@@ -131,30 +131,32 @@ pub fn layout_of(app: &App, area: Rect) -> (Rect, Option<(Rect, Pane)>) {
     layout_fit(area, code, ListSize::of(app, area))
 }
 
-/// The change itself as lines: name and location, why it matters, what
-/// the agent said. With `statements` its statements are listed too; the
-/// list preview and the swipe card write them into the code change instead
-/// (see [`super::diff`]).
+/// The change itself as lines: its name, why it matters and its commits
+/// under it, then a blank row before each other group of [`unit_groups`].
+/// With `statements` its statements are listed too; the list preview and
+/// the swipe card write them into the code change instead (see
+/// [`super::diff`]).
 pub fn unit_lines(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Line<'static>> {
-    let mut lines = vec![unit_head(app, u, true, w)];
-    lines.extend(unit_explain(app, u, w, statements));
+    let name = truncate(&slim::row_name(u), w);
+    let mut lines = vec![Line::styled(format!(" {name}"), app.theme.bold())];
+    let mut groups = unit_groups(app, u, w, statements).into_iter();
+    lines.extend(groups.next().unwrap_or_default());
+    for g in groups.filter(|g| !g.is_empty()) {
+        lines.push(Line::default());
+        lines.extend(g);
+    }
     lines
 }
 
 /// The first line, in `w` cells after one blank: the name, a spinner while
-/// it is described, with `badge` its decision on the right, and the path in
-/// what is left, cut at the front so the file name stays.
-pub fn unit_head(app: &App, u: &Unit, badge: bool, w: usize) -> Line<'static> {
+/// it is described, and the path in what is left, cut at the front so the
+/// file name stays.
+pub fn unit_head(app: &App, u: &Unit, w: usize) -> Line<'static> {
     let t = &app.theme;
     let name = truncate(&slim::row_name(u), w);
     let mut tail = Vec::new();
     if u.prep == Prep::Pending {
         tail.push(Span::styled(format!(" {}", app.spinner()), t.muted()));
-    }
-    let b = slim::badge_text(app, u);
-    if badge && !b.content.is_empty() {
-        tail.push(Span::raw("  "));
-        tail.push(b);
     }
     let tail_w: usize = tail.iter().map(|s| s.content.width()).sum();
     let room = w.saturating_sub(name.width() + tail_w + 2);
@@ -217,6 +219,21 @@ fn marked(
         .collect()
 }
 
+/// `lines` from [`marked`] with `label`, where their text starts, in
+/// `style`.
+fn labelled(mut lines: Vec<Line<'static>>, label: &str, style: Style) -> Vec<Line<'static>> {
+    if let Some(first) = lines.first_mut()
+        && let Some(text) = first.spans.get(1)
+        && let Some(rest) = text.content.strip_prefix(label)
+    {
+        let rest = Span::styled(rest.to_string(), text.style);
+        first.spans.truncate(1);
+        first.spans.push(Span::styled(label.to_string(), style));
+        first.spans.push(rest);
+    }
+    lines
+}
+
 /// Lines for the signals beside the reasons, `indent` cells in: expensive
 /// to undo (`$`, `(agent)` when the agent says so rather than the path), a
 /// second opinion that disagrees (`⚠`, its model, the first point in at
@@ -228,47 +245,42 @@ pub fn check_lines(app: &App, u: &Unit, w: usize, indent: usize) -> Vec<Line<'st
     let Some(a) = app.assessment(&u.id) else {
         return lines;
     };
+    // Each says what it is in the icon's colour, then what was found.
+    let mut check = |icon: &str, label: String, text: &str, style: Style, keep: (usize, &str)| {
+        let all = marked(
+            icon,
+            &format!("{label} {text}"),
+            w,
+            (style, t.text()),
+            indent,
+            keep,
+        );
+        lines.extend(labelled(all, &label, style));
+    };
     if let Some(why) = &a.cost {
         let by = if u.checks.cost.is_some() {
             " (agent)"
         } else {
             ""
         };
-        lines.extend(marked(
-            "$",
-            &format!("expensive to undo{by}: {why}"),
-            w,
-            (t.needs_fix(), t.text()),
-            indent,
-            (usize::MAX, ""),
-        ));
+        let label = format!("Expensive to undo{by}:");
+        check("$", label, why, t.needs_fix(), (usize::MAX, ""));
     }
     if let Some(first) = a.doubts.first() {
         let more = match a.doubts.len() {
             1 => String::new(),
             n => format!(" (+{} more)", n - 1),
         };
-        lines.extend(marked(
-            "⚠",
-            &format!(
-                "second opinion ({}): {first}",
-                slim::model_name(&app.cfg.second_model)
-            ),
-            w,
-            (t.risk(crate::review::model::Risk::Medium), t.text()),
-            indent,
-            (2, &more),
-        ));
+        let label = format!(
+            "Second opinion ({}):",
+            slim::model_name(&app.cfg.second_model)
+        );
+        let style = t.risk(crate::review::model::Risk::Medium);
+        check("⚠", label, first, style, (2, &more));
     }
     if let Some(gap) = &u.checks.unmentioned {
-        lines.extend(marked(
-            "≠",
-            &format!("not in the commit messages (agent): {}", gap.text),
-            w,
-            (t.accent(), t.text()),
-            indent,
-            (usize::MAX, ""),
-        ));
+        let label = "Not in the commit messages (agent):".to_string();
+        check("≠", label, &gap.text, t.accent(), (usize::MAX, ""));
     }
     lines
 }
@@ -312,40 +324,57 @@ pub fn agent_lines(
     lines.into_iter().map(|l| barred(app, l, indent)).collect()
 }
 
-/// Why it matters, the two checks, then what the agent said (see
-/// [`agent_lines`]), or a note while it hasn't.
+/// [`unit_groups`] one after the other.
 pub fn unit_explain(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Line<'static>> {
+    unit_groups(app, u, w, statements).concat()
+}
+
+/// What `u` is, in groups: why it matters and its commits; what the agent
+/// said (see [`agent_lines`]), or a note while it hasn't; the checks; the
+/// reviewer's note; the answers to questions asked about it. Some may be
+/// empty.
+pub fn unit_groups(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Vec<Line<'static>>> {
     let level = app
         .assessment(&u.id)
         .map(|a| a.level)
         .unwrap_or(Level::Routine);
     let style = slim::level_style(app, level);
-    let mut lines = Vec::new();
     // Why it matters comes first: the list no longer shows it.
+    let mut about = Vec::new();
     if let Some(a) = app.assessment(&u.id).filter(|a| !a.reasons.is_empty()) {
-        lines.extend(marked(
+        about.extend(marked(
             level.icon(),
             &a.reasons.join(" · "),
             w,
-            (style, style),
+            (style, app.theme.muted()),
             1,
             (usize::MAX, ""),
         ));
     }
-    lines.extend(check_lines(app, u, w, 1));
-    lines.extend(commits_line(app, u, w, 1));
-    lines.extend(agent_lines(app, u, w.saturating_sub(2), statements, 1));
+    about.extend(commits_line(app, u, w, 1));
+    let mut said = agent_lines(app, u, w.saturating_sub(2), statements, 1);
     if u.summary.is_none()
         && let Some(r) = u.nbc_reason.as_deref()
     {
         for l in wrap(r, w) {
-            lines.push(Line::raw(format!(" {l}")));
+            said.push(Line::raw(format!(" {l}")));
         }
     }
     // Not described (yet): the spinner or why not.
     if u.prep != Prep::Ready && u.summary.is_none() && u.nbc_reason.is_none() {
-        lines.extend(slim::statement_lines(app, u, w, 1));
+        said.extend(slim::statement_lines(app, u, w, 1));
     }
+    let checks = check_lines(app, u, w, 1);
+    let indented = |lines: Vec<Line<'static>>| -> Vec<Line<'static>> {
+        lines
+            .into_iter()
+            .map(|l| {
+                let mut spans = vec![Span::raw(" ")];
+                spans.extend(l.spans);
+                Line::from(spans)
+            })
+            .collect()
+    };
     // The reviewer's note. Under the code box when there is one; the
     // Flagged screen has it in its head.
     let card = if statements && app.screen != super::app::Screen::Flagged {
@@ -353,14 +382,6 @@ pub fn unit_explain(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Line
     } else {
         Vec::new()
     };
-    if !card.is_empty() {
-        lines.push(Line::default());
-        lines.extend(card.into_iter().map(|l| {
-            let mut spans = vec![Span::raw(" ")];
-            spans.extend(l.spans);
-            Line::from(spans)
-        }));
-    }
     // Answers to questions asked about it, so they are seen. On the Flagged
     // screen they are in its chat.
     let asked = if app.screen == super::app::Screen::Flagged {
@@ -368,15 +389,7 @@ pub fn unit_explain(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Line
     } else {
         super::ask::note_lines(app, &u.id, w.saturating_sub(1))
     };
-    if !asked.is_empty() {
-        lines.push(Line::default());
-        lines.extend(asked.into_iter().map(|l| {
-            let mut spans = vec![Span::raw(" ")];
-            spans.extend(l.spans);
-            Line::from(spans)
-        }));
-    }
-    lines
+    vec![about, said, checks, indented(card), indented(asked)]
 }
 
 /// `commits: c86f6fc Batch invalidate. · 1a2b3c4 Renames DTO.`: the commits
@@ -418,10 +431,15 @@ pub fn scrolled(
     editor: bool,
 ) -> Vec<Line<'static>> {
     let s = scroll_rows(app, blocks, w, h, indent, editor, app.detail_offset());
+    keep_scroll(app, &s, h);
+    s.lines
+}
+
+/// Notes how far the detail area, `h` rows, scrolled and can scroll.
+pub fn keep_scroll(app: &App, s: &Scroll, h: usize) {
     app.detail_scroll.borrow_mut().1 = s.offset;
     app.detail_max_scroll.set(s.max);
     app.detail_rows.set(h);
-    s.lines
 }
 
 /// What [`scroll_rows`] made of the blocks.
@@ -431,6 +449,8 @@ pub struct Scroll {
     pub offset: usize,
     /// How far the blocks can scroll.
     pub max: usize,
+    /// Rows left under the last one shown.
+    pub below: usize,
 }
 
 /// [`scrolled`] from `offset`, for an area that keeps its own scroll.
@@ -439,6 +459,33 @@ pub fn scroll_rows(
     blocks: Vec<Vec<Line<'static>>>,
     w: usize,
     h: usize,
+    indent: usize,
+    editor: bool,
+    offset: usize,
+) -> Scroll {
+    scroll_in(app, blocks, w, (h, h), indent, editor, offset)
+}
+
+/// [`scroll_rows`] for a box that leaves its bottom edge off while rows are
+/// left below: what is left in `h - 1` rows when it fits there, which
+/// leaves a row for the edge; else `h` rows, the last saying what is left.
+pub fn scroll_open(
+    app: &App,
+    blocks: Vec<Vec<Line<'static>>>,
+    w: usize,
+    h: usize,
+    editor: bool,
+    offset: usize,
+) -> Scroll {
+    scroll_in(app, blocks, w, (h.saturating_sub(1), h), 0, editor, offset)
+}
+
+/// [`scroll_rows`] in `fit` rows when what is left fits there, else in `h`.
+fn scroll_in(
+    app: &App,
+    blocks: Vec<Vec<Line<'static>>>,
+    w: usize,
+    (fit, h): (usize, usize),
     indent: usize,
     editor: bool,
     offset: usize,
@@ -454,16 +501,16 @@ pub fn scroll_rows(
         })
         .collect();
     // The row that says what is above, when there is room for it.
-    let head = usize::from(h >= 3);
+    let head = usize::from(fit >= 3);
     // Scrolled furthest, the last block is at the bottom: the first start
     // from which the rest fits under that row.
-    let max = if total <= h {
+    let max = if total <= fit {
         0
     } else {
         starts
             .iter()
             .copied()
-            .find(|&s| s > 0 && total - s + head <= h)
+            .find(|&s| s > 0 && total - s + head <= fit)
             .unwrap_or_else(|| starts.last().copied().unwrap_or(0))
     };
     let offset = offset.min(max);
@@ -479,21 +526,21 @@ pub fn scroll_rows(
         )
     };
     let mut out = Vec::new();
-    let mut room = h;
+    let mut top = 0;
     if above > 0 && head > 0 {
         out.push(hint(format!(
             "… {above} line{} above · {} scroll up",
             plural(above),
             k(Action::PreviewUp)
         )));
-        room -= 1;
+        top = 1;
     }
     let rest = total - above;
     // Keep a row for what is left when not everything fits.
-    let budget = if rest <= room {
-        room
+    let budget = if rest + top <= fit {
+        fit - top
     } else {
-        room.saturating_sub(1)
+        h.saturating_sub(top + 1)
     };
     let mut used = 0;
     for b in blocks.into_iter().skip(first) {
@@ -509,7 +556,7 @@ pub fn scroll_rows(
         out.extend(b);
     }
     let left = rest - used;
-    if left > 0 && room > 0 {
+    if left > 0 && h > top {
         let mut more = format!(
             "… {left} more line{} · {} scroll",
             plural(left),
@@ -524,6 +571,7 @@ pub fn scroll_rows(
         lines: out,
         offset,
         max,
+        below: left,
     }
 }
 

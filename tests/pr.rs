@@ -1025,40 +1025,25 @@ fn header_of(r: &Review) -> String {
 }
 
 #[test]
-fn the_header_marks_an_assumed_base() {
-    // With a merge ref the base is the merge base, shown as a short sha.
+fn an_assumed_base_is_noted_but_not_part_of_the_prs_identity() {
+    // With a merge ref the base is the merge base.
     let fx = Fx::new(true);
     let s = fx.prepare(&fx.url).unwrap();
     assert_eq!(s.review.pr.as_ref().unwrap().base_assumed, None);
-    let h = header_of(&s.review);
-    // The PR's only commit names it while gh isn't there.
-    assert!(
-        h.contains(&format!("PR #{} · pr change · teer · +", fx.n)),
-        "{h}"
-    );
-    assert!(
-        h.contains(&format!(
-            "· acme/shop · {}..{}",
-            &fx.fork[..7],
-            &fx.head[..7]
-        )),
-        "{h}"
-    );
-    assert!(!h.contains("main*"), "{h}");
+    // The header is the title alone: the PR's only commit names it while
+    // gh isn't there.
+    assert_eq!(header_of(&s.review).trim_end(), " pr change");
     drop(s);
 
-    // Without one the default branch is assumed and the header says so.
+    // Without one the default branch is assumed (the status says so when
+    // teer opens).
     let fx = Fx::new(false);
     let s = fx.prepare(&fx.url).unwrap();
     assert_eq!(
         s.review.pr.as_ref().unwrap().base_assumed.as_deref(),
         Some("main")
     );
-    let h = header_of(&s.review);
-    assert!(
-        h.contains(&format!("· acme/shop · main*..{}", &fx.head[..7])),
-        "{h}"
-    );
+    assert_eq!(header_of(&s.review).trim_end(), " pr change");
     // It does not change the PR's identity (store key).
     let mut plain = s.review.pr.clone().unwrap();
     plain.base_assumed = None;

@@ -1123,7 +1123,7 @@ pub fn draw_flagged(f: &mut Frame, app: &App, area: Rect) {
     };
     let cw = count.width();
     let w = (head.width as usize).saturating_sub(cw + 3);
-    let mut line = unit_head(app, u, false, w);
+    let mut line = unit_head(app, u, w);
     line.spans.insert(0, glyph(app, u));
     line.spans.insert(0, Span::raw(" "));
     let used = line.width();

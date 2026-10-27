@@ -213,10 +213,13 @@ fn key(app: &mut App, c: char) {
 fn the_list_shows_whole_files_and_the_files_it_cant_show_last() {
     let a = App::new(review(), Config::default(), KeyMap::default());
     let t = draw(&a, 120, 50);
-    // A whole file goes by its file name, and the preview says it is one.
+    // A whole file goes by its file name, in the list and over the preview.
     assert!(t.lines().any(|l| l.starts_with("│ README.md")), "{t}");
     assert!(t.lines().any(|l| l.starts_with("│▌  ◆ README.md")), "{t}");
-    assert!(t.contains("  README.md  whole file"), "{t}");
+    assert!(
+        t.lines().any(|l| l.trim_end().ends_with("╮  README.md")),
+        "{t}"
+    );
     // Files teer can't show are muted rows with why, in a box of their own
     // after every other, and can't be selected.
     let rows: Vec<&str> = t.lines().collect();

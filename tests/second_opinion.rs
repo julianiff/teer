@@ -178,11 +178,11 @@ async fn a_disputed_statement_and_an_expensive_change_are_warnings() {
     }
     let text = screen(&app, 120, 40);
     assert!(
-        text.contains("$ expensive to undo (agent): Charges the card"),
+        text.contains("$ Expensive to undo (agent): Charges the card"),
         "{text}"
     );
     assert!(
-        text.contains("⚠ second opinion (sonnet): disputes"),
+        text.contains("⚠ Second opinion (sonnet): disputes"),
         "{text}"
     );
     // "(+1 more)" may wrap after the model name.

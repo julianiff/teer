@@ -1,13 +1,14 @@
 ---
 source: tests/tui_list_files.rs
+assertion_line: 267
 expression: "render(&a, 120, 60).backend()"
 ---
-" teer  r · b..h · no agent                                                                                              "
-"╭─ Needs a close look · 1 file ──╮  close_a  src/c.rs:10-15                                                             "
+" b..h                                                                                                                   "
+"╭─ Needs a close look · 1 file ──╮  close_a                                                                             "
 "│ src/c.rs                   0/3 │  ▲ removed, 1 caller still calls it                                                  "
-"│▌  ▲ close_a                    │  ┃ agent (haiku)                                                                     "
-"│   ▲ close_b                    │  ┃ summary                                                                           "
-"│   ● c_helper                   │                                                                                      "
+"│▌  ▲ close_a                    │                                                                                      "
+"│   ▲ close_b                    │  ┃ agent (haiku)                                                                     "
+"│   ● c_helper                   │  ┃ summary                                                                           "
 "│   ○ tidy  formatting only      │                                                                                      "
 "╰────────────────────────────────╯                                                                                      "
 "                                                                                                                        "

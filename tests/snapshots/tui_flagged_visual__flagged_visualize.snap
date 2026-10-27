@@ -1,8 +1,9 @@
 ---
 source: tests/tui_flagged_visual.rs
+assertion_line: 246
 expression: "screen(&f.app, 100, 30).backend()"
 ---
-" teer  shop · uncommitted vs a1b2c3d · s1                                              Flagged (2)  "
+" Uncommitted changes                                                                   Flagged (2)  "
 " ⚑ charge_order  checkout.py:8-12                                             1/2 · j k other units "
 "                                                                                                    "
 " ◆ 1 caller · not described, read the code                                                          "

@@ -1,8 +1,9 @@
 ---
 source: tests/tui.rs
+assertion_line: 343
 expression: card
 ---
-" teer  shop · uncommitted vs a1b2c3d · s1                                       "
+" Uncommitted changes                                                            "
 "                                                                                "
 "  ╭ 1 of 4 ──────────────────────────────────────────────────────────────────╮  "
 "  │ ▲ Needs a close look  checkout.py                                        │  "
@@ -20,8 +21,8 @@ expression: card
 "  │ │     │ Rejects unsupported currencies. 2 callers don't handle it. │   │ │  "
 "  │ │     ╰────────────────────────────────────────────────────────────╯   │ │  "
 "  │ │  11       result = pay(order)                                        │ │  "
-"  │ │ … 10 more lines · J scroll · e editor                                │ │  "
-"  │ ╰──────────────────────────────────────────────────────────────────────╯ │  "
+"  │ │  10 -     send_receipt(order)                                        │ │  "
+"  │ │ … 9 more lines · J scroll · e editor                                 │ │  "
 "  │ not reviewed yet                                                         │  "
 "  ╰──────────────────────────────────────────────────────────────────────────╯  "
 "                                                                 accept [l] →   "

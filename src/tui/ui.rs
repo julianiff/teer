@@ -166,66 +166,17 @@ pub(super) fn click_hints(f: &mut Frame, app: &App, area: Rect, hints: &str) {
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
     let r = &app.review;
-    let repo = r
-        .repo_root
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
+    // What the change is called, nothing else: the commits view (`C`) has
+    // the PR's number, author, size and description.
     let short = |s: &str| s.chars().take(7).collect::<String>();
-    let range = if r.head == WORKTREE {
-        format!("uncommitted vs {}", short(&r.base))
-    } else {
-        format!("{}..{}", short(&r.base), short(&r.head))
-    };
-    // What is reviewed, then what the author says it is. Every part after
-    // the first can go when the line is short, the lowest number first; the
-    // title shrinks before any of them does.
-    let mut parts: Vec<(String, Style, u8)> = Vec::new();
-    let (title, author, size) = if r.head == WORKTREE {
-        (None, None, None)
+    let title = if r.head == WORKTREE {
+        "Uncommitted changes".to_string()
     } else {
         crate::review::intent::headline(r)
+            .0
+            .map(|s| sanitize(&s))
+            .unwrap_or_else(|| format!("{}..{}", short(&r.base), short(&r.head)))
     };
-    let about = |parts: &mut Vec<(String, Style, u8)>| {
-        if let Some(a) = &author {
-            parts.push((format!(" · {}", sanitize(a)), t.muted(), 5));
-        }
-        if let Some(s) = size {
-            let text = crate::review::intent::size_text(s);
-            parts.push((format!(" · {text}"), t.muted(), 4));
-        }
-    };
-    match &r.pr {
-        Some(pr) => {
-            // `main*`: no merge ref, the default branch was assumed as the base.
-            let base = match &pr.base_assumed {
-                Some(b) => format!("{}*", truncate(&sanitize(b), 24)),
-                None => short(&r.base),
-            };
-            parts.push((format!(" PR #{}", pr.number), t.muted(), 0));
-            about(&mut parts);
-            parts.push((format!(" · {}/{}", pr.owner, pr.repo), t.muted(), 2));
-            parts.push((format!(" · {base}..{}", short(&r.head)), t.muted(), 1));
-        }
-        None => {
-            parts.push((format!(" {repo}"), t.muted(), 0));
-            about(&mut parts);
-            parts.push((format!(" · {range}"), t.muted(), 1));
-        }
-    }
-    if let Some(s) = r.agent_session.as_ref().filter(|s| s.is_fresh()) {
-        parts.push((format!(" · {}", s.agent), t.muted(), 3));
-    } else if let Some(s) = &r.agent_session {
-        let title = app
-            .sessions
-            .iter()
-            .find(|x| x.id == s.id)
-            .map(|x| x.title.clone())
-            .unwrap_or_else(|| s.id.chars().take(8).collect());
-        parts.push((format!(" · {}", truncate(&title, 32)), t.muted(), 3));
-    } else {
-        parts.push((" · no agent".into(), t.muted(), 3));
-    }
     let mut right = Vec::new();
     let (done, total) = app.prep_progress();
     if done < total {
@@ -246,50 +197,12 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     // The status on the right is never cut and keeps a gap before it.
     let rw: usize = right.iter().map(|s| s.content.width()).sum();
     let budget = (area.width as usize).saturating_sub(if rw > 0 { rw + 2 } else { 0 });
-    let lead = " teer ";
-    let title = title.map(|s| sanitize(&s));
-    let title_w = title.as_ref().map_or(0, |s| s.width() + 3);
-    let fixed = |parts: &[(String, Style, u8)]| {
-        lead.width() + parts.iter().map(|p| p.0.width()).sum::<usize>()
-    };
-    for level in 1..=5 {
-        if fixed(&parts) + title_w.min(HEADER_TITLE_MIN + 3) <= budget {
-            break;
-        }
-        parts.retain(|p| p.2 != level);
-    }
-    let room = budget.saturating_sub(fixed(&parts)).min(title_w);
-    let mut left = vec![Span::styled(lead, t.accent().add_modifier(Modifier::BOLD))];
-    for (i, (text, style, _)) in parts.into_iter().enumerate() {
-        left.push(Span::styled(text, style));
-        // The title follows the first part (the PR number or the repository).
-        if i == 0
-            && let Some(title) = title.as_ref().filter(|_| room >= 8)
-        {
-            left.push(Span::styled(
-                format!(" · {}", truncate(title, room - 3)),
-                t.bold(),
-            ));
-        }
-    }
-    // Still too long (a very narrow terminal): cut the left side, not the status.
-    let mut used = 0;
-    for s in left.iter_mut() {
-        let w = s.content.width();
-        if used + w > budget {
-            s.content = truncate(&s.content, budget.saturating_sub(used)).into();
-        }
-        used += s.content.width();
-    }
-    let pad = (area.width as usize).saturating_sub(used + rw);
-    left.push(Span::raw(" ".repeat(pad)));
-    left.extend(right);
-    f.render_widget(Paragraph::new(Line::from(left)), area);
+    let title = truncate(&format!(" {title}"), budget);
+    let pad = (area.width as usize).saturating_sub(title.width() + rw);
+    let mut line = vec![Span::styled(title, t.bold()), Span::raw(" ".repeat(pad))];
+    line.extend(right);
+    f.render_widget(Paragraph::new(Line::from(line)), area);
 }
-
-/// The header's title keeps at least this many columns before the other
-/// parts of the header give way.
-const HEADER_TITLE_MIN: usize = 24;
 
 /// Footer buttons, highest priority first (the footer drops from the end).
 /// `R` reset and `l` accept are deliberately absent: they work everywhere

@@ -289,11 +289,19 @@ async fn rows_show_the_name_and_the_preview_where_it_is() {
         assert!(line.contains(name), "{w}: {line}");
         assert!(!line.contains("checkout"), "{w}: {line}");
     }
-    // The selected unit's file and lines are in the preview.
+    // The preview is headed by the selected unit's name alone: its file
+    // is the label above it in the list, its lines are in the code.
     let (mut app, _r) = app().await;
     select(&mut app, "charge_order");
-    let all: String = grid(&app, 120, 30).iter().map(|l| l.concat()).collect();
-    assert!(all.contains("charge_order  checkout.py:8-12"), "{all}");
+    let g = grid(&app, 120, 30);
+    let head = g
+        .iter()
+        .map(|l| l.concat())
+        .find(|l| l.contains("╮  charge_order"))
+        .unwrap();
+    assert!(head.trim_end().ends_with("╮  charge_order"), "{head}");
+    let all: String = g.iter().map(|l| l.concat()).collect();
+    assert!(!all.contains("checkout.py:8-12"), "{all}");
 }
 
 #[tokio::test]

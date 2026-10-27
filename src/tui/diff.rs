@@ -18,6 +18,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use super::app::App;
+use super::preview;
 use super::syntax::{Cache, Class};
 use crate::review::attention::Level;
 use crate::review::model::{Change, LineRef, Marker, Prep, Range, Review, Side, Unit};
@@ -611,9 +612,25 @@ pub fn draw_box(f: &mut Frame, app: &App, area: Rect, u: &Unit, notes: Notes) ->
         height: area.height.min(rows.min(u16::MAX as usize) as u16),
         ..area
     };
+    // While code is left below, the box has no bottom edge: it reads as
+    // going on past the pane, and that row says how much is left. Scrolled
+    // to the end, it closes.
+    let h = area.height as usize;
+    let s = preview::scroll_open(app, blocks, w, h - 1, true, app.detail_offset());
+    let open = s.below > 0;
+    preview::keep_scroll(app, &s, h - 2 + usize::from(open));
+    let mut lines = s.lines;
+    let borders = if open {
+        let hint = lines.pop().unwrap_or_default();
+        lines.resize(h - 2, Line::default());
+        lines.push(hint);
+        Borders::TOP | Borders::LEFT | Borders::RIGHT
+    } else {
+        Borders::ALL
+    };
     let t = &app.theme;
     let block = Block::new()
-        .borders(Borders::ALL)
+        .borders(borders)
         .border_type(BorderType::Rounded)
         .border_style(t.text())
         .title(Span::styled(TITLE, t.bold()))
@@ -626,7 +643,6 @@ pub fn draw_box(f: &mut Frame, app: &App, area: Rect, u: &Unit, notes: Notes) ->
         inner.width.saturating_sub(2),
         inner.height,
     );
-    let lines = super::preview::scrolled(app, blocks, w, inner.height as usize, 0, true);
     f.render_widget(Paragraph::new(lines), inner);
     super::ui::text_area(app, inner, gutter);
     true

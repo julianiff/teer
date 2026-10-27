@@ -397,47 +397,39 @@ mod screen {
     }
 
     #[test]
-    fn a_pr_header_has_title_author_and_size_and_never_cuts_the_status() {
+    fn a_pr_header_is_its_title_and_never_cuts_the_status() {
         let (r, _repo) = pr_review(Some(meta()));
         let app = busy(r);
         let h = row(&render(&app, 120, 20), 0);
         assert!(
-            h.starts_with(" teer  PR #7 · Distribute batching for"),
+            h.starts_with(" Distribute batching for withdrawals and invalidations  "),
             "{h}"
         );
-        assert!(h.contains(" · @jdoe · +145 −44 · 13 files"), "{h}");
+        // The rest is in the commits view.
+        for gone in ["PR #7", "@jdoe", "13 files", "acme/shop", "teer"] {
+            assert!(!h.contains(gone), "{gone}: {h}");
+        }
         status_keeps_its_place(&h, 120);
 
-        // At 80 columns the title is cut first, then the repo and range go.
-        let h = row(&render(&app, 80, 24), 0);
-        assert!(h.starts_with(" teer  PR #7 · Distribute batching"), "{h}");
+        // Short of room the title is cut, never the status.
+        let h = row(&render(&app, 60, 24), 0);
+        assert!(h.starts_with(" Distribute batching"), "{h}");
         assert!(h.contains('…'), "{h}");
-        assert!(h.contains("@jdoe"), "{h}");
-        assert!(!h.contains("acme/shop"), "{h}");
-        status_keeps_its_place(&h, 80);
-
-        // Even at 50 columns the status is whole.
-        let h = row(&render(&app, 50, 24), 0);
-        status_keeps_its_place(&h, 50);
+        status_keeps_its_place(&h, 60);
+        let h = row(&render(&app, 30, 24), 0);
+        status_keeps_its_place(&h, 30);
     }
 
     #[test]
     fn without_gh_the_header_names_the_commits() {
         let (r, _repo) = pr_review(None);
-        let size = r.intent.size.unwrap();
         let app = App::new(r, Config::default(), KeyMap::default());
         let h = row(&render(&app, 120, 20), 0);
-        assert!(
-            h.contains(&format!(
-                "PR #7 · 4 commits · teer · +{} −{} · 2 files · acme/shop · ",
-                size.additions, size.deletions
-            )),
-            "{h}"
-        );
+        assert_eq!(h.trim_end(), " 4 commits");
     }
 
     #[test]
-    fn a_branch_review_has_its_commit_count_and_size() {
+    fn a_branch_review_is_named_by_its_commits_and_uncommitted_changes_say_so() {
         let (repo, init) = history();
         let r = build_review(
             &repo.path(),
@@ -448,9 +440,15 @@ mod screen {
         )
         .unwrap();
         let app = App::new(r, Config::default(), KeyMap::default());
-        let h = row(&render(&app, 120, 20), 0);
-        assert!(h.contains(" · 4 commits · teer · +"), "{h}");
-        assert!(h.contains(&format!(" · {}..", &init[..7])), "{h}");
+        assert_eq!(row(&render(&app, 120, 20), 0).trim_end(), " 4 commits");
+
+        repo.write("a.py", "def f():\n    return 9\n");
+        let r = build_review(&repo.path(), &BuildOptions::default()).unwrap();
+        let app = App::new(r, Config::default(), KeyMap::default());
+        assert_eq!(
+            row(&render(&app, 120, 20), 0).trim_end(),
+            " Uncommitted changes"
+        );
     }
 }
 
@@ -901,7 +899,7 @@ mod agent {
         assert_eq!(unit(&back, "g").checks.unmentioned, Some(g));
 
         // The preview, the card and the Flagged screen say it under the reasons.
-        let want = "≠ not in the commit messages (agent): Also triples the result.";
+        let want = "≠ Not in the commit messages (agent): Also triples the result.";
         let text = |app: &App, w, h| {
             let t = render(app, w, h);
             (0..h).map(|y| row(&t, y)).collect::<Vec<_>>().join("\n")

@@ -1,8 +1,9 @@
 ---
 source: tests/tui.rs
+assertion_line: 305
 expression: "render(&app, 90, 20).backend()"
 ---
-" teer  shop · uncommitted vs a1b2c3d · s1                                      1 flagged  "
+" Uncommitted changes                                                           1 flagged  "
 "                                                                                          "
 "                                                                                          "
 "                                                                                          "

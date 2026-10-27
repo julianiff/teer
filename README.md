@@ -111,7 +111,7 @@ Anywhere else, `/` opens **Ask**, for questions about the codebase itself: "who 
 teer pr https://github.com/owner/repo/pull/123
 ```
 
-teer fetches the pull request with plain `git` into a checkout of its own. Your working tree, branches and index are never touched. With `gh` installed, the header shows the PR's title, author and size, and the agent reads the PR description as the author's stated intent, and points out a change the description doesn't mention.
+teer fetches the pull request with plain `git` into a checkout of its own. Your working tree, branches and index are never touched. With `gh` installed, the header shows the PR's title (`C` shows its author, size and description), and the agent reads the PR description as the author's stated intent, and points out a change the description doesn't mention.
 
 A pull request's code is treated as untrusted. teer runs none of it, git hooks are off, the agent can only read inside the checkout and never searches the web, and the repository's own Claude settings and instructions aren't loaded. Nothing is posted to GitHub until you've seen exactly what will be posted and confirmed it. teer also refuses if the PR got new commits since you reviewed it.
 

@@ -167,10 +167,10 @@ fn a_double_click_copies_the_word_under_the_pointer() {
     let (text, what) = copied(&click(&mut a, (x + 2, y))).expect("copied");
     assert_eq!(text, "subtotal");
     assert_eq!(what, "“subtotal”");
-    // A path with its line numbers is one word.
-    let (x, y) = at(&rows, "calc.py:1-3");
-    click(&mut a, (x, y));
-    assert_eq!(copied(&click(&mut a, (x, y))).unwrap().0, "calc.py:1-3");
+    // A file name is one word.
+    let (x, y) = at(&rows, "calc.py");
+    click(&mut a, (x + 2, y));
+    assert_eq!(copied(&click(&mut a, (x + 2, y))).unwrap().0, "calc.py");
 }
 
 #[test]

@@ -124,9 +124,10 @@ fn the_preview_scrolls_down_to_the_cut_rows_and_back_up() {
     let (w, h) = (100, 30);
     let first = pane(&app, w, h);
     let text = first.join("\n");
-    // Cut: the code's box ends with how much is left and how to see it;
-    // nothing above.
-    assert!(first[first.len() - 2].contains(MORE), "{text}");
+    // Cut: the code's box has no bottom edge; its last row says how much is
+    // left and how to see it. Nothing above.
+    assert!(first[first.len() - 1].contains(MORE), "{text}");
+    assert!(!has(&first, "╰"), "{text}");
     assert!(!has(&first, "above"), "{text}");
     assert!(has(&first, " long_one "), "{text}");
     assert!(!has(&first, "a15 = x + 15"), "{text}");
@@ -138,7 +139,7 @@ fn the_preview_scrolls_down_to_the_cut_rows_and_back_up() {
     // what is above.
     assert!(has(&after, "│ … 3 lines above · K scroll up"), "{text}");
     assert!(has(&after, " long_one "), "{text}");
-    assert!(after[after.len() - 2].contains(MORE), "{text}");
+    assert!(after[after.len() - 1].contains(MORE), "{text}");
     assert!(has(&after, "a15 = x + 15"), "{text}");
 
     // At the end the last row of the change shows and nothing is left below.
@@ -150,8 +151,10 @@ fn the_preview_scrolls_down_to_the_cut_rows_and_back_up() {
     assert!(has(&end, "return a29"), "{text}");
     assert!(!has(&end, "more lines"), "{text}");
     assert!(has(&end, ABOVE), "{text}");
-    // Only whole rows: the box's bottom row is code, not blank or cut.
+    // Only whole rows: the box's bottom row is code, not blank or cut, and
+    // the box closes under it.
     assert!(end[end.len() - 2].contains("return a29"), "{text}");
+    assert!(end[end.len() - 1].contains("╰──"), "{text}");
     let max = app.detail_max_scroll.get();
     assert!(max > 0);
     key(&mut app, 'J');
@@ -175,7 +178,7 @@ fn page_down_and_page_up_scroll_a_page() {
     assert_eq!(app.detail_offset(), app.detail_rows.get() - 2);
     let after = pane(&app, w, h);
     // The last code row shown before is near the top of the box now.
-    let last = before[before.len() - 3].clone();
+    let last = before[before.len() - 2].clone();
     let at = after
         .iter()
         .position(|l| *l == last)
@@ -345,16 +348,11 @@ fn beside_a_one_unit_list_the_code_change_gets_the_width() {
         .cloned()
         .collect();
     assert_eq!(units, [(Rect::new(0, 3, 28, 1), Target::Unit(0))]);
-    // The unit's row is its name, under its file's name; the pane says where.
+    // The unit's row is its name, under its file's name.
     let file: String = lines[2].chars().take(28).collect();
     assert!(file.starts_with("│ calc.py"), "{file}");
     let row: String = lines[3].chars().take(28).collect();
     assert!(row.contains("◆ only") && !row.contains("calc.py"), "{row}");
-    assert!(
-        lines.iter().any(|l| l.contains("only  calc.py:1-2")),
-        "{}",
-        lines.join("\n")
-    );
     // The long line fits on one row instead of wrapping.
     let pane_rows = pane(&app, w, h);
     assert!(

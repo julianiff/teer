@@ -573,7 +573,7 @@ async fn starts_on_the_review_without_asking_for_a_session() {
             .any(|e| matches!(e, Effect::Prepare(ids) if !ids.is_empty()))
     );
     let screen = format!("{}", render(&app, 90, 8).backend());
-    assert!(screen.contains("· claude"), "{screen}");
+    assert!(screen.contains("preparing 0/4"), "{screen}");
 
     // Without Claude Code, the review still opens and says why.
     let mut app = App::new(review, Config::default(), KeyMap::default());

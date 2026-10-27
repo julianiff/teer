@@ -1,8 +1,9 @@
 ---
 source: tests/tui.rs
+assertion_line: 253
 expression: "render(&app, 90, 26).backend()"
 ---
-" teer  shop · uncommitted vs a1b2c3d · s1                                                 "
+" Uncommitted changes                                                                      "
 "                                                                                          "
 "    ╭ 1 of 4 ────────────────────────────────────────────────────────────────────────╮    "
 "    │ ▲ Needs a close look  checkout.py                                              │    "
@@ -21,9 +22,9 @@ expression: "render(&app, 90, 26).backend()"
 "    │ │     ╭────────────────────────────────────────────────────────────╮         │ │    "
 "    │ │     │ Rejects unsupported currencies. 2 callers don't handle it. │         │ │    "
 "    │ │     ╰────────────────────────────────────────────────────────────╯         │ │    "
-"    │ │ … 7 more lines · J scroll · e editor                                       │ │    "
 "    │ │                                                                            │ │    "
-"    │ ╰────────────────────────────────────────────────────────────────────────────╯ │    "
+"    │ │                                                                            │ │    "
+"    │ │ … 7 more lines · J scroll · e editor                                       │ │    "
 "    │ not reviewed yet                                                               │    "
 "    ╰────────────────────────────────────────────────────────────────────────────────╯    "
 "                                                                         accept [l] →     "

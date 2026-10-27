@@ -1,8 +1,9 @@
 ---
 source: tests/tui.rs
+assertion_line: 797
 expression: "render(&app, 90, 20).backend()"
 ---
-" teer  shop · uncommitted vs a1b2c3d · s1                                      1 flagged  "
+" Uncommitted changes                                                           1 flagged  "
 "                                                                                          "
 "    ╭ 2 of 4 ────────────────────────────────────────────────────────────────────────╮    "
 "    │ ◆ Worth a look  checkout.py                                                    │    "
@@ -14,10 +15,10 @@ expression: "render(&app, 90, 20).backend()"
 "    │          │  Clears every decision, as if nothing was looked at.     │          │    "
 "    │ ╭ code ch│                                                          │──── −2 ╮ │    "
 "    │ │  14 - d│  enter reset · esc cancel                                │        │ │    "
-"    │ │ … 4 mor│                                                          │        │ │    "
-"    │ │        ╰──────────────────────────────────────────────────────────╯        │ │    "
-"    │ │                                                                            │ │    "
-"    │ ╰────────────────────────────────────────────────────────────────────────────╯ │    "
+"    │ │     ╭──│                                                          │        │ │    "
+"    │ │     │ T╰──────────────────────────────────────────────────────────╯        │ │    "
+"    │ │     ╰──────────────────────────────╯                                       │ │    "
+"    │ │ … 1 more line · J scroll · e editor                                        │ │    "
 "    │ ⚑ flagged  ·  1 flagged                                                        │    "
 "    ╰────────────────────────────────────────────────────────────────────────────────╯    "
 "                                                                         accept [l] →     "
