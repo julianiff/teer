@@ -12,34 +12,10 @@
 
 ---
 
-```text
- Uncommitted changes
-╭─ Needs a close look · 1 file ────────────────────────────────────────╮
-│ checkout.py                                                      0/4 │
-│▌  ▲ charge_order                                                     │
-│   ◆ old_helper                                                       │
-│   ● new_helper                                                       │
-│   ○ format_me  formatting or comments                                │
-╰──────────────────────────────────────────────────────────────────────╯
-────────────────────────────────────────────────────────────────────────
- charge_order
- ▲ 3 callers · agent: high risk
 
- ┃ agent (haiku, sonnet)
- ┃ Changes how orders are charged.
+https://github.com/user-attachments/assets/4f66d3b0-057e-49b9-8873-3f277a254ea7
 
- ╭ code change ──────────────────────────────────────────────── +3 −2 ╮
- │   8   def charge_order(order):                                     │
- │     ╭────────────────────────────────────╮                         │
- │     │ No longer sends the receipt email. │                         │
- │     ╰────────────────────────────────────╯                         │
- │   9 +     if order.currency not in SUPPORTED:                      │
- │     ╭────────────────────────────────────────────────────────────╮ │
- │     │ Rejects unsupported currencies. 2 callers don't handle it. │ │
- │     ╰────────────────────────────────────────────────────────────╯ │
- ╰────────────────────────────────────────────────────────────────────╯
- e open in editor   s swipe   ? help   i investigate   / ask   m note
-```
+
 
 **review a code change by what it does, not line by line.**
 
