@@ -132,18 +132,15 @@ pub fn model_name(model: &str) -> String {
     }
 }
 
-/// Who wrote the summary and statements of `u`: `agent (haiku)`, and
-/// `· checked by sonnet` once the second model has checked them. Drawn
+/// Who wrote the summary and statements of `u`: `agent (haiku)`, or
+/// `agent (haiku, sonnet)` once the second model has checked them. Drawn
 /// above them; facts from the code carry no label.
 pub fn agent_label(app: &App, u: &Unit) -> String {
-    let mut label = format!("agent ({})", model_name(&app.cfg.prepare_model));
+    let mut models = model_name(&app.cfg.prepare_model);
     if u.checks.second.is_some() {
-        label.push_str(&format!(
-            " · checked by {}",
-            model_name(&app.cfg.second_model)
-        ));
+        models.push_str(&format!(", {}", model_name(&app.cfg.second_model)));
     }
-    label
+    format!("agent ({models})")
 }
 
 /// Runs of cited lines shown before the rest is counted.
@@ -542,7 +539,7 @@ fn indent(app: &App, ui: usize) -> String {
     }
 }
 
-fn file_name(path: &std::path::Path) -> String {
+pub fn file_name(path: &std::path::Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default()
@@ -901,7 +898,7 @@ mod tests {
         });
         assert_eq!(
             agent_label(&app, &u),
-            "agent (Claude Code's default model) · checked by sonnet"
+            "agent (Claude Code's default model, sonnet)"
         );
     }
 

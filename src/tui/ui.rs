@@ -426,6 +426,9 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
     )
 }
 
+/// Cells between the swipe card's border and its text, on each side.
+const CARD_PAD: u16 = 2;
+
 fn draw_swipe(f: &mut Frame, app: &App, area: Rect) {
     use crate::review::model::Decision;
     let t = &app.theme;
@@ -445,32 +448,39 @@ fn draw_swipe(f: &mut Frame, app: &App, area: Rect) {
         76
     }
     .min(area.width);
-    // Text width inside the borders and the one-cell padding.
-    let w = card_w.saturating_sub(4) as usize;
+    // Text width inside the borders and the padding.
+    let w = card_w.saturating_sub(2 + 2 * CARD_PAD) as usize;
     let title = format!("{} {}", level.icon(), level.title());
-    // The path gives way at the front, so the file name stays.
-    let path = slim::fit_path(
-        &u.file.display().to_string(),
-        w.saturating_sub(title.width() + 2),
-    );
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(
-                title,
-                slim::level_style(app, level).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!("  {path}"), t.muted()),
-        ]),
-        Line::styled(slim::row_name(u), t.bold()),
-    ];
-    if let Some(a) = a
-        .as_ref()
-        .filter(|a| !a.reasons.is_empty() && level != Level::Routine)
-    {
-        lines.push(Line::styled(truncate(&a.reasons.join(" · "), w), t.muted()));
+    // A symbol says which file it is in; a whole file is named already.
+    let mut name = vec![Span::styled(slim::row_name(u), t.bold())];
+    if u.kind != crate::review::model::UnitKind::File {
+        name.push(Span::styled(
+            format!("  {}", slim::file_name(&u.file)),
+            t.muted(),
+        ));
     }
-    lines.extend(crate::tui::preview::check_lines(app, u, w, 0));
-    lines.extend(crate::tui::preview::commits_line(app, u, w, 0));
+    let mut lines = vec![
+        Line::styled(
+            title,
+            slim::level_style(app, level).add_modifier(Modifier::BOLD),
+        ),
+        Line::from(name),
+    ];
+    // The commits that changed it, by subject.
+    let subjects: Vec<&str> = app
+        .review
+        .commits_of(u)
+        .iter()
+        .map(|c| c.subject.as_str())
+        .collect();
+    if !subjects.is_empty() {
+        lines.push(Line::styled(truncate(&subjects.join(" · "), w), t.muted()));
+    }
+    let checks = crate::tui::preview::check_lines(app, u, w, 0, false);
+    if !checks.is_empty() {
+        lines.push(Line::default());
+        lines.extend(checks);
+    }
     lines.push(Line::default());
     // What the agent wrote sits behind a bar. A routine card says it in one
     // sentence; the others write their statements into the code change.
@@ -532,8 +542,8 @@ fn draw_swipe(f: &mut Frame, app: &App, area: Rect) {
         _ => 10,
     };
     let wanted = if code || level == Level::Attention {
-        // Borders and the state line.
-        floor.max((total + 3).min(u16::MAX as usize) as u16)
+        // Borders and the state line with a blank row above it.
+        floor.max((total + 4).min(u16::MAX as usize) as u16)
     } else {
         floor
     };
@@ -583,6 +593,7 @@ fn draw_swipe(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Rounded)
         .border_style(tint)
+        .padding(ratatui::widgets::Padding::horizontal(CARD_PAD))
         .title(Span::styled(counter, t.muted()))
         .title_bottom(Line::styled(label, tint.add_modifier(Modifier::BOLD)).right_aligned());
     f.render_widget(Clear, card);
@@ -599,9 +610,13 @@ fn draw_swipe(f: &mut Frame, app: &App, area: Rect) {
     if flagged > 0 {
         foot_line.push(Span::styled(format!("  ·  {flagged} flagged"), t.muted()));
     }
-    let [content, foot] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(pad(inner, 1, 0));
-    text_area(app, pad(inner, 1, 0), 0);
+    let [content, _, foot] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    text_area(app, inner, 0);
     let h = content.height as usize;
     let min_box = crate::tui::preview::MIN_BOX_ROWS;
     if boxed && h > min_box {

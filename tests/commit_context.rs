@@ -712,11 +712,10 @@ mod preview {
         {
             app.swipe.cursor += 1;
         }
+        // By subject alone, with no label and no hash.
         let s = text(&render(&app, 120, 40));
-        assert!(
-            s.contains(&format!("commits: {} Change g, drop old", short[1])),
-            "{s}"
-        );
+        assert!(s.contains("Change g, drop old · fixup! Change g"), "{s}");
+        assert!(!s.contains("commits:") && !s.contains(&short[1]), "{s}");
     }
 
     #[test]
@@ -923,7 +922,12 @@ mod agent {
         {
             app.swipe.cursor += 1;
         }
-        assert!(text(&app, 120, 40).contains(want));
+        // The card leaves out who said it.
+        let card = text(&app, 120, 40);
+        assert!(
+            card.contains("≠ Not in the commit messages: Also triples the result."),
+            "{card}"
+        );
         app.screen = Screen::Slim;
         app.on_action(teer::config::Action::Flagged);
         assert_eq!(app.screen, Screen::Flagged);

@@ -235,11 +235,18 @@ fn labelled(mut lines: Vec<Line<'static>>, label: &str, style: Style) -> Vec<Lin
 }
 
 /// Lines for the signals beside the reasons, `indent` cells in: expensive
-/// to undo (`$`, `(agent)` when the agent says so rather than the path), a
-/// second opinion that disagrees (`⚠`, its model, the first point in at
-/// most two lines and how many more; the Disagreement tab has them all) and
-/// a change the commit messages don't mention (`≠`).
-pub fn check_lines(app: &App, u: &Unit, w: usize, indent: usize) -> Vec<Line<'static>> {
+/// to undo (`$`, with `tagged` `(agent)` when the agent says so rather than
+/// the path), a second opinion that disagrees (`⚠`, its model, the first
+/// point in at most two lines and how many more; the Disagreement tab has
+/// them all) and a change the commit messages don't mention (`≠`, with
+/// `tagged` `(agent)`).
+pub fn check_lines(
+    app: &App,
+    u: &Unit,
+    w: usize,
+    indent: usize,
+    tagged: bool,
+) -> Vec<Line<'static>> {
     let t = &app.theme;
     let mut lines = Vec::new();
     let Some(a) = app.assessment(&u.id) else {
@@ -258,7 +265,7 @@ pub fn check_lines(app: &App, u: &Unit, w: usize, indent: usize) -> Vec<Line<'st
         lines.extend(labelled(all, &label, style));
     };
     if let Some(why) = &a.cost {
-        let by = if u.checks.cost.is_some() {
+        let by = if tagged && u.checks.cost.is_some() {
             " (agent)"
         } else {
             ""
@@ -279,7 +286,8 @@ pub fn check_lines(app: &App, u: &Unit, w: usize, indent: usize) -> Vec<Line<'st
         check("⚠", label, first, style, (2, &more));
     }
     if let Some(gap) = &u.checks.unmentioned {
-        let label = "Not in the commit messages (agent):".to_string();
+        let by = if tagged { " (agent)" } else { "" };
+        let label = format!("Not in the commit messages{by}:");
         check("≠", label, &gap.text, t.accent(), (usize::MAX, ""));
     }
     lines
@@ -364,7 +372,7 @@ pub fn unit_groups(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Vec<L
     if u.prep != Prep::Ready && u.summary.is_none() && u.nbc_reason.is_none() {
         said.extend(slim::statement_lines(app, u, w, 1));
     }
-    let checks = check_lines(app, u, w, 1);
+    let checks = check_lines(app, u, w, 1, true);
     let indented = |lines: Vec<Line<'static>>| -> Vec<Line<'static>> {
         lines
             .into_iter()

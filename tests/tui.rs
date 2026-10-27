@@ -342,12 +342,9 @@ async fn statements_sit_in_the_code_under_the_rows_they_cite() {
     let card = format!("{}", render(&app, 80, 24).backend());
     insta::assert_snapshot!("swipe_card_cites", card);
     // What the agent wrote sits behind a bar, under a label naming who.
+    assert!(card.contains("│  ┃ agent (haiku, sonnet) "), "{card}");
     assert!(
-        card.contains("│ ┃ agent (haiku) · checked by sonnet "),
-        "{card}"
-    );
-    assert!(
-        card.contains("│ ┃ Changes how orders are charged."),
+        card.contains("│  ┃ Changes how orders are charged."),
         "{card}"
     );
     // Each statement sits in a card under the last row it cites, and
@@ -378,7 +375,7 @@ async fn statements_sit_in_the_code_under_the_rows_they_cite() {
 }
 
 #[tokio::test]
-async fn a_long_path_on_the_card_is_cut_at_the_front() {
+async fn the_card_names_the_file_of_a_symbol_not_its_path() {
     let (mut review, _repo) = fixture_review().await;
     let long = PathBuf::from("application/module/MediaDistribution/Contract/Data/checkout.py");
     for f in review.files.iter_mut().filter(|f| f.path == *"checkout.py") {
@@ -390,14 +387,15 @@ async fn a_long_path_on_the_card_is_cut_at_the_front() {
     let mut app = app_for(review, Config::default());
     key(&mut app, 's');
     let card = format!("{}", render(&app, 80, 24).backend());
-    let head = card
-        .lines()
-        .find(|l| l.contains("Needs a close look"))
+    let rows: Vec<&str> = card.lines().collect();
+    let head = rows
+        .iter()
+        .position(|l| l.contains("Needs a close look"))
         .unwrap();
-    assert!(
-        head.contains("▲ Needs a close look  …") && head.contains("/Contract/Data/checkout.py │"),
-        "{head}"
-    );
+    assert!(!rows[head].contains("checkout.py"), "{}", rows[head]);
+    let name = rows[head + 1];
+    assert!(name.contains("charge_order  checkout.py"), "{name}");
+    assert!(!card.contains("Contract/"), "{card}");
 }
 
 #[tokio::test]
