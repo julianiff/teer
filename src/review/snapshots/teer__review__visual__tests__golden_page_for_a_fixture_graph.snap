@@ -1,0 +1,132 @@
+---
+source: src/review/visual.rs
+expression: "render_html(&fixture(), \"dispatch · src/dispatch.py:10\")"
+---
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>dispatch · src/dispatch.py:10 · teer</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #1f2328; --muted: #656d76; --line: #8c959f; --node: #f6f8fa; --accent: #0969da; --accent-bg: #ddf4ff; --removed: #cf222e; --changed: #9a6700;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0d1117; --fg: #e6edf3; --muted: #8d96a0; --line: #6e7681; --node: #161b22; --accent: #4493f8; --accent-bg: #0c2d6b; --removed: #f85149; --changed: #d29922; }
+}
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+main { max-width: 1200px; margin: 0 auto; padding: 24px 16px; }
+h1 { font: 600 17px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin: 0 0 4px; overflow-wrap: anywhere; }
+.what { color: var(--muted); margin: 0 0 16px; }
+figure { margin: 0; }
+.scroll { overflow-x: auto; }
+svg { display: block; }
+figcaption { margin-top: 12px; font-size: 15px; }
+.legend { list-style: none; padding: 0; margin: 16px 0 0; display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--muted); font-size: 13px; }
+.legend i { display: inline-block; width: 22px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 6px;
+  border: 1.2px solid var(--line); background: var(--node); }
+.legend .added i { border: 1.8px solid var(--accent); background: var(--accent-bg); }
+.legend .changed i { border: 3px solid var(--changed); }
+.legend .removed i { border: 1.2px dashed var(--removed); background: none; }
+.note { color: var(--muted); font-size: 12px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+<h1>dispatch · src/dispatch.py:10</h1>
+<p class="what">What talks to this unit, and what the change adds or removes.</p>
+<figure>
+<div class="scroll">
+<svg role="img" aria-label="dispatch now sends n8n actions to an SQS queue instead of SNS." viewBox="0 0 1121 231" width="1121" height="231" style="font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;font-size:13px">
+<rect width="1121" height="231" style="fill:var(--bg)"/>
+<defs>
+  <marker id="ah-added" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/></marker>
+  <marker id="ah-changed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--changed)"/></marker>
+  <marker id="ah-removed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--removed)"/></marker>
+  <marker id="ah-unchanged" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--line)"/></marker>
+</defs>
+<g>
+  <title>POST /actions handler ─calls→ dispatch (unchanged) · src/dispatch.py:14-16</title>
+  <path d="M208,122 C247,122 247,122 287,122" style="fill:none;stroke:var(--line);stroke-width:1.4" marker-end="url(#ah-unchanged)"/>
+  <text x="248" y="112" dy="0.35em" text-anchor="middle" style="font-size:12px;fill:var(--fg);stroke:var(--bg);stroke-width:4px;stroke-linejoin:round;paint-order:stroke">calls</text>
+</g>
+<g>
+  <title>dispatch ─Publish→ SNS topic (removed) · src/dispatch.py:14-16</title>
+  <path d="M376,122 C440,122 440,88 505,88" style="fill:none;stroke:var(--removed);stroke-width:1.4;stroke-dasharray:6 5" marker-end="url(#ah-removed)"/>
+  <text x="433" y="99" dy="0.35em" text-anchor="middle" style="font-size:12px;fill:var(--removed);stroke:var(--bg);stroke-width:4px;stroke-linejoin:round;paint-order:stroke">Publish</text>
+</g>
+<g>
+  <title>dispatch ─SendMessage→ n8n SQS queue (added) · src/dispatch.py:14-16</title>
+  <path d="M376,122 C433,122 433,156 490,156" style="fill:none;stroke:var(--accent);stroke-width:2" marker-end="url(#ah-added)"/>
+  <text x="433" y="129" dy="0.35em" text-anchor="middle" style="font-size:12px;fill:var(--accent);stroke:var(--bg);stroke-width:4px;stroke-linejoin:round;paint-order:stroke">SendMessage</text>
+</g>
+<g>
+  <title>n8n SQS queue ─triggers→ n8n workflow (unchanged) · src/dispatch.py:14-16</title>
+  <path d="M616,156 C663,156 663,122 710,122" style="fill:none;stroke:var(--line);stroke-width:1.4" marker-end="url(#ah-unchanged)"/>
+  <text x="663" y="129" dy="0.35em" text-anchor="middle" style="font-size:12px;fill:var(--fg);stroke:var(--bg);stroke-width:4px;stroke-linejoin:round;paint-order:stroke">triggers</text>
+</g>
+<g>
+  <title>n8n workflow ─POST result→ callback endpoint (changed) · src/dispatch.py:14-16</title>
+  <path d="M828,122 C885,122 885,122 942,122" style="fill:none;stroke:var(--changed);stroke-width:6"/>
+  <path d="M828,122 C885,122 885,122 942,122" style="fill:none;stroke:var(--bg);stroke-width:2" marker-end="url(#ah-changed)"/>
+  <text x="885" y="112" dy="0.35em" text-anchor="middle" style="font-size:12px;fill:var(--changed);stroke:var(--bg);stroke-width:4px;stroke-linejoin:round;paint-order:stroke">POST result</text>
+</g>
+<g>
+  <title>callback endpoint ─resumes→ dispatch (unchanged) · src/dispatch.py:14-16</title>
+  <path d="M1020,142 C1020,204 332,204 332,143" style="fill:none;stroke:var(--line);stroke-width:1.4" marker-end="url(#ah-unchanged)"/>
+  <text x="676" y="199" dy="0.35em" text-anchor="middle" style="font-size:12px;fill:var(--fg);stroke:var(--bg);stroke-width:4px;stroke-linejoin:round;paint-order:stroke">resumes</text>
+</g>
+<g>
+  <title>dispatch ─retries 3x→ dispatch (added) · src/dispatch.py:14-16</title>
+  <path d="M318,102 C318,66 346,66 346,101" style="fill:none;stroke:var(--accent);stroke-width:2" marker-end="url(#ah-added)"/>
+  <text x="332" y="68" dy="0.35em" text-anchor="middle" style="font-size:12px;fill:var(--accent);stroke:var(--bg);stroke-width:4px;stroke-linejoin:round;paint-order:stroke">retries 3x</text>
+</g>
+<g>
+  <title>POST /actions handler (unchanged) · src/dispatch.py:10-12</title>
+  <rect x="24" y="102" width="184" height="40" rx="6" style="fill:var(--node);stroke:var(--line);stroke-width:1.2"/>
+  <text x="116" y="122" dy="0.35em" text-anchor="middle" style="fill:var(--fg)">POST /actions handler</text>
+</g>
+<g>
+  <title>dispatch (changed) · src/dispatch.py:10-12</title>
+  <rect x="288" y="102" width="88" height="40" rx="6" style="fill:var(--node);stroke:var(--changed);stroke-width:3"/>
+  <text x="332" y="122" dy="0.35em" text-anchor="middle" style="fill:var(--fg)">dispatch</text>
+</g>
+<g>
+  <title>SNS topic (removed) · src/dispatch.py:10-12</title>
+  <rect x="506" y="68" width="95" height="40" rx="6" style="fill:none;stroke:var(--removed);stroke-width:1.2;stroke-dasharray:5 4"/>
+  <text x="553" y="88" dy="0.35em" text-anchor="middle" style="fill:var(--muted)">SNS topic</text>
+</g>
+<g>
+  <title>n8n SQS queue (added) · src/dispatch.py:10-12</title>
+  <rect x="491" y="136" width="125" height="40" rx="6" style="fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.8"/>
+  <text x="553" y="156" dy="0.35em" text-anchor="middle" style="fill:var(--fg)">n8n SQS queue</text>
+</g>
+<g>
+  <title>n8n workflow (unchanged) · src/dispatch.py:10-12</title>
+  <rect x="711" y="102" width="117" height="40" rx="6" style="fill:var(--node);stroke:var(--line);stroke-width:1.2"/>
+  <text x="769" y="122" dy="0.35em" text-anchor="middle" style="fill:var(--fg)">n8n workflow</text>
+</g>
+<g>
+  <title>callback endpoint (unchanged) · src/dispatch.py:10-12</title>
+  <rect x="943" y="102" width="154" height="40" rx="6" style="fill:var(--node);stroke:var(--line);stroke-width:1.2"/>
+  <text x="1020" y="122" dy="0.35em" text-anchor="middle" style="fill:var(--fg)">callback endpoint</text>
+</g>
+</svg>
+</div>
+<figcaption>dispatch now sends n8n actions to an SQS queue instead of SNS.</figcaption>
+</figure>
+<ul class="legend">
+  <li class="added"><i></i>added by this change</li>
+  <li class="changed"><i></i>behaves differently</li>
+  <li class="removed"><i></i>removed by this change</li>
+  <li class="unchanged"><i></i>unchanged</li>
+</ul>
+<p class="note">Drawn by a coding agent and checked by teer: every box and arrow cites lines in this unit, its callers or what it calls. Hover one to see them.</p>
+</main>
+</body>
+</html>

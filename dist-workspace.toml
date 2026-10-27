@@ -1,0 +1,23 @@
+# Release config for cargo-dist (https://opensource.axo.dev/cargo-dist/).
+# Before the first release: create the GitHub repository `julianiff/homebrew-tap`
+# (the `tap` below) and give this repo a `HOMEBREW_TAP_TOKEN` secret that can
+# write to it, then run `dist init --yes` to generate the CI workflow.
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.32.0"
+ci = "github"
+installers = ["shell", "homebrew"]
+# Homebrew formula is published as `teer`.
+formula = "teer"
+tap = "julianiff/homebrew-tap"
+publish-jobs = ["homebrew"]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+]
+install-path = "CARGO_HOME"
+install-updater = false

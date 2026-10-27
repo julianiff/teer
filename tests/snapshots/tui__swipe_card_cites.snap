@@ -1,0 +1,28 @@
+---
+source: tests/tui.rs
+expression: card
+---
+" teer  shop · uncommitted vs a1b2c3d · s1                                       "
+"                                                                                "
+"  ╭ 1 of 4 ──────────────────────────────────────────────────────────────────╮  "
+"  │ ▲ Needs a close look  checkout.py                                        │  "
+"  │ charge_order                                                             │  "
+"  │ 3 callers · agent: high risk                                             │  "
+"  │                                                                          │  "
+"  │ ┃ agent (haiku) · checked by sonnet                                      │  "
+"  │ ┃ Changes how orders are charged.                                        │  "
+"  │                                                                          │  "
+"  │ ╭ code change ────────────────────────────────────────────────── +3 −2 ╮ │  "
+"  │ │   8   def charge_order(order):                                       │ │  "
+"  │ │   9 +     if order.currency not in SUPPORTED:                        │ │  "
+"  │ │  10 +         raise ValueError("unsupported currency")               │ │  "
+"  │ │     ╭────────────────────────────────────────────────────────────╮   │ │  "
+"  │ │     │ Rejects unsupported currencies. 2 callers don't handle it. │   │ │  "
+"  │ │     ╰────────────────────────────────────────────────────────────╯   │ │  "
+"  │ │  11       result = pay(order)                                        │ │  "
+"  │ │ … 10 more lines · J scroll · e editor                                │ │  "
+"  │ ╰──────────────────────────────────────────────────────────────────────╯ │  "
+"  │ not reviewed yet                                                         │  "
+"  ╰──────────────────────────────────────────────────────────────────────────╯  "
+"                                                                 accept [l] →   "
+" l accept · next   h previous   ← i investigate   u undo   esc back             "

@@ -1,0 +1,18 @@
+---
+source: tests/pr_list.rs
+expression: "render(&mut p, 90, 14).backend()"
+---
+" teer  acme/shop · pull requests                                                          "
+"                                                                                          "
+" Waiting for your review · 2                                                              "
+"   #123  Fix rounding of order totals   @bob                       2h                     "
+" ▌ #120  Reject unsupported currencies  @alice                     1d                     "
+"                                                                                          "
+" Assigned to you · 0                                                                      "
+"   none                                                                                   "
+"                                                                                          "
+" Yours · 1                                                                                "
+"   #118  Split checkout into steps      draft · changes requested  3d                     "
+"                                                                                          "
+"                                                                                          "
+" ⏎ review   j/k move   q quit                        https://github.com/acme/shop/pull/120"

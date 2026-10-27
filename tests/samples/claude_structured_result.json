@@ -1,0 +1,13 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "result": "{\"answer\":\"Hi!\"}",
+ "structured_output": {
+  "answer": "Hi!"
+ },
+ "session_id": "82a22d10-2d02-4312-9fa5-77a3e3b646a7",
+ "stop_reason": "tool_use",
+ "num_turns": 2,
+ "total_cost_usd": 0.148836
+}
