@@ -381,6 +381,7 @@ fn draw_slim(f: &mut Frame, app: &App, area: Rect) {
     let (s, e) = rows.spans.get(app.sel).copied().unwrap_or((0, 0));
     let title = rows.titles.get(app.sel).copied().unwrap_or(s);
     let head = rows.heads.get(app.sel).copied().unwrap_or(s);
+    let end = rows.ends.get(app.sel).copied().unwrap_or(e);
     let mut top = app.slim_scroll.get();
     // Keep the selected unit in view, with its box title above it when the
     // two fit together, else with its file's name.
@@ -394,6 +395,11 @@ fn draw_slim(f: &mut Frame, app: &App, area: Rect) {
         top = title;
     } else if top > head && e <= head + h {
         top = head;
+    }
+    // Below the last unit of a box, its bottom edge and the blank after it,
+    // when they fit with the unit.
+    if end > top + h && end - s <= h {
+        top = end - h;
     }
     top = top.min(rows.lines.len().saturating_sub(1));
     app.slim_scroll.set(top);

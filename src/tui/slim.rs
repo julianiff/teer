@@ -36,6 +36,10 @@ pub struct Rows {
     pub heads: Vec<usize>,
     /// Line of the title edge of the box each unit's file sits in, by position.
     pub titles: Vec<usize>,
+    /// One past the last line to keep in view below each unit, by position:
+    /// its own line, or for the last unit of a box, the box's bottom edge
+    /// and, with blank lines, the one after it.
+    pub ends: Vec<usize>,
 }
 
 impl Rows {
@@ -622,6 +626,8 @@ struct Builder<'a> {
     padded: bool,
     /// Where the last file's rows start in the box being drawn.
     last: Option<usize>,
+    /// The last unit, by position, in the box being drawn.
+    last_unit: Option<usize>,
 }
 
 impl Builder<'_> {
@@ -656,6 +662,9 @@ impl Builder<'_> {
         if self.boxes && self.last.is_some() {
             let edge = bottom_edge(self.app, self.width);
             self.rows.push(edge, None);
+        }
+        if let Some(pos) = self.last_unit.take() {
+            self.rows.ends[pos] = self.rows.lines.len() + usize::from(self.padded);
         }
         self.last = None;
     }
@@ -696,12 +705,14 @@ pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
             spans: vec![(0, 0); app.order.len()],
             heads: vec![0; app.order.len()],
             titles: vec![0; app.order.len()],
+            ends: vec![0; app.order.len()],
         },
         width,
         inner,
         boxes,
         padded: padded && boxes,
         last: None,
+        last_unit: None,
     };
     let (name_w, count_w) = column_widths(inner, widest_count(app));
     for (level, files) in boxes_of(app) {
@@ -716,6 +727,8 @@ pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
                 b.rows.spans[pos] = (line, line + 1);
                 b.rows.heads[pos] = head;
                 b.rows.titles[pos] = title;
+                b.rows.ends[pos] = line + 1;
+                b.last_unit = Some(pos);
             }
             b.same_rows(app.file_at(start));
         }
@@ -746,6 +759,10 @@ pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
         }
     }
     b.close_box();
+    // A blank line under the last box, so the list visibly ends.
+    if b.padded && !b.rows.lines.is_empty() {
+        b.rows.push(Line::raw(" ".repeat(width)), None);
+    }
     let mut rows = b.rows;
     for line in &mut rows.lines {
         clip(line, width);

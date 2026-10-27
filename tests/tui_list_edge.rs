@@ -613,3 +613,16 @@ fn investigate_button_and_help_show_i_and_k_is_up() {
     assert!(help.contains("l  i") || help.contains("l i"), "{help}");
     assert!(help.contains("k") && !help.contains("later"), "{help}");
 }
+
+#[test]
+fn the_last_unit_shows_its_boxs_bottom_edge_and_a_blank_row() {
+    let mut a = app_of((0..40).map(|i| with_change(unit(i), "Changes")).collect());
+    a.on_action(Action::Bottom);
+    let s = text(&render(&a, 140, 24));
+    let rows: Vec<&str> = s.lines().collect();
+    let n = rows.len();
+    // The selected row, the box's bottom edge, a blank row, the footer.
+    assert!(rows[n - 4].contains("▌  ● sym39 "), "{s}");
+    assert!(rows[n - 3].contains('╰'), "{s}");
+    assert!(!rows[n - 2].contains(['│', '╰']), "{s}");
+}
