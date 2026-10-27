@@ -6,6 +6,7 @@ description = "teer: the essence of every revision. Semantic code review in the 
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/julianiff/teer"
+homepage = "https://github.com/julianiff/teer"
 keywords = ["code-review", "tui", "git", "claude", "tree-sitter"]
 categories = ["command-line-utilities", "development-tools"]
 
