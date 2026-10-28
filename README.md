@@ -18,18 +18,14 @@ https://github.com/user-attachments/assets/4f66d3b0-057e-49b9-8873-3f277a254ea7
 
 **review a code change by what it does, not line by line.**
 
-teer splits a git change into the functions it touches, puts the risky ones on top, and has an agent explain each one — [claude code](https://claude.com/claude-code), [codex](https://developers.openai.com/codex), or any model api with your key — every sentence pinned to the lines that prove it. you accept or flag, write notes, and hand them back to your agent.
+teer splits a git change into the functions it touches, puts the risky ones on top, and has an agent explain each one, every sentence pinned to the lines that prove it. you accept or flag, take notes, and hand them back to your agent.
 
-- **meaning first** — every unit is sorted into needs a close look `▲`, worth a look `◆` or routine `●`. renames, reformatting and comment-only edits are spotted from the syntax tree and set aside `○`.
-- **claims come with their lines** — a fast model explains each unit, right in the code under the lines it's about. a sentence that can't cite its lines is dropped, and a second, stronger model flags every place it disagrees. you pick both on the first start.
-- **facts decide what needs you** — a removed function that's still called, a changed signature, a migration, a payment. what teer sees in the code sets the level; the agent can raise it, never lower it.
-- **dig into what you flagged** — get a recommendation, a diagram of what talks to the unit, the tests that cover it, or a sandboxed run of the code before and after the change (macos). `/` asks anything about the code. [flagged screen →](FEATURES.md#flagged-screen)
-- **notes back to your agent** — `m` writes a note on any unit. send them all to claude code or codex, copy them as markdown, or post them as inline comments on the pull request. then `r` reviews what changed. [notes →](FEATURES.md#notes-srcnotesrs-srctuinotesrs-srcclipboardrs)
-- **pull requests at arm's length** — `teer pr <url>` reviews a pr in a checkout of its own, so your working tree is never touched. the agent can only read, the repo's own agent instructions aren't loaded, its code only ever runs in a sandbox, and nothing is posted until you've seen it and confirmed. [pull requests →](FEATURES.md#getting-a-review)
-- **you know what leaves your machine** — the agent gets the changed code, and read-only access to the repo for your questions. github gets something only when you confirm a post. everything else stays in `~/.local/share/teer/`.
-- **one rust binary** — rust, typescript, javascript, python and php are split by function; any other text file is reviewed whole. keyboard first, mouse too. no agent at all? `teer --no-agent` still sorts the change.
-
----
+- **risky first** — every function lands in `▲` close look, `◆` worth a look, `●` routine or `○` no behavior change. facts from the code set the level; the agent can only raise it.
+- **no claim without its lines** — a fast model explains each function right in the code, a second model checks it. a sentence that can't cite its lines is dropped.
+- **dig into what you flag** — a recommendation, a diagram of what calls it, the tests that cover it, or a sandboxed run before and after the change. `/` asks anything.
+- **notes back to your agent** — `m` notes any function. hand them to claude code or codex, copy them as markdown, or post them on the pr.
+- **pull requests at arm's length** — `teer pr <url>` reviews in a checkout of its own. the agent only reads, the repo's agent instructions stay out, nothing is posted until you confirm.
+- **any agent, or none** — [claude code](https://claude.com/claude-code), [codex](https://developers.openai.com/codex), or a model api with your key (anthropic, openai, openrouter, ollama). `--no-agent` still sorts the change.
 
 ## install
 
@@ -39,33 +35,47 @@ brew install julianiff/tap/teer
 
 or `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/julianiff/teer/releases/latest/download/teer-installer.sh | sh` · `cargo install --locked teer` · [binaries](https://github.com/julianiff/teer/releases)
 
-macos and linux. needs `git`, and for the explanations one of: [claude code](https://claude.com/claude-code), [codex](https://developers.openai.com/codex), or an api key (anthropic, openai, openrouter, or a local ollama). `gh` adds pull request titles and posting, `e` opens a unit in `nvim` or the editor you name. `teer setup` shows what it finds of each.
+macos and linux. needs `git` and an agent; `gh` adds pull requests. `teer setup` checks what's there.
 
 ## start
 
-in any repository:
-
 ```bash
 teer                # your uncommitted changes
-teer --base main    # this branch, against main
+teer --base main    # this branch against main
 teer pr <url>       # a github pull request
-teer pr list        # pick one waiting for your review
+teer pr list        # pick one waiting for you
 ```
 
-the first start asks what explains the changes: claude code or codex headless, or a model api, then a fast model and a second one that checks it. `teer setup` changes it later.
+the first start asks which agent and models to use; `teer setup` changes it.
 
-`l` accepts, `i` flags, `s` swipes one card at a time, `d` digs into what you flagged, `?` shows every key. your place is saved, and after an edit `r` re-runs: only the code that changed starts over. once everything is accepted, teer offers to commit it, or to approve the pr.
+| | |
+| --- | --- |
+| `l` · `i` | accept · flag |
+| `s` | swipe, one card at a time |
+| `d` | dig into what you flagged |
+| `/` | ask about the code |
+| `m` · `N` | note · all notes |
+| `e` | open in your editor |
+| `r` | re-run after an edit |
+| `?` | every key |
+
+your place is saved. once everything is accepted, teer offers to commit it, or to approve the pr.
+
+## config
+
+`~/.config/teer/config.toml`:
+
+```toml
+theme = "light"                                # dark, light, mono
+editor = "code --wait --goto {file}:{line}"    # default: nvim +{line} {file}
+
+[keys]
+accept = "y"                                   # every key can be rebound
+```
 
 ## docs
 
-everything is in [FEATURES.md](FEATURES.md): [getting a review](FEATURES.md#getting-a-review) · [the list](FEATURES.md#the-list-view) · [swipe](FEATURES.md#swipe--triage) · [flagged screen](FEATURES.md#flagged-screen) · [ask](FEATURES.md#ask-srctuiaskrs-srcreviewaskrs) · [notes](FEATURES.md#notes-srcnotesrs-srctuinotesrs-srcclipboardrs) · [keys](FEATURES.md#keys) · [configuration](FEATURES.md#configuration) · [persistence and safety](FEATURES.md#persistence-and-safety) · [known limitations](FEATURES.md#known-limitations)
-
-settings live in `~/.config/teer/config.toml`, and every key can be rebound. another editor for `e`:
-
-```toml
-editor = "code --wait --goto {file}:{line}"   # vs code
-editor = "idea --wait --line {line} {file}"   # intellij
-```
+[FEATURES.md](FEATURES.md): [how it works](FEATURES.md#how-it-works) · [commands](FEATURES.md#commands) · [agents](FEATURES.md#agents) · [the list](FEATURES.md#the-list) · [swipe](FEATURES.md#swipe) · [the flagged screen](FEATURES.md#the-flagged-screen) · [ask](FEATURES.md#ask) · [notes](FEATURES.md#notes) · [commit and approve](FEATURES.md#commit-and-approve) · [keys](FEATURES.md#keys) · [config](FEATURES.md#config) · [safety](FEATURES.md#safety) · [limits](FEATURES.md#limits)
 
 ## development
 
@@ -78,8 +88,8 @@ cargo test                   # unit, fixture-repo and tui snapshot tests
 cargo clippy --all-targets
 ```
 
-tests that need a real agent are ignored by default; each one says how to run it. every `claude` and `codex` command line is in [`src/agent/commands.rs`](src/agent/commands.rs), the model api client in [`src/agent/api.rs`](src/agent/api.rs), every prompt in [`src/review/prompts.rs`](src/review/prompts.rs).
+tests that need a real agent are ignored by default; each one says how to run it. the `claude` and `codex` command lines are in [`src/agent/commands.rs`](src/agent/commands.rs), the model api client in [`src/agent/api.rs`](src/agent/api.rs), the prompts in [`src/review/prompts.rs`](src/review/prompts.rs).
 
 ## license
 
-teer is licensed under the [Apache License 2.0](LICENSE).
+[Apache 2.0](LICENSE)
