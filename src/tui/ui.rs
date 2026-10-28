@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
-use super::app::{App, Overlay, Screen, Target};
+use super::app::{App, Grouping, Overlay, Screen, Target};
 use super::diff::Notes;
 use super::select;
 use super::slim;
@@ -61,11 +61,15 @@ pub fn draw(f: &mut Frame, app: &App) {
         Overlay::ConfirmAcceptFile { file, ids } => {
             let what = sanitize(&file.display().to_string());
             let units = if ids.len() == 1 { "unit" } else { "units" };
-            draw_confirm(
-                f,
-                app,
-                format!("Accept {} pending {units} in \"{what}\"? (y/n)", ids.len()),
-            )
+            let n = ids.len();
+            // Listed by unit, only the file's units in the cursor's box.
+            let text = match app.grouping {
+                Grouping::File => format!("Accept {n} pending {units} in \"{what}\"? (y/n)"),
+                Grouping::Unit => {
+                    format!("Accept {n} pending {units} of \"{what}\" in this box? (y/n)")
+                }
+            };
+            draw_confirm(f, app, text)
         }
         Overlay::AllDone => draw_all_done(f, app),
         Overlay::PostReview {
@@ -869,8 +873,13 @@ fn draw_help(f: &mut Frame, app: &App) {
             "next / previous pending",
         ),
         (
-            format!("{} {}", k(Action::NextGroup), k(Action::PrevGroup)),
-            "next / previous file",
+            format!(
+                "{} {} {}",
+                k(Action::NextGroup),
+                k(Action::PrevGroup),
+                k(Action::Grouping)
+            ),
+            "next / prev file, list by file or unit",
         ),
         (k(Action::AcceptFile), "accept all pending in the file"),
         (

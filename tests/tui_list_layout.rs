@@ -376,7 +376,7 @@ async fn help_lists_the_list_keys_and_the_style_legend() {
             "reset all decisions",
             "accept / investigate",
             "next / previous pending",
-            "next / previous file",
+            "next / prev file, list by file or unit",
             "legend",
             "accepted",
             "removed",

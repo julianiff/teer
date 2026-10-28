@@ -3,7 +3,8 @@
 //! most critical first. The cursor only ever moves over units. `ctrl+d`
 //! `ctrl+u` jump file to file, `A` accepts a file's pending units (one undo
 //! step), and a large review asks the agent about a file when the cursor
-//! gets to it.
+//! gets to it. `f` lists each unit in its own level's box instead, its file
+//! named on its row.
 
 mod common;
 
@@ -16,7 +17,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use teer::config::{Action, Config, KeyMap};
 use teer::review::model::{Decision, Prep, Range, Review, SessionRef, Unit, UnitKind, UnitStatus};
-use teer::tui::app::{App, Effect, Overlay, Screen, Target};
+use teer::tui::app::{App, Effect, Grouping, Overlay, Screen, Target};
 use teer::tui::{slim, ui};
 
 #[derive(Clone, Copy)]
@@ -598,6 +599,197 @@ fn both_keys_can_be_rebound_in_the_config() {
     assert!(matches!(a.overlay, Overlay::ConfirmAcceptFile { .. }));
 }
 
+// ---- f: listed by unit ---------------------------------------------------------
+
+#[test]
+fn f_lists_each_unit_in_its_own_levels_box_with_its_file_on_its_row() {
+    let mut a = app();
+    a.sel = 2;
+    assert_eq!(symbol(&a), "c_helper");
+    assert!(key(&mut a, 'f').is_empty());
+    assert_eq!(
+        (a.grouping, a.status.as_str()),
+        (Grouping::Unit, "listed by unit")
+    );
+    // The cursor stays on its unit, now in the routine box.
+    assert_eq!((a.sel, symbol(&a)), (5, "c_helper"));
+    let s = lines(&a, 120, 60);
+    let at = |t: &str| {
+        s.iter()
+            .position(|l| l.contains(t))
+            .unwrap_or_else(|| panic!("no {t}\n{}", s.join("\n")))
+    };
+    let order = [
+        "╭─ Needs a close look · 2 units ",
+        "▲ close_a",
+        "╭─ Worth a look · 3 units ",
+        "◆ look_a",
+        "◆ look_c",
+        "╭─ Routine · 21 units ",
+        "● c_helper",
+        "● r0_0",
+        "● r4_3",
+        "╭─ No behavior change · 2 files ",
+        "│   src/c.rs",
+        "○ tidy",
+        "│   src/q.rs",
+        "○ quiet",
+        "╭─ Not shown · 1 file ",
+    ];
+    for pair in order.windows(2) {
+        assert!(at(pair[0]) < at(pair[1]), "{pair:?}");
+    }
+    // No file names as labels, no gaps: a box's units follow each other.
+    assert!(
+        !s.iter().any(|l| l.starts_with("│ src/")),
+        "{}",
+        s.join("\n")
+    );
+    assert_eq!(at("▲ close_b"), at("▲ close_a") + 1);
+    assert_eq!(at("◆ look_c"), at("◆ look_a") + 2);
+    assert_eq!(at("● r0_0"), at("● c_helper") + 1);
+    // Each row names its file on the right, in a column.
+    let rows: Vec<String> = slim::build(&a, 40).lines.iter().map(row_text).collect();
+    let row = |name: &str| {
+        rows.iter()
+            .find(|l| l.contains(&format!(" {name} ")))
+            .unwrap_or_else(|| panic!("no {name}\n{}", rows.join("\n")))
+    };
+    assert!(row("close_a").ends_with(" c.rs  │"), "{}", row("close_a"));
+    assert!(row("look_c").ends_with(" l1.rs │"), "{}", row("look_c"));
+    assert!(row("r4_3").ends_with(" r4.rs │"), "{}", row("r4_3"));
+    insta::assert_snapshot!("units", render(&a, 120, 60).backend());
+    // `f` again: by file, the cursor still on its unit.
+    key(&mut a, 'f');
+    assert_eq!(
+        (a.grouping, a.status.as_str()),
+        (Grouping::File, "listed by file")
+    );
+    assert_eq!((a.sel, symbol(&a)), (2, "c_helper"));
+    assert!(text(&a, 120, 60).contains("╭─ Needs a close look · 1 file "));
+}
+
+#[test]
+fn listed_by_unit_a_row_names_its_file_by_as_much_path_as_tells_it_apart() {
+    let mut readme = unit("readme", "docs/README.md", 1, Kind::Routine);
+    readme.kind = UnitKind::File;
+    let units = vec![
+        unit("a", "src/review/mod.rs", 10, Kind::Routine),
+        unit("b", "src/agent/mod.rs", 10, Kind::Routine),
+        unit("c", "src/tui/app.rs", 10, Kind::Routine),
+        unit("d", "lib/tui/app.rs", 10, Kind::Routine),
+        unit("e", "src/main.rs", 10, Kind::Routine),
+        readme,
+    ];
+    let mut a = app_with(units, Config::default());
+    key(&mut a, 'f');
+    let rows: Vec<String> = slim::build(&a, 60).lines.iter().map(row_text).collect();
+    let row = |name: &str| {
+        rows.iter()
+            .find(|l| l.contains(&format!("● {name} ")))
+            .unwrap_or_else(|| panic!("no {name}\n{}", rows.join("\n")))
+    };
+    assert!(row("a").contains("  review/mod.rs "), "{}", row("a"));
+    assert!(row("b").contains("  agent/mod.rs "), "{}", row("b"));
+    assert!(row("c").contains("  src/tui/app.rs "), "{}", row("c"));
+    assert!(row("d").contains("  lib/tui/app.rs "), "{}", row("d"));
+    assert!(row("e").contains("  main.rs ") && !row("e").contains("src/"));
+    // A whole file is named already.
+    assert_eq!(row("README.md").matches("README.md").count(), 1);
+}
+
+#[test]
+fn listed_by_unit_every_row_fits_and_nothing_is_cut_at_the_fitted_width() {
+    let mut a = app();
+    key(&mut a, 'f');
+    for w in 0u16..=120 {
+        for l in &slim::build(&a, w).lines {
+            assert!(l.width() <= w as usize, "{w}: {l:?}");
+            if w >= 30 {
+                assert_eq!(l.width(), w as usize, "{w}: {l:?}");
+            }
+        }
+    }
+    let w = slim::fit_width(&a) as u16;
+    let s: Vec<String> = slim::build(&a, w).lines.iter().map(row_text).collect();
+    for (pos, &i) in a.order.iter().enumerate() {
+        let u = &a.review.units[i];
+        let file = u.file.file_name().unwrap().to_string_lossy();
+        let line = &s[slim::build(&a, w).spans[pos].0];
+        assert!(
+            line.contains(&format!(" {} ", u.symbol)) && line.contains(&format!(" {file} ")),
+            "{w}: {line}"
+        );
+    }
+    assert!(s.iter().any(|l| l.contains("Routine · 21 units")));
+    // Narrow: the file column goes before the names get short.
+    let rows = slim::build(&a, 20);
+    for &(s, _) in &rows.spans {
+        let line = row_text(&rows.lines[s]);
+        assert!(!line.contains(".rs"), "{line}");
+    }
+}
+
+#[test]
+fn listed_by_unit_ctrl_d_and_a_go_by_the_files_units_in_the_box() {
+    // `src/a.rs` ends the worth-a-look box and starts the routine one.
+    let units = vec![
+        unit("a_look", "src/a.rs", 10, Kind::Look),
+        unit("a_routine", "src/a.rs", 30, Kind::Routine),
+        unit("a_more", "src/a.rs", 50, Kind::Routine),
+        unit("b_routine", "src/b.rs", 10, Kind::Routine),
+    ];
+    let mut a = app_with(units, Config::default());
+    key(&mut a, 'f');
+    let s = text(&a, 100, 30);
+    assert!(s.contains("╭─ Worth a look · 1 unit "), "{s}");
+    assert!(s.contains("╭─ Routine · 3 units "), "{s}");
+    assert_eq!(symbol(&a), "a_look");
+    assert!(a.starts_file(1));
+    ctrl(&mut a, 'd');
+    assert_eq!(symbol(&a), "a_routine");
+    ctrl(&mut a, 'd');
+    assert_eq!(symbol(&a), "b_routine");
+    ctrl(&mut a, 'u');
+    assert_eq!(symbol(&a), "a_routine");
+    ctrl(&mut a, 'u');
+    assert_eq!(symbol(&a), "a_look");
+    // `A` takes the file's pending units in this box only.
+    a.sel = 2;
+    shift_a(&mut a);
+    match &a.overlay {
+        Overlay::ConfirmAcceptFile { ids, .. } => assert_eq!(ids.len(), 2),
+        other => panic!("{other:?}"),
+    }
+    let s = text(&a, 100, 24);
+    assert!(
+        s.contains("Accept 2 pending units of \"src/a.rs\" in this box?"),
+        "{s}"
+    );
+    key(&mut a, 'y');
+    assert_eq!(accepted(&a), ["a_routine", "a_more"]);
+}
+
+#[test]
+fn f_is_list_only_and_can_be_rebound() {
+    let mut a = app();
+    a.review.units[1].decision = Decision::Investigate;
+    key(&mut a, 'd');
+    key(&mut a, 'f');
+    assert_eq!((a.screen, a.grouping), (Screen::Flagged, Grouping::File));
+    let mut b = app();
+    key(&mut b, 's');
+    key(&mut b, 'f');
+    assert_eq!((b.screen, b.grouping), (Screen::Swipe, Grouping::File));
+    let cfg: Config = toml::from_str("[keys]\ngrouping = \"w\"\n").unwrap();
+    let keys = cfg.keymap().unwrap();
+    let mut c = app_keys(units(), cfg, keys);
+    key(&mut c, 'f');
+    assert_eq!(c.grouping, Grouping::File);
+    key(&mut c, 'w');
+    assert_eq!(c.grouping, Grouping::Unit);
+}
+
 // ---- Help, paths -------------------------------------------------------------
 
 #[test]
@@ -607,7 +799,7 @@ fn the_keys_are_in_the_help_overlay_and_the_legend_still_fits() {
         a.overlay = Overlay::Help;
         let out = text(&a, w, h);
         assert!(
-            out.contains("^d ^u  next / previous file"),
+            out.contains("^d ^u f  next / prev file, list by file or unit"),
             "{w}x{h}\n{out}"
         );
         assert!(
@@ -771,8 +963,18 @@ fn a_thousand_units_in_a_hundred_files() {
 
 #[test]
 fn the_selection_stays_visible_with_its_box_title_or_file_name_when_they_fit() {
-    for (w, h) in [(60u16, 24u16), (80, 24), (120, 30), (80, 40)] {
+    for (w, h, by_unit) in [
+        (60u16, 24u16, false),
+        (80, 24, false),
+        (120, 30, false),
+        (80, 40, false),
+        (60, 24, true),
+        (120, 30, true),
+    ] {
         let mut a = app();
+        if by_unit {
+            key(&mut a, 'f');
+        }
         for _ in 0..a.order.len() {
             let s = lines(&a, w, h);
             let name = symbol(&a).to_string();
@@ -780,7 +982,7 @@ fn the_selection_stays_visible_with_its_box_title_or_file_name_when_they_fit() {
             assert_eq!(marked.len(), 1, "{w}x{h} {}\n{}", a.sel, s.join("\n"));
             assert!(marked[0].contains(&name), "{w}x{h} {name}");
             // Stepping into a file shows its name.
-            if a.starts_file(a.sel) {
+            if !by_unit && a.starts_file(a.sel) {
                 let path = a.selected().unwrap().file.display().to_string();
                 assert!(s.iter().any(|l| l.contains(&path)), "{w}x{h} {path}");
             }

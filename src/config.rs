@@ -226,6 +226,9 @@ pub enum Action {
     /// Accept every pending unit in the selected file, after a confirmation
     /// (list only).
     AcceptFile,
+    /// List the units in their files, or each in its own level's box (list
+    /// only).
+    Grouping,
     /// Approve the pull request on GitHub (only in the "all reviewed" popup
     /// of a `teer pr` review).
     ApprovePr,
@@ -286,6 +289,8 @@ impl Action {
         (Action::NextGroup, "next_group", "ctrl+d"),
         (Action::PrevGroup, "prev_group", "ctrl+u"),
         (Action::AcceptFile, "accept_file", "A"),
+        // `f` resolves "needs fix" only on the Flagged screen.
+        (Action::Grouping, "grouping", "f"),
         (Action::ApprovePr, "approve_pr", "a"),
         (Action::Commit, "commit", "c"),
         (Action::Commits, "commits", "C"),

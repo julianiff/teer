@@ -35,6 +35,17 @@ pub enum Screen {
     Flagged,
 }
 
+/// What the list's level boxes hold (`f` switches).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Grouping {
+    /// Files, each in the box of the most attention one of its units
+    /// needs, its units under its name.
+    #[default]
+    File,
+    /// Units, each in the box of its own level, its file named on its row.
+    Unit,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Overlay {
     None,
@@ -402,8 +413,10 @@ pub struct App {
     /// Unit indexes in display order, file by file: files by the most
     /// attention one of their units needs (then by path), inside a file most
     /// attention first, then by story (see `review::story`) or, with
-    /// `order = "line"`, by line.
+    /// `order = "line"`, by line. Listed by unit, units by their own level
+    /// first, then the same.
     pub order: Vec<usize>,
+    pub grouping: Grouping,
     /// How far each unit is indented under the units it is read beneath in
     /// its file and level, by index into `review.units` (0 in line order).
     pub depth: Vec<usize>,
@@ -476,6 +489,7 @@ impl App {
             agent_note: None,
             sessions: Vec::new(),
             order: Vec::new(),
+            grouping: Grouping::File,
             depth: Vec::new(),
             levels: Vec::new(),
             sel: 0,
@@ -515,9 +529,10 @@ impl App {
 
     /// List units file by file: files by the most attention one of their
     /// units needs, then by path; inside a file most attention first, then
-    /// by story (callers right before what they call) or line. Units without
-    /// a behavior change aren't listed as units. The selection stays on the
-    /// same unit as levels change.
+    /// by story (callers right before what they call) or line. Listed by
+    /// unit, each unit goes by its own level instead of its file's. Units
+    /// without a behavior change aren't listed as units. The selection stays
+    /// on the same unit as levels change.
     pub fn rebuild_order(&mut self) {
         let keep = self.selected().map(|u| u.id.clone());
         self.levels = self
@@ -542,11 +557,20 @@ impl App {
         } else {
             Default::default()
         };
+        // The level of the box a unit is listed in.
+        let by_file = self.grouping == Grouping::File;
+        let boxed = |i: usize| {
+            if by_file {
+                most[&units[i].file]
+            } else {
+                level(i)
+            }
+        };
         let mut order = listed;
         order.sort_by(|&a, &b| {
             let (fa, fb) = (&units[a].file, &units[b].file);
-            (most[fb] as u8)
-                .cmp(&(most[fa] as u8))
+            (boxed(b) as u8)
+                .cmp(&(boxed(a) as u8))
                 .then_with(|| fa.cmp(fb))
                 .then_with(|| (level(b) as u8).cmp(&(level(a) as u8)))
                 .then_with(|| match (placed.get(&a), placed.get(&b)) {
@@ -579,9 +603,13 @@ impl App {
         &self.review.units[self.order[pos]].file
     }
 
-    /// Does a new file start at `pos`?
+    /// Does a new file start at `pos`? Listed by unit, a file starts again
+    /// in each level's box it has units in.
     pub fn starts_file(&self, pos: usize) -> bool {
-        pos == 0 || self.file_at(pos - 1) != self.file_at(pos)
+        let level = |p: usize| self.levels[self.order[p]].level;
+        pos == 0
+            || self.file_at(pos - 1) != self.file_at(pos)
+            || (self.grouping == Grouping::Unit && level(pos - 1) != level(pos))
     }
 
     /// Position of the first unit of the file `pos` is in.
@@ -598,12 +626,23 @@ impl App {
     }
 
     /// The most attention a unit of the file `pos` is in needs: the box the
-    /// file is listed in.
+    /// file is listed in (listed by unit, the level of the box's units).
     pub fn file_level(&self, pos: usize) -> Level {
         self.file_range(pos)
             .map(|p| self.levels[self.order[p]].level)
             .max()
             .unwrap_or(Level::Routine)
+    }
+
+    /// List by unit, or by file again; the cursor stays on its unit.
+    fn switch_grouping(&mut self) {
+        let (to, word) = match self.grouping {
+            Grouping::File => (Grouping::Unit, "unit"),
+            Grouping::Unit => (Grouping::File, "file"),
+        };
+        self.grouping = to;
+        self.rebuild_order();
+        self.status = format!("listed by {word}");
     }
 
     /// Move `step` units up or down the list.
@@ -1000,6 +1039,7 @@ impl App {
                 Action::NextGroup,
                 Action::PrevGroup,
                 Action::AcceptFile,
+                Action::Grouping,
                 Action::Commits,
             ];
             if let Some(a) = LIST.iter().copied().find(|a| self.keys.is(*a, k)) {
@@ -2122,6 +2162,7 @@ impl App {
             Action::NextGroup => return self.jump_file(true),
             Action::PrevGroup => return self.jump_file(false),
             Action::AcceptFile => self.ask_accept_file(),
+            Action::Grouping => self.switch_grouping(),
             Action::Commits => self.open_commits(),
             Action::Quit => return vec![Effect::Save, Effect::Quit],
             _ => {}

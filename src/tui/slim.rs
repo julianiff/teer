@@ -13,12 +13,21 @@
 //! summary and code change live in the preview pane. Accepted rows are
 //! dimmed, removed names struck through, flagged names in the flagged
 //! style.
+//!
+//! Listed by unit (`f`, [`Grouping::Unit`]), each unit sits in its own
+//! level's box instead, with no file names as labels: a muted column on the
+//! right of each row names its file, by as much of its path as tells it
+//! from the other listed files (`mod.rs`, `review/mod.rs`). Units with no
+//! behavior change then all go in the muted box, under their files.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use super::app::App;
+use super::app::{App, Grouping};
 use crate::review::attention::Level;
 use crate::review::model::{Decision, LineRef, Prep, Side, Unit, UnitKind, UnitStatus};
 use crate::units::extract::MODULE_SYMBOL;
@@ -32,7 +41,8 @@ pub struct Rows {
     pub owner: Vec<Option<usize>>,
     /// First and one-past-last line of each unit, by position.
     pub spans: Vec<(usize, usize)>,
-    /// Line of the name of each unit's file, by position.
+    /// Line of the name of each unit's file, by position; listed by unit,
+    /// the unit's own line.
     pub heads: Vec<usize>,
     /// Line of the title edge of the box each unit's file sits in, by position.
     pub titles: Vec<usize>,
@@ -400,15 +410,19 @@ fn same_reason(u: &Unit) -> String {
         .unwrap_or_else(|| "no behavior change".into())
 }
 
-/// Files with no unit to decide, by path: every unit has no behavior change.
+/// Files in the muted box, by path: files with no unit to decide (every
+/// unit has no behavior change), or listed by unit, every file with a unit
+/// that has none.
 fn quiet_files(app: &App) -> Vec<&std::path::Path> {
+    let by_file = app.grouping == Grouping::File;
     let mut files: Vec<&std::path::Path> = Vec::new();
     for (i, u) in app.review.units.iter().enumerate() {
         if app.level_of(i).level == Level::Same
-            && !app
-                .order
-                .iter()
-                .any(|&o| app.review.units[o].file == u.file)
+            && (!by_file
+                || !app
+                    .order
+                    .iter()
+                    .any(|&o| app.review.units[o].file == u.file))
             && !files.contains(&u.file.as_path())
         {
             files.push(&u.file);
@@ -419,8 +433,12 @@ fn quiet_files(app: &App) -> Vec<&std::path::Path> {
 }
 
 /// Widest count a file name can show (`⠋ ⚑ done/total`), for sizing the
-/// count column; 0 when no file has a unit to decide.
+/// count column; 0 when no file has a unit to decide, or files have no
+/// names to show it beside (listed by unit).
 fn widest_count(app: &App) -> usize {
+    if app.grouping == Grouping::Unit {
+        return 0;
+    }
     (0..app.order.len())
         .filter(|&pos| app.starts_file(pos))
         .map(|pos| {
@@ -451,15 +469,21 @@ const FIT_MAX: usize = 512;
 pub fn fit_width(app: &App) -> usize {
     let widest = widest_count(app);
     let path = |p: &std::path::Path| sanitize(&p.display().to_string()).width();
+    let by_file = app.grouping == Grouping::File;
+    let short = short_paths(app);
+    let shown = widest_shown(app, &short);
     // A file's path, beside its count; any other row's whole width.
     let mut file = 0;
     let mut row = 0;
     for (pos, &i) in app.order.iter().enumerate() {
         let u = &app.review.units[i];
         row = row.max(UNIT_LEAD + indent(app, i).width() + row_name(u).width());
-        if app.starts_file(pos) {
+        if by_file && app.starts_file(pos) {
             file = file.max(path(&u.file));
         }
+    }
+    if shown > 0 {
+        row += 2 + shown;
     }
     for (i, u) in app.review.units.iter().enumerate() {
         if app.level_of(i).level == Level::Same {
@@ -474,14 +498,18 @@ pub fn fit_width(app: &App) -> usize {
     // A title, its spaces, the corners and a few dashes.
     let title = boxes_of(app)
         .into_iter()
-        .map(|(level, files)| box_title(level, files.len()).width() + 7)
+        .map(|(level, files)| box_title(app, level, &files).width() + 7)
         .max()
         .unwrap_or(0);
     // Borders and the blank cell before the right one take 3.
     (4..FIT_MAX)
         .find(|&width| {
             let (n, c) = column_widths(width - 3, widest);
-            n >= file && c >= widest && width - 3 >= row && width >= title
+            n >= file
+                && c >= widest
+                && width - 3 >= row
+                && file_column(width - 3, shown) == shown
+                && width >= title
         })
         .unwrap_or(FIT_MAX)
 }
@@ -500,9 +528,74 @@ fn boxes_of(app: &App) -> Vec<(Level, Vec<usize>)> {
     boxes
 }
 
-/// A box's title: `Worth a look · 3 files`.
-fn box_title(level: Level, files: usize) -> String {
-    format!("{} · {}", level.title(), files_word(files))
+/// A box's title: `Worth a look · 3 files`, or listed by unit `· 5 units`.
+/// `files`: the positions of the first units of its files.
+fn box_title(app: &App, level: Level, files: &[usize]) -> String {
+    let n = match app.grouping {
+        Grouping::File => plural(files.len(), "file"),
+        Grouping::Unit => {
+            let units = files.iter().map(|&p| app.file_range(p).len()).sum();
+            plural(units, "unit")
+        }
+    };
+    format!("{} · {n}", level.title())
+}
+
+/// Each listed file's shortest end of its path that no other listed
+/// file's path ends with: `mod.rs`, or `review/mod.rs` when `agent/mod.rs`
+/// is listed too. Empty when listed by file, where files have labels.
+fn short_paths(app: &App) -> HashMap<&Path, String> {
+    if app.grouping == Grouping::File {
+        return HashMap::new();
+    }
+    let mut files: Vec<&Path> = app
+        .order
+        .iter()
+        .map(|&i| app.review.units[i].file.as_path())
+        .collect();
+    files.sort();
+    files.dedup();
+    files
+        .iter()
+        .map(|&f| {
+            let parts: Vec<_> = f.components().collect();
+            let tail = |n: usize| parts[parts.len() - n..].iter().collect::<PathBuf>();
+            let n = (1..parts.len())
+                .find(|&n| {
+                    let t = tail(n);
+                    files.iter().all(|&o| o == f || !o.ends_with(&t))
+                })
+                .unwrap_or(parts.len());
+            (f, sanitize(&tail(n).display().to_string()))
+        })
+        .collect()
+}
+
+/// What the file column of `u`'s row says: its file's short path, nothing
+/// for a whole file already named so.
+fn shown_file<'a>(u: &Unit, short: &'a HashMap<&Path, String>) -> &'a str {
+    match short.get(u.file.as_path()) {
+        Some(s) if !(u.kind == UnitKind::File && *s == row_name(u)) => s,
+        _ => "",
+    }
+}
+
+/// Widest file column text of the listed units; 0 listed by file.
+fn widest_shown(app: &App, short: &HashMap<&Path, String>) -> usize {
+    app.order
+        .iter()
+        .map(|&i| shown_file(&app.review.units[i], short).width())
+        .max()
+        .unwrap_or(0)
+}
+
+/// Cells of the file column in rows of `inner` cells: the `widest` text in
+/// it, cut so names keep 10 cells; none when under 4 would be left.
+fn file_column(inner: usize, widest: usize) -> usize {
+    match widest.min(inner.saturating_sub(UNIT_LEAD + 10 + 2)) {
+        w if w >= 4 => w,
+        _ => 0,
+    }
 }
 
 fn border(app: &App, text: String) -> Span<'static> {
@@ -559,8 +652,9 @@ pub fn build(app: &App, width: u16) -> Rows {
 }
 
 /// The unit row at `pos`, `width` cells: the name takes what the icon and
-/// indent leave, the count column of file names included.
-fn unit_row(app: &App, pos: usize, width: usize) -> Line<'static> {
+/// indent leave, the count column of file names included. Listed by unit,
+/// `file` names its file in a muted column of `file_w` cells on the right.
+fn unit_row(app: &App, pos: usize, width: usize, file: &str, file_w: usize) -> Line<'static> {
     let t = &app.theme;
     let ui = app.order[pos];
     let u = &app.review.units[ui];
@@ -594,7 +688,8 @@ fn unit_row(app: &App, pos: usize, width: usize) -> Line<'static> {
     // A pencil at the end says the reviewer wrote a note on it.
     let noted = !u.dive.note.trim().is_empty();
     let mark = if noted { 2 } else { 0 };
-    let name_w = width.saturating_sub(UNIT_LEAD + indent.width() + mark);
+    let column = if file_w > 0 { 2 + file_w } else { 0 };
+    let name_w = width.saturating_sub(UNIT_LEAD + indent.width() + mark + column);
     let mut spans = vec![
         if selected {
             Span::styled("▌", t.accent())
@@ -609,6 +704,11 @@ fn unit_row(app: &App, pos: usize, width: usize) -> Line<'static> {
     ];
     if noted {
         spans.push(Span::styled(" ✎", t.accent()));
+    }
+    if file_w > 0 {
+        let fitted = truncate_pad(&fit_path(file, file_w), file_w);
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(fitted, t.muted()));
     }
     Line::from(spans)
 }
@@ -714,30 +814,44 @@ pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
         last: None,
         last_unit: None,
     };
+    let by_file = app.grouping == Grouping::File;
     let (name_w, count_w) = column_widths(inner, widest_count(app));
+    let short = short_paths(app);
+    let file_w = file_column(inner, widest_shown(app, &short));
     for (level, files) in boxes_of(app) {
-        let title = b.open_box(&box_title(level, files.len()), level_style(app, level));
+        let title = b.open_box(&box_title(app, level, &files), level_style(app, level));
         for &start in &files {
-            b.file_gap(false);
+            if by_file {
+                b.file_gap(false);
+            } else if b.last.is_none() {
+                // Listed by unit, a box's units follow each other.
+                b.last = Some(b.rows.lines.len());
+            }
             let head = b.rows.lines.len();
-            b.row(file_spans(app, start, name_w, count_w), None);
+            if by_file {
+                b.row(file_spans(app, start, name_w, count_w), None);
+            }
             for pos in app.file_range(start) {
                 let line = b.rows.lines.len();
-                b.row(unit_row(app, pos, inner).spans, Some(pos));
+                let file = shown_file(&app.review.units[app.order[pos]], &short);
+                b.row(unit_row(app, pos, inner, file, file_w).spans, Some(pos));
                 b.rows.spans[pos] = (line, line + 1);
-                b.rows.heads[pos] = head;
+                // With no file name above it, a unit is its own head.
+                b.rows.heads[pos] = if by_file { head } else { line };
                 b.rows.titles[pos] = title;
                 b.rows.ends[pos] = line + 1;
                 b.last_unit = Some(pos);
             }
-            b.same_rows(app.file_at(start));
+            if by_file {
+                b.same_rows(app.file_at(start));
+            }
         }
     }
     // Two muted boxes nobody selects: files with nothing to decide, then
     // changed files teer can't show.
     let quiet = quiet_files(app);
     if !quiet.is_empty() {
-        let title = format!("{} · {}", Level::Same.title(), files_word(quiet.len()));
+        let title = format!("{} · {}", Level::Same.title(), plural(quiet.len(), "file"));
         b.open_box(&title, level_style(app, Level::Same));
         for file in quiet {
             b.file_gap(false);
@@ -750,7 +864,7 @@ pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
     }
     let skipped = &app.review.skipped;
     if !skipped.is_empty() {
-        let title = format!("Not shown · {}", files_word(skipped.len()));
+        let title = format!("Not shown · {}", plural(skipped.len(), "file"));
         b.open_box(&title, level_style(app, Level::Same));
         for f in skipped {
             b.file_gap(true);
@@ -771,8 +885,8 @@ pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
 }
 
 /// `1 file`, `3 files`.
-fn files_word(n: usize) -> String {
-    format!("{n} file{}", if n == 1 { "" } else { "s" })
+fn plural(n: usize, word: &str) -> String {
+    format!("{n} {word}{}", if n == 1 { "" } else { "s" })
 }
 
 #[cfg(test)]
