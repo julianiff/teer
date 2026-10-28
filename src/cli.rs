@@ -6,9 +6,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+use crate::agent::api::ApiAdapter;
 use crate::agent::claude::{ClaudeAdapter, is_installed};
-use crate::agent::{AgentAdapter, PrepareModel, SessionInfo};
-use crate::config::Config;
+use crate::agent::codex::CodexAdapter;
+use crate::agent::{AgentAdapter, SessionInfo};
+use crate::config::{ApiConfig, Config, Provider, Role};
 use crate::review::model::{Review, SessionRef};
 use crate::review::prepare;
 use crate::review::{BuildOptions, build_review, store};
@@ -20,10 +22,10 @@ pub const TAGLINE: &str = "teer: the essence of every revision.";
     name = "teer",
     about = TAGLINE,
     long_about = "teer: the essence of every revision.\n\n\
-Review code changes by what they mean instead of by their lines. Claude Code prepares the review \
-underneath; you read it in the terminal \
+Review code changes by what they mean instead of by their lines. An agent prepares the review \
+underneath (Claude Code, Codex, or a model API with your key; `teer setup` picks it); you read it in the terminal \
 and swipe through changes.",
-    after_help = "Examples:\n  teer                 review uncommitted changes (claude runs underneath)\n  teer --base main     review this branch against main\n  teer --session <id>  ask a fork of this Claude Code session, which knows why\n  teer --swipe         open straight into swipe mode\n  teer --json          print the prepared review as JSON and exit\n  teer pr <url>        review a GitHub pull request of this repository (fetched with git)\n  teer pr list         pick a pull request waiting for your review, assigned to you, or yours\n  teer notes           print your notes from the last review as Markdown, for an agent\n\nConfig: ~/.config/teer/config.toml   Data: ~/.local/share/teer/",
+    after_help = "Examples:\n  teer                 review uncommitted changes (the agent runs underneath)\n  teer setup           pick what prepares reviews: Claude Code, Codex, or a model API\n  teer --base main     review this branch against main\n  teer --session <id>  ask a fork of this Claude Code session, which knows why\n  teer --swipe         open straight into swipe mode\n  teer --json          print the prepared review as JSON and exit\n  teer pr <url>        review a GitHub pull request of this repository (fetched with git)\n  teer pr list         pick a pull request waiting for your review, assigned to you, or yours\n  teer notes           print your notes from the last review as Markdown, for an agent\n\nConfig: ~/.config/teer/config.toml   Data: ~/.local/share/teer/",
     disable_version_flag = true
 )]
 pub struct Args {
@@ -36,7 +38,7 @@ pub struct Args {
 
     /// Claude Code session that made the changes. teer asks a throwaway fork of it,
     /// so the review knows why. Without it, teer runs
-    /// a fresh headless `claude` in the repo.
+    /// a fresh headless agent in the repo. Claude Code only.
     #[arg(global = true, long, value_name = "ID")]
     pub session: Option<String>,
 
@@ -95,6 +97,14 @@ pub enum Command {
         #[arg(value_name = "URL")]
         url: Option<String>,
     },
+    /// Pick what prepares reviews and its models; teer asks this on the first start.
+    ///
+    /// Claude Code (`claude -p`) or Codex (`codex exec`) headless, or a model API with a key:
+    /// Anthropic, OpenAI, OpenRouter, Ollama, or any server that speaks OpenAI's chat
+    /// completions. Then the fast model, which describes every change, and the second model,
+    /// which checks each description. The choice goes to the config; an API key stays in
+    /// your environment, the config only names its variable.
+    Setup,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -122,39 +132,113 @@ pub const NO_AGENT: &str = "running with --no-agent";
 pub struct Agent {
     pub adapter: Arc<dyn AgentAdapter>,
     pub sessions: Vec<SessionInfo>,
+    /// The provider it is: the configured one, or the one found.
+    pub provider: Provider,
 }
 
-/// Find the agent and its sessions for this repo. `Err` explains why
-/// there is no agent, for the user. `untrusted` is for code from a pull
-/// request: the agent ignores the repo's own Claude settings and every
-/// prompt says the code is untrusted data. `prepare` is the model and effort
-/// that describe units, `second` the ones that check those descriptions.
+/// Find the agent `cfg` names, and its sessions for this repo (Claude
+/// Code's only); with none set up, the first agent CLI on the PATH, as teer
+/// did before it asked. `Err` explains why there is no agent, for the user.
+/// `untrusted` is for code from a pull request: the agent loads none of the
+/// repo's own instructions and every prompt says the code is untrusted data.
 pub fn discover_agent(
     repo: &Path,
     untrusted: bool,
-    prepare: PrepareModel,
-    second: PrepareModel,
+    cfg: &Config,
 ) -> std::result::Result<Agent, String> {
-    let adapter = ClaudeAdapter {
-        untrusted,
-        prepare,
-        second,
-        ..ClaudeAdapter::default()
+    // A CLI found here is known to be installed.
+    let (provider, found) = match cfg.provider {
+        Some(p) => (p, false),
+        None => detect_provider().map_or((Provider::Claude, false), |p| (p, true)),
     };
-    if !is_installed(&adapter.bin) {
-        return Err("Claude Code ('claude') isn't on your PATH. Install it from https://claude.com/claude-code, \
+    let cfg = &Config {
+        provider: Some(provider),
+        ..cfg.clone()
+    };
+    let installed = |bin: &str| found || is_installed(bin);
+    let model = |role| cfg.model(role).map_err(|e| format!("{e:#}"));
+    let (prepare, second) = (model(Role::Fast)?, model(Role::Second)?);
+    let missing = |what: &str, url: &str| {
+        format!(
+            "{what} isn't on your PATH. Install it ({url}), pick another agent with `teer setup`, \
 or run with --no-agent to review without change statements."
-            .into());
-    }
-    let sessions = adapter
-        .list_sessions(repo)
-        .map_err(|e| format!("couldn't list Claude Code sessions: {e:#}"))?;
-    let adapter: Arc<dyn AgentAdapter> = if untrusted {
-        Arc::new(crate::pr::UntrustedCode(Arc::new(adapter)))
-    } else {
-        Arc::new(adapter)
+        )
     };
-    Ok(Agent { adapter, sessions })
+    let (adapter, sessions): (Arc<dyn AgentAdapter>, _) = match provider {
+        Provider::Claude => {
+            let adapter = ClaudeAdapter {
+                untrusted,
+                prepare,
+                second,
+                ..ClaudeAdapter::default()
+            };
+            if !installed(&adapter.bin) {
+                return Err(missing(
+                    "Claude Code ('claude')",
+                    "https://claude.com/claude-code",
+                ));
+            }
+            let sessions = adapter
+                .list_sessions(repo)
+                .map_err(|e| format!("couldn't list Claude Code sessions: {e:#}"))?;
+            (Arc::new(adapter), sessions)
+        }
+        Provider::Codex => {
+            let adapter = CodexAdapter {
+                untrusted,
+                prepare,
+                second,
+                ..CodexAdapter::default()
+            };
+            if !installed(&adapter.bin) {
+                return Err(missing(
+                    "Codex ('codex')",
+                    "https://developers.openai.com/codex",
+                ));
+            }
+            (Arc::new(adapter), Vec::new())
+        }
+        Provider::Api => {
+            let key = api_key(&cfg.api)?;
+            let deep = model(Role::Deep)?;
+            let adapter =
+                ApiAdapter::new(cfg.api.format, &cfg.api.url(), key, prepare, second, deep)
+                    .map_err(|e| format!("{e:#}"))?;
+            (Arc::new(adapter), Vec::new())
+        }
+    };
+    let adapter: Arc<dyn AgentAdapter> = if untrusted {
+        Arc::new(crate::pr::UntrustedCode(adapter))
+    } else {
+        adapter
+    };
+    Ok(Agent {
+        adapter,
+        sessions,
+        provider,
+    })
+}
+
+/// The API key from the variable `[api] key_env` names; `None` when it
+/// names none (a local server).
+pub fn api_key(api: &ApiConfig) -> std::result::Result<Option<String>, String> {
+    let var = api.key_env.trim();
+    if var.is_empty() {
+        return Ok(None);
+    }
+    match std::env::var(var) {
+        Ok(k) if !k.trim().is_empty() => Ok(Some(k.trim().to_string())),
+        _ => Err(format!(
+            "${var} isn't set: export your API key in it, or pick another agent with `teer setup`."
+        )),
+    }
+}
+
+/// The first agent CLI on the PATH: Claude Code, then Codex.
+pub fn detect_provider() -> Option<Provider> {
+    [Provider::Claude, Provider::Codex]
+        .into_iter()
+        .find(|p| p.program().is_some_and(is_installed))
 }
 
 /// Resolve `--session <id>` (a prefix is enough) against the known sessions.
@@ -165,7 +249,7 @@ pub fn session_by_id(id: &str, sessions: &[SessionInfo], repo: &Path) -> Session
         .or_else(|| sessions.iter().find(|s| s.id.starts_with(id)))
         .map(|s| s.to_ref())
         .unwrap_or_else(|| SessionRef {
-            agent: "claude".into(),
+            agent: Provider::Claude.name().into(),
             id: id.into(),
             cwd: repo.to_path_buf(),
         })
@@ -235,12 +319,50 @@ pub async fn run(args: Args) -> Result<()> {
         Some(d) => d.clone(),
         None => std::env::current_dir().context("no current directory")?,
     };
-    let cfg =
-        Config::load(&store::config_path())?.with_no_color(std::env::var_os("NO_COLOR").as_deref());
+    let path = store::config_path();
+    let no_color = std::env::var_os("NO_COLOR");
+    let mut cfg = Config::load(&path)?.with_no_color(no_color.as_deref());
     let keymap = cfg.keymap()?;
+    if matches!(args.command, Some(Command::Setup)) {
+        if !crate::tui::setup::can_run() {
+            anyhow::bail!("teer setup needs a terminal");
+        }
+        if let crate::tui::setup::Ended::Saved(_) =
+            crate::tui::setup::run(cfg, &path, false).await?
+        {
+            println!("teer: saved to {}", path.display());
+        }
+        return Ok(());
+    }
+    let needs_agent = !args.no_agent && !matches!(args.command, Some(Command::Notes { .. }));
+    if cfg.provider.is_none() && needs_agent {
+        // First start: ask in a terminal; elsewhere (scripts, --json) the
+        // agent CLI that is there is used (`discover_agent`), and teer asks
+        // next time.
+        use crate::tui::setup::Ended;
+        let asked = if !args.json && crate::tui::setup::can_run() {
+            crate::tui::setup::run(cfg.clone(), &path, true).await?
+        } else {
+            Ended::Left
+        };
+        match asked {
+            Ended::Saved(saved) => cfg = saved.with_no_color(no_color.as_deref()),
+            Ended::Left => {}
+            Ended::Quit => return Ok(()),
+        }
+    }
+    if args.session.is_some() && cfg.provider() != Provider::Claude {
+        anyhow::bail!(
+            "--session works with Claude Code only (the provider is {})",
+            cfg.provider().name()
+        );
+    }
+    cfg.editor()?;
     // Bad model settings fail at start, not when the agent is first asked.
-    cfg.prepare_model()?;
-    cfg.second_model()?;
+    if needs_agent {
+        cfg.prepare_model()?;
+        cfg.second_model()?;
+    }
     match args.command.clone() {
         None => {
             let opts = BuildOptions {
@@ -265,6 +387,7 @@ pub async fn run(args: Args) -> Result<()> {
             review_pr(args, cwd, pr.url, cfg, keymap).await
         }
         Some(Command::Notes { url }) => print_notes(&cwd, url.as_deref()),
+        Some(Command::Setup) => unreachable!("handled above"),
         Some(Command::Pr { url, .. }) => {
             let url = url.context("teer pr needs the URL of a pull request")?;
             if args.base.is_some() {
@@ -395,7 +518,7 @@ fn exit_if_signalled() {
 async fn run_review(
     args: Args,
     mut review: Review,
-    cfg: Config,
+    mut cfg: Config,
     keymap: crate::config::KeyMap,
 ) -> Result<()> {
     let repo = review.repo_root.clone();
@@ -404,8 +527,12 @@ async fn run_review(
     let agent = if args.no_agent {
         Err(NO_AGENT.to_string())
     } else {
-        discover_agent(&repo, is_pr, cfg.prepare_model()?, cfg.second_model()?)
+        discover_agent(&repo, is_pr, &cfg)
     };
+    if let Ok(a) = &agent {
+        // Labels and session names follow the agent found.
+        cfg.provider = Some(a.provider);
+    }
 
     if args.json {
         match &agent {
@@ -419,7 +546,7 @@ async fn run_review(
                         }
                         s
                     }
-                    None => SessionRef::fresh("claude", repo.clone()),
+                    None => SessionRef::fresh(cfg.provider().name(), repo.clone()),
                 };
                 review.set_session(Some(s.clone()));
                 prepare_all(&mut review, a.adapter.clone(), s, cfg.concurrency).await;

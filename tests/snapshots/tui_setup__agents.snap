@@ -1,0 +1,26 @@
+---
+source: tests/tui_setup.rs
+expression: first
+---
+ teer  setup                                                                                    1/4
+
+  What prepares your reviews?
+  teer asks an agent to describe every change. Pick one; `teer setup` changes it later.
+
+  ▌ Claude Code     found                        claude -p, headless
+    Codex           not installed                codex exec, read-only
+    Anthropic API   ANTHROPIC_API_KEY is set     your API key, teer runs the agent
+    OpenAI API      OPENAI_API_KEY not set       your API key, teer runs the agent
+    OpenRouter      OPENROUTER_API_KEY not set   your API key, teer runs the agent
+    Ollama                                       local, no key
+    Other API                                    any server that speaks OpenAI's chat completions
+
+  Also used
+    git             found                        reads the changes
+    gh              not logged in                run `gh auth login`
+    nvim            not installed                `e` opens a unit in it
+    sandbox-exec    found                        Behavior runs code in it
+
+  Next: a fast model describes every change, a second one checks it.
+
+ ⏎ next   ↑/↓ move   esc not now

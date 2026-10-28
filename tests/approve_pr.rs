@@ -521,7 +521,7 @@ fn editing_round_trip_uses_a_temp_file_and_deletes_it() {
             copy = d.path().join("orig").display()
         ),
     );
-    let out = approve::edit_in_editor(editor.as_os_str(), "Reviewed with teer.");
+    let out = approve::edit_in_editor(&editor.into(), "Reviewed with teer.");
     assert_eq!(
         out,
         EditOutcome::Edited("Edited by hand\n [31mred x".into())
@@ -540,13 +540,13 @@ fn editing_round_trip_uses_a_temp_file_and_deletes_it() {
     // A non-zero exit (:cq) cancels.
     let cq = script(d.path(), "cq", "echo changed > \"$1\"; exit 1");
     assert_eq!(
-        approve::edit_in_editor(cq.as_os_str(), "x"),
+        approve::edit_in_editor(&cq.into(), "x"),
         EditOutcome::Cancelled
     );
     // No editor: unavailable.
     let none = d.path().join("missing");
     assert!(matches!(
-        approve::edit_in_editor(none.as_os_str(), "x"),
+        approve::edit_in_editor(&none.into(), "x"),
         EditOutcome::Unavailable(_)
     ));
 }
@@ -721,6 +721,7 @@ esac"#,
     );
     let editor = d.join("no-editor");
     let claude = d.join("no-claude");
+    let codex = d.join("no-codex");
     Fakes {
         dir,
         tools: Tools {
@@ -728,6 +729,7 @@ esac"#,
             opener: opener.into(),
             editor: editor.into(),
             claude: claude.into(),
+            codex: codex.into(),
         },
     }
 }

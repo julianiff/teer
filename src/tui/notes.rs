@@ -169,8 +169,8 @@ pub fn draw_editor(f: &mut Frame, app: &App, id: &str, text: &str) {
     super::ui::click_hints(f, app, inner, "enter save · esc cancel");
 }
 
-/// The keys of the notes view, as `(key, label)`: Claude Code only for a
-/// local review, posting only for a pull request.
+/// The keys of the notes view, as `(key, label)`: handing over to the agent
+/// CLI only for a local review, posting only for a pull request.
 fn view_keys(app: &App) -> Vec<(String, &'static str)> {
     let mut keys = vec![
         ("enter".to_string(), "go to"),
@@ -181,7 +181,11 @@ fn view_keys(app: &App) -> Vec<(String, &'static str)> {
     if app.review.pr.is_some() {
         keys.push(("p".into(), "post on the PR"));
     } else {
-        keys.push(("c".into(), "hand to Claude Code"));
+        match app.cfg.provider() {
+            crate::config::Provider::Claude => keys.push(("c".into(), "hand to Claude Code")),
+            crate::config::Provider::Codex => keys.push(("c".into(), "hand to Codex")),
+            crate::config::Provider::Api => {}
+        }
     }
     keys.push(("esc".into(), "close"));
     keys

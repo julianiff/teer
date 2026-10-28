@@ -10,7 +10,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use teer::approve::Verdict;
-use teer::config::{Config, KeyMap};
+use teer::config::{Config, KeyMap, Provider};
 use teer::git::{ChangedFile, FileStatus};
 use teer::review::model::{
     Decision, PrInfo, Prep, Range, Review, SessionRef, Unit, UnitKind, UnitStatus,
@@ -280,7 +280,8 @@ fn c_hands_the_notes_to_claude_code() {
     key(&mut a, 'N');
     let e = key(&mut a, 'c');
     let [
-        Effect::OpenClaude {
+        Effect::OpenAgent {
+            cli: Provider::Claude,
             cwd,
             prompt,
             resume,
@@ -303,11 +304,41 @@ fn c_hands_the_notes_to_claude_code() {
     });
     key(&mut a, 'N');
     let e = key(&mut a, 'c');
-    let [Effect::OpenClaude { cwd, resume, .. }] = &e[..] else {
+    let [Effect::OpenAgent { cwd, resume, .. }] = &e[..] else {
         panic!("{e:?}")
     };
     assert_eq!(cwd, &PathBuf::from("/repo/sub"));
     assert_eq!(resume.as_deref(), Some("abc-123"));
+}
+
+#[test]
+fn c_hands_the_notes_to_codex_without_a_claude_session_and_not_to_an_api() {
+    let mut a = app(["first", ""], None);
+    a.review.agent_session = Some(SessionRef {
+        agent: "claude".into(),
+        id: "abc-123".into(),
+        cwd: PathBuf::from("/repo/sub"),
+    });
+    a.cfg.provider = Some(Provider::Codex);
+    key(&mut a, 'N');
+    let e = key(&mut a, 'c');
+    let [
+        Effect::OpenAgent {
+            cli: Provider::Codex,
+            cwd,
+            resume: None,
+            ..
+        },
+    ] = &e[..]
+    else {
+        panic!("{e:?}")
+    };
+    assert_eq!(cwd, &PathBuf::from("/repo"));
+
+    a.cfg.provider = Some(Provider::Api);
+    key(&mut a, 'N');
+    assert!(key(&mut a, 'c').is_empty());
+    assert!(a.status.contains("Claude Code or Codex"), "{}", a.status);
 }
 
 // ------------------------------------------------------------ pull request

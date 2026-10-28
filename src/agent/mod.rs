@@ -1,9 +1,14 @@
-//! Agent adapters. teer talks to coding agents only through
-//! [`AgentAdapter`], so more agents can be added next to Claude Code.
+//! Agent adapters. teer talks to what prepares its reviews only through
+//! [`AgentAdapter`]: Claude Code, Codex, or a model API (see
+//! [`crate::config::Provider`]).
 
+pub mod api;
 pub mod claude;
+pub mod codex;
 pub mod commands;
 pub mod mock;
+pub mod repo_tools;
+pub mod schema;
 pub mod sessions;
 
 use std::path::{Path, PathBuf};
@@ -35,8 +40,9 @@ impl SessionInfo {
     }
 }
 
-/// The model and effort that describe units (`claude --model` / `--effort`).
-/// `None` leaves Claude Code's own default.
+/// A model and effort (`claude --model` / `--effort`, `codex -m` /
+/// `model_reasoning_effort`, or the API's). `None` leaves the provider's
+/// own default.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PrepareModel {
     pub model: Option<String>,

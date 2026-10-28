@@ -841,7 +841,7 @@ fn editing_with_an_external_editor_round_trips_through_a_temp_file() {
             copy = d.path().join("orig").display()
         ),
     );
-    let out = approve::edit_message_in_editor(editor.as_os_str(), &original);
+    let out = approve::edit_message_in_editor(&editor.into(), &original);
     assert_eq!(
         out,
         EditOutcome::Edited("Edited subject\n\nbody    line".into())
@@ -859,7 +859,7 @@ fn editing_with_an_external_editor_round_trips_through_a_temp_file() {
     assert!(draw(&a, 100, 40).contains("Edited subject"));
     // :cq keeps what was there; an empty file does too.
     let cq = script(d.path(), "cq", "echo nope > \"$1\"; exit 1");
-    let out = approve::edit_message_in_editor(cq.as_os_str(), "x");
+    let out = approve::edit_message_in_editor(&cq.into(), "x");
     assert_eq!(out, EditOutcome::Cancelled);
     a.comment_edited(out);
     a.comment_edited(EditOutcome::Edited("  \n".into()));
@@ -867,7 +867,7 @@ fn editing_with_an_external_editor_round_trips_through_a_temp_file() {
     // No editor at all.
     let missing = d.path().join("missing");
     assert!(matches!(
-        approve::edit_message_in_editor(missing.as_os_str(), "x"),
+        approve::edit_message_in_editor(&missing.into(), "x"),
         EditOutcome::Unavailable(_)
     ));
 }

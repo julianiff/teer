@@ -234,7 +234,7 @@ fn conversation(
     let mut links = Vec::new();
     if which.is_empty() {
         let intro = if !app.has_agent {
-            "No agent: asking needs Claude Code ('claude') on your PATH."
+            "No agent: asking needs one. `teer setup` picks Claude Code, Codex or a model API."
         } else if chat {
             "Ask about this unit in your own words: \"why is the retry here?\", \"who else calls it?\", \
 \"show me the test for it\". The agent reads the code (read-only) and this conversation so far, \
@@ -262,7 +262,7 @@ question has to do with. Each answer is also noted on the unit it is about."
             continue;
         };
         lines.push(Line::default());
-        lines.push(barred(app, Line::styled(agent_label(), t.muted()), 0));
+        lines.push(barred(app, Line::styled(agent_label(app), t.muted()), 0));
         for l in wrap(&a.text, w.saturating_sub(2)) {
             lines.push(barred(app, Line::raw(l), 0));
         }
@@ -340,9 +340,12 @@ fn question_lines(
     }
 }
 
-/// Who answers: Claude Code's own model, as for the Flagged questions.
-fn agent_label() -> String {
-    format!("agent ({})", slim::model_name("default"))
+/// Who answers: the deep model, as for the Flagged questions.
+fn agent_label(app: &App) -> String {
+    format!(
+        "agent ({})",
+        slim::model_name(app, crate::config::Role::Deep)
+    )
 }
 
 /// A unit the answer has to do with: its level's icon, name and place, and

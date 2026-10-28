@@ -1,10 +1,14 @@
 //! Every external command line teer runs, in one place so they are easy to
 //! update when a CLI changes. Flags were checked against `claude --help`
-//! and live probes on Claude Code 2.1.291.
+//! and live probes on Claude Code 2.1.291, and against `codex exec --help`
+//! and live probes on Codex 0.159.2.
+
+use std::path::Path;
 
 use super::PrepareModel;
 
 pub const CLAUDE_BIN: &str = "claude";
+pub const CODEX_BIN: &str = "codex";
 
 /// Tools a review run may use. It can read the repo but must not change it.
 const READ_ONLY_TOOLS: &str = "Read,Grep,Glob";
@@ -89,6 +93,59 @@ pub fn untrusted_flags() -> Vec<String> {
     ])
 }
 
+/// A headless Codex run: `codex exec` in `cwd` with the prompt on stdin
+/// (`-`), the answer held to the schema in `schema_file` and written to
+/// `out_file`. `--sandbox read-only` lets its commands read but not write
+/// or reach the network; unlike Claude Code's read tools that sandbox reads
+/// the whole disk, not only `cwd`. `--ephemeral` keeps the run out of the
+/// session list. `model` empty leaves Codex's own model and effort.
+pub fn codex_exec(
+    cwd: &Path,
+    model: &PrepareModel,
+    schema_file: &Path,
+    out_file: &Path,
+    untrusted: bool,
+) -> Vec<String> {
+    let mut a = s(&[
+        "exec",
+        "--sandbox",
+        "read-only",
+        "--ephemeral",
+        "--skip-git-repo-check",
+    ]);
+    a.extend(s(&["--color", "never", "-C"]));
+    a.push(cwd.to_string_lossy().into_owned());
+    if let Some(m) = &model.model {
+        a.extend(["-m".to_string(), m.clone()]);
+    }
+    if let Some(e) = &model.effort {
+        a.extend(["-c".to_string(), format!("model_reasoning_effort=\"{e}\"")]);
+    }
+    if untrusted {
+        // The pull request's own AGENTS.md and skills would reach the
+        // prompt as instructions (verified with `codex debug prompt-input`);
+        // its exec rules could allow commands.
+        a.extend(s(&[
+            "-c",
+            "project_doc_max_bytes=0",
+            "-c",
+            "skills.include_instructions=false",
+            "--ignore-rules",
+        ]));
+    }
+    a.push("--output-schema".into());
+    a.push(schema_file.to_string_lossy().into_owned());
+    a.push("-o".into());
+    a.push(out_file.to_string_lossy().into_owned());
+    a.push("-".into());
+    a
+}
+
+/// Codex's model catalog as JSON (`models[].slug`, `visibility`, `priority`).
+pub fn codex_models() -> (&'static str, Vec<String>) {
+    (CODEX_BIN, s(&["debug", "models"]))
+}
+
 /// All processes with their parent and full command line.
 pub fn ps_all() -> (&'static str, Vec<String>) {
     ("ps", s(&["-axo", "pid=,ppid=,args="]))
@@ -140,6 +197,39 @@ mod tests {
             plain,
             "-p --no-session-persistence --tools  --permission-mode dontAsk --output-format json --json-schema {}"
         );
+    }
+
+    #[test]
+    fn codex_runs_read_only_and_leaves_the_prs_instructions_out() {
+        let fast = PrepareModel {
+            model: Some("gpt-6.1-terra".into()),
+            effort: Some("low".into()),
+        };
+        let a = codex_exec(
+            Path::new("/r"),
+            &fast,
+            Path::new("/t/s.json"),
+            Path::new("/t/o.txt"),
+            false,
+        );
+        assert_eq!(
+            a.join(" "),
+            "exec --sandbox read-only --ephemeral --skip-git-repo-check --color never -C /r \
+-m gpt-6.1-terra -c model_reasoning_effort=\"low\" --output-schema /t/s.json -o /t/o.txt -"
+        );
+        let pr = codex_exec(
+            Path::new("/r"),
+            &PrepareModel::default(),
+            Path::new("s"),
+            Path::new("o"),
+            true,
+        )
+        .join(" ");
+        assert!(!pr.contains(" -m ") && !pr.contains("model_reasoning_effort"));
+        assert!(pr.contains(
+            "-c project_doc_max_bytes=0 -c skills.include_instructions=false --ignore-rules"
+        ));
+        assert!(!pr.contains("workspace-write") && !pr.contains("danger"));
     }
 
     #[test]

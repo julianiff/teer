@@ -17,7 +17,7 @@ use super::theme::Theme;
 use crate::agent::SessionInfo;
 use crate::approve::{self, EditOutcome, Inline, NoteEntry, Verdict};
 use crate::commit::{self, Branch};
-use crate::config::{Action, Config, KeyMap, Order};
+use crate::config::{Action, Config, KeyMap, Order, Provider};
 use crate::review::attention::{Assessment, Level, assess};
 use crate::review::dive::{DiveEvent, uses_web};
 use crate::review::model::{
@@ -281,9 +281,11 @@ pub enum Effect {
         text: String,
         what: String,
     },
-    /// Hand the terminal to Claude Code in `cwd` with `prompt` as its first
-    /// message, resuming a fork of session `resume` when there is one.
-    OpenClaude {
+    /// Hand the terminal to the agent CLI (Claude Code or Codex) in `cwd`
+    /// with `prompt` as its first message, resuming a fork of Claude Code
+    /// session `resume` when there is one.
+    OpenAgent {
+        cli: Provider,
         cwd: PathBuf,
         prompt: String,
         resume: Option<String>,
@@ -2068,7 +2070,7 @@ impl App {
             }];
         } else if k.code == KeyCode::Char('c') {
             self.overlay = Overlay::Notes { sel };
-            return self.notes_to_claude();
+            return self.notes_to_agent();
         } else if k.code == KeyCode::Char('p') {
             self.overlay = Overlay::Notes { sel };
             if self.review.pr.is_none() {
@@ -2089,24 +2091,34 @@ impl App {
         Vec::new()
     }
 
-    /// Hand the notes to Claude Code in the repository, as the first message
-    /// of a session: a fork of the review's session when there is one. Not
-    /// for a pull request: its code is untrusted, and the session could
-    /// change files and run commands.
-    fn notes_to_claude(&mut self) -> Vec<Effect> {
+    /// Hand the notes to the agent CLI in the repository, as the first
+    /// message of a session: a fork of the review's Claude Code session when
+    /// there is one. Not for a pull request: its code is untrusted, and the
+    /// session could change files and run commands. Not with a model API,
+    /// which has no session to hand over to.
+    fn notes_to_agent(&mut self) -> Vec<Effect> {
         if self.review.pr.is_some() {
             self.status =
                 "Not for a pull request: its code is untrusted. y copies the notes, p posts them on the PR."
                     .into();
             return Vec::new();
         }
+        let cli = self.cfg.provider();
+        if cli.program().is_none() {
+            self.status =
+                "Handing over needs Claude Code or Codex (teer setup). y copies the notes.".into();
+            return Vec::new();
+        }
         let prompt = crate::notes::agent_prompt(&self.review);
-        let session = self.review.agent_session.as_ref().filter(|s| !s.is_fresh());
+        // Only Claude Code has sessions to fork.
+        let session = (self.review.agent_session.as_ref())
+            .filter(|s| !s.is_fresh() && cli == Provider::Claude);
         // Claude Code finds a session by the directory it was started in.
         let cwd = session.map_or(self.review.repo_root.clone(), |s| s.cwd.clone());
         let resume = session.map(|s| s.id.clone());
         self.overlay = Overlay::None;
-        vec![Effect::OpenClaude {
+        vec![Effect::OpenAgent {
+            cli,
             cwd,
             prompt,
             resume,
@@ -2434,7 +2446,7 @@ impl App {
             return Vec::new();
         };
         if !has_agent {
-            q.error = Some("no agent: asking needs Claude Code ('claude') on your PATH".into());
+            q.error = Some("no agent: asking needs one (`teer setup` picks it)".into());
             return vec![Effect::Save];
         }
         if !self.ask.pending.insert(index) {

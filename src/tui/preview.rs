@@ -280,7 +280,7 @@ pub fn check_lines(
         };
         let label = format!(
             "Second opinion ({}):",
-            slim::model_name(&app.cfg.second_model)
+            slim::model_name(app, crate::config::Role::Second)
         );
         let style = t.risk(crate::review::model::Risk::Medium);
         check("⚠", label, first, style, (2, &more));

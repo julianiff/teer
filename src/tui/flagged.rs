@@ -16,7 +16,7 @@ use unicode_width::UnicodeWidthStr;
 use super::app::{App, Pane, Target, pane_key, tile_kinds};
 use super::preview::{scroll_rows, unit_explain, unit_head};
 use super::slim;
-use crate::config::{Action, Theme as ThemeName};
+use crate::config::{Action, Role, Theme as ThemeName};
 use crate::review::model::{
     Behavior, ClaimCheck, Coverage, Delta, DiveKind, Expect, FoundTest, Marker, Outcome, ProbeCase,
     Reach, Resolution, Risk, TestCheck, TestSearch, Unit, UnitStatus, Visual,
@@ -138,21 +138,19 @@ fn waiting(app: &App, u: &Unit, kind: DiveKind) -> String {
     .to_string()
 }
 
-/// Who wrote the answer on `kind`'s tab. Questions here run on Claude
-/// Code's default model (no `--model`); the second opinion on `second_model`;
-/// the Tests search is teer's own until the agent reads it.
+/// Who wrote the answer on `kind`'s tab. Questions here run on the deep
+/// model (the CLI's own default, or the second model with an API); the
+/// second opinion on `second_model`; the Tests search is teer's own until
+/// the agent reads it.
 fn answer_label(app: &App, u: &Unit, kind: DiveKind) -> String {
-    let agent = slim::model_name("default");
+    let agent = slim::model_name(app, Role::Deep);
     let tests = u.dive.results.get(&kind).and_then(|r| r.coverage.as_ref());
     match kind {
         DiveKind::Tests if tests.is_some_and(|c| !c.judged) => "found by teer".into(),
         DiveKind::Tests if tests.is_some_and(|c| c.search.is_some()) => {
             format!("found by teer, read by the agent ({agent})")
         }
-        DiveKind::Disagree => format!(
-            "second opinion ({})",
-            slim::model_name(&app.cfg.second_model)
-        ),
+        DiveKind::Disagree => format!("second opinion ({})", slim::model_name(app, Role::Second)),
         DiveKind::Behavior => format!("probe by the agent ({agent}), run by teer"),
         _ => format!("agent ({agent})"),
     }

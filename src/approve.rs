@@ -12,6 +12,7 @@ use std::path::Path;
 
 use serde_json::json;
 
+use crate::editor::Editor;
 use crate::gh::{self, Output as GhOut};
 use crate::git::ChangedFile;
 use crate::pr;
@@ -45,9 +46,10 @@ pub fn intro_for(review: &Review) -> String {
 pub struct Tools {
     pub gh: OsString,
     pub opener: OsString,
-    pub editor: OsString,
-    /// Claude Code, which the notes can be handed to.
+    pub editor: Editor,
+    /// Claude Code and Codex, which the notes can be handed to.
     pub claude: OsString,
+    pub codex: OsString,
 }
 
 impl Default for Tools {
@@ -59,8 +61,9 @@ impl Default for Tools {
             } else {
                 "xdg-open".into()
             },
-            editor: "nvim".into(),
+            editor: Editor::default(),
             claude: crate::agent::commands::CLAUDE_BIN.into(),
+            codex: crate::agent::commands::CODEX_BIN.into(),
         }
     }
 }
@@ -395,7 +398,7 @@ pub enum EditOutcome {
 /// inside teer's data dir) holding `text`; the file's raw content afterwards,
 /// or `None` when the editor exited non-zero. The caller owns the terminal
 /// handover. The directory and file are deleted on return.
-fn run_editor(editor: &OsStr, text: &str, name: &str) -> Result<Option<String>, String> {
+fn run_editor(editor: &Editor, text: &str, name: &str) -> Result<Option<String>, String> {
     let dir = crate::review::store::data_dir().join("tmp");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{e}"))?;
     let scratch = tempfile::Builder::new()
@@ -405,8 +408,8 @@ fn run_editor(editor: &OsStr, text: &str, name: &str) -> Result<Option<String>, 
     let path = scratch.path().join(name);
     std::fs::write(&path, text.as_bytes())
         .map_err(|_| "couldn't write the temp file".to_string())?;
-    let status = std::process::Command::new(editor)
-        .arg(&path)
+    let status = editor
+        .command(&path, 1)
         .status()
         .map_err(|e| format!("{e}"))?;
     if !status.success() {
@@ -420,7 +423,7 @@ fn run_editor(editor: &OsStr, text: &str, name: &str) -> Result<Option<String>, 
 /// Edit `text` in `editor` on a private temp file inside teer's data dir,
 /// then read it back (sanitised and capped) and delete the file. The caller
 /// owns the terminal handover.
-pub fn edit_in_editor(editor: &OsStr, text: &str) -> EditOutcome {
+pub fn edit_in_editor(editor: &Editor, text: &str) -> EditOutcome {
     match run_editor(editor, text, "approve.md") {
         Err(why) => EditOutcome::Unavailable(why),
         Ok(None) => EditOutcome::Cancelled,
@@ -431,7 +434,7 @@ pub fn edit_in_editor(editor: &OsStr, text: &str) -> EditOutcome {
 /// Like [`edit_in_editor`] for a commit message: the file is named
 /// `COMMIT_EDITMSG` (so editors pick git's syntax) and the result is
 /// normalised as a commit message.
-pub fn edit_message_in_editor(editor: &OsStr, text: &str) -> EditOutcome {
+pub fn edit_message_in_editor(editor: &Editor, text: &str) -> EditOutcome {
     match run_editor(editor, text, "COMMIT_EDITMSG") {
         Err(why) => EditOutcome::Unavailable(why),
         Ok(None) => EditOutcome::Cancelled,

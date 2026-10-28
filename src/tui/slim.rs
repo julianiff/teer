@@ -28,6 +28,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use super::app::{App, Grouping};
+use crate::config::Role;
 use crate::review::attention::Level;
 use crate::review::model::{Decision, LineRef, Prep, Side, Unit, UnitKind, UnitStatus};
 use crate::units::extract::MODULE_SYMBOL;
@@ -136,23 +137,19 @@ pub fn level_style(app: &App, level: Level) -> Style {
     }
 }
 
-/// A model as configured, in words: `default` (or nothing) is Claude Code's own.
-pub fn model_name(model: &str) -> String {
-    let m = model.trim();
-    if m.is_empty() || m.eq_ignore_ascii_case("default") {
-        "Claude Code's default model".into()
-    } else {
-        sanitize(m)
-    }
+/// The model for `role` in words: `haiku`, or `Claude Code's default
+/// model` when the CLI picks.
+pub fn model_name(app: &App, role: Role) -> String {
+    app.cfg.model_label(role)
 }
 
 /// Who wrote the summary and statements of `u`: `agent (haiku)`, or
 /// `agent (haiku, sonnet)` once the second model has checked them. Drawn
 /// above them; facts from the code carry no label.
 pub fn agent_label(app: &App, u: &Unit) -> String {
-    let mut models = model_name(&app.cfg.prepare_model);
+    let mut models = model_name(app, Role::Fast);
     if u.checks.second.is_some() {
-        models.push_str(&format!(", {}", model_name(&app.cfg.second_model)));
+        models.push_str(&format!(", {}", model_name(app, Role::Second)));
     }
     format!("agent ({models})")
 }
@@ -1012,15 +1009,28 @@ mod tests {
 
     #[test]
     fn models_are_named_and_default_says_whose() {
-        assert_eq!(model_name("haiku"), "haiku");
-        assert_eq!(model_name(" claude-sonnet-5-5 "), "claude-sonnet-5-5");
-        for m in ["default", "Default", "", "  "] {
-            assert_eq!(model_name(m), "Claude Code's default model", "{m:?}");
-        }
         let mut app = app();
+        assert_eq!(model_name(&app, Role::Fast), "haiku");
+        assert_eq!(model_name(&app, Role::Deep), "Claude Code's default model");
+        for m in ["default", "Default", "", "  "] {
+            app.cfg.prepare_model = Some(m.into());
+            assert_eq!(
+                model_name(&app, Role::Fast),
+                "Claude Code's default model",
+                "{m:?}"
+            );
+        }
+        app.cfg.provider = Some(crate::config::Provider::Codex);
+        assert_eq!(model_name(&app, Role::Deep), "Codex's default model");
+        app.cfg.provider = Some(crate::config::Provider::Api);
+        app.cfg.second_model = Some(" claude-sonnet-5-5 ".into());
+        assert_eq!(model_name(&app, Role::Deep), "claude-sonnet-5-5");
+        app.cfg.provider = None;
+        app.cfg.second_model = None;
+        app.cfg.prepare_model = None;
         let u = app.review.units[0].clone();
         assert_eq!(agent_label(&app, &u), "agent (haiku)");
-        app.cfg.prepare_model = "default".into();
+        app.cfg.prepare_model = Some("default".into());
         let mut u = u;
         u.checks.second = Some(crate::review::model::SecondOpinion {
             risk: crate::review::model::Risk::Low,

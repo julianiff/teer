@@ -11,6 +11,7 @@ pub mod picture;
 pub mod pr_pick;
 pub mod preview;
 pub mod select;
+pub mod setup;
 pub mod slim;
 pub mod swipe;
 pub mod syntax;
@@ -89,7 +90,7 @@ pub async fn run(l: Launch) -> Result<()> {
         Ok(a) => (Some(a.adapter), a.sessions, None),
         Err(why) => (None, Vec::new(), Some(why)),
     };
-    // Without --session, teer runs claude headless in the repo; no picker.
+    // Without --session, teer runs the agent headless in the repo; no picker.
     let session = match l.session_arg {
         Some(id) => {
             let mut s = crate::cli::session_by_id(&id, &sessions, &repo);
@@ -99,7 +100,7 @@ pub async fn run(l: Launch) -> Result<()> {
             }
             s
         }
-        None => crate::review::model::SessionRef::fresh("claude", repo.clone()),
+        None => crate::review::model::SessionRef::fresh(app.cfg.provider().name(), repo.clone()),
     };
     let initial = app.start(adapter.is_some(), note, sessions, Some(session), l.swipe);
     if let Some(b) = app.review.pr.as_ref().and_then(|p| p.base_assumed.clone()) {
@@ -114,7 +115,10 @@ pub async fn run(l: Launch) -> Result<()> {
         adapter,
         tx,
         build,
-        tools: Default::default(),
+        tools: crate::approve::Tools {
+            editor: app.cfg.editor()?,
+            ..Default::default()
+        },
     };
 
     let mut terminal = ratatui::init();
@@ -161,18 +165,20 @@ pub async fn run(l: Launch) -> Result<()> {
                         &rerun,
                     );
                     events = EventStream::new();
-                } else if let Effect::OpenClaude {
+                } else if let Effect::OpenAgent {
+                    cli,
                     cwd,
                     prompt,
                     resume,
                 } = e
                 {
-                    // Claude Code needs the terminal and stdin to itself.
+                    // The agent CLI needs the terminal and stdin to itself.
                     drop(events);
                     let rerun = app.keys.label(crate::config::Action::Rerun);
-                    app.status = open_claude(
+                    app.status = open_agent(
                         &mut terminal,
-                        &rt.tools.claude,
+                        cli,
+                        &rt.tools,
                         &cwd,
                         &prompt,
                         resume.as_deref(),
@@ -521,7 +527,7 @@ impl Runtime {
             Effect::Edit { .. }
             | Effect::EditComment { .. }
             | Effect::Commit { .. }
-            | Effect::OpenClaude { .. } => {}
+            | Effect::OpenAgent { .. } => {}
         }
         false
     }
@@ -610,12 +616,12 @@ fn force_redraw<B: ratatui::backend::Backend>(terminal: &mut ratatui::Terminal<B
     terminal.swap_buffers();
 }
 
-/// Run `editor` on `file` at `line` (`+line file`, as vi-like editors take
-/// it), then take the terminal back. Returns the status line to show
+/// Run `editor` on `file` at `line`, then take the terminal back (a GUI
+/// editor's command returns at once). Returns the status line to show
 /// afterwards; `rerun` is the key that re-runs the review.
 fn open_editor(
     terminal: &mut ratatui::DefaultTerminal,
-    editor: &std::ffi::OsStr,
+    editor: &crate::editor::Editor,
     repo: &std::path::Path,
     file: &std::path::Path,
     line: u32,
@@ -624,45 +630,52 @@ fn open_editor(
     if !repo.join(file).exists() {
         return format!("{} no longer exists, nothing to open.", file.display());
     }
+    // The whole path: a launcher (`open -a`, an IDE) may not run in the repo.
     let result = with_terminal_released(terminal, || {
-        std::process::Command::new(editor)
-            .arg(format!("+{line}"))
-            .arg(file)
+        editor
+            .command(&repo.join(file), line)
             .current_dir(repo)
             .status()
     });
-    let name = editor.to_string_lossy();
+    let name = editor.name();
     match result {
-        Ok(_) => format!("Back from {name}. {rerun} re-runs the review if you changed the code."),
-        Err(e) => format!("Couldn't start {name}: {e}"),
+        Ok(_) => format!(
+            "Opened {}:{line} in {name}. {rerun} re-runs the review if you changed the code.",
+            file.display()
+        ),
+        Err(e) => format!("Couldn't start {name}: {e} (`editor` in the config)"),
     }
 }
 
-/// Run Claude Code in `cwd` with `prompt` as its first message (resuming a
-/// fork of session `resume` when there is one, so a session open elsewhere
-/// stays as it is), then take the terminal back. Returns the status line to
-/// show afterwards; `rerun` is the key that re-runs the review.
-fn open_claude(
+/// Run the agent CLI `cli` in `cwd` with `prompt` as its first message
+/// (Claude Code resumes a fork of session `resume` when there is one, so a
+/// session open elsewhere stays as it is), then take the terminal back.
+/// Returns the status line to show afterwards; `rerun` is the key that
+/// re-runs the review.
+fn open_agent(
     terminal: &mut ratatui::DefaultTerminal,
-    claude: &std::ffi::OsStr,
+    cli: crate::config::Provider,
+    tools: &crate::approve::Tools,
     cwd: &std::path::Path,
     prompt: &str,
     resume: Option<&str>,
     rerun: &str,
 ) -> String {
+    let program = match cli {
+        crate::config::Provider::Codex => &tools.codex,
+        _ => &tools.claude,
+    };
     let result = with_terminal_released(terminal, || {
-        let mut cmd = std::process::Command::new(claude);
+        let mut cmd = std::process::Command::new(program);
         if let Some(id) = resume {
             cmd.args(["--resume", id, "--fork-session"]);
         }
         cmd.arg(prompt).current_dir(cwd).status()
     });
+    let name = cli.title();
     match result {
-        Ok(_) => format!("Back from Claude Code. {rerun} re-runs the review on what it changed."),
-        Err(e) => format!(
-            "Couldn't start Claude Code ({}): {e}",
-            claude.to_string_lossy()
-        ),
+        Ok(_) => format!("Back from {name}. {rerun} re-runs the review on what it changed."),
+        Err(e) => format!("Couldn't start {name} ({}): {e}", program.to_string_lossy()),
     }
 }
 
