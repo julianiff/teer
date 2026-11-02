@@ -956,6 +956,7 @@ mod tests {
             questions: Vec::new(),
             version: 0,
             history: Default::default(),
+            branch: None,
         };
         App::new(review, Config::default(), Keymap::default())
     }

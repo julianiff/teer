@@ -63,6 +63,7 @@ fn app() -> App {
         questions: Vec::new(),
         version: 0,
         history: Default::default(),
+        branch: None,
     };
     let mut a = App::new(review, Config::default(), Keymap::default());
     a.screen = Screen::Flagged;

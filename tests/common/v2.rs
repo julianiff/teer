@@ -66,6 +66,7 @@ pub fn review(units: Vec<Unit>) -> Review {
         questions: Vec::new(),
         version: 0,
         history: Default::default(),
+        branch: None,
     }
 }
 

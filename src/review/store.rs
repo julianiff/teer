@@ -192,6 +192,10 @@ pub fn merge_previous(new: &mut Review, old: &Review) {
     if new.agent_session.is_none() {
         new.agent_session = old.agent_session.clone();
     }
+    // A re-run knows the commits, not the names the header shows.
+    if new.branch.is_none() {
+        new.branch = old.branch.clone();
+    }
     // gh didn't answer this time (or a re-run doesn't ask): keep what it said before.
     if new.pr.is_some() && new.intent.pr.is_none() {
         new.intent.pr = old.intent.pr.clone();
@@ -252,6 +256,7 @@ mod tests {
             questions: Vec::new(),
             version: 0,
             history: Default::default(),
+            branch: None,
         }
     }
 

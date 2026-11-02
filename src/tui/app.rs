@@ -3543,6 +3543,7 @@ mod tests {
             questions: Vec::new(),
             version: 0,
             history: Default::default(),
+            branch: None,
         };
         let mut a = App::new(review, Config::default(), Keymap::default());
         a.sel = 0;

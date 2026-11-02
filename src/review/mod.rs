@@ -69,6 +69,7 @@ pub fn build_review(cwd: &Path, opts: &BuildOptions) -> Result<Review> {
         questions: Vec::new(),
         version: 0,
         history: Default::default(),
+        branch: None,
     })
 }
 

@@ -75,6 +75,7 @@ fn app_with(n: usize, cfg: Config, keys: Keymap) -> App {
         questions: Vec::new(),
         version: 0,
         history: Default::default(),
+        branch: None,
     };
     App::new(review, cfg, keys)
 }

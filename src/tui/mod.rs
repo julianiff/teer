@@ -92,7 +92,8 @@ pub async fn run(l: Launch) -> Result<()> {
         Ok(a) => (Some(a.adapter), a.sessions, None),
         Err(why) => (None, Vec::new(), Some(why)),
     };
-    // Without --session, teer runs the agent headless in the repo; no picker.
+    // Without a session (none found, none given), teer runs the agent
+    // headless in the repo; no picker.
     let session = match l.session_arg {
         Some(id) => {
             let mut s = crate::cli::session_by_id(&id, &sessions, &repo);
@@ -797,6 +798,7 @@ mod tests {
             questions: Vec::new(),
             version: 0,
             history: Default::default(),
+            branch: None,
         };
         super::App::new(review, cfg, Default::default())
     }

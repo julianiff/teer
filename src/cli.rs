@@ -1,9 +1,10 @@
-//! Command line entry: argument parsing and the headless `--json` path.
+//! Command line entry: argument parsing, working out what to review, and
+//! the headless `--json` path.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 use crate::agent::api::ApiAdapter;
@@ -11,10 +12,13 @@ use crate::agent::claude::{ClaudeAdapter, is_installed};
 use crate::agent::codex::CodexAdapter;
 use crate::agent::{AgentAdapter, SessionInfo};
 use crate::config::{ApiConfig, Config, Provider, Role};
+use crate::git::{self, Target};
 use crate::keymap::{Action, Keymap};
-use crate::review::model::{Review, SessionRef};
+use crate::review::model::{BranchNames, Review, SessionRef};
 use crate::review::prepare;
 use crate::review::{BuildOptions, build_review, store};
+use crate::tui::setup::{Ended, Opened};
+use crate::util::sanitize;
 
 pub const TAGLINE: &str = "teer: the essence of every revision.";
 
@@ -24,34 +28,41 @@ pub const TAGLINE: &str = "teer: the essence of every revision.";
     about = TAGLINE,
     long_about = "teer: the essence of every revision.\n\n\
 Review code changes by what they mean instead of by their lines. An agent prepares the review \
-underneath (Claude Code, Codex, or a model API with your key; `teer setup` picks it); you read it in the terminal \
-and swipe through changes.",
-    after_help = "Examples:\n  teer                 review uncommitted changes (the agent runs underneath)\n  teer setup           pick what prepares reviews: Claude Code, Codex, or a model API\n  teer --base main     review this branch against main\n  teer --session <id>  ask a fork of this Claude Code session, which knows why\n  teer --swipe         open straight into swipe mode\n  teer --json          print the prepared review as JSON and exit\n  teer pr <url>        review a GitHub pull request of this repository (fetched with git)\n  teer pr list         pick a pull request waiting for your review, assigned to you, or yours\n  teer notes           print your notes from the last review as Markdown, for an agent\n\nConfig: ~/.config/teer/config.toml   Data: ~/.local/share/teer/",
+underneath (Claude Code, Codex, or a model API with your key; teer asks which on the first start, \
+`teer setup` changes it); you read it in the terminal.\n\n\
+Plain `teer` works out what to review: your uncommitted changes (staged, unstaged or untracked); \
+with none, this branch since its base; on the default branch with none, there is nothing to review.",
+    after_help = "Examples:\n  teer                 review your changes, or this branch since its base\n  teer --base main     review this branch since main\n  teer <url>           review a GitHub pull request of this repository (fetched with git)\n  teer 482             review pull request #482 of this repository\n  teer pr              pick a pull request waiting for your review, assigned to you, or yours\n  teer --no-agent      review without an agent: no change statements, no questions\n  teer --json          print the prepared review as JSON and exit\n  teer notes           print your notes from the last review as Markdown, for an agent\n\nConfig: ~/.config/teer/config.toml   Data: ~/.local/share/teer/",
     disable_version_flag = true
 )]
 pub struct Args {
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// Review the branch against this revision (merge base) instead of the working tree.
-    #[arg(long, value_name = "REV")]
+    /// A pull request to review: its URL, or its number in this repository.
+    #[arg(value_name = "PR")]
+    pub target: Option<String>,
+
+    /// Review this branch since its merge base with REF, instead of the base
+    /// teer finds (the pull request's, else origin/HEAD, else main or master).
+    #[arg(long, value_name = "REF")]
     pub base: Option<String>,
 
-    /// Claude Code session that made the changes. teer asks a throwaway fork of it,
-    /// so the review knows why. Without it, teer runs
-    /// a fresh headless agent in the repo. Claude Code only.
-    #[arg(global = true, long, value_name = "ID")]
+    /// The Claude Code session to ask (a throwaway fork of it) and hand the
+    /// notes to, instead of the one teer finds: the newest session in this
+    /// repository that edited the changed files in the last 24 hours.
+    #[arg(global = true, long, value_name = "ID", hide = true)]
     pub session: Option<String>,
 
     /// Open straight into swipe mode.
-    #[arg(global = true, long)]
+    #[arg(global = true, long, hide = true)]
     pub swipe: bool,
 
     /// Print the prepared review as JSON and exit (no TUI).
     #[arg(global = true, long)]
     pub json: bool,
 
-    /// Don't ask an agent; show units without change statements.
+    /// Review without an agent: no change statements, no questions.
     #[arg(global = true, long)]
     pub no_agent: bool,
 
@@ -66,23 +77,25 @@ pub struct Args {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
-    /// Review a pull request of the current repository, or list the open ones that need you.
+    /// Pick a pull request of the current repository to review, or review the one named.
     ///
-    /// Fetches refs/pull/<n>/head (and /merge, to find the base) from the remote of this
-    /// clone that matches the URL, using plain git. The head is checked out in a worktree
-    /// teer keeps under its data dir; your working tree and branches are never touched.
-    /// Decisions are saved per pull request. The code under review is untrusted: teer runs none of it.
+    /// Without a URL, lists the open pull requests that wait for your review, are assigned
+    /// to you, or are yours, to pick one (as `teer pr list`). With one, fetches
+    /// refs/pull/<n>/head (and /merge, to find the base) from the remote of this clone
+    /// that matches it, using plain git. The head is checked out in a worktree teer keeps
+    /// under its data dir; your working tree and branches are never touched. Decisions are
+    /// saved per pull request. The code under review is untrusted: teer runs none of it.
     #[command(
         args_conflicts_with_subcommands = true,
-        subcommand_negates_reqs = true,
-        after_help = "Examples:\n  teer pr https://github.com/owner/repo/pull/123\n  teer pr github.com/owner/repo/pull/123/files --no-agent\n  teer pr list"
+        after_help = "Examples:\n  teer pr\n  teer pr https://github.com/owner/repo/pull/123\n  teer pr github.com/owner/repo/pull/123/files --no-agent\n  teer pr 123"
     )]
     Pr {
         #[command(subcommand)]
         action: Option<PrAction>,
 
-        /// URL of the pull request: https://<host>/<owner>/<repo>/pull/<number>
-        #[arg(value_name = "URL", required = true)]
+        /// The pull request: https://<host>/<owner>/<repo>/pull/<number>, or its number.
+        /// Without it, pick one.
+        #[arg(value_name = "URL")]
         url: Option<String>,
     },
     /// Print the notes (`m` in the review) of this repository's last review as Markdown.
@@ -105,6 +118,7 @@ pub enum Command {
     /// completions. Then the fast model, which describes every change, and the second model,
     /// which checks each description. The choice goes to the config; an API key stays in
     /// your environment, the config only names its variable.
+    #[command(hide = true)]
     Setup,
 }
 
@@ -115,9 +129,9 @@ pub enum PrAction {
     ///
     /// Uses the GitHub CLI (gh, logged in) on the repository behind this clone's remote:
     /// the one `gh repo set-default` chose, else `upstream`, else `origin`. On a terminal,
-    /// pick one with ↑/↓ (or j/k) and Enter to review it as `teer pr <url>` would; --swipe,
-    /// --no-agent and --session apply to that review. Piped, each pull request is printed
-    /// with its URL. With --json, prints the lists as JSON.
+    /// pick one with ↑/↓ (or j/k) and Enter to review it as `teer pr <url>` would; --no-agent
+    /// applies to that review. Piped, each pull request is printed with its URL. With
+    /// --json, prints the lists as JSON.
     #[command(visible_alias = "ls")]
     List,
 }
@@ -311,7 +325,151 @@ pub async fn prepare_all(
     }
 }
 
+/// The screens teer opens on the terminal: setup and the review. [`Terminal`]
+/// draws them; tests stand in for the user.
+#[async_trait::async_trait(?Send)]
+pub trait Screens {
+    /// The setup screen, opened from `opened`, until it is left; `None` when
+    /// there is no terminal to show it on.
+    async fn setup(
+        &self,
+        cfg: Config,
+        path: &Path,
+        opened: Opened,
+        keys: Keymap,
+    ) -> Result<Option<Ended>>;
+
+    /// The review, until the user leaves it.
+    async fn review(&self, launch: crate::tui::Launch) -> Result<()>;
+}
+
+/// The screens on the terminal teer runs in.
+pub struct Terminal;
+
+#[async_trait::async_trait(?Send)]
+impl Screens for Terminal {
+    async fn setup(
+        &self,
+        cfg: Config,
+        path: &Path,
+        opened: Opened,
+        keys: Keymap,
+    ) -> Result<Option<Ended>> {
+        if !crate::tui::setup::can_run() {
+            return Ok(None);
+        }
+        crate::tui::setup::run(cfg, path, opened, keys)
+            .await
+            .map(Some)
+    }
+
+    async fn review(&self, launch: crate::tui::Launch) -> Result<()> {
+        crate::tui::run(launch).await
+    }
+}
+
+/// What a start reviews, worked out before anything is asked or built.
+enum Start {
+    /// The repository: its changes, or its branch ([`git::detect`]).
+    Repo(Target),
+    /// The pull request at this URL.
+    Pr(String),
+    /// A pull request the user picks (`teer pr`, `teer pr list`).
+    Pick,
+}
+
+/// What plain `teer` prints when there is nothing to review: a clean tree
+/// on the default branch (`on`), or on a detached HEAD the base has.
+pub fn nothing_to_review(on: &str) -> String {
+    format!(
+        "Nothing to review: no changes, and you're on {}.",
+        sanitize(on)
+    )
+}
+
+/// The URL of the pull request `input` names: its URL, or its number in the
+/// repository behind this clone's GitHub remote.
+fn pr_url(cwd: &Path, input: &str) -> Result<String> {
+    match crate::pr::parse_target(input)? {
+        crate::pr::Target::Url(url) => Ok(url),
+        crate::pr::Target::Number(n) => {
+            let repo = git::repo_root(cwd)
+                .with_context(|| format!("teer {n} must run inside a clone of the repository"))?;
+            crate::pr::url_of_number(&repo, n)
+        }
+    }
+}
+
+/// The base of the current branch's pull request as a ref of this clone:
+/// the branch on the remote gh uses (`origin/main`), else the local branch.
+/// `None` when gh doesn't say within [`crate::gh::BASE_TIMEOUT`] or names
+/// a branch this clone doesn't have.
+fn pr_base_ref(repo: &Path) -> Option<String> {
+    let name = crate::gh::pr_base(&crate::gh::program(), repo, crate::gh::BASE_TIMEOUT)?;
+    if !crate::pr::valid_branch_name(&name) {
+        return None;
+    }
+    let remote = crate::pr_list::target_repo(repo).ok().map(|r| r.remote);
+    remote
+        .map(|r| format!("{r}/{name}"))
+        .into_iter()
+        .chain([name])
+        .find(|r| git::commit_of(repo, r).is_some())
+}
+
+/// What `review` is of, as its header says it: "your changes", "feature
+/// since main, 6 commits", "PR #482 by octocat".
+pub fn subject(review: &Review) -> String {
+    if let Some(pr) = &review.pr {
+        let author = review.intent.pr.as_ref().map(|m| m.author.as_str());
+        return match author.filter(|a| !a.is_empty()) {
+            Some(a) => format!("PR #{} by {}", pr.number, sanitize(a)),
+            None => format!("PR #{}", pr.number),
+        };
+    }
+    if review.head == git::WORKTREE {
+        return "your changes".into();
+    }
+    // No commits read (git failed, or a review made up in a test): no count.
+    let commits = match review.intent.commits.len() {
+        0 => String::new(),
+        1 => ", 1 commit".into(),
+        n => format!(", {n} commits"),
+    };
+    match &review.branch {
+        Some(b) => format!("{} since {}{commits}", sanitize(&b.head), sanitize(&b.base)),
+        None => {
+            let short: String = review.base.chars().take(7).collect();
+            format!("since {short}{commits}")
+        }
+    }
+}
+
+/// The Claude Code session that wrote `review`'s changes in the last day
+/// ([`crate::agent::sessions::wrote_changes`]), if there is one.
+fn writer_session(review: &Review) -> Option<SessionInfo> {
+    let root = crate::agent::sessions::projects_root()?;
+    let changed: Vec<PathBuf> = review
+        .files
+        .iter()
+        .flat_map(|f| std::iter::once(&f.path).chain(&f.old_path))
+        .chain(review.skipped.iter().map(|f| &f.path))
+        .cloned()
+        .collect();
+    crate::agent::sessions::wrote_changes(
+        &root,
+        &review.repo_root,
+        &changed,
+        std::time::SystemTime::now(),
+    )
+}
+
 pub async fn run(args: Args) -> Result<()> {
+    run_on(args, &store::config_path(), &Terminal).await
+}
+
+/// [`run`] with the config at `path`, opening `screens`.
+pub async fn run_on(args: Args, path: &Path, screens: &dyn Screens) -> Result<()> {
     if args.version {
         println!("{}", version_text());
         return Ok(());
@@ -320,9 +478,8 @@ pub async fn run(args: Args) -> Result<()> {
         Some(d) => d.clone(),
         None => std::env::current_dir().context("no current directory")?,
     };
-    let path = store::config_path();
     let no_color = std::env::var_os("NO_COLOR");
-    let mut cfg = Config::load(&path)?.with_no_color(no_color.as_deref());
+    let mut cfg = Config::load(path)?.with_no_color(no_color.as_deref());
     let keys = cfg
         .keymap()
         .with_context(|| format!("invalid [keys] in {}", path.display()));
@@ -332,9 +489,6 @@ pub async fn run(args: Args) -> Result<()> {
         }
     };
     if matches!(args.command, Some(Command::Setup)) {
-        if !crate::tui::setup::can_run() {
-            anyhow::bail!("teer setup needs a terminal");
-        }
         // Keys that don't load don't keep setup from running.
         let keymap = match keys {
             Ok((keymap, warnings)) => {
@@ -346,36 +500,62 @@ pub async fn run(args: Args) -> Result<()> {
                 Keymap::default()
             }
         };
-        let opened = crate::tui::setup::Opened::Command;
-        if let crate::tui::setup::Ended::Saved(_) =
-            crate::tui::setup::run(cfg, &path, opened, keymap).await?
-        {
-            println!("teer: saved to {}", path.display());
+        match screens.setup(cfg, path, Opened::Command, keymap).await? {
+            None => bail!("teer setup needs a terminal"),
+            Some(Ended::Saved(_)) => println!("teer: saved to {}", path.display()),
+            Some(Ended::Left | Ended::Quit) => {}
         }
         return Ok(());
     }
     let (keymap, key_warnings) = keys?;
     warn(&key_warnings);
-    let needs_agent = !args.no_agent && !matches!(args.command, Some(Command::Notes { .. }));
-    if cfg.provider.is_none() && needs_agent {
-        // First start: ask in a terminal; elsewhere (scripts, --json) the
-        // agent CLI that is there is used (`discover_agent`), and teer asks
-        // next time.
-        use crate::tui::setup::Ended;
-        let asked = if !args.json && crate::tui::setup::can_run() {
-            let opened = crate::tui::setup::Opened::First;
-            crate::tui::setup::run(cfg.clone(), &path, opened, keymap.clone()).await?
-        } else {
-            Ended::Left
-        };
-        match asked {
-            Ended::Saved(saved) => cfg = saved.with_no_color(no_color.as_deref()),
-            Ended::Left => {}
-            Ended::Quit => return Ok(()),
+    let start = match (args.command.clone(), args.target.clone()) {
+        (Some(_), Some(t)) => bail!(
+            "give either a pull request ('{}') or a command, not both",
+            sanitize(&t)
+        ),
+        (Some(Command::Notes { url }), None) => {
+            return print_notes(&cwd, url.as_deref(), &keymap);
+        }
+        (Some(Command::Setup), None) => unreachable!("handled above"),
+        // `teer pr`, `teer pr list` (clap takes no URL with `list`).
+        (Some(Command::Pr { url: None, .. }), None) => Start::Pick,
+        (Some(Command::Pr { url: Some(u), .. }), None) | (None, Some(u)) => {
+            Start::Pr(pr_url(&cwd, &u)?)
+        }
+        (None, None) => {
+            let repo = git::repo_root(&cwd)?;
+            Start::Repo(git::detect(&repo, args.base.as_deref(), || {
+                pr_base_ref(&repo)
+            })?)
+        }
+    };
+    match &start {
+        Start::Repo(Target::Nothing { on }) => {
+            println!("{}", nothing_to_review(on));
+            return Ok(());
+        }
+        Start::Pr(_) | Start::Pick if args.base.is_some() => {
+            bail!("--base can't be combined with a pull request: the pull request decides the base")
+        }
+        _ => {}
+    }
+    let needs_agent = !args.no_agent;
+    if needs_agent && !args.json && !path.exists() {
+        // The first start: setup, then on into the review. Without a
+        // terminal (scripts) the agent CLI that is there is used
+        // (`discover_agent`), and teer asks next time.
+        match screens
+            .setup(cfg.clone(), path, Opened::First, keymap.clone())
+            .await?
+        {
+            Some(Ended::Saved(saved)) => cfg = saved.with_no_color(no_color.as_deref()),
+            Some(Ended::Quit) => return Ok(()),
+            Some(Ended::Left) | None => {}
         }
     }
     if args.session.is_some() && cfg.provider() != Provider::Claude {
-        anyhow::bail!(
+        bail!(
             "--session works with Claude Code only (the provider is {})",
             cfg.provider().name()
         );
@@ -386,40 +566,30 @@ pub async fn run(args: Args) -> Result<()> {
         cfg.prepare_model()?;
         cfg.second_model()?;
     }
-    match args.command.clone() {
-        None => {
+    match start {
+        Start::Repo(target) => {
             let opts = BuildOptions {
-                base: args.base.clone(),
+                base: target.base().map(String::from),
                 languages: cfg.languages.clone(),
             };
             let mut review = build_review(&cwd, &opts)?;
-            restore(&mut review);
-            run_review(args, review, cfg, keymap).await
-        }
-        Some(Command::Pr {
-            action: Some(PrAction::List),
-            ..
-        }) => {
-            if args.base.is_some() {
-                anyhow::bail!("--base can't be combined with 'pr list'");
+            if let Target::Branch { head, base } = &target {
+                review.branch = Some(BranchNames {
+                    head: head.clone(),
+                    base: base.clone(),
+                });
             }
+            restore(&mut review);
+            run_review(args, review, cfg, keymap, screens).await
+        }
+        Start::Pick => {
             let picked = crate::pr_list::run(&cwd, args.json, &cfg, keymap.clone()).await?;
             let Some(pr) = picked else {
                 return Ok(());
             };
-            review_pr(args, cwd, pr.url, cfg, keymap).await
+            review_pr(args, cwd, pr.url, cfg, keymap, screens).await
         }
-        Some(Command::Notes { url }) => print_notes(&cwd, url.as_deref(), &keymap),
-        Some(Command::Setup) => unreachable!("handled above"),
-        Some(Command::Pr { url, .. }) => {
-            let url = url.context("teer pr needs the URL of a pull request")?;
-            if args.base.is_some() {
-                anyhow::bail!(
-                    "--base can't be combined with 'pr': the pull request decides the base"
-                );
-            }
-            review_pr(args, cwd, url, cfg, keymap).await
-        }
+        Start::Pr(url) => review_pr(args, cwd, url, cfg, keymap, screens).await,
     }
 }
 
@@ -458,6 +628,7 @@ async fn review_pr(
     url: String,
     cfg: Config,
     keymap: Keymap,
+    screens: &dyn Screens,
 ) -> Result<()> {
     // Fetching and checking out block; no TUI is up yet.
     let langs = cfg.languages.clone();
@@ -472,7 +643,7 @@ async fn review_pr(
         review,
         mut worktree,
     } = session;
-    let result = run_review(args, review, cfg, keymap).await;
+    let result = run_review(args, review, cfg, keymap, screens).await;
     // The terminal is restored by now; the worktree is released on every path.
     worktree.release();
     exit_if_signalled();
@@ -542,7 +713,13 @@ fn exit_if_signalled() {
 }
 
 /// Prepare and show a built review: `--json`, or the TUI.
-async fn run_review(args: Args, mut review: Review, mut cfg: Config, keymap: Keymap) -> Result<()> {
+async fn run_review(
+    args: Args,
+    mut review: Review,
+    mut cfg: Config,
+    keymap: Keymap,
+    screens: &dyn Screens,
+) -> Result<()> {
     let repo = review.repo_root.clone();
     let is_pr = review.pr.is_some();
 
@@ -589,7 +766,9 @@ async fn run_review(args: Args, mut review: Review, mut cfg: Config, keymap: Key
         } else if review.head == crate::git::WORKTREE {
             "uncommitted changes".to_string()
         } else {
-            format!("changes since {}", args.base.as_deref().unwrap_or(""))
+            let base = review.branch.as_ref().map(|b| b.base.clone());
+            let base = base.unwrap_or_else(|| review.base.chars().take(7).collect());
+            format!("changes since {}", sanitize(&base))
         };
         let place = match &review.pr {
             Some(pr) => format!("{}/{}", pr.owner, pr.repo),
@@ -599,13 +778,152 @@ async fn run_review(args: Args, mut review: Review, mut cfg: Config, keymap: Key
         return Ok(());
     }
 
-    crate::tui::run(crate::tui::Launch {
-        review,
-        agent,
-        session_arg: args.session,
-        swipe: args.swipe,
-        cfg,
-        keymap,
-    })
-    .await
+    // The session asked and handed the notes: --session, else the Claude
+    // Code session that wrote these changes, else a fresh agent.
+    let mut agent = agent;
+    let session_arg = match (&args.session, &mut agent) {
+        (Some(id), _) => Some(id.clone()),
+        (None, Ok(a)) if a.provider == Provider::Claude && !is_pr => {
+            writer_session(&review).map(|found| {
+                let id = found.id.clone();
+                if !a.sessions.iter().any(|s| s.id == id) {
+                    a.sessions.push(found);
+                }
+                id
+            })
+        }
+        _ => None,
+    };
+    screens
+        .review(crate::tui::Launch {
+            review,
+            agent,
+            session_arg,
+            swipe: args.swipe,
+            cfg,
+            keymap,
+        })
+        .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{CommandFactory, Parser};
+
+    fn parse(args: &[&str]) -> Args {
+        Args::try_parse_from(std::iter::once("teer").chain(args.iter().copied())).unwrap()
+    }
+
+    #[test]
+    fn commands_stay_commands_and_anything_else_is_a_pull_request() {
+        assert!(matches!(
+            parse(&["notes"]).command,
+            Some(Command::Notes { url: None })
+        ));
+        assert!(matches!(parse(&["setup"]).command, Some(Command::Setup)));
+        assert!(matches!(
+            parse(&["pr"]).command,
+            Some(Command::Pr {
+                action: None,
+                url: None
+            })
+        ));
+        assert!(matches!(
+            parse(&["--no-agent", "pr", "list"]).command,
+            Some(Command::Pr {
+                action: Some(PrAction::List),
+                url: None
+            })
+        ));
+        assert!(matches!(
+            parse(&["-C", "/x", "notes"]).command,
+            Some(Command::Notes { .. })
+        ));
+        for (input, target) in [
+            (vec!["482"], "482"),
+            (
+                vec!["https://github.com/a/b/pull/7"],
+                "https://github.com/a/b/pull/7",
+            ),
+            (vec!["--no-agent", "482", "--json"], "482"),
+        ] {
+            let a = parse(&input);
+            assert!(a.command.is_none(), "{input:?}");
+            assert_eq!(a.target.as_deref(), Some(target), "{input:?}");
+        }
+        assert!(parse(&["482", "--json"]).json);
+        let plain = parse(&[]);
+        assert!(plain.target.is_none() && plain.command.is_none());
+        // Still there, only hidden.
+        assert!(parse(&["--swipe"]).swipe);
+        assert_eq!(parse(&["--session", "abc"]).session.as_deref(), Some("abc"));
+        assert_eq!(parse(&["--base", "main"]).base.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn help_shows_the_v2_flags_and_hides_the_rest() {
+        let help = Args::command().render_long_help().to_string();
+        for shown in [
+            "--base",
+            "--no-agent",
+            "--json",
+            "[PR]",
+            "  pr ",
+            "  notes ",
+        ] {
+            assert!(help.contains(shown), "{shown} missing:\n{help}");
+        }
+        for hidden in ["--swipe", "--session", "  setup "] {
+            assert!(!help.contains(hidden), "{hidden} shown:\n{help}");
+        }
+    }
+
+    #[test]
+    fn the_nothing_message_is_exact() {
+        assert_eq!(
+            nothing_to_review("main"),
+            "Nothing to review: no changes, and you're on main."
+        );
+    }
+
+    fn review(head: &str, base: &str) -> Review {
+        let mut r: Review = serde_json::from_value(serde_json::json!({
+            "id": "r", "repo_root": "/work/subject-test", "base": base, "head": head,
+            "head_commit": head, "agent_session": null, "created_at": "2026-11-02T00:00:00Z",
+            "files": [], "units": []
+        }))
+        .unwrap();
+        r.intent.commits = vec![Default::default(); 3];
+        r
+    }
+
+    #[test]
+    fn the_subject_says_what_is_reviewed() {
+        assert_eq!(subject(&review(git::WORKTREE, "b1")), "your changes");
+
+        let r = review("h2", "b2");
+        assert_eq!(subject(&r), "since b2, 3 commits");
+        let mut r = r;
+        r.branch = Some(BranchNames {
+            head: "feature".into(),
+            base: "origin/main".into(),
+        });
+        assert_eq!(subject(&r), "feature since origin/main, 3 commits");
+        let mut one = r.clone();
+        one.intent.commits.truncate(1);
+        assert_eq!(subject(&one), "feature since origin/main, 1 commit");
+
+        let mut pr = review("h3", "b3");
+        pr.pr = Some(crate::review::model::PrInfo {
+            number: 482,
+            ..Default::default()
+        });
+        assert_eq!(subject(&pr), "PR #482");
+        pr.intent.pr = Some(crate::review::model::PrMeta {
+            author: "octocat".into(),
+            ..Default::default()
+        });
+        assert_eq!(subject(&pr), "PR #482 by octocat");
+    }
 }

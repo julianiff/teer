@@ -2,7 +2,7 @@
 source: tests/tui_list_files.rs
 expression: "render(&a, 120, 60).backend()"
 ---
-" b..h                                                                                                                   "
+" since b                                                                                                                "
 "╭─ Needs a close look · 1 file ──╮  close_a                                                                             "
 "│ src/c.rs                   0/3 │  ▲ removed, 1 caller still calls it                                                  "
 "│▌  ▲ close_a                    │                                                                                      "

@@ -92,6 +92,7 @@ fn review(units: Vec<Unit>, pr: Option<PrInfo>) -> Review {
         questions: Vec::new(),
         version: 0,
         history: Default::default(),
+        branch: None,
     }
 }
 

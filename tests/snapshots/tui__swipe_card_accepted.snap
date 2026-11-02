@@ -2,7 +2,7 @@
 source: tests/tui.rs
 expression: "render(&app, 90, 26).backend()"
 ---
-" Uncommitted changes                                                                      "
+" your changes                                                                             "
 "                                                                                          "
 "    ╭ 1 of 4 ────────────────────────────────────────────────────────────────────────╮    "
 "    │  ▲ Needs a close look                                                          │    "

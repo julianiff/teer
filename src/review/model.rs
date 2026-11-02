@@ -56,6 +56,13 @@ impl SessionRef {
     }
 }
 
+/// A branch review's names: the branch and the base it is compared with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchNames {
+    pub head: String,
+    pub base: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Review {
     pub id: String,
@@ -96,6 +103,10 @@ pub struct Review {
     /// Undo and redo of decisions.
     #[serde(default, skip_serializing_if = "super::history::History::is_empty")]
     pub history: super::history::History,
+    /// The branch and base names of a branch review, as its header says
+    /// them ("feature since main"); `None` for other reviews.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<BranchNames>,
 }
 
 /// A question about the code, asked during the review, and the agent's

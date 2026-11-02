@@ -982,10 +982,7 @@ fn cli_json_has_the_commits_and_the_title_gh_gives() {
 #[test]
 fn cli_errors_and_help() {
     let fx = Fx::new(true);
-    let out = Command::new(teer_bin()).args(["pr"]).output().unwrap();
-    assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("Usage"));
-
+    // `teer pr` alone opens the picker (tests/v2_start.rs).
     let out = Command::new(teer_bin()).arg("--help").output().unwrap();
     let help = String::from_utf8_lossy(&out.stdout);
     assert!(help.contains("pr "), "{help}");
@@ -1031,9 +1028,12 @@ fn an_assumed_base_is_noted_but_not_part_of_the_prs_identity() {
     let fx = Fx::new(true);
     let s = fx.prepare(&fx.url).unwrap();
     assert_eq!(s.review.pr.as_ref().unwrap().base_assumed, None);
-    // The header is the title alone: the PR's only commit names it while
-    // gh isn't there.
-    assert_eq!(header_of(&s.review).trim_end(), " pr change");
+    // The header names the PR and its title: the PR's only commit names it
+    // while gh isn't there.
+    let pr_header = |r: &teer::review::model::Review| {
+        format!(" PR #{} · pr change", r.pr.as_ref().unwrap().number)
+    };
+    assert_eq!(header_of(&s.review).trim_end(), pr_header(&s.review));
     drop(s);
 
     // Without one the default branch is assumed (the status says so when
@@ -1044,7 +1044,7 @@ fn an_assumed_base_is_noted_but_not_part_of_the_prs_identity() {
         s.review.pr.as_ref().unwrap().base_assumed.as_deref(),
         Some("main")
     );
-    assert_eq!(header_of(&s.review).trim_end(), " pr change");
+    assert_eq!(header_of(&s.review).trim_end(), pr_header(&s.review));
     // It does not change the PR's identity (store key).
     let mut plain = s.review.pr.clone().unwrap();
     plain.base_assumed = None;

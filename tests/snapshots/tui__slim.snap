@@ -2,7 +2,7 @@
 source: tests/tui.rs
 expression: "render(&app, 90, 30).backend()"
 ---
-" Uncommitted changes                                                                      "
+" your changes                                                                             "
 "╭─ Needs a close look · 1 file ──────────────────────────────────────────────────────────╮"
 "│ checkout.py                                                                        0/4 │"
 "│▌  ▲ charge_order                                                                       │"

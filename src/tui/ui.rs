@@ -268,18 +268,17 @@ fn fit(spans: Vec<Span<'static>>, w: usize) -> Vec<Span<'static>> {
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
     let r = &app.review;
-    // What the change is called, nothing else: the commits view (`␣c`) has
-    // the PR's number, author, size and description.
-    let short = |s: &str| s.chars().take(7).collect::<String>();
-    let title = if r.head == WORKTREE {
-        "Uncommitted changes".to_string()
-    } else {
-        crate::review::intent::headline(r)
-            .0
-            .map(|s| sanitize(&s))
-            .unwrap_or_else(|| format!("{}..{}", short(&r.base), short(&r.head)))
-    };
+    // What is reviewed, then what the change is called (the PR's title, the
+    // only commit's subject): the commits view (`␣c`) has the rest.
+    let mut title = crate::cli::subject(r);
+    let named = r.pr.is_some() || (r.head != WORKTREE && r.intent.commits.len() == 1);
+    if let (true, Some(name)) = (named, crate::review::intent::headline(r).0) {
+        title = format!("{title} · {}", sanitize(&name));
+    }
     let mut right = Vec::new();
+    if !app.has_agent && app.agent_note.as_deref() == Some(crate::cli::NO_AGENT) {
+        right.push(Span::styled("no agent  ", t.muted()));
+    }
     let (done, total) = app.prep_progress();
     if done < total {
         right.push(Span::styled(

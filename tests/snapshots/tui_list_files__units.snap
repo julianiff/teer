@@ -2,7 +2,7 @@
 source: tests/tui_list_files.rs
 expression: "render(&a, 120, 60).backend()"
 ---
-" b..h                                                                                                                   "
+" since b                                                                                                                "
 "╭─ Needs a close look · 2 units ──╮  c_helper                                                                           "
 "│   ▲ close_a               c.rs  │                                                                                     "
 "│   ▲ close_b               c.rs  │  ┃ agent (haiku)                                                                    "

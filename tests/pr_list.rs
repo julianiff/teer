@@ -55,7 +55,15 @@ fn the_cli_parses_pr_list_and_still_takes_a_url() {
         a.command,
         Some(Command::Pr { action: None, url: Some(ref u) }) if u == "https://github.com/a/b/pull/1"
     ));
-    assert!(Args::try_parse_from(["teer", "pr"]).is_err());
+    // `teer pr` alone opens the picker.
+    let a = Args::try_parse_from(["teer", "pr"]).unwrap();
+    assert!(matches!(
+        a.command,
+        Some(Command::Pr {
+            action: None,
+            url: None
+        })
+    ));
     assert!(Args::try_parse_from(["teer", "pr", "list", "https://github.com/a/b/pull/1"]).is_err());
 }
 

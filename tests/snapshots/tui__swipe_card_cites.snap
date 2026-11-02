@@ -2,7 +2,7 @@
 source: tests/tui.rs
 expression: card
 ---
-" Uncommitted changes                                                            "
+" your changes                                                                   "
 "                                                                                "
 "  ╭ 1 of 4 ──────────────────────────────────────────────────────────────────╮  "
 "  │  ▲ Needs a close look                                                    │  "

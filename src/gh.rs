@@ -13,6 +13,28 @@ use crate::approve::tidy_output;
 /// How long one `gh` run may take.
 pub const TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How long plain `teer` waits for gh to name the base of the branch's pull
+/// request before it goes on without it.
+pub const BASE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The base branch of the current branch's pull request, as `gh pr view`
+/// names it (`main`). `None` when gh is missing, fails, finds no pull
+/// request, prints something else or takes longer than `timeout`.
+pub fn pr_base(gh: &OsStr, repo: &Path, timeout: Duration) -> Option<String> {
+    let mut cmd = std::process::Command::new(gh);
+    cmd.args(["pr", "view", "--json", "baseRefName"])
+        .current_dir(repo)
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("NO_COLOR", "1");
+    let (status, stdout, _) = crate::util::output_within(&mut cmd, timeout, 1 << 16).ok()??;
+    if !status.success() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_slice(&stdout).ok()?;
+    let name = v["baseRefName"].as_str()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 /// The `gh` program teer runs: `$TEER_GH`, else `gh` (tests point it at a
 /// script, or at nothing).
 pub fn program() -> OsString {

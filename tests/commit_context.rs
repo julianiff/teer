@@ -403,18 +403,20 @@ mod screen {
         let app = busy(r);
         let h = row(&render(&app, 120, 20), 0);
         assert!(
-            h.starts_with(" Distribute batching for withdrawals and invalidations  "),
+            h.starts_with(
+                " PR #7 by jdoe · Distribute batching for withdrawals and invalidations  "
+            ),
             "{h}"
         );
         // The rest is in the commits view.
-        for gone in ["PR #7", "@jdoe", "13 files", "acme/shop", "teer"] {
+        for gone in ["@jdoe", "13 files", "acme/shop", "teer"] {
             assert!(!h.contains(gone), "{gone}: {h}");
         }
         status_keeps_its_place(&h, 120);
 
         // Short of room the title is cut, never the status.
         let h = row(&render(&app, 60, 24), 0);
-        assert!(h.starts_with(" Distribute batching"), "{h}");
+        assert!(h.starts_with(" PR #7 by jdoe · Distribute"), "{h}");
         assert!(h.contains('…'), "{h}");
         status_keeps_its_place(&h, 60);
         let h = row(&render(&app, 30, 24), 0);
@@ -426,7 +428,7 @@ mod screen {
         let (r, _repo) = pr_review(None);
         let app = App::new(r, Config::default(), Keymap::default());
         let h = row(&render(&app, 120, 20), 0);
-        assert_eq!(h.trim_end(), " 4 commits");
+        assert_eq!(h.trim_end(), " PR #7 · 4 commits");
     }
 
     #[test]
@@ -441,15 +443,15 @@ mod screen {
         )
         .unwrap();
         let app = App::new(r, Config::default(), Keymap::default());
-        assert_eq!(row(&render(&app, 120, 20), 0).trim_end(), " 4 commits");
+        assert_eq!(
+            row(&render(&app, 120, 20), 0).trim_end(),
+            format!(" since {}, 4 commits", &init[..7])
+        );
 
         repo.write("a.py", "def f():\n    return 9\n");
         let r = build_review(&repo.path(), &BuildOptions::default()).unwrap();
         let app = App::new(r, Config::default(), Keymap::default());
-        assert_eq!(
-            row(&render(&app, 120, 20), 0).trim_end(),
-            " Uncommitted changes"
-        );
+        assert_eq!(row(&render(&app, 120, 20), 0).trim_end(), " your changes");
     }
 }
 

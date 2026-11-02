@@ -91,6 +91,7 @@ fn app(notes: [&str; 2], pr: Option<PrInfo>) -> App {
         questions: Vec::new(),
         version: 0,
         history: Default::default(),
+        branch: None,
     };
     App::new(review, Config::default(), Keymap::default())
 }

@@ -335,6 +335,7 @@ mod tests {
             questions: Vec::new(),
             version: 0,
             history: Default::default(),
+            branch: None,
         }
     }
 

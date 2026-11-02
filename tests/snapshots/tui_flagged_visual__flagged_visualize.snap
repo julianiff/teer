@@ -2,7 +2,7 @@
 source: tests/tui_flagged_visual.rs
 expression: "screen(&f.app, 100, 30).backend()"
 ---
-" Uncommitted changes                                                                   Flagged (2)  "
+" your changes                                                                          Flagged (2)  "
 " ⚑ charge_order  checkout.py:8-12                                             1/2 · j k other units "
 "                                                                                                    "
 " ◆ 1 caller · not described, read the code                                                          "

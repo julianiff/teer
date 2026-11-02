@@ -3,6 +3,7 @@
 
 #![allow(dead_code)]
 
+pub mod sandbox;
 pub mod v2;
 
 use std::path::{Path, PathBuf};

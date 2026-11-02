@@ -61,7 +61,7 @@ fn valid_remote_name(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'))
 }
 
-fn valid_branch_name(s: &str) -> bool {
+pub(crate) fn valid_branch_name(s: &str) -> bool {
     !s.is_empty()
         && !s.starts_with(['-', '/'])
         && !s.ends_with(['/', '.'])
@@ -154,6 +154,48 @@ pub fn parse_url(input: &str) -> Result<PrInfo> {
         number: n,
         ..Default::default()
     })
+}
+
+/// A pull request named on the command line: `teer <url>` or `teer 482`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// Its URL, as [`parse_url`] accepts it.
+    Url(String),
+    /// Its number in the repository behind this clone's GitHub remote
+    /// ([`url_of_number`]).
+    Number(u32),
+}
+
+/// Read the pull request in `teer <PR>`: its URL, or its number (1 to 9
+/// digits, not zero).
+pub fn parse_target(input: &str) -> Result<Target> {
+    if !input.is_empty() && input.bytes().all(|b| b.is_ascii_digit()) {
+        return match input.parse::<u32>() {
+            Ok(n) if n > 0 && input.len() <= 9 => Ok(Target::Number(n)),
+            _ => bail!("the pull request number must be 1 to 9 digits and not zero"),
+        };
+    }
+    if !input.contains('/') {
+        bail!(
+            "'{}' is neither a command nor a pull request; give the pull request's URL \
+(https://<host>/<owner>/<repo>/pull/<number>) or its number",
+            sanitize(input)
+        );
+    }
+    parse_url(input)?;
+    Ok(Target::Url(input.to_string()))
+}
+
+/// The URL of pull request `number` of the GitHub repository behind this
+/// clone's remotes, picked as `teer pr list` picks it
+/// ([`crate::pr_list::target_repo`]).
+pub fn url_of_number(repo: &Path, number: u32) -> Result<String> {
+    let target = crate::pr_list::target_repo(repo)
+        .with_context(|| format!("pull request #{number} needs a GitHub remote"))?;
+    Ok(format!(
+        "https://{}/{}/{}/pull/{number}",
+        target.host, target.owner, target.repo
+    ))
 }
 
 // ----------------------------------------------------------- remote matching
@@ -1297,6 +1339,31 @@ mod tests {
         assert!(
             !valid_branch_name("-x") && !valid_branch_name("a..b") && !valid_branch_name("a b")
         );
+    }
+
+    #[test]
+    fn a_target_is_a_url_or_a_number() {
+        assert_eq!(parse_target("482").unwrap(), Target::Number(482));
+        assert_eq!(parse_target("1").unwrap(), Target::Number(1));
+        assert_eq!(
+            parse_target("github.com/acme/shop/pull/7/files").unwrap(),
+            Target::Url("github.com/acme/shop/pull/7/files".into())
+        );
+        for bad in ["0", "0000", "1234567890", "99999999999999999999"] {
+            let e = parse_target(bad).unwrap_err().to_string();
+            assert!(e.contains("1 to 9 digits"), "{bad}: {e}");
+        }
+        let e = parse_target("notse").unwrap_err().to_string();
+        assert!(e.contains("neither a command nor a pull request"), "{e}");
+        for bad in [
+            "",
+            "-1",
+            "#482",
+            "4 82",
+            "https://github.com/acme/shop/issues/7",
+        ] {
+            assert!(parse_target(bad).is_err(), "should reject {bad:?}");
+        }
     }
 
     #[test]
