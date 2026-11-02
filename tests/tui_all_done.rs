@@ -38,6 +38,8 @@ fn unit(i: usize) -> Unit {
         summary: Some("summary".into()),
         nbc_reason: None,
         dive: Default::default(),
+        accepted_by: None,
+        reasons: Vec::new(),
         dive_pending: Default::default(),
         checks: Default::default(),
     };
@@ -182,7 +184,9 @@ fn accepting_the_last_pending_unit_in_the_list_opens_it() {
 #[test]
 fn a_no_behavior_change_unit_does_not_hold_it_back() {
     let mut a = app(4);
-    assert_eq!(a.review.units[3].decision, Decision::Pending);
+    // It is accepted for you.
+    assert_eq!(a.review.units[3].decision, Decision::Accepted);
+    assert!(a.review.units[3].auto_accepted());
     for u in a.review.units.iter_mut().take(2) {
         u.decision = Decision::Accepted;
     }

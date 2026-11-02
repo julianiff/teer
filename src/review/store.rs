@@ -161,12 +161,14 @@ pub fn merge_previous(new: &mut Review, old: &Review) {
         // Changed code starts over: no decision, no dive.
         if prev.fingerprint == u.fingerprint {
             u.decision = prev.decision;
+            u.accepted_by = prev.accepted_by;
             u.dive = prev.dive.clone();
             if matches!(prev.prep, Prep::Ready | Prep::Unavailable) {
                 u.changes = prev.changes.clone();
                 u.summary = prev.summary.clone();
                 u.prep = prev.prep;
                 u.checks = prev.checks.clone();
+                u.reasons = prev.reasons.clone();
             }
         } else {
             // The reviewer's note stays: it may be what changed the code.
@@ -289,6 +291,25 @@ mod tests {
     }
 
     #[test]
+    fn who_accepted_carries_over_with_the_decision() {
+        use crate::review::model::AcceptedBy;
+        let mut accepted = unit("same");
+        accepted.decision = Decision::Accepted;
+        accepted.accepted_by = Some(AcceptedBy::Auto);
+        let old = review(accepted);
+        let mut new = review(unit("same"));
+        merge_previous(&mut new, &old);
+        assert_eq!(new.units[0].accepted_by, Some(AcceptedBy::Auto));
+        // Changed code starts over.
+        let mut new = review(unit("other"));
+        merge_previous(&mut new, &old);
+        assert_eq!(
+            (new.units[0].decision, new.units[0].accepted_by),
+            (Decision::Pending, None)
+        );
+    }
+
+    #[test]
     fn dive_is_dropped_when_the_code_changed_but_the_note_stays() {
         let mut flagged = flagged_with_dive("before");
         flagged.dive.note_on = Some("before".into());
@@ -372,6 +393,9 @@ mod tests {
         assert_eq!(r.version, 0);
         assert!(r.history.is_empty());
         assert_eq!(r.units[0].decision, Decision::Accepted);
+        // Who accepted it wasn't kept then; the reasons come with the levels.
+        assert_eq!(r.units[0].accepted_by, None);
+        assert!(r.units[0].reasons.is_empty());
         // Saved again, it is the current format.
         let path = save(&r).unwrap();
         let json: serde_json::Value =

@@ -35,6 +35,8 @@ fn unit(file: &str, name: &str, line: u32, callees: &[&str], callers: &[&str]) -
         summary: Some("summary".into()),
         nbc_reason: None,
         dive: Default::default(),
+        accepted_by: None,
+        reasons: Vec::new(),
         dive_pending: Default::default(),
         checks: Default::default(),
     }

@@ -624,10 +624,10 @@ fn gx_opens_the_picture_or_says_there_is_none() {
 }
 
 #[test]
-fn za_says_nothing_is_accepted_for_you_yet() {
+fn za_says_when_nothing_is_accepted_for_you() {
     let mut d = Driver::new(3);
     assert!(d.keys("za").is_empty());
-    assert_eq!(d.status(), "No units are accepted for you yet.");
+    assert_eq!(d.status(), "No units are accepted for you.");
 }
 
 // ---- Leader: tools --------------------------------------------------------------

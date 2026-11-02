@@ -198,8 +198,10 @@ fn units_that_leave_the_list_are_not_decided_after_a_rebuild() {
         "selection stays in range"
     );
     a.keys("a");
-    assert_eq!(a.app.review.units[1].decision, Decision::Pending);
+    // Accepted for you, not by `a`.
+    assert!(a.app.review.units[1].auto_accepted());
     assert_eq!(a.app.review.units[2].decision, Decision::Accepted);
+    assert!(!a.app.review.units[2].auto_accepted());
 }
 
 #[test]

@@ -45,6 +45,8 @@ fn unit(symbol: &str, old: (u32, u32), new: (u32, u32), note: &str) -> Unit {
             note: note.into(),
             ..Default::default()
         },
+        accepted_by: None,
+        reasons: Vec::new(),
         dive_pending: Default::default(),
         checks: Default::default(),
     }

@@ -957,6 +957,8 @@ mod tests {
             summary: None,
             nbc_reason: None,
             dive: Default::default(),
+            accepted_by: None,
+            reasons: Vec::new(),
             dive_pending: Default::default(),
             checks: Default::default(),
         }

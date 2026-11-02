@@ -50,6 +50,8 @@ fn unit(symbol: &str, file: &str, old: (u32, u32), new: (u32, u32), note: &str) 
             note: note.into(),
             ..Default::default()
         },
+        accepted_by: None,
+        reasons: Vec::new(),
         dive_pending: Default::default(),
         checks: Default::default(),
     }

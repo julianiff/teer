@@ -42,6 +42,8 @@ fn unit(i: usize) -> Unit {
         summary: Some("A summary that must stay out of the list rows".into()),
         nbc_reason: None,
         dive: Default::default(),
+        accepted_by: None,
+        reasons: Vec::new(),
         dive_pending: Default::default(),
         checks: Default::default(),
     };
@@ -156,7 +158,19 @@ fn pane(app: &App, w: u16, h: u16) -> Option<(Rect, preview::Pane)> {
 #[test]
 fn every_level_is_a_titled_box_of_its_files_with_their_units() {
     for w in [60u16, 80, 120] {
-        let a = app(12);
+        let mut a = app(12);
+        // Units with no behavior change are accepted for you: one line
+        // under the boxes says so.
+        let buf = draw(&a, w, 70);
+        let lines = list_lines(&a, &buf);
+        let routine = lines.iter().position(|(_, l)| l.contains("Routine · 3"));
+        let said = lines
+            .iter()
+            .position(|(_, l)| l.contains("3 units accepted for you, za shows them"));
+        assert!(routine.is_some() && routine < said, "{w}: {lines:?}");
+        assert!(!lines.iter().any(|(_, l)| l.contains("file003.rs")), "{w}");
+        // `za` lists them, in a box of their own.
+        common::v2::press(&mut a, "za");
         let buf = draw(&a, w, 70);
         let lines = list_lines(&a, &buf);
         let at = |t: &str| {
@@ -165,13 +179,12 @@ fn every_level_is_a_titled_box_of_its_files_with_their_units() {
                 .position(|(_, l)| l.contains(t))
                 .unwrap_or_else(|| panic!("{w}: no {t:?}"))
         };
-        // Boxes by attention, then the muted one for files with no
-        // behavior change.
+        // Boxes by attention, then the one of the units accepted for you.
         let titles = [
             "Needs a close look · 3 files",
             "Worth a look · 3 files",
             "Routine · 3 files",
-            "No behavior change · 3 files",
+            "Accepted for you · 3 files",
         ];
         for pair in titles.windows(2) {
             assert!(at(pair[0]) < at(pair[1]), "{w}: {pair:?}");
@@ -213,14 +226,9 @@ fn every_level_is_a_titled_box_of_its_files_with_their_units() {
             let name: String = unit[NAME_X as usize..].iter().collect();
             assert!(name.starts_with(&format!("sym{i:03}")), "{w}: {name:?}");
         }
-        // A unit with no behavior change is muted, under its file, with why
-        // (cut in the narrow list beside the pane).
+        // A unit accepted for you is a unit row under its file, behind `○`.
         let quiet = &lines[at("file003.rs") + 1].1;
         assert!(quiet.contains("○ sym003"), "{w}: {quiet:?}");
-        assert!(
-            w >= 110 || quiet.contains("formatting only"),
-            "{w}: {quiet:?}"
-        );
     }
 }
 
@@ -459,13 +467,14 @@ fn the_preview_is_always_there_for_the_selected_unit() {
             .join("\n");
         let sym = &a.selected().unwrap().symbol;
         assert!(text.contains(&format!(" {sym} ")), "{w}x{h}\n{text}");
-        // Reasons come first, right under the head.
+        // Reasons come first, right under the head and "Why this level".
         let lines: Vec<&str> = text.lines().collect();
         let head = lines.iter().position(|l| l.contains(sym)).unwrap();
+        assert!(lines[head + 1].contains("Why this level"), "{w}x{h}");
         assert!(
-            lines[head + 1].contains("not described") || lines[head + 1].contains("removed"),
+            lines[head + 2].contains("not described") || lines[head + 2].contains("removed"),
             "{w}x{h}: {:?}",
-            lines[head + 1]
+            lines[head + 2]
         );
         // The list still has room for several rows.
         assert!(unit_rects(&a).len() >= 3, "{w}x{h}");

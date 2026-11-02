@@ -11,7 +11,8 @@
 //! prepare_model = "haiku"   # fast model that describes units; "default" = the CLI's own
 //! prepare_effort = "low"    # low | medium | high | xhigh | max | default
 //! order = "story"           # inside a file, story: units that call each other together, caller first | line
-//! second_opinion = true     # a second model checks each description; disagreements are warnings
+//! auto_accept = "no_behavior_change"  # accept units with no behavior change for you (za shows them) | none
+//! second_opinion = true     # a second model checks each description; disagreements are reasons to look
 //! second_model = "sonnet"   # model of that check, also of the Flagged questions with an API
 //! second_effort = "low"     # low | medium | high | xhigh | max | default
 //! behavior_timeout = 120    # seconds one Behavior probe run may take (each side)
@@ -54,6 +55,18 @@ pub enum Order {
     Story,
     /// Line by line.
     Line,
+}
+
+/// Which units teer accepts for the reviewer before the review opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoAccept {
+    /// None: every unit waits for the reviewer.
+    None,
+    /// Units with no behavior change (formatting, comments, renames) that no
+    /// second model disputes.
+    #[default]
+    NoBehaviorChange,
 }
 
 /// What prepares the reviews: a coding agent's headless mode, or a model
@@ -185,6 +198,8 @@ pub struct Config {
     /// The effort for describing units; `default` leaves the provider's own.
     pub prepare_effort: Option<String>,
     pub order: Order,
+    /// Which units are accepted for the reviewer (`za` shows them in the list).
+    pub auto_accept: AutoAccept,
     /// After describing units, a second model checks each description; where
     /// it disagrees the unit gets a warning and at least "Worth a look".
     pub second_opinion: bool,
@@ -218,6 +233,7 @@ impl Default for Config {
             prepare_model: None,
             prepare_effort: None,
             order: Order::Story,
+            auto_accept: AutoAccept::NoBehaviorChange,
             second_opinion: true,
             second_model: None,
             second_effort: None,
@@ -499,6 +515,18 @@ mod tests {
             "provider = \"api\"\nprepare_model = \"m\"\nprepare_effort = \"none\"\n[api]\nformat = \"openai\"\n"
         ));
         assert!(toml::from_str::<Config>("provider = \"gemini\"\n").is_err());
+    }
+
+    #[test]
+    fn auto_accept_defaults_to_no_behavior_change_and_can_be_off() {
+        assert_eq!(Config::default().auto_accept, AutoAccept::NoBehaviorChange);
+        let c: Config = toml::from_str("theme = \"dark\"\n").unwrap();
+        assert_eq!(c.auto_accept, AutoAccept::NoBehaviorChange);
+        let c: Config = toml::from_str("auto_accept = \"none\"\n").unwrap();
+        assert_eq!(c.auto_accept, AutoAccept::None);
+        let c: Config = toml::from_str("auto_accept = \"no_behavior_change\"\n").unwrap();
+        assert_eq!(c.auto_accept, AutoAccept::NoBehaviorChange);
+        assert!(toml::from_str::<Config>("auto_accept = \"all\"\n").is_err());
     }
 
     #[test]

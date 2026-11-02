@@ -34,6 +34,8 @@ fn unit(i: usize, range: Option<Range>) -> Unit {
         summary: Some("Changes how the thing is computed".into()),
         nbc_reason: None,
         dive: Default::default(),
+        accepted_by: None,
+        reasons: Vec::new(),
         dive_pending: Default::default(),
         checks: Default::default(),
     }
@@ -141,7 +143,8 @@ fn the_unit_is_a_header_row_then_its_explanation_then_the_tiles() {
     );
     assert!(!out.contains("func_1"), "one unit at a time:\n{out}");
     assert!(rows[head + 1].trim().is_empty(), "{out}");
-    assert!(rows[head + 2].contains("caller"), "the explanation:\n{out}");
+    assert!(rows[head + 2].contains("Why this level"), "{out}");
+    assert!(rows[head + 3].contains("caller"), "the explanation:\n{out}");
     // What the agent said, behind its bar, above the tiles; no callers or
     // callees lists (the reasons count the callers).
     let tiles = at("╭");

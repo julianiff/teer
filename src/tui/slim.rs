@@ -5,20 +5,22 @@
 //! and other parts it changed, sit under it, most attention first, each
 //! behind its level's icon: `▲` needs a close look, `◆` worth a look, `●`
 //! routine. The cursor only ever moves over units. Units with no behavior
-//! change follow in their file, muted with why (`○`), and nobody selects
-//! them. Two muted boxes close the list: files with nothing but such units,
-//! and changed files teer can't show. Each box is a rounded box with a
-//! titled top edge, drawn by hand as plain lines so scrolling and click
-//! mapping stay line based. A row holds the unit's name; the reasons,
-//! summary and code change live in the preview pane. Accepted rows are
-//! dimmed, removed names struck through, flagged names in the flagged
-//! style.
+//! change are accepted for you and not listed; a line under the boxes says
+//! how many, and `za` lists them, last in their file, behind `○`, in an
+//! "Accepted for you" box when their file has nothing else. A muted box
+//! closes the list: changed files teer can't show. Each box is a rounded
+//! box with a titled top edge, drawn by hand as plain lines so scrolling
+//! and click mapping stay line based. A row holds the unit's name, `⚠`
+//! when a second model disputes it, and `✎` when it has a note; the
+//! reasons, summary and code change live in the preview pane. Accepted
+//! rows are dimmed, removed names struck through, flagged names in the
+//! flagged style.
 //!
 //! Listed by unit (`zf`, [`Grouping::Unit`]), each unit sits in its own
 //! level's box instead, with no file names as labels: a muted column on the
 //! right of each row names its file, by as much of its path as tells it
-//! from the other listed files (`mod.rs`, `review/mod.rs`). Units with no
-//! behavior change then all go in the muted box, under their files.
+//! from the other listed files (`mod.rs`, `review/mod.rs`). Units accepted
+//! for you then all go in the "Accepted for you" box.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -29,6 +31,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::app::{App, Grouping};
 use crate::config::Role;
+use crate::keymap::Action;
 use crate::review::attention::Level;
 use crate::review::model::{Decision, LineRef, Prep, Side, Unit, UnitKind, UnitStatus};
 use crate::units::extract::MODULE_SYMBOL;
@@ -386,47 +389,19 @@ fn muted_row(app: &App, lead: &str, name: &str, why: &str, width: usize) -> Line
     line
 }
 
-/// Units of `file` with no behavior change, in line order.
-fn same_in<'a>(app: &'a App, file: &std::path::Path) -> Vec<&'a Unit> {
-    let mut same: Vec<&Unit> = app
-        .review
-        .units
-        .iter()
-        .enumerate()
-        .filter(|(i, u)| u.file == file && app.level_of(*i).level == Level::Same)
-        .map(|(_, u)| u)
-        .collect();
-    same.sort_by_key(|u| u.display_line());
-    same
-}
-
-/// Why a unit has no behavior change.
-fn same_reason(u: &Unit) -> String {
-    u.nbc_reason
-        .clone()
-        .unwrap_or_else(|| "no behavior change".into())
-}
-
-/// Files in the muted box, by path: files with no unit to decide (every
-/// unit has no behavior change), or listed by unit, every file with a unit
-/// that has none.
-fn quiet_files(app: &App) -> Vec<&std::path::Path> {
-    let by_file = app.grouping == Grouping::File;
-    let mut files: Vec<&std::path::Path> = Vec::new();
-    for (i, u) in app.review.units.iter().enumerate() {
-        if app.level_of(i).level == Level::Same
-            && (!by_file
-                || !app
-                    .order
-                    .iter()
-                    .any(|&o| app.review.units[o].file == u.file))
-            && !files.contains(&u.file.as_path())
-        {
-            files.push(&u.file);
-        }
+/// The line that closes the list when units were accepted for you: how
+/// many, and the key that shows or hides them. `None` when there are none.
+pub fn auto_line(app: &App) -> Option<String> {
+    let n = app.auto_accepted();
+    if n == 0 {
+        return None;
     }
-    files.sort();
-    files
+    let does = if app.show_auto { "hides" } else { "shows" };
+    let key = app.keys.label(Action::ToggleAutoAccepted);
+    Some(format!(
+        "{} accepted for you, {key} {does} them",
+        plural(n, "unit")
+    ))
 }
 
 /// Widest count a file name can show (`⠋ ⚑ done/total`), for sizing the
@@ -461,8 +436,9 @@ fn column_widths(width: usize, widest: usize) -> (usize, usize) {
 const FIT_MAX: usize = 512;
 
 /// Narrowest list in which every file shows its whole path and count, every
-/// unit its whole name and every level's box its whole title (why a unit
-/// has no behavior change, and the muted boxes' titles, are cut as needed).
+/// unit its whole name and marks, every level's box its whole title and the
+/// line about units accepted for you fits on one line (the muted box's
+/// title is cut as needed).
 pub fn fit_width(app: &App) -> usize {
     let widest = widest_count(app);
     let path = |p: &std::path::Path| sanitize(&p.display().to_string()).width();
@@ -474,7 +450,8 @@ pub fn fit_width(app: &App) -> usize {
     let mut row = 0;
     for (pos, &i) in app.order.iter().enumerate() {
         let u = &app.review.units[i];
-        row = row.max(UNIT_LEAD + indent(app, i).width() + row_name(u).width());
+        let marks: usize = marks(app, i).iter().map(|m| 1 + m.0.width()).sum();
+        row = row.max(UNIT_LEAD + indent(app, i).width() + row_name(u).width() + marks);
         if by_file && app.starts_file(pos) {
             file = file.max(path(&u.file));
         }
@@ -482,15 +459,13 @@ pub fn fit_width(app: &App) -> usize {
     if shown > 0 {
         row += 2 + shown;
     }
-    for (i, u) in app.review.units.iter().enumerate() {
-        if app.level_of(i).level == Level::Same {
-            row = row
-                .max(UNIT_LEAD + row_name(u).width())
-                .max(3 + path(&u.file));
-        }
-    }
     for f in &app.review.skipped {
         row = row.max(3 + path(&f.path));
+    }
+    // The line under the boxes takes the borders' cells too: a blank, then
+    // its text.
+    if let Some(text) = auto_line(app) {
+        row = row.max((1 + text.width()).saturating_sub(3));
     }
     // A title, its spaces, the corners and a few dashes.
     let title = boxes_of(app)
@@ -535,7 +510,16 @@ fn box_title(app: &App, level: Level, files: &[usize]) -> String {
             plural(units, "unit")
         }
     };
-    format!("{} · {n}", level.title())
+    format!("{} · {n}", box_name(level))
+}
+
+/// What a level's box is called. Only units accepted for you are listed at
+/// [`Level::Same`] (see [`App::shown_level`]).
+fn box_name(level: Level) -> &'static str {
+    match level {
+        Level::Same => "Accepted for you",
+        _ => level.title(),
+    }
 }
 
 /// Each listed file's shortest end of its path that no other listed
@@ -675,16 +659,15 @@ fn unit_row(app: &App, pos: usize, width: usize, file: &str, file_w: usize) -> L
     } else {
         name_style
     };
-    let level = app.level_of(ui).level;
+    let level = app.shown_level(ui);
     let icon = if u.decision == Decision::Accepted {
         t.accepted_row()
     } else {
         icon_style(app, level)
     };
     let indent = indent(app, ui);
-    // A pencil at the end says the reviewer wrote a note on it.
-    let noted = !u.dive.note.trim().is_empty();
-    let mark = if noted { 2 } else { 0 };
+    let marks = marks(app, ui);
+    let mark: usize = marks.iter().map(|m| 1 + m.0.width()).sum();
     let column = if file_w > 0 { 2 + file_w } else { 0 };
     let name_w = width.saturating_sub(UNIT_LEAD + indent.width() + mark + column);
     let mut spans = vec![
@@ -699,8 +682,8 @@ fn unit_row(app: &App, pos: usize, width: usize, file: &str, file_w: usize) -> L
         // The file and lines are in the preview; the row is just the name.
         Span::styled(truncate_pad(&row_name(u), name_w), name_style),
     ];
-    if noted {
-        spans.push(Span::styled(" ✎", t.accent()));
+    for (m, style) in marks {
+        spans.push(Span::styled(format!(" {m}"), style));
     }
     if file_w > 0 {
         let fitted = truncate_pad(&fit_path(file, file_w), file_w);
@@ -716,6 +699,22 @@ fn unit_row(app: &App, pos: usize, width: usize, file: &str, file_w: usize) -> L
         }
     }
     Line::from(spans)
+}
+
+/// What ends unit `ui`'s row after its name: `⚠` when a second model
+/// disputes it (worth seeing before the unit is opened; the other reasons
+/// are in the preview), `✎` when the reviewer wrote a note on it.
+fn marks(app: &App, ui: usize) -> Vec<(&'static str, Style)> {
+    let t = &app.theme;
+    let u = &app.review.units[ui];
+    let mut marks = Vec::new();
+    if !app.level_of(ui).doubts.is_empty() {
+        marks.push(("⚠", t.risk(crate::review::model::Risk::Medium)));
+    }
+    if !u.dive.note.trim().is_empty() {
+        marks.push(("✎", t.accent()));
+    }
+    marks
 }
 
 /// Is the unit at `pos` inside the visual selection, which runs from its
@@ -793,14 +792,6 @@ impl Builder<'_> {
         }
         self.last = Some(self.rows.lines.len());
     }
-
-    /// The muted rows of `file`'s units with no behavior change.
-    fn same_rows(&mut self, file: &std::path::Path) {
-        for u in same_in(self.app, file) {
-            let line = muted_row(self.app, "○ ", &row_name(u), &same_reason(u), self.inner);
-            self.row(line.spans, None);
-        }
-    }
 }
 
 pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
@@ -854,26 +845,9 @@ pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
                 b.rows.ends[pos] = line + 1;
                 b.last_unit = Some(pos);
             }
-            if by_file {
-                b.same_rows(app.file_at(start));
-            }
         }
     }
-    // Two muted boxes nobody selects: files with nothing to decide, then
-    // changed files teer can't show.
-    let quiet = quiet_files(app);
-    if !quiet.is_empty() {
-        let title = format!("{} · {}", Level::Same.title(), plural(quiet.len(), "file"));
-        b.open_box(&title, level_style(app, Level::Same));
-        for file in quiet {
-            b.file_gap(false);
-            let mut spans = vec![Span::raw("   ")];
-            let path = file.display().to_string();
-            spans.extend(path_spans(app, &path, inner.saturating_sub(3), t.muted()));
-            b.row(spans, None);
-            b.same_rows(file);
-        }
-    }
+    // A muted box nobody selects: changed files teer can't show.
     let skipped = &app.review.skipped;
     if !skipped.is_empty() {
         let title = format!("Not shown · {}", plural(skipped.len(), "file"));
@@ -885,6 +859,17 @@ pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
         }
     }
     b.close_box();
+    // How many units were accepted for you, under the boxes, wrapped
+    // rather than cut: it names the key.
+    if let Some(text) = auto_line(app) {
+        if b.padded && !b.rows.lines.is_empty() {
+            b.rows.push(Line::raw(" ".repeat(width)), None);
+        }
+        for l in wrap(&text, width.saturating_sub(1)) {
+            let l = truncate_pad(&format!(" {l}"), width);
+            b.rows.push(Line::styled(l, t.muted()), None);
+        }
+    }
     // A blank line under the last box, so the list visibly ends.
     if b.padded && !b.rows.lines.is_empty() {
         b.rows.push(Line::raw(" ".repeat(width)), None);
@@ -928,6 +913,8 @@ mod tests {
             summary: Some("Does something fairly involved with a long description text".into()),
             nbc_reason: None,
             dive: Default::default(),
+            accepted_by: None,
+            reasons: Vec::new(),
             dive_pending: Default::default(),
             checks: Default::default(),
         }

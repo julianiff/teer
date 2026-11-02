@@ -24,9 +24,10 @@ use crate::review::attention::Level;
 use crate::review::model::{Change, LineRef, Marker, Prep, Range, Review, Side, Unit};
 use crate::util::{DiffOp, diff_lines, sanitize};
 
-/// Units at this level or above show their code change: every unit that
-/// changes behavior (not formatting, comments or renames).
-pub const DIFF_LEVEL: Level = Level::Routine;
+/// Units at this level or above show their code change: every unit, now
+/// that units without a behavior change are listed too (accepted for you,
+/// shown with `za`).
+pub const DIFF_LEVEL: Level = Level::Same;
 /// Unchanged lines kept before and after each change.
 pub const CONTEXT: usize = 2;
 /// Lines kept before and after each line a statement cites, when the
@@ -718,6 +719,8 @@ mod tests {
             summary: None,
             nbc_reason: None,
             dive: Default::default(),
+            accepted_by: None,
+            reasons: Vec::new(),
             dive_pending: Default::default(),
             checks: Default::default(),
         }

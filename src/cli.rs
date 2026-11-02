@@ -753,6 +753,8 @@ async fn run_review(
             Err(why) if !args.no_agent => eprintln!("teer: {why}"),
             Err(_) => {}
         }
+        // Levels, reasons and what is accepted for you, as the queue would have them.
+        review.settle(cfg.auto_accept);
         if let Err(e) = store::save(&review) {
             eprintln!("teer: couldn't save review: {e:#}");
         }

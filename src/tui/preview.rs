@@ -9,7 +9,6 @@ use unicode_width::UnicodeWidthStr;
 
 use super::app::{App, Target};
 use super::slim;
-use crate::review::attention::Level;
 use crate::review::model::{Prep, Unit};
 use crate::util::{truncate, wrap};
 
@@ -219,76 +218,52 @@ fn marked(
         .collect()
 }
 
-/// `lines` from [`marked`] with `label`, where their text starts, in
-/// `style`.
-fn labelled(mut lines: Vec<Line<'static>>, label: &str, style: Style) -> Vec<Line<'static>> {
-    if let Some(first) = lines.first_mut()
-        && let Some(text) = first.spans.get(1)
-        && let Some(rest) = text.content.strip_prefix(label)
-    {
-        let rest = Span::styled(rest.to_string(), text.style);
-        first.spans.truncate(1);
-        first.spans.push(Span::styled(label.to_string(), style));
-        first.spans.push(rest);
-    }
-    lines
-}
+/// The heading of what says why a unit has its level.
+pub const WHY_HEADING: &str = "Why this level";
 
-/// Lines for the signals beside the reasons, `indent` cells in: expensive
-/// to undo (`$`, with `tagged` `(agent)` when the agent says so rather than
-/// the path), a second opinion that disagrees (`⚠`, its model, the first
-/// point in at most two lines and how many more; the Disagreement tab has
-/// them all) and a change the commit messages don't mention (`≠`, with
-/// `tagged` `(agent)`).
+/// Why `u` has its level, `indent` cells in: its written reasons
+/// (`Unit::reasons`: expensive to undo, what a second model disputes, what
+/// the commits or PR description don't mention), each wrapped behind a
+/// muted `·`. With `heading`, under [`WHY_HEADING`] and the rules that set
+/// the level, behind the level's icon.
 pub fn check_lines(
     app: &App,
     u: &Unit,
     w: usize,
     indent: usize,
-    tagged: bool,
+    heading: bool,
 ) -> Vec<Line<'static>> {
     let t = &app.theme;
     let mut lines = Vec::new();
-    let Some(a) = app.assessment(&u.id) else {
-        return lines;
-    };
-    // Each says what it is in the icon's colour, then what was found.
-    let mut check = |icon: &str, label: String, text: &str, style: Style, keep: (usize, &str)| {
-        let all = marked(
-            icon,
-            &format!("{label} {text}"),
+    if heading && let Some(a) = app.assessment(&u.id) {
+        if a.reasons.is_empty() && u.reasons.is_empty() {
+            return lines;
+        }
+        lines.push(Line::styled(
+            format!("{}{WHY_HEADING}", " ".repeat(indent)),
+            t.bold(),
+        ));
+        if !a.reasons.is_empty() {
+            let level = a.level.shown(u.auto_accepted());
+            lines.extend(marked(
+                level.icon(),
+                &a.reasons.join(" · "),
+                w,
+                (slim::level_style(app, level), t.muted()),
+                indent,
+                (usize::MAX, ""),
+            ));
+        }
+    }
+    for r in &u.reasons {
+        lines.extend(marked(
+            "·",
+            r,
             w,
-            (style, t.text()),
+            (t.muted(), t.text()),
             indent,
-            keep,
-        );
-        lines.extend(labelled(all, &label, style));
-    };
-    if let Some(why) = &a.cost {
-        let by = if tagged && u.checks.cost.is_some() {
-            " (agent)"
-        } else {
-            ""
-        };
-        let label = format!("Expensive to undo{by}:");
-        check("$", label, why, t.needs_fix(), (usize::MAX, ""));
-    }
-    if let Some(first) = a.doubts.first() {
-        let more = match a.doubts.len() {
-            1 => String::new(),
-            n => format!(" (+{} more)", n - 1),
-        };
-        let label = format!(
-            "Second opinion ({}):",
-            slim::model_name(app, crate::config::Role::Second)
-        );
-        let style = t.risk(crate::review::model::Risk::Medium);
-        check("⚠", label, first, style, (2, &more));
-    }
-    if let Some(gap) = &u.checks.unmentioned {
-        let by = if tagged { " (agent)" } else { "" };
-        let label = format!("Not in the commit messages{by}:");
-        check("≠", label, &gap.text, t.accent(), (usize::MAX, ""));
+            (usize::MAX, ""),
+        ));
     }
     lines
 }
@@ -337,42 +312,20 @@ pub fn unit_explain(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Line
     unit_groups(app, u, w, statements).concat()
 }
 
-/// What `u` is, in groups: why it matters and its commits; what the agent
-/// said (see [`agent_lines`]), or a note while it hasn't; the checks; the
-/// reviewer's note; the answers to questions asked about it. Some may be
-/// empty.
+/// What `u` is, in groups: why it has its level (see [`check_lines`]) and
+/// its commits; what the agent said (see [`agent_lines`]), or a note while
+/// it hasn't; the reviewer's note; the answers to questions asked about it.
+/// Some may be empty.
 pub fn unit_groups(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Vec<Line<'static>>> {
-    let level = app
-        .assessment(&u.id)
-        .map(|a| a.level)
-        .unwrap_or(Level::Routine);
-    let style = slim::level_style(app, level);
-    // Why it matters comes first: the list no longer shows it.
-    let mut about = Vec::new();
-    if let Some(a) = app.assessment(&u.id).filter(|a| !a.reasons.is_empty()) {
-        about.extend(marked(
-            level.icon(),
-            &a.reasons.join(" · "),
-            w,
-            (style, app.theme.muted()),
-            1,
-            (usize::MAX, ""),
-        ));
-    }
+    // Why it matters comes first: the list only shows a dispute.
+    let mut about = check_lines(app, u, w, 1, true);
     about.extend(commits_line(app, u, w, 1));
     let mut said = agent_lines(app, u, w.saturating_sub(2), statements, 1);
-    if u.summary.is_none()
-        && let Some(r) = u.nbc_reason.as_deref()
-    {
-        for l in wrap(r, w) {
-            said.push(Line::raw(format!(" {l}")));
-        }
-    }
-    // Not described (yet): the spinner or why not.
+    // Not described (yet): the spinner or why not. Why a unit has no
+    // behavior change is said above.
     if u.prep != Prep::Ready && u.summary.is_none() && u.nbc_reason.is_none() {
         said.extend(slim::statement_lines(app, u, w, 1));
     }
-    let checks = check_lines(app, u, w, 1, true);
     let indented = |lines: Vec<Line<'static>>| -> Vec<Line<'static>> {
         lines
             .into_iter()
@@ -397,7 +350,7 @@ pub fn unit_groups(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Vec<L
     } else {
         super::ask::note_lines(app, &u.id, w.saturating_sub(1))
     };
-    vec![about, said, checks, indented(card), indented(asked)]
+    vec![about, said, indented(card), indented(asked)]
 }
 
 /// `commits: c86f6fc Batch invalidate. · 1a2b3c4 Renames DTO.`: the commits
@@ -819,6 +772,8 @@ mod tests {
                 summary: Some("Does a thing".into()),
                 nbc_reason: None,
                 dive: Default::default(),
+                accepted_by: None,
+                reasons: Vec::new(),
                 dive_pending: Default::default(),
                 checks: Default::default(),
             }]

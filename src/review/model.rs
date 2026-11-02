@@ -332,6 +332,16 @@ pub enum Decision {
     Investigate,
 }
 
+/// Who accepted a unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AcceptedBy {
+    /// teer, because the unit has no behavior change (`auto_accept`).
+    Auto,
+    /// The reviewer.
+    Reviewer,
+}
+
 /// The kinds of question about a flagged unit on the Flagged screen. "Dive"
 /// names the agent side; the screen itself is `Screen::Flagged`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -685,32 +695,58 @@ pub struct SecondOpinion {
     pub missed: Vec<Change>,
 }
 
+/// One point where a second opinion disagrees with the first description.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Doubt<'a> {
+    /// It disputes `statement` of the first description, because `why`.
+    Disputes { statement: &'a str, why: &'a str },
+    /// A behavior change of medium risk or more the first description left out.
+    Missed(&'a str),
+    /// It rates the unit `theirs` risk, where the first description had `had`.
+    Risk { theirs: Risk, had: Risk },
+}
+
 impl SecondOpinion {
-    /// Why it disagrees with `first` (the unit's statements), most important
-    /// first; empty when it doesn't.
-    pub fn disagreements(&self, first: &[Change]) -> Vec<String> {
+    /// Where it disagrees with `first` (the unit's statements), most
+    /// important first; empty when it doesn't.
+    pub fn doubts<'a>(&'a self, first: &[Change]) -> Vec<Doubt<'a>> {
         let mut out = Vec::new();
         for v in self.verdicts.iter().filter(|v| !v.agree) {
-            out.push(format!(
-                "disputes \"{}\": {}",
-                crate::util::truncate(&v.statement, 48),
-                v.why
-            ));
+            out.push(Doubt::Disputes {
+                statement: &v.statement,
+                why: &v.why,
+            });
         }
         for m in self.missed.iter().filter(|m| m.risk >= Risk::Medium) {
-            out.push(format!("missed: {}", m.statement));
+            out.push(Doubt::Missed(&m.statement));
         }
-        if let Some(had) = first.iter().map(|c| c.risk).max() {
-            let word = |r: Risk| format!("{r:?}").to_lowercase();
-            if self.risk > had || had as u8 >= self.risk as u8 + 2 {
-                out.push(format!(
-                    "rates it {} risk, not {}",
-                    word(self.risk),
-                    word(had)
-                ));
-            }
+        if let Some(had) = first.iter().map(|c| c.risk).max()
+            && (self.risk > had || had as u8 >= self.risk as u8 + 2)
+        {
+            out.push(Doubt::Risk {
+                theirs: self.risk,
+                had,
+            });
         }
         out
+    }
+
+    /// [`SecondOpinion::doubts`] in short words, as the Disagreement tab
+    /// lists them.
+    pub fn disagreements(&self, first: &[Change]) -> Vec<String> {
+        self.doubts(first)
+            .into_iter()
+            .map(|d| match d {
+                Doubt::Disputes { statement, why } => format!(
+                    "disputes \"{}\": {why}",
+                    crate::util::truncate(statement, 48)
+                ),
+                Doubt::Missed(statement) => format!("missed: {statement}"),
+                Doubt::Risk { theirs, had } => {
+                    format!("rates it {} risk, not {}", theirs.word(), had.word())
+                }
+            })
+            .collect()
     }
 }
 
@@ -806,6 +842,16 @@ pub struct Unit {
     pub callers: Vec<String>,
     pub callees: Vec<String>,
     pub decision: Decision,
+    /// Who accepted it while `decision` is `Accepted`, `None` otherwise.
+    /// Kept by `attention::settle`.
+    #[serde(default)]
+    pub accepted_by: Option<AcceptedBy>,
+    /// Why it sits at its level beyond the rule that put it there, one short
+    /// sentence each: expensive to undo, a second model disputes it, not
+    /// mentioned in the commits or PR description. Written by
+    /// `attention::settle`.
+    #[serde(default)]
+    pub reasons: Vec<String>,
     /// One broad sentence about the whole unit, from the agent. Shown for
     /// routine units instead of their change statements.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -827,6 +873,11 @@ pub struct Unit {
 impl Unit {
     pub fn needs_agent(&self) -> bool {
         self.status != UnitStatus::NoBehaviorChange
+    }
+
+    /// teer accepted it for the reviewer (no behavior change).
+    pub fn auto_accepted(&self) -> bool {
+        self.accepted_by == Some(AcceptedBy::Auto)
     }
 
     pub fn display_line(&self) -> u32 {
@@ -888,6 +939,17 @@ pub enum Risk {
     Low,
     Medium,
     High,
+}
+
+impl Risk {
+    /// `low`, `medium`, `high`.
+    pub fn word(self) -> &'static str {
+        match self {
+            Risk::Low => "low",
+            Risk::Medium => "medium",
+            Risk::High => "high",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

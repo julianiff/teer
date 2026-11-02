@@ -18,12 +18,12 @@ use crate::commit::{self, Branch};
 use crate::config::{Config, Order, Provider};
 use crate::keymap::{Action, Edit, Keymap, Outcome, Sheet};
 use crate::review::ask::Progress;
-use crate::review::attention::{Assessment, Level, assess};
+use crate::review::attention::{Assessment, Level, accepted_for_you, assess_all, settle};
 use crate::review::dive::{DiveEvent, uses_web};
 use crate::review::history::{Change, Step};
 use crate::review::model::{
-    Answer, Decision, DiveKind, PrInfo, Prep, Question, Resolution, Review, SessionRef, Unit,
-    UnitKind, UnitStatus,
+    AcceptedBy, Answer, Decision, DiveKind, PrInfo, Prep, Question, Resolution, Review, SessionRef,
+    Unit, UnitKind,
 };
 use crate::review::prepare::PrepareEvent;
 use crate::review::story;
@@ -467,9 +467,12 @@ pub struct App {
     /// attention one of their units needs (then by path), inside a file most
     /// attention first, then by story (see `review::story`) or, with
     /// `order = "line"`, by line. Listed by unit, units by their own level
-    /// first, then the same.
+    /// first, then the same. Units accepted for you are left out unless
+    /// `show_auto`.
     pub order: Vec<usize>,
     pub grouping: Grouping,
+    /// The units accepted for you are listed (`za`).
+    pub show_auto: bool,
     /// Visual mode (`V`): the row the selection started on; it runs to
     /// `sel`.
     pub visual: Option<usize>,
@@ -548,6 +551,7 @@ impl App {
             sessions: Vec::new(),
             order: Vec::new(),
             grouping: Grouping::File,
+            show_auto: false,
             visual: None,
             last_decision: None,
             depth: Vec::new(),
@@ -584,29 +588,50 @@ impl App {
             cfg,
         };
         app.rebuild_order();
+        app.sel = app.first_to_review();
         app
     }
 
-    /// List units file by file: files by the most attention one of their
-    /// units needs, then by path; inside a file most attention first, then
-    /// by story (callers right before what they call) or line. Listed by
-    /// unit, each unit goes by its own level instead of its file's. Units
-    /// without a behavior change aren't listed as units. The selection stays
+    /// Where the review starts: the first pending unit that needs a close
+    /// look, else the top.
+    fn first_to_review(&self) -> usize {
+        (0..self.order.len())
+            .find(|&p| self.pending_at(p) && self.levels[self.order[p]].level == Level::Attention)
+            .unwrap_or(0)
+    }
+
+    /// Assess every unit again, then [`App::reorder`]. The selection stays
     /// on the same unit as levels change.
     pub fn rebuild_order(&mut self) {
+        self.levels = assess_all(&self.review);
+        self.large = self.review.units.len() > self.cfg.large_review;
+        self.reorder();
+    }
+
+    /// The level unit `i` (index into `review.units`) is listed under (see
+    /// [`Level::shown`]): units accepted for you in the box of their own.
+    pub fn shown_level(&self, i: usize) -> Level {
+        self.levels[i]
+            .level
+            .shown(self.review.units[i].auto_accepted())
+    }
+
+    /// Settle what the levels decide (reasons, units accepted for you: see
+    /// [`settle`]) and list the units file by file: files by the most
+    /// attention one of their units needs, then by path; inside a file most
+    /// attention first, then by story (callers right before what they call)
+    /// or line. Listed by unit, each unit goes by its own level instead of
+    /// its file's: level, then path, then story. Units accepted for you are
+    /// listed last, and only with `show_auto`. The selection stays on the
+    /// same unit.
+    fn reorder(&mut self) {
         let keep = self.selected().map(|u| u.id.clone());
-        self.levels = self
-            .review
-            .units
-            .iter()
-            .map(|u| assess(&self.review, u))
-            .collect();
+        settle(&mut self.review, &self.levels, self.cfg.auto_accept);
         let units = &self.review.units;
-        let level = |i: usize| self.levels[i].level;
+        let level = |i: usize| self.shown_level(i);
         let listed: Vec<usize> = (0..units.len())
-            .filter(|&i| level(i) != Level::Same)
+            .filter(|&i| self.show_auto || !units[i].auto_accepted())
             .collect();
-        self.large = units.len() > self.cfg.large_review;
         let mut most: HashMap<&PathBuf, Level> = HashMap::new();
         for &i in &listed {
             let m = most.entry(&units[i].file).or_insert(Level::Same);
@@ -666,7 +691,7 @@ impl App {
     /// Does a new file start at `pos`? Listed by unit, a file starts again
     /// in each level's box it has units in.
     pub fn starts_file(&self, pos: usize) -> bool {
-        let level = |p: usize| self.levels[self.order[p]].level;
+        let level = |p: usize| self.shown_level(self.order[p]);
         pos == 0
             || self.file_at(pos - 1) != self.file_at(pos)
             || (self.grouping == Grouping::Unit && level(pos - 1) != level(pos))
@@ -689,7 +714,7 @@ impl App {
     /// file is listed in (listed by unit, the level of the box's units).
     pub fn file_level(&self, pos: usize) -> Level {
         self.file_range(pos)
-            .map(|p| self.levels[self.order[p]].level)
+            .map(|p| self.shown_level(self.order[p]))
             .max()
             .unwrap_or(Level::Routine)
     }
@@ -703,6 +728,23 @@ impl App {
         self.grouping = to;
         self.rebuild_order();
         self.status = format!("listed by {word}");
+    }
+
+    /// `za`: list the units accepted for you, or hide them again; the
+    /// cursor stays on its unit while it is listed.
+    fn toggle_auto(&mut self) {
+        let n = self.auto_accepted();
+        if n == 0 && !self.show_auto {
+            self.status = "No units are accepted for you.".into();
+            return;
+        }
+        self.show_auto = !self.show_auto;
+        self.reorder();
+        self.status = if self.show_auto {
+            format!("Showing {} accepted for you.", units(n))
+        } else {
+            format!("Hiding {} accepted for you.", units(n))
+        };
     }
 
     /// Move `step` units up or down the list.
@@ -887,15 +929,10 @@ impl App {
         self.review.flagged()
     }
 
-    /// (accepted, flagged, pending), counting only units with a behavior change.
+    /// (accepted, flagged, pending); units accepted for you count as accepted.
     pub fn decision_counts(&self) -> (usize, usize, usize) {
         let mut c = (0, 0, 0);
-        for u in self
-            .review
-            .units
-            .iter()
-            .filter(|u| u.status != UnitStatus::NoBehaviorChange)
-        {
+        for u in &self.review.units {
             match u.decision {
                 Decision::Accepted => c.0 += 1,
                 Decision::Investigate => c.1 += 1,
@@ -905,7 +942,16 @@ impl App {
         c
     }
 
-    /// Every unit with a behavior change is accepted (and there is one).
+    /// How many units teer accepted for you.
+    pub fn auto_accepted(&self) -> usize {
+        self.review
+            .units
+            .iter()
+            .filter(|u| u.auto_accepted())
+            .count()
+    }
+
+    /// Every unit is accepted, by you or for you (and there is one).
     pub fn all_reviewed(&self) -> bool {
         let (accepted, flagged, pending) = self.decision_counts();
         accepted > 0 && flagged == 0 && pending == 0
@@ -1203,7 +1249,7 @@ impl App {
                 return Vec::new();
             }
             Action::ToggleAutoAccepted => {
-                self.status = "No units are accepted for you yet.".into();
+                self.toggle_auto();
                 return Vec::new();
             }
             Action::HistoryUndo => return self.undo(),
@@ -2981,35 +3027,70 @@ impl App {
         self.last_decision = Some((a, Some(ids.len() as u32)));
         let n = self.decide_ids(&ids, d);
         self.status = decided_status(d, n);
+        // A unit that was accepted for you may have moved: go by its id.
+        let hi = ids.last().and_then(|id| self.position_of(id)).unwrap_or(hi);
         self.sel = self.next_pending_pos(hi).unwrap_or(hi);
         let mut effects = vec![Effect::Save];
         effects.extend(self.ensure_prepared());
         effects
     }
 
+    /// Where unit `id` is listed, if it is.
+    fn position_of(&self, id: &str) -> Option<usize> {
+        self.order
+            .iter()
+            .position(|&i| self.review.units[i].id == id)
+    }
+
     /// Set each of `ids` to `d` and record that as one undo step; the "all
     /// done" sheet opens when this finished the review. How many changed.
     fn decide_ids(&mut self, ids: &[String], d: Decision) -> usize {
+        let each: Vec<(String, Decision)> = ids.iter().map(|id| (id.clone(), d)).collect();
+        self.decide_each(&each)
+    }
+
+    /// Set each unit to its decision as one undo step, and list the units
+    /// again (who accepted them; see [`settle`]); the "all done" sheet opens
+    /// when this finished the review. How many changed.
+    fn decide_each(&mut self, each: &[(String, Decision)]) -> usize {
         let was_done = self.all_reviewed();
         let mut changes = Vec::new();
-        for id in ids {
+        for (id, d) in each {
             if let Some(u) = self.review.unit_mut(id) {
-                let before = std::mem::replace(&mut u.decision, d);
+                let before = std::mem::replace(&mut u.decision, *d);
                 changes.push(Change {
                     id: id.clone(),
                     before,
-                    after: d,
+                    after: *d,
                 });
             }
         }
         let n = changes.iter().filter(|c| c.before != c.after).count();
         self.review.history.record(Step { changes });
+        self.reorder();
         self.check_all_done(was_done);
         n
     }
 
     /// `u`: put back what the last step changed, and go to its first unit.
+    /// On a unit accepted for you (listed with `za`), take that back instead:
+    /// it is pending again, as a step of its own.
     pub fn undo(&mut self) -> Vec<Effect> {
+        if self.screen == Screen::Slim
+            && let Some(id) = self
+                .selected()
+                .filter(|u| u.auto_accepted())
+                .map(|u| u.id.clone())
+        {
+            self.decide_ids(std::slice::from_ref(&id), Decision::Pending);
+            let name = self
+                .review
+                .unit(&id)
+                .map(super::slim::row_name)
+                .unwrap_or_default();
+            self.status = format!("{name} is pending again, no longer accepted for you.");
+            return vec![Effect::Save];
+        }
         let Some(step) = self.review.history.undo() else {
             self.status = "Nothing to undo.".into();
             return Vec::new();
@@ -3019,6 +3100,7 @@ impl App {
                 u.decision = c.before;
             }
         }
+        self.reorder();
         let mut effects = vec![Effect::Save];
         effects.extend(self.show_step(&step));
         effects
@@ -3036,6 +3118,7 @@ impl App {
                 u.decision = c.after;
             }
         }
+        self.reorder();
         self.check_all_done(was_done);
         let mut effects = vec![Effect::Save];
         effects.extend(self.show_step(&step));
@@ -3104,12 +3187,23 @@ impl App {
         }
     }
 
-    /// Forget every decision, as if nothing had been looked at: one undo
-    /// step, so `u` brings them back.
+    /// Forget every decision, as if nothing had been looked at: units with
+    /// no behavior change are accepted for you again, the rest pending. One
+    /// undo step, so `u` brings them back.
     fn reset(&mut self) -> Vec<Effect> {
-        let ids: Vec<String> = self.review.units.iter().map(|u| u.id.clone()).collect();
+        let auto = self.cfg.auto_accept;
+        let mut each = Vec::new();
+        for (u, a) in self.review.units.iter_mut().zip(&self.levels) {
+            let d = if accepted_for_you(a.level, auto) {
+                u.accepted_by = Some(AcceptedBy::Auto);
+                Decision::Accepted
+            } else {
+                Decision::Pending
+            };
+            each.push((u.id.clone(), d));
+        }
         self.visual = None;
-        self.decide_ids(&ids, Decision::Pending);
+        self.decide_each(&each);
         if self.screen == Screen::Swipe {
             self.swipe = self.fresh_swipe();
         } else {
@@ -3121,15 +3215,14 @@ impl App {
 
     // ---- Swipe -----------------------------------------------------------
 
-    /// The cards on entering swipe: units with a behavior change that are
-    /// flagged or not yet looked at (accepted ones are left out), most
+    /// The cards on entering swipe: listed units that are flagged or not yet
+    /// looked at (accepted ones, by you or for you, are left out), most
     /// attention first, then in list order.
     fn swipe_cards(&self) -> Vec<String> {
         let mut cards: Vec<usize> = self
             .order
             .iter()
             .copied()
-            .filter(|&i| self.review.units[i].status != UnitStatus::NoBehaviorChange)
             .filter(|&i| self.review.units[i].decision != Decision::Accepted)
             .collect();
         cards.sort_by_key(|&i| std::cmp::Reverse(self.levels[i].level));
@@ -3499,7 +3592,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review::model::UnitKind;
+    use crate::review::model::{UnitKind, UnitStatus};
     use crossterm::event::KeyModifiers;
 
     fn app(n: usize) -> App {
@@ -3522,6 +3615,8 @@ mod tests {
                 summary: None,
                 nbc_reason: None,
                 dive: Default::default(),
+                accepted_by: None,
+                reasons: Vec::new(),
                 dive_pending: Default::default(),
                 checks: Default::default(),
             })
@@ -4098,7 +4193,8 @@ mod tests {
     fn za_and_hunk_jumps_say_what_comes_later() {
         let mut a = app(2);
         press(&mut a, "za");
-        assert_eq!(a.status, "No units are accepted for you yet.");
+        assert_eq!(a.status, "No units are accepted for you.");
+        assert!(!a.show_auto);
         press(&mut a, "]c");
         assert_eq!(a.status, "Hunk jumps come with the unit view.");
         assert_eq!(decisions(&a), vec![Pend; 2]);

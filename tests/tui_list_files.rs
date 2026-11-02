@@ -53,6 +53,8 @@ fn unit(id: &str, file: &str, line: u32, kind: Kind) -> Unit {
         summary: Some("summary".into()),
         nbc_reason: None,
         dive: Default::default(),
+        accepted_by: None,
+        reasons: Vec::new(),
         dive_pending: Default::default(),
         checks: Default::default(),
     };
@@ -236,7 +238,8 @@ fn each_file_sits_in_the_box_of_its_most_critical_unit_with_its_units_under_its_
             .unwrap_or_else(|| panic!("no {t}\n{}", s.join("\n")))
     };
     // The boxes in attention order, each file in the box of its most
-    // critical unit, files by path inside a box.
+    // critical unit, files by path inside a box; units with no behavior
+    // change are accepted for you, a line under the boxes says so.
     let order = [
         "╭─ Needs a close look · 1 file ",
         "│ src/c.rs",
@@ -246,14 +249,17 @@ fn each_file_sits_in_the_box_of_its_most_critical_unit_with_its_units_under_its_
         "╭─ Routine · 5 files ",
         "│ src/r0.rs",
         "│ src/r4.rs",
-        "╭─ No behavior change · 1 file ",
-        "│   src/q.rs",
         "╭─ Not shown · 1 file ",
         "│   assets/logo.png",
+        " 2 units accepted for you, za shows them",
     ];
     for pair in order.windows(2) {
         assert!(at(pair[0]) < at(pair[1]), "{pair:?}");
     }
+    assert!(
+        !s.iter()
+            .any(|l| l.contains("tidy") || l.contains("src/q.rs"))
+    );
     // The file's name is a label with its count; no open or closed marker.
     let label = &s[at("│ src/c.rs")];
     assert!(
@@ -265,13 +271,26 @@ fn each_file_sits_in_the_box_of_its_most_critical_unit_with_its_units_under_its_
     assert_eq!(at("▲ close_a"), at("│ src/c.rs") + 1);
     assert_eq!(at("▲ close_b"), at("│ src/c.rs") + 2);
     assert_eq!(at("● c_helper"), at("│ src/c.rs") + 3);
-    assert_eq!(at("○ tidy"), at("│ src/c.rs") + 4);
     assert_eq!(at("◆ look_a"), at("│ src/l0.rs") + 1);
     assert_eq!(at("● r0_0"), at("│ src/r0.rs") + 1);
     // Units are indented under the file's name.
     let col = |l: &str, c: char| l.chars().position(|x| x == c).unwrap();
     assert_eq!(col(&s[at("▲ close_a")], '▲'), col(label, 's') + 2);
     insta::assert_snapshot!("files", render(&a, 120, 60).backend());
+    // `za` lists them: last in their file, or in a box of their own.
+    let mut a = a;
+    v2::press(&mut a, "za");
+    let s = lines(&a, 120, 80);
+    let at = |t: &str| {
+        s.iter()
+            .position(|l| l.contains(t))
+            .unwrap_or_else(|| panic!("no {t}\n{}", s.join("\n")))
+    };
+    assert_eq!(at("○ tidy"), at("│ src/c.rs") + 4);
+    assert!(at("│ src/r4.rs") < at("╭─ Accepted for you · 1 file "));
+    assert_eq!(at("○ quiet"), at("│ src/q.rs") + 1);
+    assert!(at("○ quiet") < at("╭─ Not shown · 1 file "));
+    assert!(at(" 2 units accepted for you, za hides them") > at("assets/logo.png"));
 }
 
 #[test]
@@ -290,19 +309,28 @@ fn only_units_are_selectable() {
         assert_eq!(rows.owner[rows.heads[pos]], None);
         assert!(row_text(&rows.lines[rows.titles[pos]]).starts_with('╭'));
     }
-    for t in [
-        "src/c.rs",
-        "○ tidy",
-        "src/q.rs",
-        "○ quiet",
-        "assets/logo.png",
-    ] {
+    let mut a = a;
+    v2::press(&mut a, "za");
+    let rows = slim::build(&a, 80);
+    let owner = |t: &str| {
         let y = rows
             .lines
             .iter()
             .position(|l| row_text(l).contains(t))
-            .unwrap();
-        assert_eq!(rows.owner[y], None, "{t}");
+            .unwrap_or_else(|| panic!("no {t}"));
+        rows.owner[y]
+    };
+    for t in [
+        "src/c.rs",
+        "src/q.rs",
+        "assets/logo.png",
+        "units accepted for you",
+    ] {
+        assert_eq!(owner(t), None, "{t}");
+    }
+    // Listed with `za`, units accepted for you are units like any other.
+    for t in ["○ tidy", "○ quiet"] {
+        assert!(owner(t).is_some(), "{t}");
     }
     let logo = rows
         .lines
@@ -310,14 +338,18 @@ fn only_units_are_selectable() {
         .find(|l| row_text(l).contains("assets/logo.png"))
         .unwrap();
     assert!(row_text(logo).contains("binary"));
-    // Nothing to decide at all: the muted boxes still say what changed.
+    // Nothing to decide at all: the list says what was accepted for you
+    // and what isn't shown.
     let units: Vec<Unit> = units()
         .into_iter()
         .filter(|u| u.status == UnitStatus::NoBehaviorChange)
         .collect();
     let b = app_with(units, Config::default());
     let s = text(&b, 80, 20);
-    assert!(s.contains("○ tidy") && s.contains("assets/logo.png"), "{s}");
+    assert!(
+        s.contains("2 units accepted for you, za shows them") && s.contains("assets/logo.png"),
+        "{s}"
+    );
 }
 
 #[test]
@@ -335,7 +367,7 @@ fn every_row_fits_its_width_and_nothing_is_cut_at_the_fitted_width() {
     }
     let w = slim::fit_width(&a) as u16;
     let s: Vec<String> = slim::build(&a, w).lines.iter().map(row_text).collect();
-    for u in &a.review.units {
+    for u in a.order.iter().map(|&i| &a.review.units[i]) {
         assert!(
             s.iter().any(|l| l.contains(&u.symbol)),
             "{} at {w}",
@@ -558,7 +590,11 @@ fn a_asks_first_then_accepts_the_files_pending_units_in_one_undo_step() {
         let effects = code(&mut a, confirm);
         assert_eq!(effects, vec![Effect::Save]);
         assert_eq!(a.overlay, Overlay::None);
-        assert_eq!(accepted(&a), ["r2_0", "r2_1", "r2_3"]);
+        assert_eq!(
+            accepted(&a),
+            ["tidy", "quiet", "r2_0", "r2_1", "r2_3"],
+            "and the 2 accepted for you"
+        );
         assert_eq!(a.sel, 15);
         assert_eq!(a.review.history.undo.len(), 1);
         key(&mut a, 'u');
@@ -646,12 +682,8 @@ fn f_lists_each_unit_in_its_own_levels_box_with_its_file_on_its_row() {
         "● c_helper",
         "● r0_0",
         "● r4_3",
-        "╭─ No behavior change · 2 files ",
-        "│   src/c.rs",
-        "○ tidy",
-        "│   src/q.rs",
-        "○ quiet",
         "╭─ Not shown · 1 file ",
+        " 2 units accepted for you, za shows them",
     ];
     for pair in order.windows(2) {
         assert!(at(pair[0]) < at(pair[1]), "{pair:?}");
@@ -676,6 +708,18 @@ fn f_lists_each_unit_in_its_own_levels_box_with_its_file_on_its_row() {
     assert!(row("look_c").ends_with(" l1.rs │"), "{}", row("look_c"));
     assert!(row("r4_3").ends_with(" r4.rs │"), "{}", row("r4_3"));
     insta::assert_snapshot!("units", render(&a, 120, 60).backend());
+    // With `za`, the units accepted for you close the list in their box.
+    v2::press(&mut a, "za");
+    let s = lines(&a, 120, 60);
+    let at = |t: &str| {
+        s.iter()
+            .position(|l| l.contains(t))
+            .unwrap_or_else(|| panic!("no {t}\n{}", s.join("\n")))
+    };
+    assert!(at("● r4_3") < at("╭─ Accepted for you · 2 units "));
+    assert_eq!(at("○ tidy") + 1, at("○ quiet"));
+    assert!(at("○ quiet") < at("╭─ Not shown · 1 file "));
+    v2::press(&mut a, "za");
     // `zf` again: by file, the cursor still on its unit.
     v2::press(&mut a, "zf");
     assert_eq!(

@@ -582,7 +582,7 @@ fn each_tile_keeps_its_own_scroll() {
     let code = screen(&app, w, h);
     assert!(
         code.iter()
-            .any(|l| l.starts_with("│ … 43 more lines · ^d scroll")),
+            .any(|l| l.starts_with("│ … 44 more lines · ^d scroll")),
         "{}",
         code.join("\n")
     );

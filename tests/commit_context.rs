@@ -908,8 +908,9 @@ mod agent {
         let back: Review = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(unit(&back, "g").checks.unmentioned, Some(g));
 
-        // The preview, the card and the Flagged screen say it under the reasons.
-        let want = "≠ Not in the commit messages (agent): Also triples the result.";
+        // The preview, the card and the Flagged screen say it as a reason
+        // (under "Why this level" but on the card).
+        let want = "· Not mentioned in the commits or PR description: Also triples the result.";
         let text = |app: &App, w, h| {
             let t = render(app, w, h);
             (0..h).map(|y| row(&t, y)).collect::<Vec<_>>().join("\n")
@@ -923,6 +924,8 @@ mod agent {
             "{}",
             text(&app, 160, 30)
         );
+        assert!(text(&app, 160, 30).contains("Why this level"));
+        assert!(!text(&app, 160, 30).contains('≠'));
         app.enter_swipe();
         while app
             .review
@@ -933,12 +936,8 @@ mod agent {
         {
             app.swipe.cursor += 1;
         }
-        // The card leaves out who said it.
         let card = text(&app, 120, 40);
-        assert!(
-            card.contains("≠ Not in the commit messages: Also triples the result."),
-            "{card}"
-        );
+        assert!(card.contains(want), "{card}");
         app.screen = Screen::Slim;
         app.on_action(teer::keymap::Action::ViewOpen);
         assert_eq!(app.screen, Screen::Flagged);

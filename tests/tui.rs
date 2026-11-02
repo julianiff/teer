@@ -817,15 +817,17 @@ async fn reset_clears_every_decision_after_confirming() {
             .any(|u| u.decision != Decision::Pending)
     );
 
-    // enter resets: nothing is looked at, the swipe stack is full again.
+    // enter resets: nothing is looked at, the swipe stack is full again;
+    // units with no behavior change are accepted for you again.
     v2::press(&mut app, ":e!<cr>");
     assert_eq!(code(&mut app, KeyCode::Enter), vec![Effect::Save]);
-    assert!(
-        app.review
-            .units
-            .iter()
-            .all(|u| u.decision == Decision::Pending)
-    );
+    for u in &app.review.units {
+        if u.status == teer::review::model::UnitStatus::NoBehaviorChange {
+            assert!(u.auto_accepted(), "{}", u.id);
+        } else {
+            assert_eq!(u.decision, Decision::Pending, "{}", u.id);
+        }
+    }
     assert_eq!(app.swipe.cards.len(), total);
     assert_eq!(app.swipe.cursor, 0);
 }
@@ -888,12 +890,24 @@ async fn the_file_sits_in_its_most_critical_box_with_its_units_most_critical_fir
     assert!(at("▲ charge_order") < at("◆ old_helper"));
     assert!(at("◆ old_helper") < at("● new_helper"));
     assert!(at("● new_helper") < at("● Cart::add"));
-    assert!(at("● Cart::add") < at("○ compute_total  local names renamed"));
+    // The units with no behavior change are accepted for you, not listed.
+    assert!(!text.contains("compute_total"), "{text}");
+    assert!(at("● Cart::add") < at("3 units accepted for you, za shows them"));
     assert_eq!(
         symbols(&app),
         vec!["charge_order", "old_helper", "new_helper", "Cart::add"]
     );
     // Start on the file's first unit: its close look.
+    assert_eq!(app.selected().unwrap().symbol, "charge_order");
+    // `za` lists them last in the file, behind their icon.
+    let mut app = app;
+    v2::press(&mut app, "za");
+    let text = format!("{}", render(&app, 90, 30).backend());
+    assert!(
+        text.find("● Cart::add") < text.find("○ compute_total"),
+        "{text}"
+    );
+    assert!(text.contains("za hides them"), "{text}");
     assert_eq!(app.selected().unwrap().symbol, "charge_order");
 }
 
@@ -1025,7 +1039,8 @@ async fn all_accepted_opens_on_the_summary_and_says_nothing_needs_a_look() {
     let text = screen_text(&app);
     assert!(text.contains("All changes triaged"), "{text}");
     assert!(text.contains("Nothing needs a look"), "{text}");
-    assert!(text.contains("4 accepted"), "{text}");
+    // The 3 units with no behavior change count, accepted for you.
+    assert!(text.contains("7 accepted"), "{text}");
     // With a flagged unit left over the deck is not empty; the summary
     // after it counts it (Flagged opens from the list, not from swipe).
     let id = app.review.units[0].id.clone();
@@ -1144,11 +1159,15 @@ async fn re_deciding_a_card_overrides_it() {
     key(&mut app, 'k');
     key(&mut app, 'f');
     assert_eq!(decision_of(&app, &first), Decision::Investigate);
-    assert_eq!(app.decision_counts(), (0, 1, 3));
+    assert_eq!(
+        app.decision_counts(),
+        (3, 1, 3),
+        "the 3 accepted for you count"
+    );
     key(&mut app, 'k');
     key(&mut app, 'a');
     assert_eq!(decision_of(&app, &first), Decision::Accepted);
-    assert_eq!(app.decision_counts(), (1, 0, 3));
+    assert_eq!(app.decision_counts(), (4, 0, 3));
 }
 
 #[tokio::test]
@@ -1185,11 +1204,15 @@ async fn f_flags_and_k_goes_back_without_deciding() {
     key(&mut app, 'k');
     assert_eq!(app.swipe.cursor, 1);
     assert_eq!(decision_of(&app, &ids[2]), Decision::Pending);
-    assert_eq!(app.decision_counts(), (0, 2, 2));
+    assert_eq!(
+        app.decision_counts(),
+        (3, 2, 2),
+        "the 3 accepted for you count"
+    );
     // h goes back to the list, deciding nothing.
     key(&mut app, 'h');
     assert_eq!(app.screen, Screen::Slim);
-    assert_eq!(app.decision_counts(), (0, 2, 2));
+    assert_eq!(app.decision_counts(), (3, 2, 2));
 
     // In the list, f flags too, and h no longer does.
     let (review, _repo) = fixture_review().await;

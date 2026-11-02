@@ -177,22 +177,24 @@ async fn a_disputed_statement_and_an_expensive_change_are_warnings() {
     assert_eq!(a.cost.as_deref(), Some("Charges the card again on retry."));
     assert_eq!(a.doubts.len(), 2);
 
-    // The list preview shows both, each on its own line.
+    // The list preview says why, a reason per line under "Why this level";
+    // the row keeps only the dispute's ⚠.
     let mut app = App::new(review, Config::default(), Keymap::default());
     while app.selected().is_some_and(|u| u.symbol != "charge_order") {
         press(&mut app, 'j');
     }
     let text = screen(&app, 120, 40);
+    assert!(text.contains("Why this level"), "{text}");
     assert!(
-        text.contains("$ Expensive to undo (agent): Charges the card"),
+        text.contains("· Expensive to undo: Charges the card"),
         "{text}"
     );
+    assert!(text.contains("· The second model disputes"), "{text}");
     assert!(
-        text.contains("⚠ Second opinion (sonnet): disputes"),
+        text.contains("· The second model rates it high risk, not low."),
         "{text}"
     );
-    // "(+1 more)" may wrap after the model name.
-    assert!(text.contains("(+1"), "{text}");
+    assert!(text.contains('⚠') && !text.contains('$'), "{text}");
 }
 
 #[tokio::test]
