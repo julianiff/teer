@@ -23,6 +23,9 @@
 //! "decide.accept" = "a"
 //! "move.down" = ["j", "<down>"]
 //! ```
+//!
+//! v1's names and keys (`accept = "y"`, `next_group = "ctrl+n"`) are read
+//! too, through [`V1_NAMES`].
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -791,46 +794,67 @@ impl Keymap {
     /// a default key it takes is removed from the action that had it.
     /// Unknown action ids are warned about and skipped; keys that can't be
     /// parsed, or that clash, are errors.
+    ///
+    /// v1's names (`accept`, `ctrl+d`) still work ([`V1_NAMES`]): each
+    /// becomes its v2 action unless it only repeats v1's default key, the
+    /// v2 id is set too, or its keys don't fit; names v2 dropped warn once
+    /// each. Nothing about them is an error, and nothing is written back.
     pub fn new(
         overrides: &HashMap<String, KeySpec>,
         timeout_ms: u64,
     ) -> Result<(Keymap, Vec<String>)> {
         let mut warnings = Vec::new();
         let mut over: Vec<(Action, Vec<Trigger>)> = Vec::new();
+        // v1 names, applied after the v2 ids, each only if it fits.
+        let mut v1: Vec<(&str, Action, Vec<Trigger>)> = Vec::new();
         let mut ids: Vec<&String> = overrides.keys().collect();
         ids.sort();
         for id in ids {
-            let Some(action) = Action::from_id(id) else {
+            let parsed = overrides[id]
+                .items()
+                .into_iter()
+                .map(parse_trigger)
+                .collect::<Result<Vec<_>>>();
+            if let Some(action) = Action::from_id(id) {
+                let triggers = parsed.map_err(|e| anyhow::anyhow!("[keys] '{id}': {e}"))?;
+                over.push((action, triggers));
+                continue;
+            }
+            let Some(&(name, default, became)) = V1_NAMES.iter().find(|(n, ..)| n == id) else {
                 warnings.push(format!("[keys]: unknown action '{id}', ignored"));
                 continue;
             };
-            let triggers = overrides[id]
-                .items()
-                .into_iter()
-                .map(|s| Trigger::parse(s).map_err(|e| anyhow::anyhow!("[keys] '{id}': {e}")))
-                .collect::<Result<Vec<_>>>()?;
-            over.push((action, triggers));
+            let Some(action) = became else {
+                warnings.push(format!("`[keys].{name}` is no longer used"));
+                continue;
+            };
+            match parsed {
+                Err(e) => warnings.push(format!("`[keys].{name}` is ignored: {e}")),
+                // v1's own default: v2's default stands.
+                Ok(t) if t == [parse_trigger(default).expect("v1 defaults parse")] => {}
+                Ok(t) => v1.push((name, action, t)),
+            }
         }
-        let taken: Vec<&Trigger> = over.iter().flat_map(|(_, t)| t).collect();
-        let mut bindings = Vec::new();
-        for (action, _, keys, _) in TABLE {
-            if let Some((_, triggers)) = over.iter().find(|(a, _)| a == action) {
-                bindings.extend(triggers.iter().map(|t| (*action, t.clone())));
+        validate(&bind(&over).0)?;
+        for (name, action, triggers) in v1 {
+            if over.iter().any(|(a, _)| *a == action) {
+                warnings.push(format!(
+                    "`[keys].{name}` is ignored: \"{}\" is set",
+                    action.id()
+                ));
                 continue;
             }
-            for k in *keys {
-                let t = Trigger::parse(k).expect("default keys parse");
-                if taken.contains(&&t) {
-                    warnings.push(format!(
-                        "[keys]: '{k}' is rebound, so '{}' no longer has it",
-                        action.id()
-                    ));
-                } else {
-                    bindings.push((*action, t));
-                }
+            over.push((action, triggers));
+            if let Err(e) = validate(&bind(&over).0) {
+                over.pop();
+                warnings.push(format!(
+                    "`[keys].{name}` (now \"{}\") is ignored: {e}",
+                    action.id()
+                ));
             }
         }
-        validate(&bindings)?;
+        let (bindings, taken) = bind(&over);
+        warnings.extend(taken);
         Ok((
             Keymap {
                 bindings,
@@ -1178,6 +1202,127 @@ impl Keymap {
     }
 }
 
+/// The default table with `over` in place of the keys of the actions it
+/// names, and a warning for each default key an override took away.
+fn bind(over: &[(Action, Vec<Trigger>)]) -> (Vec<(Action, Trigger)>, Vec<String>) {
+    let taken: Vec<&Trigger> = over.iter().flat_map(|(_, t)| t).collect();
+    let mut bindings = Vec::new();
+    let mut warnings = Vec::new();
+    for (action, _, keys, _) in TABLE {
+        if let Some((_, triggers)) = over.iter().find(|(a, _)| a == action) {
+            bindings.extend(triggers.iter().map(|t| (*action, t.clone())));
+            continue;
+        }
+        for k in *keys {
+            let t = Trigger::parse(k).expect("default keys parse");
+            if taken.contains(&&t) {
+                warnings.push(format!(
+                    "[keys]: '{k}' is rebound, so '{}' no longer has it",
+                    action.id()
+                ));
+            } else {
+                bindings.push((*action, t));
+            }
+        }
+    }
+    (bindings, warnings)
+}
+
+/// v1's `[keys]` names (teer 0.1), each with its v1 default key and the
+/// action it became; `None` where v2 dropped it: the swipe and Flagged
+/// screens, their tiles and resolutions, the all-reviewed popup (`:w`
+/// finishes now).
+pub const V1_NAMES: &[(&str, &str, Option<Action>)] = &[
+    ("quit", "q", Some(Action::ViewClose)),
+    ("down", "j", Some(Action::MoveDown)),
+    ("up", "k", Some(Action::MoveUp)),
+    ("preview_down", "J", Some(Action::ScrollHalfDown)),
+    ("preview_up", "K", Some(Action::ScrollHalfUp)),
+    ("top", "g", Some(Action::MoveFirst)),
+    ("bottom", "G", Some(Action::MoveLast)),
+    ("open", "enter", Some(Action::ViewOpen)),
+    ("swipe", "s", None),
+    ("rerun", "r", Some(Action::ReviewRerun)),
+    ("reset", "R", Some(Action::ReviewReset)),
+    ("edit", "e", Some(Action::GotoEditor)),
+    ("accept", "l", Some(Action::DecideAccept)),
+    ("investigate", "i", Some(Action::DecideFlag)),
+    ("flagged", "d", None),
+    ("dive_recommend", "n", None),
+    ("dive_visualize", "v", Some(Action::ToolDiagram)),
+    ("dive_behavior", "t", Some(Action::ToolRunOldNew)),
+    ("dive_disagree", "x", None),
+    ("dive_tests", "c", Some(Action::ToolTests)),
+    ("interpret_tests", "a", None),
+    ("open_visual", "b", Some(Action::GotoBrowser)),
+    ("resolve_ok", "o", None),
+    ("resolve_fix", "f", None),
+    ("edit_note", "m", Some(Action::NoteEdit)),
+    ("notes", "N", Some(Action::ToolNotes)),
+    ("dive_rerun", "r", None),
+    ("prev_tile", "left", None),
+    ("next_tile", "right", None),
+    ("zoom", "z", None),
+    ("undo", "u", Some(Action::HistoryUndo)),
+    ("back", "esc", Some(Action::ViewBack)),
+    ("help", "?", Some(Action::HelpOpen)),
+    ("next_pending", "]", Some(Action::MoveNextPending)),
+    ("prev_pending", "[", Some(Action::MovePrevPending)),
+    ("prev_card", "h", None),
+    ("next_group", "ctrl+d", Some(Action::MoveNextFile)),
+    ("prev_group", "ctrl+u", Some(Action::MovePrevFile)),
+    ("accept_file", "A", Some(Action::DecideAcceptFile)),
+    ("grouping", "f", Some(Action::ToggleByFile)),
+    ("approve_pr", "a", None),
+    ("commit", "c", None),
+    ("commits", "C", Some(Action::ToolHistory)),
+    ("ask", "/", Some(Action::AskOpen)),
+];
+
+/// A `[keys]` value: Neovim notation, or v1's ([`v1_key`]).
+fn parse_trigger(s: &str) -> Result<Trigger> {
+    match v1_key(s) {
+        Some(k) => Ok(Trigger::Keys(vec![k])),
+        None => Trigger::parse(s),
+    }
+}
+
+/// A key in v1's notation (`ctrl+d`, `shift+tab`, `enter`, `left`), which
+/// `[keys]` still takes. `None` for anything else, a single character
+/// included: it means the same in both.
+fn v1_key(s: &str) -> Option<Key> {
+    let (mods, name) = match s.rsplit_once('+') {
+        Some((m, k)) if !m.is_empty() && !k.is_empty() => (m, k),
+        _ => ("", s),
+    };
+    let mut modifiers = KeyModifiers::NONE;
+    for m in mods.split('+') {
+        modifiers |= match m.to_ascii_lowercase().as_str() {
+            "ctrl" => KeyModifiers::CONTROL,
+            "alt" => KeyModifiers::ALT,
+            "shift" => KeyModifiers::SHIFT,
+            "" if mods.is_empty() => KeyModifiers::NONE,
+            _ => return None,
+        };
+    }
+    let code = match name.to_ascii_lowercase().as_str() {
+        "enter" | "return" => KeyCode::Enter,
+        "tab" => KeyCode::Tab,
+        "esc" | "escape" => KeyCode::Esc,
+        "space" => KeyCode::Char(' '),
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "backspace" => KeyCode::Backspace,
+        _ if !modifiers.is_empty() && name.chars().count() == 1 => {
+            KeyCode::Char(name.chars().next()?)
+        }
+        _ => return None,
+    };
+    Some(Key::from_event(&KeyEvent::new(code, modifiers)))
+}
+
 /// One action per trigger, no trigger the start of another (it could never
 /// wait for the rest), and nothing a count or the command line takes.
 fn validate(bindings: &[(Action, Trigger)]) -> Result<()> {
@@ -1473,11 +1618,11 @@ mod tests {
 
     #[test]
     fn unknown_ids_warn_and_bad_keys_fail() {
-        let over = HashMap::from([("accept".to_string(), KeySpec::One("l".into()))]);
+        let over = HashMap::from([("reject".to_string(), KeySpec::One("l".into()))]);
         let (_, warnings) = Keymap::new(&over, 1000).unwrap();
         assert_eq!(
             warnings,
-            vec!["[keys]: unknown action 'accept', ignored".to_string()]
+            vec!["[keys]: unknown action 'reject', ignored".to_string()]
         );
         let over = HashMap::from([("move.down".to_string(), KeySpec::One("<bogus>".into()))]);
         assert!(Keymap::new(&over, 1000).is_err());
@@ -1492,6 +1637,148 @@ mod tests {
         assert!(err.contains("is the start of"), "{err}");
         let over = HashMap::from([("move.down".to_string(), KeySpec::One("2".into()))]);
         assert!(Keymap::new(&over, 1000).is_err());
+    }
+
+    fn v1(entries: &[(&str, &str)]) -> (Keymap, Vec<String>) {
+        let over = entries
+            .iter()
+            .map(|(k, v)| (k.to_string(), KeySpec::One(v.to_string())))
+            .collect();
+        Keymap::new(&over, 1000).unwrap()
+    }
+
+    #[test]
+    fn every_v1_name_is_known_once_and_its_default_parses() {
+        let names: Vec<&str> = V1_NAMES.iter().map(|(n, ..)| *n).collect();
+        for (i, n) in names.iter().enumerate() {
+            assert!(!names[i + 1..].contains(n), "{n} twice");
+            assert!(Action::from_id(n).is_none(), "{n} is a v2 id");
+        }
+        for (name, default, _) in V1_NAMES {
+            assert!(parse_trigger(default).is_ok(), "{name} = {default}");
+        }
+        // v1's `Action::ALL` had 44 names.
+        assert_eq!(V1_NAMES.len(), 44);
+    }
+
+    #[test]
+    fn v1_names_rebind_their_v2_action() {
+        let (km, warnings) = v1(&[("accept", "y"), ("next_group", "ctrl+n"), ("down", "e")]);
+        assert_eq!(km.labels(Action::DecideAccept), "y");
+        assert_eq!(km.labels(Action::MoveNextFile), "^n");
+        assert_eq!(km.labels(Action::MoveDown), "e");
+        // `y` came from finish.yank: said, as for any v2 id.
+        assert_eq!(
+            warnings,
+            vec!["[keys]: 'y' is rebound, so 'finish.yank' no longer has it".to_string()]
+        );
+        let mut km = km;
+        let now = Instant::now();
+        assert_eq!(
+            feed_all(&mut km, "y", now),
+            vec![ran(Action::DecideAccept, None)]
+        );
+        assert_eq!(
+            feed_all(&mut km, "<c-n>", now),
+            vec![ran(Action::MoveNextFile, None)]
+        );
+    }
+
+    #[test]
+    fn a_v1_default_leaves_the_v2_default() {
+        // What v1's docs showed: the keys v1 had anyway.
+        let (km, warnings) = v1(&[
+            ("accept", "l"),
+            ("investigate", "i"),
+            ("open", "enter"),
+            ("next_group", "ctrl+d"),
+            ("preview_up", "K"),
+        ]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let def = Keymap::default();
+        for a in Action::all() {
+            assert_eq!(km.labels(a), def.labels(a), "{}", a.id());
+        }
+    }
+
+    #[test]
+    fn removed_v1_names_warn_once_each_and_nothing_fails() {
+        let (km, warnings) = v1(&[
+            ("swipe", "w"),
+            ("zoom", "z"),
+            ("resolve_fix", "x"),
+            ("approve_pr", "ctrl+a"),
+        ]);
+        assert_eq!(
+            warnings,
+            vec![
+                "`[keys].approve_pr` is no longer used".to_string(),
+                "`[keys].resolve_fix` is no longer used".to_string(),
+                "`[keys].swipe` is no longer used".to_string(),
+                "`[keys].zoom` is no longer used".to_string(),
+            ]
+        );
+        let def = Keymap::default();
+        for a in Action::all() {
+            assert_eq!(km.labels(a), def.labels(a), "{}", a.id());
+        }
+    }
+
+    #[test]
+    fn v1_keys_that_dont_fit_are_skipped_not_fatal() {
+        // `z` is the start of `za`, `zf`; `bogus+x` isn't a key; the v2 id
+        // wins over the v1 name of the same action.
+        let over = HashMap::from([
+            ("bottom".to_string(), KeySpec::One("z".into())),
+            ("top".to_string(), KeySpec::One("<nope>".into())),
+            ("accept".to_string(), KeySpec::One("y".into())),
+            ("decide.accept".to_string(), KeySpec::One("e".into())),
+        ]);
+        let (km, warnings) = Keymap::new(&over, 1000).unwrap();
+        let joined = warnings.join("\n");
+        assert!(
+            joined.contains(
+                "`[keys].bottom` (now \"move.last\") is ignored: 'z' (move.last) is the start of"
+            ),
+            "{joined}"
+        );
+        assert!(joined.contains("`[keys].top` is ignored"), "{joined}");
+        assert!(
+            joined.contains("`[keys].accept` is ignored: \"decide.accept\" is set"),
+            "{joined}"
+        );
+        assert_eq!(km.labels(Action::MoveLast), "G/end");
+        assert_eq!(km.labels(Action::DecideAccept), "e");
+        assert_eq!(km.labels(Action::FinishYank), "y");
+    }
+
+    #[test]
+    fn v1_key_names_are_read_for_v2_ids_too() {
+        for (v1, v2) in [
+            ("ctrl+d", "<c-d>"),
+            ("Ctrl+Shift+X", "<c-x>"),
+            ("alt+j", "<a-j>"),
+            ("shift+tab", "<s-tab>"),
+            ("shift+j", "J"),
+            ("enter", "<cr>"),
+            ("Esc", "<esc>"),
+            ("space", "<space>"),
+            ("left", "<left>"),
+            ("backspace", "<bs>"),
+        ] {
+            assert_eq!(
+                parse_trigger(v1).unwrap(),
+                Trigger::parse(v2).unwrap(),
+                "{v1}"
+            );
+        }
+        // Neovim notation and single keys are what they were.
+        for s in ["j", "+", "gg", "<c-d>", ":w", "<space>t"] {
+            assert_eq!(parse_trigger(s).unwrap(), Trigger::parse(s).unwrap(), "{s}");
+        }
+        let (km, warnings) = v1(&[("move.down", "ctrl+n")]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(km.labels(Action::MoveDown), "^n");
     }
 
     #[test]

@@ -332,7 +332,7 @@ impl App {
                 return Vec::new();
             }
             Action::HelpOpen => {
-                self.overlay = Overlay::Help;
+                self.open_help();
                 return Vec::new();
             }
             _ => sel,

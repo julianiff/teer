@@ -1405,10 +1405,15 @@ const ASK: &[Action] = &[
     Action::ViewClose,
 ];
 
-/// The panel open under the help, if any: its name and the actions it
+/// The panel the help is about, if any: the one it was opened over
+/// ([`App::help_over`]), else the one open. Its name and the actions it
 /// handles.
 fn help_panel(app: &App) -> Option<(&'static str, &'static [Action])> {
-    match app.overlay {
+    let over = match &app.overlay {
+        Overlay::Help => app.help_over.as_ref()?,
+        other => other,
+    };
+    match over {
         Overlay::Notes { .. } | Overlay::ConfirmDeleteNote { .. } => Some(("notes", NOTES)),
         Overlay::Commits { .. } => Some(("commits", COMMITS)),
         Overlay::Jump { .. } => Some(("jump list", JUMP)),
@@ -1448,23 +1453,27 @@ fn screen_name(app: &App) -> &'static str {
 }
 
 /// The help's groups, in its order.
-const GROUPS: [&str; 6] = ["move", "decide", "view", "go to", "tools", "finish"];
+const GROUPS: [&str; 5] = ["Move", "Decide", "Look closer", "More", "Finish"];
 
-/// Which of [`GROUPS`] `a` is listed under.
+/// Which of [`GROUPS`] `a` is listed under: moving through the review,
+/// deciding on it, looking closer at a unit (its view, asking, going to
+/// code, the tools under it), the rest of what opens, and finishing.
 fn group_of(a: Action) -> usize {
     use Action::*;
     match a {
         MoveDown | MoveUp | MoveFirst | MoveLast | MoveNextPending | MovePrevPending
         | MoveNextHunk | MovePrevHunk | MoveNextFile | MovePrevFile | ScrollHalfDown
-        | ScrollHalfUp | ScrollPageDown | ScrollPageUp | V1NextTile | V1PrevTile => 0,
+        | ScrollHalfUp | ScrollPageDown | ScrollPageUp | FindUnit | ViewBack | V1NextTile
+        | V1PrevTile => 0,
         DecideAccept | DecideFlag | NoteEdit | DecideAcceptFile | DecideFlagFile | VisualStart
         | HistoryUndo | HistoryRedo | HistoryRepeat | NoteDelete | V1ResolveOk | V1ResolveFix => 1,
-        ViewOpen | ViewBack | ViewClose | AskOpen | ToggleAutoAccepted | HelpOpen | V1Swipe
-        | ToggleByFile | V1Zoom => 2,
-        FindUnit | GotoDefinition | GotoCallers | GotoEditor | GotoBrowser => 3,
-        ToolTests | ToolRunOldNew | ToolDiagram | ToolHistory | ToolNotes | ToolSettings
-        | V1Recommend | V1Disagree | V1InterpretTests | V1DiveRerun => 4,
-        FinishOpen | FinishYank | ReviewRerun | ReviewReset | V1NotesToAgent | V1NotesPost => 5,
+        ViewOpen | AskOpen | GotoDefinition | GotoCallers | GotoEditor | GotoBrowser
+        | ToolTests | ToolRunOldNew | ToolDiagram | V1Zoom | V1Recommend | V1Disagree
+        | V1InterpretTests | V1DiveRerun => 2,
+        ToggleAutoAccepted | ToggleByFile | ToolHistory | ToolNotes | ToolSettings | HelpOpen
+        | V1Swipe => 3,
+        FinishOpen | FinishYank | ReviewRerun | ReviewReset | ViewClose | V1NotesToAgent
+        | V1NotesPost => 4,
     }
 }
 
@@ -1529,6 +1538,15 @@ struct HelpRow {
     v1: bool,
 }
 
+/// What `a` does where the help was opened: the finish sheet's `i` writes
+/// the commit message or the review summary, not a note.
+fn describe(app: &App, a: Action) -> &'static str {
+    match (help_panel(app), a) {
+        (Some(("finish", _)), Action::NoteEdit) => "edit the commit message or summary",
+        _ => a.describe(),
+    }
+}
+
 /// The help's rows for `actions`, by group: each group's name and its
 /// rows, pairs on one row, unbound actions left out.
 fn help_groups(app: &App, actions: &[Action]) -> Vec<(&'static str, Vec<HelpRow>)> {
@@ -1555,12 +1573,12 @@ fn help_groups(app: &App, actions: &[Action]) -> Vec<(&'static str, Vec<HelpRow>
         let row = match other {
             Some(b) => HelpRow {
                 keys: format!("{keys} {}", app.keys.labels(b)),
-                what: joined(a.describe(), b.describe()),
+                what: joined(describe(app, a), describe(app, b)),
                 v1: v1(a) || v1(b),
             },
             None => HelpRow {
                 keys,
-                what: a.describe().to_string(),
+                what: describe(app, a).to_string(),
                 v1: v1(a),
             },
         };
@@ -1612,8 +1630,9 @@ fn help_columns<'a>(
 }
 
 /// The help (`?`): every key of the screen or panel it was opened on,
-/// built from the keymap, grouped (move, decide, view, go to, tools,
-/// finish), in as many columns as it takes and the terminal has room for.
+/// built from the keymap, grouped ([`GROUPS`]: Move, Decide, Look closer,
+/// More, Finish), in as many columns as it takes and the terminal has room
+/// for.
 fn draw_help(f: &mut Frame, app: &App) {
     let t = &app.theme;
     let area = f.area();

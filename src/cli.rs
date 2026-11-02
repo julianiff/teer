@@ -33,14 +33,16 @@ underneath (Claude Code, Codex, or a model API with your key; teer asks which on
 Plain `teer` works out what to review: your uncommitted changes (staged, unstaged or untracked); \
 with none, this branch since its base; on the default branch with none, there is nothing to review.",
     after_help = "Examples:\n  teer                 review your changes, or this branch since its base\n  teer --base main     review this branch since main\n  teer <url>           review a GitHub pull request of this repository (fetched with git)\n  teer 482             review pull request #482 of this repository\n  teer pr              pick a pull request waiting for your review, assigned to you, or yours\n  teer --no-agent      review without an agent: no change statements, no questions\n  teer --json          print the prepared review as JSON and exit\n  teer notes           print your notes from the last review as Markdown, for an agent\n\nConfig: ~/.config/teer/config.toml   Data: ~/.local/share/teer/",
-    disable_version_flag = true
+    override_usage = "teer [--base <REF>] [--no-agent] [--json]\n       teer <URL>\n       teer pr\n       teer notes",
+    disable_version_flag = true,
+    disable_help_subcommand = true
 )]
 pub struct Args {
     #[command(subcommand)]
     pub command: Option<Command>,
 
     /// A pull request to review: its URL, or its number in this repository.
-    #[arg(value_name = "PR")]
+    #[arg(value_name = "URL")]
     pub target: Option<String>,
 
     /// Review this branch since its merge base with REF, instead of the base
@@ -67,39 +69,44 @@ pub struct Args {
     #[arg(global = true, long)]
     pub no_agent: bool,
 
-    /// Run as if started in this directory.
-    #[arg(global = true, short = 'C', value_name = "DIR")]
+    /// Run as if started in this directory. Hidden: the help lists only
+    /// the three flags a review takes.
+    #[arg(global = true, short = 'C', value_name = "DIR", hide = true)]
     pub dir: Option<PathBuf>,
 
-    /// Print version.
-    #[arg(short = 'V', long)]
+    /// Print version. Hidden, as `-C` is.
+    #[arg(short = 'V', long, hide = true)]
     pub version: bool,
 }
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
-    /// Pick a pull request of the current repository to review, or review the one named.
+    /// Pick a pull request of the current repository to review.
     ///
-    /// Without a URL, lists the open pull requests that wait for your review, are assigned
-    /// to you, or are yours, to pick one (as `teer pr list`). With one, fetches
-    /// refs/pull/<n>/head (and /merge, to find the base) from the remote of this clone
-    /// that matches it, using plain git. The head is checked out in a worktree teer keeps
-    /// under its data dir; your working tree and branches are never touched. Decisions are
-    /// saved per pull request. The code under review is untrusted: teer runs none of it.
+    /// Lists the open pull requests that wait for your review, are assigned to you, or are
+    /// yours, using the GitHub CLI (gh, logged in) on the repository behind this clone's
+    /// remote: the one `gh repo set-default` chose, else `upstream`, else `origin`. On a
+    /// terminal, pick one with ↑/↓ (or j/k) and Enter to review it as `teer <url>` would;
+    /// --no-agent applies to that review. Piped, each pull request is printed with its URL.
+    /// With --json, prints the lists as JSON. The pull request is checked out in a worktree
+    /// teer keeps under its data dir; your working tree and branches are never touched. The
+    /// code under review is untrusted: teer runs none of it.
     #[command(
         args_conflicts_with_subcommands = true,
-        after_help = "Examples:\n  teer pr\n  teer pr https://github.com/owner/repo/pull/123\n  teer pr github.com/owner/repo/pull/123/files --no-agent\n  teer pr 123"
+        override_usage = "teer pr [--no-agent] [--json]",
+        after_help = "Examples:\n  teer pr\n  teer pr --no-agent\n  teer pr --json"
     )]
     Pr {
+        /// `teer pr list`, v1's picker. Hidden.
         #[command(subcommand)]
         action: Option<PrAction>,
 
-        /// The pull request: https://<host>/<owner>/<repo>/pull/<number>, or its number.
-        /// Without it, pick one.
-        #[arg(value_name = "URL")]
+        /// The pull request, as v1 took it (`teer pr <url>`); `teer <url>` now.
+        /// Hidden, and kept for one release with a hint ([`old_form_hint`]).
+        #[arg(value_name = "URL", hide = true)]
         url: Option<String>,
     },
-    /// Print the notes (`m` in the review) of this repository's last review as Markdown.
+    /// Print the notes of this repository's last review as Markdown.
     ///
     /// Each note comes with the file, the lines, and the change it is about as a diff,
     /// so an agent can work through them: run `! teer notes` in Claude Code, or let
@@ -121,20 +128,56 @@ pub enum Command {
     /// your environment, the config only names its variable.
     #[command(hide = true)]
     Setup,
+    /// Print the help, or a command's (`teer help pr`). Hidden: `--help`
+    /// says it.
+    #[command(hide = true)]
+    Help {
+        #[arg(value_name = "COMMAND")]
+        command: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum PrAction {
-    /// List the open pull requests of this repository that wait for your
-    /// review, are assigned to you, or are yours.
-    ///
-    /// Uses the GitHub CLI (gh, logged in) on the repository behind this clone's remote:
-    /// the one `gh repo set-default` chose, else `upstream`, else `origin`. On a terminal,
-    /// pick one with ↑/↓ (or j/k) and Enter to review it as `teer pr <url>` would; --no-agent
-    /// applies to that review. Piped, each pull request is printed with its URL. With
-    /// --json, prints the lists as JSON.
-    #[command(visible_alias = "ls")]
+    /// v1's picker, now `teer pr`. Hidden, and kept for one release with a
+    /// hint ([`old_form_hint`]).
+    #[command(hide = true, alias = "ls")]
     List,
+}
+
+/// The one-line hint for a form v1 had and v2 replaced, which still works
+/// for one release: `teer pr list` (now `teer pr`), `teer pr <url>` (now
+/// `teer <url>`). `None` for every other form.
+pub fn old_form_hint(args: &Args) -> Option<String> {
+    let (old, new) = match &args.command {
+        Some(Command::Pr {
+            action: Some(PrAction::List),
+            ..
+        }) => ("teer pr list", "teer pr".to_string()),
+        Some(Command::Pr { url: Some(u), .. }) => {
+            ("teer pr <url>", format!("teer {}", sanitize(u)))
+        }
+        _ => return None,
+    };
+    Some(format!(
+        "`{old}` is now `{new}`; the old form goes in the next release."
+    ))
+}
+
+/// `teer help [COMMAND]`: the help `--help` prints, of teer or of one of
+/// its commands, hidden ones included.
+fn print_help(command: Option<&str>) -> Result<()> {
+    use clap::CommandFactory;
+    let mut cmd = Args::command();
+    cmd.build();
+    match command {
+        None => cmd.print_long_help()?,
+        Some(name) => match cmd.find_subcommand_mut(name) {
+            Some(sub) => sub.print_long_help()?,
+            None => bail!("no command '{}': see teer --help", sanitize(name)),
+        },
+    }
+    Ok(())
 }
 
 pub fn version_text() -> String {
@@ -475,6 +518,12 @@ pub async fn run_on(args: Args, path: &Path, screens: &dyn Screens) -> Result<()
         println!("{}", version_text());
         return Ok(());
     }
+    if let Some(Command::Help { command }) = &args.command {
+        return print_help(command.as_deref());
+    }
+    if let Some(hint) = old_form_hint(&args) {
+        eprintln!("teer: {hint}");
+    }
     let cwd = match &args.dir {
         Some(d) => d.clone(),
         None => std::env::current_dir().context("no current directory")?,
@@ -518,7 +567,7 @@ pub async fn run_on(args: Args, path: &Path, screens: &dyn Screens) -> Result<()
         (Some(Command::Notes { url }), None) => {
             return print_notes(&cwd, url.as_deref(), &keymap);
         }
-        (Some(Command::Setup), None) => unreachable!("handled above"),
+        (Some(Command::Setup | Command::Help { .. }), None) => unreachable!("handled above"),
         // `teer pr`, `teer pr list` (clap takes no URL with `list`).
         (Some(Command::Pr { url: None, .. }), None) => Start::Pick,
         (Some(Command::Pr { url: Some(u), .. }), None) | (None, Some(u)) => {
@@ -526,6 +575,15 @@ pub async fn run_on(args: Args, path: &Path, screens: &dyn Screens) -> Result<()
         }
         (None, None) => {
             let repo = git::repo_root(&cwd)?;
+            if let Some(b) = args.base.as_deref()
+                && let Some((r, name)) = git::default_base(&repo)
+                && (b == r || b == name)
+            {
+                // v1's way to review a branch: plain `teer` finds this base now.
+                eprintln!(
+                    "teer: plain `teer` finds the base ({name}) on its own; --base picks another"
+                );
+            }
             Start::Repo(git::detect(&repo, args.base.as_deref(), || {
                 pr_base_ref(&repo)
             })?)
@@ -871,15 +929,53 @@ mod tests {
             "--base",
             "--no-agent",
             "--json",
-            "[PR]",
+            "[URL]",
             "  pr ",
             "  notes ",
         ] {
             assert!(help.contains(shown), "{shown} missing:\n{help}");
         }
-        for hidden in ["--swipe", "--session", "  setup "] {
+        for hidden in [
+            "--swipe",
+            "--session",
+            "  setup ",
+            "  help ",
+            "-C",
+            "--version",
+            "list",
+        ] {
             assert!(!help.contains(hidden), "{hidden} shown:\n{help}");
         }
+    }
+
+    #[test]
+    fn old_forms_still_parse_and_get_a_hint() {
+        let hint = |args: &[&str]| old_form_hint(&parse(args));
+        assert_eq!(
+            hint(&["pr", "list"]).as_deref(),
+            Some("`teer pr list` is now `teer pr`; the old form goes in the next release.")
+        );
+        assert_eq!(hint(&["pr", "ls"]), hint(&["pr", "list"]));
+        assert_eq!(
+            hint(&["pr", "https://github.com/a/b/pull/7"]).as_deref(),
+            Some(
+                "`teer pr <url>` is now `teer https://github.com/a/b/pull/7`; the old form goes in the next release."
+            )
+        );
+        for v2 in [
+            &[][..],
+            &["pr"],
+            &["482"],
+            &["notes"],
+            &["--base", "main"],
+            &["setup"],
+        ] {
+            assert_eq!(hint(v2), None, "{v2:?}");
+        }
+        assert!(matches!(
+            parse(&["help", "pr"]).command,
+            Some(Command::Help { command: Some(ref c) }) if c == "pr"
+        ));
     }
 
     #[test]

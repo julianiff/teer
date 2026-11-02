@@ -1,0 +1,11 @@
+# A teer v1 config: action names from v1's `[keys]` (src/config.rs at
+# e394565), one key each. `accept` and `undo` have a v2 action; `swipe`
+# and `prev_card` (swipe's "previous card") don't.
+theme = "dark"
+second_opinion = false
+
+[keys]
+accept = "e"
+undo = "U"
+swipe = "S"
+prev_card = "H"

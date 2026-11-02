@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use super::model::{PrInfo, Prep, Review};
+use super::model::{Decision, PrInfo, Prep, Review};
 use crate::util::hash_hex;
 
 /// The version of the saved format. 1 added the version itself and the
@@ -175,7 +175,24 @@ fn read(path: &Path) -> Option<Review> {
     if let Ok(id) = std::fs::read_to_string(cursor_path(path)) {
         review.cursor = (!id.is_empty()).then_some(id);
     }
+    if review.version == 0 {
+        migrate_v1(&mut review);
+    }
     (review.version <= CURRENT).then_some(review)
+}
+
+/// A review teer v1 saved (format 0) in v2's states. v1 resolved a flagged
+/// unit as "needs fix" or "ok" on its Flagged screen; v2 has no such
+/// state, so a unit with either is flagged, its note kept, unless it was
+/// accepted since. Flagged units stay flagged, with or without a note.
+/// v1 kept no swipe position or cursor, so the queue opens on its first
+/// pending ▲ (`App::new`).
+fn migrate_v1(review: &mut Review) {
+    for u in &mut review.units {
+        if u.dive.resolution.take().is_some() && u.decision != Decision::Accepted {
+            u.decision = Decision::Investigate;
+        }
+    }
 }
 
 /// Carry decisions and agent answers over from a previous review for units
@@ -574,5 +591,78 @@ mod tests {
         );
         merge_previous(&mut new, &back);
         assert_eq!(new.cursor.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn a_v1_resolution_becomes_a_flag_with_its_note() {
+        use crate::review::model::Resolution;
+        let with = |id: &str, decision, resolution, note: &str| {
+            let mut u = named(id, "1");
+            u.decision = decision;
+            u.dive.resolution = resolution;
+            u.dive.note = note.into();
+            u
+        };
+        let units = vec![
+            with(
+                "fix",
+                Decision::Investigate,
+                Some(Resolution::NeedsFix),
+                "the +1",
+            ),
+            with("ok", Decision::Investigate, Some(Resolution::Ok), ""),
+            with("plain", Decision::Investigate, None, ""),
+            // Reset after resolving it: the fix still stands.
+            with(
+                "reset",
+                Decision::Pending,
+                Some(Resolution::NeedsFix),
+                "why",
+            ),
+            // Accepted after resolving it: accepted.
+            with("later", Decision::Accepted, Some(Resolution::NeedsFix), "n"),
+            with("note", Decision::Pending, None, "a question"),
+        ];
+        let mut r = saved_at("/teer-tests/v1-resolutions", units);
+        let path = save(&r).unwrap();
+        // Saved by v1: no version.
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("version");
+        write_atomic(&path, &serde_json::to_vec(&json).unwrap()).unwrap();
+
+        let back = load(&r.repo_root, None, &r.base, &r.head, &r.head_commit).unwrap();
+        let got: Vec<(&str, Decision, Option<Resolution>, &str)> = back
+            .units
+            .iter()
+            .map(|u| {
+                (
+                    u.id.as_str(),
+                    u.decision,
+                    u.dive.resolution,
+                    u.dive.note.as_str(),
+                )
+            })
+            .collect();
+        use Decision::*;
+        assert_eq!(
+            got,
+            vec![
+                ("fix", Investigate, None, "the +1"),
+                ("ok", Investigate, None, ""),
+                ("plain", Investigate, None, ""),
+                ("reset", Investigate, None, "why"),
+                ("later", Accepted, None, "n"),
+                ("note", Pending, None, "a question"),
+            ]
+        );
+
+        // A file of this teer keeps what it says: the v1 screens still
+        // resolve until they go.
+        r.units[1].decision = Pending;
+        save(&r).unwrap();
+        let back = load(&r.repo_root, None, &r.base, &r.head, &r.head_commit).unwrap();
+        assert_eq!(back.units[1].decision, Pending);
+        assert_eq!(back.units[1].dive.resolution, Some(Resolution::Ok));
     }
 }

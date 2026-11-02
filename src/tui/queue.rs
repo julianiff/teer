@@ -23,7 +23,8 @@ use crate::keymap::Action;
 use crate::review::model::{Decision, Risk, Unit, UnitKind, UnitStatus};
 use crate::util::{sanitize, truncate, truncate_pad};
 
-/// The actions the queue handles, for the help, in the order it lists them.
+/// The actions the queue handles, for the help, in the order it lists them
+/// inside each of its groups (Move, Decide, Look closer, More, Finish).
 pub const ACTIONS: &[Action] = &[
     Action::MoveDown,
     Action::MoveUp,
@@ -37,6 +38,7 @@ pub const ACTIONS: &[Action] = &[
     Action::ScrollHalfUp,
     Action::ScrollPageDown,
     Action::ScrollPageUp,
+    Action::FindUnit,
     Action::DecideAccept,
     Action::DecideFlag,
     Action::DecideAcceptFile,
@@ -47,24 +49,23 @@ pub const ACTIONS: &[Action] = &[
     Action::HistoryRedo,
     Action::HistoryRepeat,
     Action::ViewOpen,
-    Action::ViewClose,
     Action::AskOpen,
-    Action::ToggleAutoAccepted,
-    Action::ToggleByFile,
-    Action::HelpOpen,
-    Action::FindUnit,
     Action::GotoDefinition,
     Action::GotoCallers,
     Action::GotoEditor,
     Action::ToolTests,
     Action::ToolRunOldNew,
     Action::ToolDiagram,
+    Action::ToggleAutoAccepted,
+    Action::ToggleByFile,
     Action::ToolHistory,
     Action::ToolNotes,
     Action::ToolSettings,
+    Action::HelpOpen,
     Action::FinishOpen,
     Action::ReviewRerun,
     Action::ReviewReset,
+    Action::ViewClose,
 ];
 
 /// Most characters of a flagged unit's note its row shows.

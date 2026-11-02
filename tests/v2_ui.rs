@@ -232,12 +232,11 @@ fn the_help_lists_the_lists_keys_from_the_keymap() {
     let screen = text(&app, 160, 50);
     for want in [
         "keys · list",
-        "move",
-        "decide",
-        "view",
-        "go to",
-        "tools",
-        "finish",
+        "Move",
+        "Decide",
+        "Look closer",
+        "More",
+        "Finish",
         "j/↓ k/↑  move down / up",
         "gg/home G/end  first / last unit",
         "a f  accept / flag the unit",

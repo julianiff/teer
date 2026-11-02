@@ -34,7 +34,8 @@ use crate::review::dive::DiveEvent;
 use crate::review::model::{AcceptedBy, Cite, Decision, DiveKind, Prep, Shown, Unit};
 use crate::util::{truncate, wrap};
 
-/// The actions the unit view handles, for the help.
+/// The actions the unit view handles, for the help, in the order it lists
+/// them inside each of its groups (Move, Decide, Look closer, More, Finish).
 pub const ACTIONS: &[Action] = &[
     Action::MoveNextPending,
     Action::MovePrevPending,
@@ -50,19 +51,17 @@ pub const ACTIONS: &[Action] = &[
     Action::ScrollHalfUp,
     Action::ScrollPageDown,
     Action::ScrollPageUp,
+    Action::FindUnit,
+    Action::ViewBack,
     Action::DecideAccept,
     Action::DecideFlag,
-    Action::NoteEdit,
     Action::DecideAcceptFile,
     Action::DecideFlagFile,
+    Action::NoteEdit,
     Action::HistoryUndo,
     Action::HistoryRedo,
     Action::HistoryRepeat,
-    Action::ViewBack,
-    Action::ViewClose,
     Action::AskOpen,
-    Action::HelpOpen,
-    Action::FindUnit,
     Action::GotoDefinition,
     Action::GotoCallers,
     Action::GotoEditor,
@@ -72,9 +71,12 @@ pub const ACTIONS: &[Action] = &[
     Action::ToolDiagram,
     Action::ToolHistory,
     Action::ToolNotes,
+    Action::ToolSettings,
+    Action::HelpOpen,
     Action::FinishOpen,
     Action::ReviewRerun,
     Action::ReviewReset,
+    Action::ViewClose,
 ];
 
 /// Pending units the recommendation is asked for when the queue opens:

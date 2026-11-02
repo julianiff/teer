@@ -529,6 +529,9 @@ pub struct App {
     pub screen: Screen,
     pub return_to: Vec<Screen>,
     pub overlay: Overlay,
+    /// The panel the help (`?`) was opened over: what it lists the keys of,
+    /// and what comes back when it closes.
+    pub help_over: Option<Overlay>,
 
     pub has_agent: bool,
     pub agent_note: Option<String>,
@@ -625,6 +628,7 @@ impl App {
             screen: Screen::Queue,
             return_to: Vec::new(),
             overlay: Overlay::None,
+            help_over: None,
             has_agent: false,
             agent_note: None,
             sessions: Vec::new(),
@@ -1241,7 +1245,7 @@ impl App {
                 return Some(Vec::new());
             }
             Overlay::Help => {
-                self.overlay = Overlay::None;
+                self.overlay = self.help_over.take().unwrap_or(Overlay::None);
                 return Some(Vec::new());
             }
             Overlay::Commits { sel, unit } => return Some(self.commits_key(sel, unit, k)),
@@ -1328,6 +1332,12 @@ impl App {
         self.act(a, count)
     }
 
+    /// The help (`?`) for the screen, or for the panel open on it.
+    pub fn open_help(&mut self) {
+        let over = std::mem::replace(&mut self.overlay, Overlay::Help);
+        self.help_over = (over != Overlay::None).then_some(over);
+    }
+
     /// Run `a` once, without a count.
     pub fn on_action(&mut self, a: Action) -> Vec<Effect> {
         self.run_action(a, None)
@@ -1348,7 +1358,7 @@ impl App {
     fn act(&mut self, a: Action, count: Option<u32>) -> Vec<Effect> {
         match a {
             Action::HelpOpen => {
-                self.overlay = Overlay::Help;
+                self.open_help();
                 return Vec::new();
             }
             Action::ReviewReset => {
@@ -2086,7 +2096,7 @@ impl App {
                 return self.open_finish_on(super::finish::Step::RequestChanges);
             }
             Action::HelpOpen => {
-                self.overlay = Overlay::Help;
+                self.open_help();
                 return Vec::new();
             }
             Action::ViewBack | Action::ViewClose | Action::ToolNotes => {
