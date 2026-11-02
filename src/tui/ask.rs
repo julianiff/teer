@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use super::app::{App, Target};
+use super::app::{App, LiveAnswer, Target};
 use super::preview::barred;
 use super::slim;
 use crate::config::Action;
@@ -24,6 +24,8 @@ use crate::util::{sanitize, truncate, wrap};
 
 /// What a question on its way says.
 pub const ASKING: &str = "the agent reads the code…";
+/// While the answer comes in.
+pub const WRITING: &str = "the agent writes the answer…";
 /// The view's title.
 pub const TITLE: &str = " Ask about the code ";
 /// Lines of an answer a unit's note shows before it is cut.
@@ -258,6 +260,15 @@ question has to do with. Each answer is also noted on the unit it is about."
         }
         let last = k + 1 == which.len();
         question_lines(app, n, q, (last, chat), w, &mut lines);
+        // The answer being written, in the old one's place.
+        if let Some(text) = app.live_text(n) {
+            lines.push(Line::default());
+            lines.push(barred(app, Line::styled(agent_label(app), t.muted()), 0));
+            for l in wrap(text, w.saturating_sub(2)) {
+                lines.push(barred(app, Line::raw(l), 0));
+            }
+            continue;
+        }
         let Some(a) = &q.answer else {
             continue;
         };
@@ -324,8 +335,18 @@ fn question_lines(
         ));
     }
     if app.ask.pending.contains(&n) {
+        let live = app.ask.live.get(&n);
+        let doing = match live {
+            _ if app.live_text(n).is_some() => WRITING.to_string(),
+            Some(LiveAnswer {
+                step: Some(step),
+                steps,
+                ..
+            }) => format!("step {steps}: {step}"),
+            _ => ASKING.to_string(),
+        };
         lines.push(Line::styled(
-            format!("  {} {ASKING}", app.spinner()),
+            truncate(&format!("  {} {doing}", app.spinner()), w),
             t.muted(),
         ));
     } else if let Some(e) = &q.error {

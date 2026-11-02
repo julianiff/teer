@@ -7,6 +7,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 
+use super::live::{Live, LiveTx};
 use super::{AgentAdapter, SessionInfo};
 use crate::review::model::SessionRef;
 
@@ -24,6 +25,8 @@ pub struct MockAdapter {
     pub prepare_calls: Arc<Mutex<usize>>,
     /// How many came through `ask_second`.
     pub second_calls: Arc<Mutex<usize>>,
+    /// What `ask_live` tells before it answers.
+    pub live: Vec<Live>,
 }
 
 impl MockAdapter {
@@ -35,6 +38,7 @@ impl MockAdapter {
             web_calls: Arc::default(),
             prepare_calls: Arc::default(),
             second_calls: Arc::default(),
+            live: Vec::new(),
         }
     }
 }
@@ -59,6 +63,20 @@ impl AgentAdapter for MockAdapter {
     ) -> Result<Value> {
         self.web_calls.lock().unwrap().push(web);
         self.ask_structured(s, prompt, schema).await
+    }
+
+    async fn ask_live(
+        &self,
+        s: &SessionRef,
+        prompt: &str,
+        schema: &Value,
+        web: bool,
+        live: LiveTx,
+    ) -> Result<Value> {
+        for l in &self.live {
+            let _ = live.send(l.clone());
+        }
+        self.ask_dive(s, prompt, schema, web).await
     }
 
     async fn ask_prepare(&self, s: &SessionRef, prompt: &str, schema: &Value) -> Result<Value> {

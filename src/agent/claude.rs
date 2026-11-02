@@ -8,9 +8,10 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, Command};
 
+use super::live::{self, Live, LiveTx};
 use super::{AgentAdapter, PrepareModel, SessionInfo, commands, sessions};
 use crate::review::model::SessionRef;
 
@@ -73,15 +74,9 @@ fn fork_of(s: &SessionRef) -> Option<&str> {
 }
 
 impl ClaudeAdapter {
-    /// Run `claude` with `args` (plus the untrusted flags for a pull request)
-    /// in the session's directory, the prompt on stdin, and parse its answer.
-    async fn run_structured(
-        &self,
-        s: &SessionRef,
-        mut args: Vec<String>,
-        prompt: &str,
-        timeout: Duration,
-    ) -> Result<Value> {
+    /// Start `claude` with `args` (plus the untrusted flags for a pull
+    /// request) in the session's directory, the prompt on stdin.
+    async fn start(&self, s: &SessionRef, mut args: Vec<String>, prompt: &str) -> Result<Child> {
         if self.untrusted {
             args.extend(commands::untrusted_flags());
         }
@@ -99,6 +94,18 @@ impl ClaudeAdapter {
         let mut stdin = child.stdin.take().context("no stdin")?;
         stdin.write_all(prompt.as_bytes()).await?;
         drop(stdin);
+        Ok(child)
+    }
+
+    /// Run `claude` and parse its answer.
+    async fn run_structured(
+        &self,
+        s: &SessionRef,
+        args: Vec<String>,
+        prompt: &str,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let child = self.start(s, args, prompt).await?;
         let out = tokio::time::timeout(timeout, child.wait_with_output())
             .await
             .context("claude timed out")??;
@@ -110,6 +117,99 @@ impl ClaudeAdapter {
             );
         }
         parse_structured_result(&stdout)
+    }
+
+    /// [`Self::run_structured`] with `stream-json` output
+    /// ([`commands::claude_live`]), read as it comes: `live` hears each
+    /// step and the answer as it is written; the `result` line is the answer.
+    async fn run_live(
+        &self,
+        s: &SessionRef,
+        args: Vec<String>,
+        prompt: &str,
+        timeout: Duration,
+        live: &LiveTx,
+    ) -> Result<Value> {
+        let mut child = self.start(s, args, prompt).await?;
+        let stdout = child.stdout.take().context("no stdout")?;
+        let mut stderr = child.stderr.take().context("no stderr")?;
+        // Read on its own, so a full pipe never stalls the run.
+        let errors = tokio::spawn(async move {
+            let mut b = Vec::new();
+            let _ = stderr.read_to_end(&mut b).await;
+            b
+        });
+        let read = async {
+            let mut lines = BufReader::new(stdout).lines();
+            let mut stream = Stream::default();
+            let mut result = None;
+            while let Some(line) = lines.next_line().await? {
+                if let Some(r) = stream.line(&line, &s.cwd, live) {
+                    result = Some(r);
+                }
+            }
+            child.wait().await?;
+            anyhow::Ok(result)
+        };
+        let result = tokio::time::timeout(timeout, read)
+            .await
+            .context("claude timed out")??;
+        match result {
+            Some(line) => parse_structured_result(&line),
+            None => {
+                let stderr = errors.await.unwrap_or_default();
+                bail!("claude failed: {}", String::from_utf8_lossy(&stderr).trim())
+            }
+        }
+    }
+}
+
+/// What is read of `stream-json` output so far.
+#[derive(Default)]
+struct Stream {
+    /// The answer's block in the message being written (Claude Code's
+    /// `StructuredOutput` tool call): its index and its JSON so far.
+    answer: Option<(u64, String)>,
+}
+
+impl Stream {
+    /// Read one line and tell `live` what it shows: a tool the agent runs, a
+    /// piece of the answer. The line itself when it is the `result`.
+    fn line(&mut self, line: &str, root: &Path, live: &LiveTx) -> Option<String> {
+        let v: Value = serde_json::from_str(line).ok()?;
+        match v["type"].as_str()? {
+            "result" => return Some(line.to_string()),
+            "assistant" => {
+                let content = v["message"]["content"].as_array();
+                for b in content.into_iter().flatten() {
+                    if b["type"] == "tool_use"
+                        && let Some(step) =
+                            live::tool_step(b["name"].as_str().unwrap_or(""), &b["input"], root)
+                    {
+                        let _ = live.send(Live::Step(step));
+                    }
+                }
+            }
+            "stream_event" => {
+                let e = &v["event"];
+                match e["type"].as_str()? {
+                    "message_start" => self.answer = None,
+                    "content_block_start" if e["content_block"]["name"] == "StructuredOutput" => {
+                        self.answer = Some((e["index"].as_u64()?, String::new()));
+                    }
+                    "content_block_delta" if e["delta"]["type"] == "input_json_delta" => {
+                        let (i, json) = self.answer.as_mut()?;
+                        if e["index"].as_u64() == Some(*i) {
+                            json.push_str(e["delta"]["partial_json"].as_str().unwrap_or(""));
+                            let _ = live.send(Live::Partial(json.clone()));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        None
     }
 }
 
@@ -137,6 +237,18 @@ impl AgentAdapter for ClaudeAdapter {
     ) -> Result<Value> {
         let args = commands::claude_dive(fork_of(s), &schema.to_string(), web);
         self.run_structured(s, args, prompt, DIVE_TIMEOUT).await
+    }
+
+    async fn ask_live(
+        &self,
+        s: &SessionRef,
+        prompt: &str,
+        schema: &Value,
+        web: bool,
+        live: LiveTx,
+    ) -> Result<Value> {
+        let args = commands::claude_live(fork_of(s), &schema.to_string(), web);
+        self.run_live(s, args, prompt, DIVE_TIMEOUT, &live).await
     }
 
     async fn ask_probe(&self, s: &SessionRef, prompt: &str, schema: &Value) -> Result<Value> {
@@ -169,6 +281,38 @@ mod tests {
         assert_eq!(
             parse_structured_result(&s).unwrap(),
             serde_json::json!({"answer": "Hi!"})
+        );
+    }
+
+    #[test]
+    fn a_stream_tells_the_steps_and_the_answer_as_it_is_written() {
+        let s = std::fs::read_to_string(format!("{DIR}claude_stream.jsonl")).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut stream = Stream::default();
+        let results: Vec<String> = s
+            .lines()
+            .filter_map(|l| stream.line(l, Path::new("/r"), &tx))
+            .collect();
+        drop(tx);
+        let mut seen = Vec::new();
+        while let Ok(l) = rx.try_recv() {
+            seen.push(l);
+        }
+        // The answer the model first wrote as text isn't the answer; the
+        // tool call's own JSON isn't either.
+        assert_eq!(
+            seen,
+            [
+                Live::Step("search “retry” in src".into()),
+                Live::Partial(String::new()),
+                Live::Partial(r#"{"text": "Retries are"#.into()),
+                Live::Partial(r#"{"text": "Retries are in http.rs."}"#.into()),
+            ]
+        );
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            parse_structured_result(&results[0]).unwrap(),
+            serde_json::json!({"text": "Retries are in http.rs."})
         );
     }
 

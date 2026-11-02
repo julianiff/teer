@@ -15,6 +15,7 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use super::live::{self, Live, LiveTx};
 use super::{AgentAdapter, PrepareModel, SessionInfo, repo_tools, schema};
 use crate::config::ApiFormat;
 use crate::review::model::SessionRef;
@@ -81,8 +82,9 @@ impl ApiAdapter {
         prompt: &str,
         schema: &Value,
         timeout: Duration,
+        live: Option<&LiveTx>,
     ) -> Result<Value> {
-        tokio::time::timeout(timeout, self.converse(m, repo, prompt, schema))
+        tokio::time::timeout(timeout, self.converse(m, repo, prompt, schema, live))
             .await
             .with_context(|| {
                 format!("the model API gave no answer within {}s", timeout.as_secs())
@@ -90,24 +92,35 @@ impl ApiAdapter {
     }
 
     /// One question, turn by turn: the model reads with the tools (when
-    /// `repo` is given) until it answers.
+    /// `repo` is given) until it answers. `live` hears each tool call and
+    /// the replies as they are written.
     async fn converse(
         &self,
         m: &PrepareModel,
         repo: Option<&Path>,
         prompt: &str,
         schema: &Value,
+        live: Option<&LiveTx>,
     ) -> Result<Value> {
         let model = m.model.as_deref().context("no model set for the API")?;
         let mut chat = Chat::new(prompt, repo.is_some());
         for turn in 0..MAX_TURNS {
-            let reply = self.send(&chat, model, m.effort.as_deref(), schema).await?;
+            let reply = self
+                .send(&chat, model, m.effort.as_deref(), schema, live)
+                .await?;
             match chat.take(self.format, reply)? {
                 Step::Answer(text) => return parse_answer(&text).map(schema::drop_nulls),
                 Step::Tools(calls) => {
                     let root = repo
                         .context("the model asked for a tool it wasn't given")?
                         .to_path_buf();
+                    for c in &calls {
+                        if let (Some(live), Some(step)) =
+                            (live, live::tool_step(&c.name, &c.input, &root))
+                        {
+                            let _ = live.send(Live::Step(step));
+                        }
+                    }
                     let results = tokio::task::spawn_blocking(move || {
                         calls
                             .into_iter()
@@ -134,13 +147,14 @@ impl ApiAdapter {
         model: &str,
         effort: Option<&str>,
         schema: &Value,
+        live: Option<&LiveTx>,
     ) -> Result<Value> {
         let formatted = !self.no_format.load(Ordering::Relaxed);
         let body = chat.body(self.format, model, effort, schema, formatted);
-        match self.post(&body).await {
+        match self.post(&body, live).await {
             Err(e) if formatted && e.downcast_ref::<BadRequest>().is_some() => {
                 let plain = chat.body(self.format, model, effort, schema, false);
-                let reply = self.post(&plain).await.map_err(|_| e)?;
+                let reply = self.post(&plain, live).await.map_err(|_| e)?;
                 self.no_format.store(true, Ordering::Relaxed);
                 Ok(reply)
             }
@@ -155,8 +169,21 @@ impl ApiAdapter {
         }
     }
 
-    async fn post(&self, body: &Value) -> Result<Value> {
+    /// Post `body`, trying again while the API is busy. With `live`, the
+    /// reply is streamed and `live` hears its text as it is written; it is
+    /// read back into the reply the API gives without streaming.
+    async fn post(&self, body: &Value, live: Option<&LiveTx>) -> Result<Value> {
         let mut wait = Duration::from_secs(2);
+        let streamed;
+        let body = match live {
+            Some(_) => {
+                let mut b = body.clone();
+                b["stream"] = json!(true);
+                streamed = b;
+                &streamed
+            }
+            None => body,
+        };
         for attempt in 1..=TRIES {
             let req = auth(
                 self.client.post(self.endpoint()),
@@ -174,11 +201,20 @@ impl ApiAdapter {
                 Err(e) => return Err(e).context("couldn't reach the model API"),
             };
             let status = res.status();
+            let events = res
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.starts_with("text/event-stream"));
             if status.is_success() {
-                return res
-                    .json()
-                    .await
-                    .context("the model API answered something that isn't JSON");
+                // A server that doesn't stream answers as usual.
+                return match live {
+                    Some(live) if events => read_events(res, self.format, live).await,
+                    _ => res
+                        .json()
+                        .await
+                        .context("the model API answered something that isn't JSON"),
+                };
             }
             let busy = matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504 | 529);
             if busy && attempt < TRIES {
@@ -200,6 +236,237 @@ impl ApiAdapter {
             bail!("the model API answered {status}: {msg}");
         }
         unreachable!("the last try returns")
+    }
+}
+
+/// Read a streamed reply (server-sent events) into the reply the API gives
+/// without streaming, telling `live` its text as it is written.
+async fn read_events(
+    mut res: reqwest::Response,
+    format: ApiFormat,
+    live: &LiveTx,
+) -> Result<Value> {
+    let mut reply = Streamed::new(format);
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = res
+        .chunk()
+        .await
+        .context("the model API's stream broke off")?
+    {
+        buf.extend_from_slice(&chunk);
+        while let Some(end) = buf.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = buf.drain(..=end).collect();
+            let line = String::from_utf8_lossy(&line);
+            if let Some(data) = line.trim_end().strip_prefix("data:") {
+                reply.event(data.trim_start(), live)?;
+            }
+        }
+    }
+    reply.finish()
+}
+
+/// A streamed reply, put back together event by event.
+struct Streamed {
+    format: ApiFormat,
+    /// Anthropic: the message, its content blocks filled in as they come.
+    /// OpenAI: the choice's message, fields filled in as they come.
+    message: Value,
+    /// Tool calls' arguments as they came: by block (Anthropic) or by call (OpenAI).
+    args: Vec<String>,
+    /// OpenAI: why the reply stopped.
+    finish: Value,
+    /// Whether the reply came to its end.
+    done: bool,
+    /// The reply's text so far.
+    text: String,
+}
+
+impl Streamed {
+    fn new(format: ApiFormat) -> Streamed {
+        let message = match format {
+            ApiFormat::Anthropic => json!({ "role": "assistant", "content": [] }),
+            ApiFormat::Openai => json!({ "role": "assistant", "content": null }),
+        };
+        Streamed {
+            format,
+            message,
+            args: Vec::new(),
+            finish: Value::Null,
+            done: false,
+            text: String::new(),
+        }
+    }
+
+    /// One event's data.
+    fn event(&mut self, data: &str, live: &LiveTx) -> Result<()> {
+        if data == "[DONE]" {
+            self.done = true;
+            return Ok(());
+        }
+        let Ok(v) = serde_json::from_str::<Value>(data) else {
+            return Ok(());
+        };
+        if !v["error"].is_null() {
+            bail!("the model API stopped: {}", error_message(&v.to_string()));
+        }
+        let before = self.text.len();
+        match self.format {
+            ApiFormat::Anthropic => self.anthropic(&v),
+            ApiFormat::Openai => self.openai(&v),
+        }
+        if self.text.len() > before {
+            let _ = live.send(Live::Partial(self.text.clone()));
+        }
+        Ok(())
+    }
+
+    /// `message_start`, `content_block_start`, `content_block_delta` (text,
+    /// tool input, thinking and its signature, which go back unchanged),
+    /// `content_block_stop`, `message_delta`, `message_stop`.
+    fn anthropic(&mut self, v: &Value) {
+        let i = v["index"].as_u64().unwrap_or(0) as usize;
+        match v["type"].as_str().unwrap_or("") {
+            "message_start" => self.message = v["message"].clone(),
+            "content_block_start" => {
+                let Some(blocks) = self.message["content"].as_array_mut() else {
+                    return;
+                };
+                if blocks.len() <= i {
+                    blocks.resize(i + 1, Value::Null);
+                }
+                blocks[i] = v["content_block"].clone();
+                if self.args.len() <= i {
+                    self.args.resize(i + 1, String::new());
+                }
+            }
+            "content_block_delta" => {
+                let d = &v["delta"];
+                let piece = |k: &str| d[k].as_str().unwrap_or("").to_string();
+                let Some(block) = self.message["content"].get_mut(i) else {
+                    return;
+                };
+                let mut append = |k: &str, s: &str| {
+                    let had = block[k].as_str().unwrap_or("").to_string();
+                    block[k] = json!(had + s);
+                };
+                match d["type"].as_str().unwrap_or("") {
+                    "text_delta" => {
+                        append("text", &piece("text"));
+                        self.text.push_str(&piece("text"));
+                    }
+                    "thinking_delta" => append("thinking", &piece("thinking")),
+                    "signature_delta" => append("signature", &piece("signature")),
+                    "input_json_delta" => {
+                        if let Some(a) = self.args.get_mut(i) {
+                            a.push_str(&piece("partial_json"));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            "content_block_stop" => {
+                let args = self.args.get(i).cloned().unwrap_or_default();
+                if let Some(block) = self.message["content"].get_mut(i)
+                    && !args.trim().is_empty()
+                {
+                    block["input"] = serde_json::from_str(&args).unwrap_or(Value::Null);
+                }
+            }
+            "message_delta" => {
+                if let (Some(m), Some(d)) = (self.message.as_object_mut(), v["delta"].as_object()) {
+                    m.extend(d.clone());
+                }
+            }
+            "message_stop" => self.done = true,
+            _ => {}
+        }
+    }
+
+    /// A chunk: the choice's `delta` (text and other fields appended, tool
+    /// calls by their `index`) and its `finish_reason`.
+    fn openai(&mut self, v: &Value) {
+        let choice = &v["choices"][0];
+        if let Some(delta) = choice["delta"].as_object() {
+            for (k, d) in delta {
+                match (k.as_str(), d) {
+                    ("tool_calls", Value::Array(calls)) => {
+                        for (n, c) in calls.iter().enumerate() {
+                            self.tool_call_delta(n, c);
+                        }
+                    }
+                    ("role", _) | (_, Value::Null) => {}
+                    (k, Value::String(s)) => {
+                        let had = self.message[k].as_str().unwrap_or("").to_string();
+                        self.message[k] = json!(had + s);
+                        if k == "content" {
+                            self.text.push_str(s);
+                        }
+                    }
+                    (k, d) => self.message[k] = d.clone(),
+                }
+            }
+        }
+        if !choice["finish_reason"].is_null() {
+            self.finish = choice["finish_reason"].clone();
+            self.done = true;
+        }
+    }
+
+    /// A piece of tool call `n` of a chunk: its `id` and `name` once, its
+    /// arguments in pieces (or whole, as an object, from some servers).
+    fn tool_call_delta(&mut self, n: usize, c: &Value) {
+        let at = c["index"].as_u64().map_or(n, |i| i as usize);
+        if !self.message["tool_calls"].is_array() {
+            self.message["tool_calls"] = json!([]);
+        }
+        let Some(calls) = self.message["tool_calls"].as_array_mut() else {
+            return;
+        };
+        while calls.len() <= at {
+            calls.push(json!({ "id": "", "type": "function", "function": { "name": "" } }));
+        }
+        if self.args.len() <= at {
+            self.args.resize(at + 1, String::new());
+        }
+        let call = &mut calls[at];
+        if let Some(id) = c["id"].as_str() {
+            call["id"] = json!(id);
+        }
+        if let Some(name) = c["function"]["name"].as_str() {
+            call["function"]["name"] = json!(name);
+        }
+        match &c["function"]["arguments"] {
+            Value::String(s) => self.args[at].push_str(s),
+            Value::Null => {}
+            whole => call["function"]["arguments"] = whole.clone(),
+        }
+    }
+
+    /// The reply as the API gives it without streaming.
+    fn finish(mut self) -> Result<Value> {
+        if !self.done {
+            bail!("the model API's stream ended before the reply did");
+        }
+        match self.format {
+            ApiFormat::Anthropic => {
+                if let Some(blocks) = self.message["content"].as_array_mut() {
+                    blocks.retain(|b| !b.is_null());
+                }
+                Ok(self.message)
+            }
+            ApiFormat::Openai => {
+                if let Some(calls) = self.message["tool_calls"].as_array_mut() {
+                    for (call, args) in calls.iter_mut().zip(&self.args) {
+                        if call["function"]["arguments"].is_null() {
+                            call["function"]["arguments"] = json!(args);
+                        }
+                    }
+                }
+                Ok(
+                    json!({ "choices": [{ "message": self.message, "finish_reason": self.finish }] }),
+                )
+            }
+        }
     }
 }
 
@@ -540,8 +807,15 @@ impl AgentAdapter for ApiAdapter {
     }
 
     async fn ask_structured(&self, s: &SessionRef, prompt: &str, schema: &Value) -> Result<Value> {
-        self.ask(&self.deep, Some(&s.cwd), prompt, schema, STRUCTURED_TIMEOUT)
-            .await
+        self.ask(
+            &self.deep,
+            Some(&s.cwd),
+            prompt,
+            schema,
+            STRUCTURED_TIMEOUT,
+            None,
+        )
+        .await
     }
 
     async fn ask_dive(
@@ -551,22 +825,49 @@ impl AgentAdapter for ApiAdapter {
         schema: &Value,
         _web: bool,
     ) -> Result<Value> {
-        self.ask(&self.deep, Some(&s.cwd), prompt, schema, DIVE_TIMEOUT)
+        self.ask(&self.deep, Some(&s.cwd), prompt, schema, DIVE_TIMEOUT, None)
+            .await
+    }
+
+    async fn ask_live(
+        &self,
+        s: &SessionRef,
+        prompt: &str,
+        schema: &Value,
+        _web: bool,
+        live: LiveTx,
+    ) -> Result<Value> {
+        let repo = Some(s.cwd.as_path());
+        self.ask(&self.deep, repo, prompt, schema, DIVE_TIMEOUT, Some(&live))
             .await
     }
 
     async fn ask_probe(&self, s: &SessionRef, prompt: &str, schema: &Value) -> Result<Value> {
-        self.ask(&self.deep, Some(&s.cwd), prompt, schema, PROBE_TIMEOUT)
-            .await
+        self.ask(
+            &self.deep,
+            Some(&s.cwd),
+            prompt,
+            schema,
+            PROBE_TIMEOUT,
+            None,
+        )
+        .await
     }
 
     async fn ask_prepare(&self, _s: &SessionRef, prompt: &str, schema: &Value) -> Result<Value> {
-        self.ask(&self.prepare, None, prompt, schema, STRUCTURED_TIMEOUT)
-            .await
+        self.ask(
+            &self.prepare,
+            None,
+            prompt,
+            schema,
+            STRUCTURED_TIMEOUT,
+            None,
+        )
+        .await
     }
 
     async fn ask_second(&self, _s: &SessionRef, prompt: &str, schema: &Value) -> Result<Value> {
-        self.ask(&self.second, None, prompt, schema, STRUCTURED_TIMEOUT)
+        self.ask(&self.second, None, prompt, schema, STRUCTURED_TIMEOUT, None)
             .await
     }
 }

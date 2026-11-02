@@ -6,6 +6,7 @@ pub mod api;
 pub mod claude;
 pub mod codex;
 pub mod commands;
+pub mod live;
 pub mod mock;
 pub mod repo_tools;
 pub mod schema;
@@ -18,6 +19,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::review::model::SessionRef;
+use live::LiveTx;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionInfo {
@@ -65,6 +67,19 @@ pub trait AgentAdapter: Send + Sync {
         _web: bool,
     ) -> Result<Value> {
         self.ask_structured(s, prompt, schema).await
+    }
+    /// [`Self::ask_dive`] while `live` hears what the run does: the steps it
+    /// takes and, where the provider streams it, the answer as it is
+    /// written. Adapters that can't watch a run just ask.
+    async fn ask_live(
+        &self,
+        s: &SessionRef,
+        prompt: &str,
+        schema: &Value,
+        web: bool,
+        _live: LiveTx,
+    ) -> Result<Value> {
+        self.ask_dive(s, prompt, schema, web).await
     }
     /// Describe units for the review: a fresh run (never a fork of the
     /// session), without tools (the code is in the prompt), on the

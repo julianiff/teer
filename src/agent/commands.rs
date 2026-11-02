@@ -55,6 +55,23 @@ pub fn claude_prepare(prep: &PrepareModel, schema_json: &str) -> Vec<String> {
 /// `--allowedTools` pre-approves only the web tools, so file tools stay
 /// confined to the working directory by `--permission-mode dontAsk`.
 pub fn claude_dive(session: Option<&str>, schema_json: &str, web: bool) -> Vec<String> {
+    dive(session, schema_json, web, &["json"])
+}
+
+/// [`claude_dive`], streamed: one JSON object per line (`stream-json` needs
+/// `--verbose` with `-p`), each message once it is done, the pieces of the
+/// one being written (`--include-partial-messages`, which is how the answer
+/// comes as it is written), and last the same `result` as `json` gives.
+pub fn claude_live(session: Option<&str>, schema_json: &str, web: bool) -> Vec<String> {
+    dive(
+        session,
+        schema_json,
+        web,
+        &["stream-json", "--verbose", "--include-partial-messages"],
+    )
+}
+
+fn dive(session: Option<&str>, schema_json: &str, web: bool, output: &[&str]) -> Vec<String> {
     let mut tools = String::from(READ_ONLY_TOOLS);
     if web {
         tools.push_str(",WebSearch,WebFetch");
@@ -71,10 +88,9 @@ pub fn claude_dive(session: Option<&str>, schema_json: &str, web: bool) -> Vec<S
         "--permission-mode",
         PERMISSION_MODE,
         "--output-format",
-        "json",
-        "--json-schema",
-        schema_json,
     ]));
+    a.extend(s(output));
+    a.extend(s(&["--json-schema", schema_json]));
     a
 }
 
@@ -99,12 +115,16 @@ pub fn untrusted_flags() -> Vec<String> {
 /// or reach the network; unlike Claude Code's read tools that sandbox reads
 /// the whole disk, not only `cwd`. `--ephemeral` keeps the run out of the
 /// session list. `model` empty leaves Codex's own model and effort.
+/// `events` prints what the run does as JSON lines on stdout (`--json`:
+/// `item.started` with a `command_execution` for each command); the answer
+/// still goes to `out_file`, whole, at the end.
 pub fn codex_exec(
     cwd: &Path,
     model: &PrepareModel,
     schema_file: &Path,
     out_file: &Path,
     untrusted: bool,
+    events: bool,
 ) -> Vec<String> {
     let mut a = s(&[
         "exec",
@@ -113,6 +133,9 @@ pub fn codex_exec(
         "--ephemeral",
         "--skip-git-repo-check",
     ]);
+    if events {
+        a.push("--json".into());
+    }
     a.extend(s(&["--color", "never", "-C"]));
     a.push(cwd.to_string_lossy().into_owned());
     if let Some(m) = &model.model {
@@ -211,6 +234,7 @@ mod tests {
             Path::new("/t/s.json"),
             Path::new("/t/o.txt"),
             false,
+            false,
         );
         assert_eq!(
             a.join(" "),
@@ -223,6 +247,7 @@ mod tests {
             Path::new("s"),
             Path::new("o"),
             true,
+            false,
         )
         .join(" ");
         assert!(!pr.contains(" -m ") && !pr.contains("model_reasoning_effort"));
@@ -230,6 +255,21 @@ mod tests {
             "-c project_doc_max_bytes=0 -c skills.include_instructions=false --ignore-rules"
         ));
         assert!(!pr.contains("workspace-write") && !pr.contains("danger"));
+        assert!(!pr.contains("--json"));
+        let watched = codex_exec(
+            Path::new("/r"),
+            &PrepareModel::default(),
+            Path::new("s"),
+            Path::new("o"),
+            false,
+            true,
+        )
+        .join(" ");
+        assert!(
+            watched
+                .starts_with("exec --sandbox read-only --ephemeral --skip-git-repo-check --json ")
+        );
+        assert!(watched.ends_with(" --output-schema s -o o -"));
     }
 
     #[test]
@@ -258,5 +298,13 @@ mod tests {
         assert!(on_s.contains("--allowedTools WebSearch,WebFetch "));
         assert!(on_s.contains("--permission-mode dontAsk"));
         assert!(!on_s.contains("Bash") && !on_s.contains("Edit") && !on_s.contains("Write"));
+        // Streamed, the same run: only how it prints changes.
+        assert_eq!(
+            claude_live(Some("abc"), "{}", true).join(" "),
+            on_s.replace(
+                "--output-format json",
+                "--output-format stream-json --verbose --include-partial-messages"
+            )
+        );
     }
 }

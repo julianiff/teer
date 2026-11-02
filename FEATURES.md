@@ -118,7 +118,7 @@ like statements, every claim in a tile must cite real lines. what doesn't is dro
 
 ## ask
 
-`/` asks anything about the code; "this" is the unit on screen. the answer brings the code it talks about (read by teer, changed lines marked) and the units it relates to: `tab`, then `enter` jumps to a unit or opens the code in your editor. answers stay on the unit they're about and are kept with the review.
+`/` asks anything about the code; "this" is the unit on screen. while the agent works you see each step it takes (the file it reads, what it searches), then the answer as it is written (claude code and model apis; codex shows the steps and the answer once done). the answer brings the code it talks about (read by teer, changed lines marked) and the units it relates to: `tab`, then `enter` jumps to a unit or opens the code in your editor. answers stay on the unit they're about and are kept with the review.
 
 ## notes
 

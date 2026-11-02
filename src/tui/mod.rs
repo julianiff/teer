@@ -435,8 +435,12 @@ impl Runtime {
                 // The code is read where the agent reads it: the repository,
                 // or the PR's checkout.
                 let job = crate::review::ask::Job::new(&app.review, index, session.cwd.clone());
+                let ptx = tx.clone();
+                let progress = move |progress| {
+                    let _ = ptx.send(AppEvent::Asking { index, progress });
+                };
                 tokio::spawn(async move {
-                    let result = crate::review::ask::answer(adapter, session, job).await;
+                    let result = crate::review::ask::answer(adapter, session, job, progress).await;
                     let _ = tx.send(AppEvent::Answer { index, result });
                 });
             }

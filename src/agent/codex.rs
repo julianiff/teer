@@ -10,9 +10,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
+use super::live::{self, Live, LiveTx};
 use super::{AgentAdapter, PrepareModel, SessionInfo, commands, schema};
 use crate::review::model::SessionRef;
 
@@ -76,6 +77,7 @@ fn parse_models(json: &str) -> Result<Vec<String>> {
 }
 
 impl CodexAdapter {
+    /// One headless run; with `live`, it hears each command Codex starts.
     async fn run(
         &self,
         s: &SessionRef,
@@ -83,17 +85,29 @@ impl CodexAdapter {
         prompt: &str,
         schema: &Value,
         timeout: Duration,
+        live: Option<&LiveTx>,
     ) -> Result<Value> {
         let dir = tempfile::tempdir().context("no temporary directory for codex")?;
         let schema_file = dir.path().join("schema.json");
         let out_file = dir.path().join("answer.json");
         std::fs::write(&schema_file, schema::for_openai(schema).to_string())?;
-        let args = commands::codex_exec(&s.cwd, model, &schema_file, &out_file, self.untrusted);
+        let args = commands::codex_exec(
+            &s.cwd,
+            model,
+            &schema_file,
+            &out_file,
+            self.untrusted,
+            live.is_some(),
+        );
         let mut child = Command::new(&self.bin)
             .args(&args)
             .current_dir(&s.cwd)
             .stdin(Stdio::piped())
-            .stdout(Stdio::null())
+            .stdout(if live.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
@@ -101,19 +115,49 @@ impl CodexAdapter {
         let mut stdin = child.stdin.take().context("no stdin")?;
         stdin.write_all(prompt.as_bytes()).await?;
         drop(stdin);
-        let out = tokio::time::timeout(timeout, child.wait_with_output())
+        let stdout = child.stdout.take();
+        let mut stderr = child.stderr.take().context("no stderr")?;
+        // Read on its own, so a full pipe never stalls the run.
+        let errors = tokio::spawn(async move {
+            let mut b = Vec::new();
+            let _ = stderr.read_to_end(&mut b).await;
+            b
+        });
+        let run = async {
+            if let (Some(out), Some(live)) = (stdout, live) {
+                let mut lines = BufReader::new(out).lines();
+                while let Some(line) = lines.next_line().await? {
+                    if let Some(step) = event_step(&line) {
+                        let _ = live.send(Live::Step(step));
+                    }
+                }
+            }
+            anyhow::Ok(child.wait().await?)
+        };
+        tokio::time::timeout(timeout, run)
             .await
             .context("codex timed out")??;
         let answer = std::fs::read_to_string(&out_file).unwrap_or_default();
         if answer.trim().is_empty() {
+            let stderr = errors.await.unwrap_or_default();
             bail!(
                 "codex failed: {}",
-                last_error(&String::from_utf8_lossy(&out.stderr))
+                last_error(&String::from_utf8_lossy(&stderr))
             );
         }
         let v: Value = serde_json::from_str(answer.trim()).context("codex's answer is not JSON")?;
         Ok(schema::drop_nulls(v))
     }
+}
+
+/// The step a line of `codex exec --json` shows: the command it starts.
+/// Its messages come whole, once written, so the answer can't be shown
+/// as it is written.
+fn event_step(line: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    let item = &v["item"];
+    (v["type"] == "item.started" && item["type"] == "command_execution")
+        .then(|| live::command_step(item["command"].as_str().unwrap_or("")))
 }
 
 /// What codex said went wrong: its `ERROR:` line, or the last lines.
@@ -147,6 +191,7 @@ impl AgentAdapter for CodexAdapter {
             prompt,
             schema,
             STRUCTURED_TIMEOUT,
+            None,
         )
         .await
     }
@@ -158,22 +203,49 @@ impl AgentAdapter for CodexAdapter {
         schema: &Value,
         _web: bool,
     ) -> Result<Value> {
-        self.run(s, &PrepareModel::default(), prompt, schema, DIVE_TIMEOUT)
+        self.run(
+            s,
+            &PrepareModel::default(),
+            prompt,
+            schema,
+            DIVE_TIMEOUT,
+            None,
+        )
+        .await
+    }
+
+    async fn ask_live(
+        &self,
+        s: &SessionRef,
+        prompt: &str,
+        schema: &Value,
+        _web: bool,
+        live: LiveTx,
+    ) -> Result<Value> {
+        let model = PrepareModel::default();
+        self.run(s, &model, prompt, schema, DIVE_TIMEOUT, Some(&live))
             .await
     }
 
     async fn ask_probe(&self, s: &SessionRef, prompt: &str, schema: &Value) -> Result<Value> {
-        self.run(s, &PrepareModel::default(), prompt, schema, PROBE_TIMEOUT)
-            .await
+        self.run(
+            s,
+            &PrepareModel::default(),
+            prompt,
+            schema,
+            PROBE_TIMEOUT,
+            None,
+        )
+        .await
     }
 
     async fn ask_prepare(&self, s: &SessionRef, prompt: &str, schema: &Value) -> Result<Value> {
-        self.run(s, &self.prepare, prompt, schema, STRUCTURED_TIMEOUT)
+        self.run(s, &self.prepare, prompt, schema, STRUCTURED_TIMEOUT, None)
             .await
     }
 
     async fn ask_second(&self, s: &SessionRef, prompt: &str, schema: &Value) -> Result<Value> {
-        self.run(s, &self.second, prompt, schema, STRUCTURED_TIMEOUT)
+        self.run(s, &self.second, prompt, schema, STRUCTURED_TIMEOUT, None)
             .await
     }
 }
@@ -189,6 +261,22 @@ mod tests {
             {"slug":"hidden","priority":0,"visibility":"hide"},
             {"slug":"a","priority":1,"visibility":"list"}]}"#;
         assert_eq!(parse_models(json).unwrap(), ["a", "b"]);
+    }
+
+    #[test]
+    fn the_commands_codex_starts_are_its_steps() {
+        // Lines as `codex exec --json` printed them (Codex 0.165.0).
+        let started = r#"{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc \"rg -n 'retry' src\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}"#;
+        assert_eq!(
+            event_step(started).as_deref(),
+            Some("run rg -n 'retry' src")
+        );
+        let done = started.replace("item.started", "item.completed");
+        assert_eq!(event_step(&done), None);
+        let said = r#"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I'll search."}}"#;
+        assert_eq!(event_step(said), None);
+        assert_eq!(event_step(r#"{"type":"turn.started"}"#), None);
+        assert_eq!(event_step("not json"), None);
     }
 
     #[test]

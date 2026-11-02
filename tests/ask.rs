@@ -163,11 +163,51 @@ async fn the_agent_answers_read_only_and_without_the_web() {
     });
     let job = ask::Job::new(&review, 0, repo.path());
     let session = SessionRef::fresh("mock", repo.path());
-    let a = ask::answer(Arc::new(mock.clone()), session, job)
+    let a = ask::answer(Arc::new(mock.clone()), session, job, |_| {})
         .await
         .unwrap();
     assert_eq!(a.shown[0].code[0], "class Cart:");
     assert_eq!(*mock.web_calls.lock().unwrap(), [false]);
+}
+
+#[tokio::test]
+async fn what_the_agent_does_is_told_before_the_answer_comes() {
+    use teer::agent::live::Live;
+    let (repo, mut review) = fixture();
+    review.questions.push(Question {
+        text: "show me the Cart class".into(),
+        ..Default::default()
+    });
+    let mut mock = MockAdapter::new(|_, _| Ok(json!({ "text": "Here it is." })));
+    mock.live = vec![
+        Live::Step("search “Cart”".into()),
+        Live::Step("read cart.py".into()),
+        // Before the text begins, and the same text again: nothing to tell.
+        Live::Partial("{\"te".into()),
+        Live::Partial("{\"text\": \"Here".into()),
+        Live::Partial("{\"text\": \"Here\", \"sh".into()),
+        // A control character from the model never reaches the screen.
+        Live::Partial(r#"{"text": "Here it\u001b[2J is"#.into()),
+    ];
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let job = ask::Job::new(&review, 0, repo.path());
+    let session = SessionRef::fresh("mock", repo.path());
+    let a = ask::answer(Arc::new(mock), session, job, move |p| {
+        log.lock().unwrap().push(p)
+    })
+    .await
+    .unwrap();
+    assert_eq!(a.text, "Here it is.");
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            ask::Progress::Step("search “Cart”".into()),
+            ask::Progress::Step("read cart.py".into()),
+            ask::Progress::Text("Here".into()),
+            ask::Progress::Text("Here it is".into()),
+        ]
+    );
 }
 
 // ---- The view ---------------------------------------------------------------
@@ -257,6 +297,92 @@ fn slash_asks_about_the_unit_on_show_and_shows_the_answer() {
     assert!(row("raise ValueError").contains("10 +"), "{text}");
     assert!(row("result = pay(order)").contains("11  "), "{text}");
     assert!(row("class Cart:").contains("  1  "), "{text}");
+}
+
+fn asking(a: &mut App, index: usize, p: ask::Progress) {
+    assert!(
+        a.on_app_event(AppEvent::Asking { index, progress: p })
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_question_on_its_way_shows_the_agents_steps_then_its_answer_as_it_is_written() {
+    use ask::Progress::{Step, Text};
+    use teer::tui::ask::{ASKING, WRITING};
+    let (_repo, review) = fixture();
+    let mut a = app(review);
+    select(&mut a, CHARGE);
+    code(&mut a, KeyCode::Char('/'));
+    typed(&mut a, "how is an order charged?");
+    code(&mut a, KeyCode::Enter);
+    asking(&mut a, 0, Step("search “charge”".into()));
+    asking(&mut a, 0, Step("read checkout.py".into()));
+    let text = screen(&a, 120, 40);
+    assert!(text.contains("step 2: read checkout.py"), "{text}");
+    assert!(!text.contains(ASKING), "{text}");
+    asking(&mut a, 0, Text("charge_order checks the\ncurrency".into()));
+    let text = screen(&a, 120, 40);
+    assert!(text.contains(WRITING), "{text}");
+    assert!(!text.contains("step 2"), "{text}");
+    assert!(
+        text.contains("┃ agent (Claude Code's default model)"),
+        "{text}"
+    );
+    assert!(text.contains("charge_order checks the"), "{text}");
+    assert!(text.contains("currency"), "{text}");
+
+    // The answer takes its place; what comes late of the run is dropped.
+    a.on_app_event(AppEvent::Answer {
+        index: 0,
+        result: Ok(answer()),
+    });
+    assert!(a.ask.live.is_empty());
+    asking(&mut a, 0, Step("read late.py".into()));
+    assert!(a.ask.live.is_empty());
+    let text = screen(&a, 120, 50);
+    assert!(!text.contains(WRITING), "{text}");
+    assert!(text.contains("In this change"), "{text}");
+    let links = a.ask_links().len();
+    assert!(links > 0);
+
+    // Asked again, the old answer stays until the new one starts coming;
+    // then it, and its links, give way.
+    let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+    assert_eq!(
+        a.on_event(Event::Key(ctrl_r)),
+        [Effect::Save, Effect::Ask { index: 0 }]
+    );
+    asking(&mut a, 0, Step("read checkout.py".into()));
+    assert!(screen(&a, 120, 50).contains("In this change"));
+    assert_eq!(a.ask_links().len(), links);
+    asking(&mut a, 0, Text("It charges".into()));
+    let text = screen(&a, 120, 50);
+    assert!(text.contains("It charges"), "{text}");
+    assert!(!text.contains("In this change"), "{text}");
+    assert!(a.ask_links().is_empty());
+    // It failed: the old answer is back.
+    a.on_app_event(AppEvent::Answer {
+        index: 0,
+        result: Err("claude timed out".into()),
+    });
+    assert_eq!(a.ask_links().len(), links);
+    assert!(screen(&a, 120, 50).contains("In this change"));
+}
+
+#[test]
+fn a_chat_shows_its_answer_as_it_is_written() {
+    let (_repo, review) = fixture();
+    let mut a = flagged(review);
+    code(&mut a, KeyCode::Char('/'));
+    typed(&mut a, "does it charge twice?");
+    code(&mut a, KeyCode::Enter);
+    asking(&mut a, 0, ask::Progress::Step("read checkout.py".into()));
+    assert!(screen(&a, 160, 50).contains("step 1: read checkout.py"));
+    asking(&mut a, 0, ask::Progress::Text("No: it saves".into()));
+    let text = screen(&a, 160, 50);
+    assert!(text.contains("No: it saves"), "{text}");
+    assert!(text.contains(teer::tui::ask::WRITING), "{text}");
 }
 
 #[test]
@@ -573,6 +699,7 @@ async fn live_ask() {
         Arc::new(ClaudeAdapter::default()),
         SessionRef::fresh("claude", root),
         job,
+        move |p| println!("[{:.0?}] {p:?}", started.elapsed()),
     )
     .await
     .unwrap();

@@ -3,7 +3,7 @@
 //! without a terminal or an agent.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 
 use crossterm::event::{
@@ -18,6 +18,7 @@ use crate::agent::SessionInfo;
 use crate::approve::{self, EditOutcome, Inline, NoteEntry, Verdict};
 use crate::commit::{self, Branch};
 use crate::config::{Action, Config, KeyMap, Order, Provider};
+use crate::review::ask::Progress;
 use crate::review::attention::{Assessment, Level, assess};
 use crate::review::dive::{DiveEvent, uses_web};
 use crate::review::model::{
@@ -131,6 +132,8 @@ pub struct AskState {
     pub link: Option<usize>,
     /// Questions, by index, the agent is answering.
     pub pending: BTreeSet<usize>,
+    /// What came of those so far, by index.
+    pub live: BTreeMap<usize, LiveAnswer>,
     /// First line shown; `None` follows the end of the conversation.
     pub scroll: Cell<Option<usize>>,
     /// The last line that can be first, as last drawn.
@@ -141,6 +144,15 @@ pub struct AskState {
     pub chat_scroll: Cell<Option<usize>>,
     /// The chat's last line that can be first, as last drawn.
     pub chat_max: Cell<usize>,
+}
+
+/// A question on its way: the agent's latest step, how many it took, and
+/// the answer's text as far as it has come.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LiveAnswer {
+    pub step: Option<String>,
+    pub steps: usize,
+    pub text: String,
 }
 
 /// Where a link in the Ask view goes.
@@ -330,6 +342,11 @@ pub enum AppEvent {
     Answer {
         index: usize,
         result: Result<Answer, String>,
+    },
+    /// What the agent is doing on question `index` while it answers.
+    Asking {
+        index: usize,
+        progress: Progress,
     },
 }
 
@@ -2301,6 +2318,10 @@ impl App {
     pub fn ask_links(&self) -> Vec<(usize, AskLink)> {
         let mut out = Vec::new();
         for n in self.talk() {
+            // An answer being written takes the old one's place.
+            if self.live_text(n).is_some() {
+                continue;
+            }
             let Some(a) = &self.review.questions[n].answer else {
                 continue;
             };
@@ -2318,6 +2339,13 @@ impl App {
             }
         }
         out
+    }
+
+    /// The answer's text so far while question `n` is on its way, once
+    /// some came.
+    pub fn live_text(&self, n: usize) -> Option<&str> {
+        let live = self.ask.live.get(&n)?;
+        (!live.text.is_empty()).then_some(live.text.as_str())
     }
 
     /// Whether unit `id` has a row in the list.
@@ -2452,14 +2480,32 @@ impl App {
         if !self.ask.pending.insert(index) {
             return Vec::new();
         }
+        self.ask.live.remove(&index);
         q.error = None;
         vec![Effect::Save, Effect::Ask { index }]
+    }
+
+    /// What the agent does on question `index` while it answers, for as
+    /// long as it is on its way.
+    fn asking(&mut self, index: usize, progress: Progress) {
+        if !self.ask.pending.contains(&index) {
+            return;
+        }
+        let live = self.ask.live.entry(index).or_default();
+        match progress {
+            Progress::Step(s) => {
+                live.step = Some(s);
+                live.steps += 1;
+            }
+            Progress::Text(t) => live.text = t,
+        }
     }
 
     /// The answer to question `index` came (or failed). A question asked
     /// with no unit on show goes with the unit the answer relates to most.
     fn answered(&mut self, index: usize, result: Result<Answer, String>) -> Vec<Effect> {
         self.ask.pending.remove(&index);
+        self.ask.live.remove(&index);
         let Some(q) = self.review.questions.get_mut(index) else {
             return Vec::new();
         };
@@ -3051,6 +3097,7 @@ impl App {
     pub fn on_app_event(&mut self, ev: AppEvent) -> Vec<Effect> {
         match ev {
             AppEvent::Answer { index, result } => return self.answered(index, result),
+            AppEvent::Asking { index, progress } => self.asking(index, progress),
             AppEvent::CommitDrafted(r) => self.commit_drafted(r),
             AppEvent::PrReviewed { verdict, result } => {
                 self.approving = false;
