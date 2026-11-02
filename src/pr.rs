@@ -523,9 +523,14 @@ fn default_branch(repo: &Path, remote: &str) -> Option<String> {
 
 /// Fetch the PR's refs and work out head and base. Prints one status line to stderr.
 fn resolve(repo: &Path, info: &PrInfo) -> Result<PrPlan> {
-    let n = info.number;
     let remote = find_remote(repo, info)?;
-    eprintln!("teer: fetching PR #{n} from {remote}…");
+    eprintln!("teer: fetching PR #{} from {remote}…", info.number);
+    resolve_from(repo, info, remote, &|note| eprintln!("teer: note: {note}"))
+}
+
+/// [`resolve`] from `remote`, found already; `note` says what was assumed.
+fn resolve_from(repo: &Path, info: &PrInfo, remote: String, note: &dyn Fn(&str)) -> Result<PrPlan> {
+    let n = info.number;
     let head_ref = format!("refs/teer/pr/{n}/head");
     let merge_ref = format!("refs/teer/pr/{n}/merge");
 
@@ -576,9 +581,9 @@ could not be determined"
             .with_context(|| {
                 format!("couldn't fetch the base branch '{branch}' from '{remote}'")
             })?;
-            eprintln!(
-                "teer: note: PR #{n} has no merge ref (merge conflicts?); assuming its base is the default branch '{branch}' of '{remote}'."
-            );
+            note(&format!(
+                "PR #{n} has no merge ref (merge conflicts?); assuming its base is the default branch '{branch}' of '{remote}'."
+            ));
             (tip, Some(branch))
         }
     };
@@ -1138,6 +1143,41 @@ pub fn prepare(cwd: &Path, url: &str, languages: Option<Vec<String>>) -> Result<
     review.pr = Some(info);
     crate::cli::restore(&mut review);
     Ok(PrSession { review, worktree })
+}
+
+/// `:e` on a pull request: fetch the PR again, move its checkout `dir` to
+/// the head the PR has now (a pushed fix shows up), and build the review
+/// there; `info` comes along with the new head and base, unapproved. Says
+/// nothing on stderr: the review's screen has the terminal.
+pub fn refresh(dir: &Path, info: &PrInfo, languages: Option<Vec<String>>) -> Result<Review> {
+    if !info_is_valid(info) {
+        bail!("invalid pull request");
+    }
+    let repo = info
+        .repo_dir
+        .as_deref()
+        .context("teer doesn't know the clone this PR was fetched into")?;
+    let remote = match &info.remote {
+        Some(r) if valid_remote_name(r) => r.clone(),
+        _ => find_remote(repo, info)?,
+    };
+    let plan = resolve_from(repo, info, remote, &|note| crate::log::write(note))?;
+    switch(dir, &plan.head)
+        .with_context(|| format!("couldn't move the checkout to PR #{}'s head", info.number))?;
+    let opts = BuildOptions {
+        base: Some(plan.base.clone()),
+        languages,
+    };
+    let mut review = build_review(dir, &opts)?;
+    let mut info = info.clone();
+    info.base_assumed = plan.assumed_base_branch;
+    info.remote = Some(plan.remote);
+    info.head_sha = Some(plan.head);
+    // An approval is of one head: `store::merge_previous` keeps it while the
+    // head is the same.
+    info.approved_head = None;
+    review.pr = Some(info);
+    Ok(review)
 }
 
 // -------------------------------------------------------------------- agent

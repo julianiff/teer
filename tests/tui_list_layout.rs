@@ -423,7 +423,8 @@ async fn confirm_reset_overlay_renders() {
         app.on_action(Action::ReviewReset);
         assert_eq!(app.overlay, Overlay::ConfirmReset);
         let s = text(&grid(&app, w, h));
-        assert!(s.contains("Reset the review?"), "{w}x{h}\n{s}");
+        let ask = format!("Reset all {} decisions? y/n", app.review.units.len());
+        assert!(s.contains(&ask), "{w}x{h}\n{s}");
     }
 }
 

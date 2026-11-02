@@ -217,9 +217,12 @@ impl App {
         match s {
             Step::KeepReviewing => "keep reviewing".into(),
             Step::SendNotes => match self.cfg.provider() {
-                Provider::Api => "copy the notes for your agent".into(),
+                Provider::Api => "copy the notes for your agent and wait for the changes".into(),
                 cli => format!("send the notes to {}", cli.title()),
             },
+            Step::Yank if self.waits_for_fixes() => {
+                "yank the notes and wait for the changes".into()
+            }
             Step::Yank => "yank the notes".into(),
             Step::Commit if self.decision_counts().1 > 0 => "commit anyway".into(),
             Step::Commit => "commit".into(),
@@ -315,7 +318,7 @@ impl App {
             Action::MoveLast => last,
             Action::MoveNextPending => return self.keep_reviewing(),
             Action::NoteEdit => return self.edit_finish_text(step),
-            Action::FinishYank => return self.yank_notes(),
+            Action::FinishYank => return self.yank_and_wait(),
             Action::ScrollHalfDown | Action::ScrollPageDown => {
                 self.scroll_finish(8);
                 sel
@@ -415,7 +418,7 @@ impl App {
             Step::KeepReviewing => self.keep_reviewing(),
             Step::SendNotes => self.send_notes(),
             Step::Yank => {
-                let effects = self.yank_notes();
+                let effects = self.yank_and_wait();
                 if !effects.is_empty() {
                     self.overlay = Overlay::None;
                 }
@@ -463,8 +466,28 @@ impl App {
         }]
     }
 
+    /// Copying the notes from the sheet hands them to an agent teer doesn't
+    /// run, to fix what they say: your changes or your branch with something
+    /// flagged (Phase 7). A pull request's fixes come as a push (`:e`
+    /// fetches them).
+    pub fn waits_for_fixes(&self) -> bool {
+        self.reviewing() != Reviewing::Pr && self.decision_counts().1 > 0
+    }
+
+    /// `y` on the sheet, or its "yank" step: copy the notes; when they are
+    /// for fixing ([`App::waits_for_fixes`]), close the sheet and wait for
+    /// the changes on the queue ([`App::start_waiting`]). teer stays open.
+    fn yank_and_wait(&mut self) -> Vec<Effect> {
+        let effects = self.yank_notes();
+        if !effects.is_empty() && self.waits_for_fixes() {
+            self.start_waiting(crate::notes::listed(&self.review).len());
+        }
+        effects
+    }
+
     /// Send the notes to the agent CLI; the model API has no session to take
-    /// them, so they go on the clipboard with what to do with them.
+    /// them, so they go on the clipboard with what to do with them, and teer
+    /// waits for the changes (Q11).
     fn send_notes(&mut self) -> Vec<Effect> {
         let listed = crate::notes::listed(&self.review);
         if listed.is_empty() {
@@ -476,13 +499,18 @@ impl App {
         }
         if self.cfg.provider().program().is_none() {
             self.overlay = Overlay::None;
-            return vec![Effect::Copy {
+            let n = listed.len();
+            let copy = Effect::Copy {
                 text: crate::notes::agent_prompt(&self.review),
                 what: format!(
                     "{} for your agent (teer can't hand them to the model API)",
                     crate::notes::count(&listed)
                 ),
-            }];
+            };
+            if self.waits_for_fixes() {
+                self.start_waiting(n);
+            }
+            return vec![copy];
         }
         self.notes_to_agent()
     }
@@ -490,7 +518,8 @@ impl App {
     /// Hand the notes to the agent CLI in the repository, as the first
     /// message of a session: a fork of the review's Claude Code session when
     /// there is one. Never for a pull request: its code is untrusted, and
-    /// the session could change files and run commands.
+    /// the session could change files and run commands. When the agent
+    /// exits, the review re-runs on its own ([`App::agent_returned`]).
     fn notes_to_agent(&mut self) -> Vec<Effect> {
         if self.review.pr.is_some() {
             return Vec::new();
@@ -943,7 +972,12 @@ pub fn draw(f: &mut Frame, app: &App) {
             }
             _ => {}
         }
-        keys.push(ui::hint(k(Action::FinishYank), "copy notes"));
+        let copy = if app.waits_for_fixes() {
+            "copy notes, wait"
+        } else {
+            "copy notes"
+        };
+        keys.push(ui::hint(k(Action::FinishYank), copy));
         if pending > 0 {
             keys.push(ui::hint(k(Action::MoveNextPending), "first pending"));
         }
@@ -1022,6 +1056,16 @@ fn details(app: &App, step: Option<Step>, w: usize) -> Vec<Line<'static>> {
             .map(|l| Line::styled(l, t.muted()))
             .collect()
     };
+    // What waiting for copied notes' changes does.
+    let wait = || {
+        format!(
+            "Then teer waits, the queue on show: once the files have changed and stayed the \
+same for {} s, it re-runs the review on what changed. {} stops waiting; {} re-runs later.",
+            app.cfg.fix_loop.quiet_seconds,
+            k(Action::ViewClose),
+            k(Action::ReviewRerun)
+        )
+    };
     match step {
         None => Vec::new(),
         Some(Step::KeepReviewing) => say(format!(
@@ -1031,8 +1075,8 @@ fn details(app: &App, step: Option<Step>, w: usize) -> Vec<Line<'static>> {
         Some(Step::SendNotes) => match app.cfg.provider() {
             Provider::Api => say(format!(
                 "teer can't hand notes to the model API: this copies them, with what to do, \
-for you to paste into your agent. {} re-runs the review on what it changed.",
-                k(Action::ReviewRerun)
+for you to paste into your agent. {}",
+                wait()
             )),
             cli => {
                 let session = app
@@ -1046,13 +1090,16 @@ for you to paste into your agent. {} re-runs the review on what it changed.",
                     })
                     .unwrap_or_default();
                 say(format!(
-                    "Opens {} with the notes as its first message{session}. Back here, {} \
-re-runs the review on what it changed.",
+                    "Opens {} with the notes as its first message{session}. When you quit it, \
+teer re-runs the review on what it changed.",
                     cli.title(),
-                    k(Action::ReviewRerun)
                 ))
             }
         },
+        Some(Step::Yank) if app.waits_for_fixes() => say(format!(
+            "Copies the notes as Markdown, each with its diff, for your agent. {}",
+            wait()
+        )),
         Some(Step::Yank) => say("Copies the notes as Markdown, each with its diff.".into()),
         Some(Step::Done) => say(
             "Everything is accepted, and a branch has nothing to commit. Leaves teer; the \
@@ -1444,9 +1491,15 @@ mod tests {
         a.cfg.provider = Some(Provider::Api);
         assert_eq!(
             a.step_label(Step::SendNotes),
-            "copy the notes for your agent"
+            "copy the notes for your agent and wait for the changes"
+        );
+        assert_eq!(
+            a.step_label(Step::Yank),
+            "yank the notes and wait for the changes"
         );
         assert_eq!(changes(&[Acc]).step_label(Step::Commit), "commit");
+        // Nothing flagged: the notes aren't for fixing, nothing waits.
+        assert_eq!(changes(&[Acc]).step_label(Step::Yank), "yank the notes");
     }
 
     #[test]
@@ -1498,7 +1551,8 @@ mod tests {
         assert_eq!(a.finish.confirm, Some(Step::Yank));
         let screen = render(&a, 90, 30);
         assert!(
-            screen.contains("1 unit still pending. Yank the notes anyway?"),
+            screen
+                .contains("1 unit still pending. Yank the notes and wait for the changes anyway?"),
             "{screen}"
         );
         assert!(press(&mut a, "x").is_empty());
@@ -1523,8 +1577,17 @@ mod tests {
         };
         assert_eq!(*text, crate::notes::markdown(&a.review));
         assert_eq!(what, "2 notes and 1 flagged unit without one as Markdown");
-        // `y` leaves the sheet open; nothing to copy says so.
-        assert!(matches!(a.overlay, Overlay::Finish { .. }));
+        // Notes to fix: the sheet closes and teer waits for the changes.
+        assert_eq!(a.overlay, Overlay::None);
+        assert_eq!(a.waiting.as_ref().map(|w| w.notes), Some(3));
+        // Nothing flagged: `y` copies and leaves the sheet open.
+        let mut c = changes(&[Acc]);
+        c.review.units[0].dive.note = "nice".into();
+        open(&mut c);
+        assert!(matches!(&press(&mut c, "y")[..], [Effect::Copy { .. }]));
+        assert!(matches!(c.overlay, Overlay::Finish { .. }));
+        assert!(c.waiting.is_none());
+        // Nothing to copy says so.
         let mut b = changes(&[Acc]);
         open(&mut b);
         assert!(press(&mut b, "y").is_empty());

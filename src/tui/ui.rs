@@ -1169,12 +1169,20 @@ fn draw_swipe_summary(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+/// `:e!`: "Reset all 42 decisions? y/n", one per unit; yes resets them and
+/// re-runs the review.
 fn draw_confirm_reset(f: &mut Frame, app: &App) {
     let t = &app.theme;
+    let n = app.reset_count();
+    let what = if n == 1 {
+        "Reset the 1 decision? y/n".to_string()
+    } else {
+        format!("Reset all {n} decisions? y/n")
+    };
     let mut lines = vec![
-        Line::styled("Reset the review?", t.bold()),
+        Line::styled(what, t.bold()),
         Line::styled(
-            "Clears every decision, as if nothing was looked at.",
+            "All units go back to pending and the review re-runs.",
             t.muted(),
         ),
         Line::default(),

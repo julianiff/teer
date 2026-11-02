@@ -56,10 +56,13 @@ pub fn card(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
         }
     }
     out.extend(body.into_iter().map(|l| line(l, t.text())));
+    // On changed code the note stays until acted on (Phase 7): `a` puts it
+    // away with the code accepted, `i` writes it again on this code.
     if u.note_is_stale() {
         out.push(line(
             format!(
-                "the code changed since · {} confirms",
+                "the code changed since this note · {} accepts · {} edits",
+                app.keys.label(Action::DecideAccept),
                 app.keys.label(Action::NoteEdit)
             ),
             t.muted(),

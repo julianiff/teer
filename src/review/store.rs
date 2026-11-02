@@ -179,7 +179,9 @@ fn read(path: &Path) -> Option<Review> {
 }
 
 /// Carry decisions and agent answers over from a previous review for units
-/// whose code didn't change.
+/// whose code didn't change. A unit whose code changed starts pending and
+/// keeps only the reviewer's note, marked as written on other code
+/// ([`super::model::Unit::note_is_stale`]), and the notes put away before.
 pub fn merge_previous(new: &mut Review, old: &Review) {
     let by_id: HashMap<&str, &super::model::Unit> =
         old.units.iter().map(|u| (u.id.as_str(), u)).collect();
@@ -200,9 +202,11 @@ pub fn merge_previous(new: &mut Review, old: &Review) {
                 u.reasons = prev.reasons.clone();
             }
         } else {
-            // The reviewer's note stays: it may be what changed the code.
+            // The reviewer's note stays until the reviewer acts on it: it
+            // may be what changed the code.
             u.dive.note = prev.dive.note.clone();
             u.dive.note_on = prev.dive.note_on.clone();
+            u.dive.archived = prev.dive.archived.clone();
         }
     }
     // Undo and redo go on for units whose decision came along: their code
@@ -256,6 +260,21 @@ pub fn merge_previous(new: &mut Review, old: &Review) {
     {
         n.approved_head = o.approved_head.clone();
     }
+}
+
+/// The units of `new` whose code is not what it was in `old`: changed,
+/// or not there before. In `new`'s order.
+pub fn changed_units(new: &Review, old: &Review) -> Vec<String> {
+    let before: HashMap<&str, &str> = old
+        .units
+        .iter()
+        .map(|u| (u.id.as_str(), u.fingerprint.as_str()))
+        .collect();
+    new.units
+        .iter()
+        .filter(|u| before.get(u.id.as_str()) != Some(&u.fingerprint.as_str()))
+        .map(|u| u.id.clone())
+        .collect()
 }
 
 #[cfg(test)]
@@ -358,6 +377,38 @@ mod tests {
         assert!(new.units[0].note_is_stale());
         // Same as before this feature: a changed unit starts undecided.
         assert_eq!(new.units[0].decision, Decision::Pending);
+    }
+
+    #[test]
+    fn a_changed_unit_keeps_its_archived_notes_and_starts_pending() {
+        let mut flagged = flagged_with_dive("before");
+        flagged.dive.note_on = Some("before".into());
+        flagged.archive_note();
+        flagged.dive.note = "second".into();
+        flagged.dive.note_on = Some("before".into());
+        let old = review(flagged);
+        let mut new = review(unit("after"));
+        merge_previous(&mut new, &old);
+        let u = &new.units[0];
+        assert_eq!(u.decision, Decision::Pending);
+        assert_eq!(u.dive.note, "second");
+        assert!(u.note_is_stale());
+        assert_eq!(u.dive.archived.len(), 1);
+        assert_eq!(u.dive.archived[0].text, "check");
+    }
+
+    #[test]
+    fn changed_units_are_the_changed_and_the_new_ones() {
+        let old = saved_at(
+            "/teer-tests/changed",
+            vec![named("a", "1"), named("b", "2")],
+        );
+        let new = saved_at(
+            "/teer-tests/changed",
+            vec![named("c", "3"), named("a", "1"), named("b", "2b")],
+        );
+        assert_eq!(changed_units(&new, &old), ["c", "b"]);
+        assert!(changed_units(&old, &old).is_empty());
     }
 
     fn named(id: &str, fingerprint: &str) -> Unit {

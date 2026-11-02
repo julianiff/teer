@@ -822,9 +822,13 @@ async fn reset_clears_every_decision_after_confirming() {
     );
 
     // enter resets: nothing is looked at, the swipe stack is full again;
-    // units with no behavior change are accepted for you again.
+    // units with no behavior change are accepted for you again. Then the
+    // review re-runs (Phase 7).
     v2::press(&mut app, ":e!<cr>");
-    assert_eq!(code(&mut app, KeyCode::Enter), vec![Effect::Save]);
+    assert_eq!(
+        code(&mut app, KeyCode::Enter),
+        vec![Effect::Save, Effect::Rerun]
+    );
     for u in &app.review.units {
         if u.status == teer::review::model::UnitStatus::NoBehaviorChange {
             assert!(u.auto_accepted(), "{}", u.id);

@@ -203,6 +203,9 @@ fn your_changes_flagged_send_the_notes_or_yank_them_or_commit_anyway() {
     };
     assert_eq!(what, "1 note as Markdown");
     assert_eq!(*text, teer::notes::markdown(&a.review));
+    // teer waits for the changes now (Phase 7); `q` stops waiting.
+    assert!(a.waiting.is_some());
+    keys(&mut a, "q");
     // `jj`: commit anyway, the reviewed files only.
     keys(&mut a, ":w<cr>jj");
     let e = keys(&mut a, "<cr>");
@@ -298,6 +301,10 @@ fn y_copies_the_notes_as_markdown_each_with_its_diff() {
     let name = flag_first(&mut a, "check \"limit\"");
     a.review.units[1].decision = Decision::Investigate;
     keys(&mut a, ":w<cr>");
+    // The sheet lists both.
+    let screen = v2::screen(&a, 100, 50);
+    assert!(screen.contains("check \"limit\""), "{screen}");
+    assert!(screen.contains("no note"), "{screen}");
     let e = keys(&mut a, "y");
     let [Effect::Copy { text, what }] = &e[..] else {
         panic!("{e:?}")
@@ -317,11 +324,10 @@ fn y_copies_the_notes_as_markdown_each_with_its_diff() {
         text.contains("_Flagged in the review, without a note._"),
         "{text}"
     );
-    // The sheet stays open, and it lists both.
-    assert!(matches!(a.overlay, Overlay::Finish { .. }));
-    let screen = v2::screen(&a, 100, 50);
-    assert!(screen.contains("check \"limit\""), "{screen}");
-    assert!(screen.contains("no note"), "{screen}");
+    // Notes to fix went out: the sheet closes and teer waits for the
+    // changes (Phase 7).
+    assert_eq!(a.overlay, Overlay::None);
+    assert!(a.waiting.is_some());
 }
 
 #[test]

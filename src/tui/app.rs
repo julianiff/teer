@@ -3,8 +3,9 @@
 //! without a terminal or an agent.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crossterm::event::{Event, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -235,6 +236,43 @@ fn decided_status(d: Decision, n: usize) -> String {
     format!("{verb} {}.", units(n))
 }
 
+/// "5 s", "0.5 s".
+fn seconds(d: std::time::Duration) -> String {
+    let s = d.as_secs_f64();
+    if s.fract() == 0.0 {
+        format!("{} s", d.as_secs())
+    } else {
+        format!("{s:.1} s")
+    }
+}
+
+/// What the queue still does while it waits for the changes to copied
+/// notes: it is read-only, so it moves and scrolls, shows the help and its
+/// other views, and re-runs (`q` stops waiting).
+fn waiting_allows(a: Action) -> bool {
+    let id = a.id();
+    id.starts_with("move.")
+        || id.starts_with("scroll.")
+        || matches!(
+            a,
+            Action::HelpOpen
+                | Action::ReviewRerun
+                | Action::ReviewReset
+                | Action::ToggleAutoAccepted
+                | Action::ToggleByFile
+        )
+}
+
+/// Whether note change `n` of `step` put a note away: the step accepted its
+/// unit and the note went (see [`App::decide_each`]). Notes typed on a note
+/// line only ever join a flag's step.
+fn archives(step: &Step, n: &NoteChange) -> bool {
+    n.after == Note::default()
+        && step.changes.iter().any(|c| {
+            c.id == n.id && c.after == Decision::Accepted && c.before != Decision::Accepted
+        })
+}
+
 /// Cards swipe asks about ahead of the one on show, in a large review.
 pub const SWIPE_AHEAD: usize = 8;
 
@@ -380,6 +418,46 @@ pub enum AppEvent {
         index: usize,
         progress: Progress,
     },
+    /// The working tree as teer looked at it at `at`, while waiting for the
+    /// changes to copied notes (see [`App::watch_due`]), or why it couldn't.
+    Tree {
+        seen: Result<crate::watch::Snapshot, String>,
+        at: Instant,
+    },
+}
+
+/// Who changed the code since the notes went out, as the status line says
+/// it after the re-run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangedBy {
+    /// The agent CLI the notes were handed to: its exit is the signal.
+    Agent(Provider),
+    /// Whoever got them from the clipboard (`y` on the sheet, or the model
+    /// API's copy): the files going quiet is the signal.
+    Copied,
+}
+
+impl ChangedBy {
+    /// "by Claude Code", "since the notes were copied".
+    fn words(self) -> String {
+        match self {
+            ChangedBy::Agent(p) => format!("by {}", p.title()),
+            ChangedBy::Copied => "since the notes were copied".into(),
+        }
+    }
+}
+
+/// Waiting for the changes to notes that were copied out of teer: the
+/// queue stays on show and takes no decisions, and teer looks at the
+/// working tree until it has changed and settled (see [`crate::watch`]).
+#[derive(Debug, Clone)]
+pub struct Waiting {
+    /// How many notes (and flagged units without one) went out.
+    pub notes: usize,
+    /// Whether the tree changed and has been quiet for long enough.
+    pub quiet: crate::watch::Quiet,
+    /// When to look at the tree next; `None` while a look is on its way.
+    pub next: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -527,6 +605,14 @@ pub struct App {
     /// The summary of the whole change was asked for this session.
     pub summary_asked: bool,
     pub ask: AskState,
+    /// Waiting for the changes to copied notes (Phase 7's waiting screen).
+    pub waiting: Option<Waiting>,
+    /// Who the notes that went out last are with, until the re-run that
+    /// brings their changes says so.
+    pub fix_by: Option<ChangedBy>,
+    /// The units the last re-run found changed or new, by id: listed at the
+    /// top of their level until the next one.
+    pub changed: HashSet<String>,
 }
 
 impl App {
@@ -578,6 +664,9 @@ impl App {
             finish: Default::default(),
             summary_asked: false,
             ask: AskState::default(),
+            waiting: None,
+            fix_by: None,
+            changed: HashSet::new(),
             cfg,
         };
         app.rebuild_order();
@@ -641,8 +730,9 @@ impl App {
     /// attention first, then by story (callers right before what they call)
     /// or line. Listed by unit, each unit goes by its own level instead of
     /// its file's: level, then path, then story. Units accepted for you are
-    /// listed last, and only with `show_auto`. The selection stays on the
-    /// same unit.
+    /// listed last, and only with `show_auto`. Units the last re-run changed
+    /// ([`App::changed`]) lead their box (listed by file, their files do,
+    /// and they lead their file). The selection stays on the same unit.
     fn reorder(&mut self) {
         let keep = self.selected().map(|u| u.id.clone());
         settle(&mut self.review, &self.levels, self.cfg.auto_accept);
@@ -670,13 +760,29 @@ impl App {
                 level(i)
             }
         };
+        let fresh = |i: usize| self.changed.contains(&units[i].id);
+        let fresh_files: HashSet<&PathBuf> = listed
+            .iter()
+            .filter(|&&i| fresh(i))
+            .map(|&i| &units[i].file)
+            .collect();
+        // What goes to the top of a box: a changed unit, or its file.
+        let leads = |i: usize| {
+            if by_file {
+                fresh_files.contains(&units[i].file)
+            } else {
+                fresh(i)
+            }
+        };
         let mut order = listed;
         order.sort_by(|&a, &b| {
             let (fa, fb) = (&units[a].file, &units[b].file);
             (boxed(b) as u8)
                 .cmp(&(boxed(a) as u8))
+                .then_with(|| leads(b).cmp(&leads(a)))
                 .then_with(|| fa.cmp(fb))
                 .then_with(|| (level(b) as u8).cmp(&(level(a) as u8)))
+                .then_with(|| fresh(b).cmp(&fresh(a)))
                 .then_with(|| match (placed.get(&a), placed.get(&b)) {
                     (Some(x), Some(y)) => x.rank.cmp(&y.rank),
                     _ => units[a].display_line().cmp(&units[b].display_line()),
@@ -1063,6 +1169,10 @@ impl App {
             Some(effects) => effects,
             None => self.normal_key(k),
         };
+        // While waiting, the status line says so unless a key said more.
+        if self.waiting.is_some() && self.status.is_empty() {
+            self.status = self.waiting_line();
+        }
         self.save_cursor(effects)
     }
 
@@ -1112,7 +1222,7 @@ impl App {
             Overlay::ConfirmReset => {
                 self.overlay = Overlay::None;
                 if self.keys.confirm(&k) {
-                    return Some(self.reset());
+                    return Some(self.reset_and_rerun());
                 }
                 return Some(Vec::new());
             }
@@ -1183,6 +1293,15 @@ impl App {
 
     /// [`App::run_action`], before the cursor is saved.
     fn action(&mut self, a: Action, count: Option<u32>) -> Vec<Effect> {
+        if self.waiting.is_some() {
+            if a == Action::ViewClose {
+                self.stop_waiting();
+                return Vec::new();
+            }
+            if !waiting_allows(a) {
+                return Vec::new();
+            }
+        }
         if self.visual.is_some() {
             match a {
                 _ if a.id().starts_with("move.") => {}
@@ -1236,10 +1355,7 @@ impl App {
                 self.overlay = Overlay::ConfirmReset;
                 return Vec::new();
             }
-            Action::ReviewRerun => {
-                self.status = "Re-running the review…".into();
-                return vec![Effect::Rerun];
-            }
+            Action::ReviewRerun => return self.rerun_now(),
             Action::AskOpen if self.screen == Screen::Flagged => {
                 self.open_chat();
                 return Vec::new();
@@ -2789,22 +2905,41 @@ impl App {
     }
 
     /// Set each of `ids` to `d` and record that as one undo step; the "all
-    /// done" sheet opens when this finished the review. How many changed.
+    /// done" sheet opens when this finished the review. Accepting a unit
+    /// whose note was written on code that changed since puts the note away
+    /// (Phase 7). How many changed.
     pub(super) fn decide_ids(&mut self, ids: &[String], d: Decision) -> usize {
         let each: Vec<(String, Decision)> = ids.iter().map(|id| (id.clone(), d)).collect();
-        self.decide_each(&each)
+        self.decide_each(&each, d == Decision::Accepted)
     }
 
     /// Set each unit to its decision as one undo step, and list the units
     /// again (who accepted them; see [`settle`]); on the v1 screens the "all
     /// done" sheet opens when this finished the review (the queue's bottom
-    /// bar says "Nothing pending" instead). How many changed.
-    fn decide_each(&mut self, each: &[(String, Decision)]) -> usize {
+    /// bar says "Nothing pending" instead). With `archive`, a unit this
+    /// accepts puts away its note when the code changed since it was written
+    /// ([`Unit::archive_note`]); the step holds that, so `u` brings the note
+    /// back. How many changed.
+    fn decide_each(&mut self, each: &[(String, Decision)], archive: bool) -> usize {
         let was_done = self.all_reviewed();
         let mut changes = Vec::new();
+        let mut notes = Vec::new();
         for (id, d) in each {
             if let Some(u) = self.review.unit_mut(id) {
                 let before = std::mem::replace(&mut u.decision, *d);
+                let accepts = *d == Decision::Accepted && before != Decision::Accepted;
+                if archive && accepts && u.note_is_stale() {
+                    let note = Note {
+                        text: u.dive.note.clone(),
+                        on: u.dive.note_on.clone(),
+                    };
+                    u.archive_note();
+                    notes.push(NoteChange {
+                        id: id.clone(),
+                        before: note,
+                        after: Note::default(),
+                    });
+                }
                 changes.push(Change {
                     id: id.clone(),
                     before,
@@ -2813,10 +2948,7 @@ impl App {
             }
         }
         let n = changes.iter().filter(|c| c.before != c.after).count();
-        self.review.history.record(Step {
-            changes,
-            ..Default::default()
-        });
+        self.review.history.record(Step { changes, notes });
         self.reorder();
         self.all_done_on_v1(was_done);
         n
@@ -2855,7 +2987,13 @@ impl App {
             return Vec::new();
         };
         for n in step.notes.iter().rev() {
-            self.put_note(&n.id, &n.before);
+            if archives(&step, n) {
+                if let Some(u) = self.review.unit_mut(&n.id) {
+                    u.unarchive_note(&n.before.text, n.before.on.as_deref());
+                }
+            } else {
+                self.put_note(&n.id, &n.before);
+            }
         }
         for c in step.changes.iter().rev() {
             if let Some(u) = self.review.unit_mut(&c.id) {
@@ -2882,7 +3020,13 @@ impl App {
             }
         }
         for n in &step.notes {
-            self.put_note(&n.id, &n.after);
+            if archives(&step, n) {
+                if let Some(u) = self.review.unit_mut(&n.id) {
+                    u.archive_note();
+                }
+            } else {
+                self.put_note(&n.id, &n.after);
+            }
         }
         self.reorder();
         self.all_done_on_v1(was_done);
@@ -2975,7 +3119,7 @@ impl App {
             each.push((u.id.clone(), d));
         }
         self.visual = None;
-        self.decide_each(&each);
+        self.decide_each(&each, false);
         if self.screen == Screen::Swipe {
             self.swipe = self.fresh_swipe();
         } else {
@@ -2983,6 +3127,177 @@ impl App {
         }
         self.status = "Reset: nothing is marked as looked at.".into();
         vec![Effect::Save]
+    }
+
+    /// How many decisions `:e!` resets: one per unit, pending ones and
+    /// those accepted for you too.
+    pub fn reset_count(&self) -> usize {
+        self.review.units.len()
+    }
+
+    /// `:e!`, confirmed: forget every decision ([`App::reset`], one undo
+    /// step), then re-run the review now; the units accepted for you are
+    /// weighed again on the new code.
+    fn reset_and_rerun(&mut self) -> Vec<Effect> {
+        let mut effects = self.reset();
+        effects.extend(self.rerun_now());
+        self.status = "Reset every decision. Re-running the review…".into();
+        effects
+    }
+
+    // ---- Fix loop (Phase 7) ----------------------------------------------
+
+    /// `:e`: re-run the review now, decisions kept; on a pull request, on
+    /// the head it has now, fetched again. Waiting for copied notes ends.
+    fn rerun_now(&mut self) -> Vec<Effect> {
+        self.waiting = None;
+        self.status = match &self.review.pr {
+            Some(pr) => format!("Fetching PR #{} and re-running the review…", pr.number),
+            None => "Re-running the review…".into(),
+        };
+        vec![Effect::Rerun]
+    }
+
+    /// The notes went to the agent CLI `cli` (see [`Effect::OpenAgent`])
+    /// and it exited: that is the signal its changes are in, so the review
+    /// re-runs now, without a key.
+    pub fn agent_returned(&mut self, cli: Provider) -> Vec<Effect> {
+        self.fix_by = Some(ChangedBy::Agent(cli));
+        let effects = self.rerun_now();
+        self.status = format!("Back from {}. Re-running the review…", cli.title());
+        effects
+    }
+
+    /// `notes` notes were copied for an agent teer doesn't run: wait for
+    /// their changes on the queue, read-only, until the files have changed
+    /// and settled (see [`App::watch_due`]), or `q`.
+    pub fn start_waiting(&mut self, notes: usize) {
+        self.overlay = Overlay::None;
+        self.visual = None;
+        self.screen = self.list_screen();
+        self.return_to.clear();
+        self.fix_by = Some(ChangedBy::Copied);
+        self.waiting = Some(Waiting {
+            notes,
+            quiet: crate::watch::Quiet::new(self.cfg.fix_loop.quiet()),
+            next: Some(Instant::now()),
+        });
+        self.status = self.waiting_line();
+    }
+
+    /// `q` while waiting: the queue as before; `:e` re-runs later.
+    fn stop_waiting(&mut self) {
+        self.waiting = None;
+        self.status = format!(
+            "Stopped waiting. {} re-runs the review once the changes are in.",
+            self.keys.label(Action::ReviewRerun)
+        );
+    }
+
+    /// What the status line says while waiting.
+    pub fn waiting_line(&self) -> String {
+        let Some(w) = &self.waiting else {
+            return String::new();
+        };
+        let q = self.keys.label(Action::ViewClose);
+        if w.quiet.changing() {
+            return format!(
+                "Files are changing… the review re-runs once they're quiet for {} ({q} to stop waiting)",
+                seconds(w.quiet.period())
+            );
+        }
+        let notes = if w.notes == 1 {
+            "the note".to_string()
+        } else {
+            format!("the {} notes", w.notes)
+        };
+        format!("Waiting for the changes to {notes}… ({q} to stop waiting)")
+    }
+
+    /// While waiting, whether to look at the working tree at `now`: the
+    /// repository to look at. The look is then on its way, and what it saw
+    /// comes back as [`AppEvent::Tree`]. The runtime asks on every tick.
+    pub fn watch_due(&mut self, now: Instant) -> Option<PathBuf> {
+        let w = self.waiting.as_mut()?;
+        if w.next.is_none_or(|t| now < t) {
+            return None;
+        }
+        w.next = None;
+        Some(self.review.repo_root.clone())
+    }
+
+    /// The tree as a look saw it at `at`: once it changed and then stayed
+    /// the same for `fix_loop.quiet_seconds`, waiting ends and the review
+    /// re-runs. Else the next look is due a little later.
+    fn tree_seen(
+        &mut self,
+        seen: Result<crate::watch::Snapshot, String>,
+        at: Instant,
+    ) -> Vec<Effect> {
+        let Some(w) = self.waiting.as_mut() else {
+            return Vec::new();
+        };
+        w.next = Some(at + crate::watch::every(w.quiet.period()));
+        match seen {
+            Ok(s) => {
+                let was = w.quiet.changing();
+                if w.quiet.see(s, at) {
+                    self.waiting = None;
+                    self.status = "The files are quiet. Re-running the review…".into();
+                    return vec![Effect::Rerun];
+                }
+                if !was && w.quiet.changing() {
+                    self.status = self.waiting_line();
+                }
+            }
+            Err(e) => self.status = format!("Couldn't look at the files: {e}"),
+        }
+        Vec::new()
+    }
+
+    /// A re-run's review is in. Decisions carry over by unit and code
+    /// (`store::merge_previous`); the units it changed or added lead their
+    /// level, the cursor goes to the first of them, and the status says how
+    /// many changed and by whom.
+    fn reran(&mut self, mut new: Review) -> Vec<Effect> {
+        crate::review::store::merge_previous(&mut new, &self.review);
+        new.agent_session = self.review.agent_session.clone();
+        let changed = crate::review::store::changed_units(&new, &self.review);
+        // Positions in the old order mean nothing in the new review:
+        // remember ids, drop the positions, restore by id.
+        let keep = self.selected().map(|u| u.id.clone());
+        self.review = new;
+        self.syntax.clear();
+        self.committed = None;
+        self.finish = Default::default();
+        self.summary_asked = false;
+        self.order.clear();
+        self.sel = 0;
+        self.visual = None;
+        self.waiting = None;
+        self.changed = changed.into_iter().collect();
+        self.rebuild_order();
+        // Units accepted for you are no news.
+        self.changed
+            .retain(|id| self.review.unit(id).is_some_and(|u| !u.auto_accepted()));
+        let first_changed = (0..self.order.len())
+            .find(|&p| self.changed.contains(&self.review.units[self.order[p]].id));
+        if let Some(pos) = first_changed.or_else(|| keep.and_then(|id| self.position_of(&id))) {
+            self.sel = pos;
+        }
+        self.screen = self.list_screen();
+        self.return_to.clear();
+        let by = self
+            .fix_by
+            .take()
+            .map_or("since the last run".to_string(), ChangedBy::words);
+        self.status = match self.changed.len() {
+            0 => format!("Nothing changed {by}."),
+            n => format!("{} changed {by}.", units(n)),
+        };
+        let mut effects = vec![Effect::Save];
+        effects.extend(self.prepare_start());
+        effects
     }
 
     // ---- Swipe -----------------------------------------------------------
@@ -3316,38 +3631,9 @@ impl App {
                 }
                 Err(e) => crate::log::write(&format!("summing up the change failed: {e}")),
             },
-            AppEvent::Rerun(Ok(new)) => {
-                let mut new = *new;
-                crate::review::store::merge_previous(&mut new, &self.review);
-                new.agent_session = self.review.agent_session.clone();
-                // Positions in the old order mean nothing in the new review:
-                // remember ids, drop the positions, restore by id.
-                let keep = self.selected().map(|u| u.id.clone());
-                self.review = new;
-                self.syntax.clear();
-                self.committed = None;
-                self.finish = Default::default();
-                self.summary_asked = false;
-                self.order.clear();
-                self.sel = 0;
-                self.visual = None;
-                self.rebuild_order();
-                let pos_of = |app: &App, id: &str| {
-                    app.order
-                        .iter()
-                        .position(|&i| app.review.units.get(i).is_some_and(|u| u.id == id))
-                };
-                if let Some(pos) = keep.and_then(|id| pos_of(self, &id)) {
-                    self.sel = pos;
-                }
-                self.screen = self.list_screen();
-                self.return_to.clear();
-                self.status = format!("Review updated: {} units.", self.review.units.len());
-                let mut effects = vec![Effect::Save];
-                effects.extend(self.prepare_start());
-                return effects;
-            }
+            AppEvent::Rerun(Ok(new)) => return self.reran(*new),
             AppEvent::Rerun(Err(e)) => self.status = format!("Re-run failed: {e}"),
+            AppEvent::Tree { seen, at } => return self.tree_seen(seen, at),
             AppEvent::Dive(ev) => {
                 match &ev {
                     DiveEvent::Progress { id, kind, text } => {
@@ -4107,5 +4393,213 @@ mod tests {
         });
         assert_eq!(dec(&a, 0), Acc);
         assert_eq!(a.review.history.undo.len(), 1);
+    }
+
+    // ---- Fix loop (Phase 7) ------------------------------------------------
+
+    /// What a re-run builds after the code of units `ids` changed: their
+    /// fingerprints differ, and they come undecided, without a note.
+    fn rebuilt(a: &App, ids: &[usize]) -> Box<Review> {
+        let mut r = a.review.clone();
+        r.history = Default::default();
+        for u in &mut r.units {
+            u.decision = Pend;
+            u.accepted_by = None;
+            u.dive = Default::default();
+        }
+        for &i in ids {
+            r.units[i].fingerprint = "new".into();
+        }
+        Box::new(r)
+    }
+
+    fn listed_ids(a: &App) -> Vec<String> {
+        a.order
+            .iter()
+            .map(|&i| a.review.units[i].id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn back_from_the_agent_the_review_reruns_and_lands_on_what_changed() {
+        let mut a = app(6);
+        press(&mut a, "aaaa");
+        a.review.units[1].dive.note = "rename it".into();
+        a.review.units[1].dive.note_on = Some(String::new());
+        assert_eq!(a.agent_returned(Provider::Claude), vec![Effect::Rerun]);
+        assert_eq!(a.status, "Back from Claude Code. Re-running the review…");
+        let new = rebuilt(&a, &[1, 4]);
+        let effects = a.on_app_event(AppEvent::Rerun(Ok(new)));
+        assert!(effects.contains(&Effect::Save), "{effects:?}");
+        assert_eq!(a.status, "2 units changed by Claude Code.");
+        // The changed units lead their level, the cursor on the first.
+        assert_eq!(&listed_ids(&a)[..2], ["u1", "u4"]);
+        assert_eq!(a.selected_id().as_deref(), Some("u1"));
+        // Changed: pending, the note kept and marked. The rest keep theirs.
+        assert_eq!(decisions(&a), vec![Acc, Pend, Acc, Acc, Pend, Pend]);
+        assert_eq!(a.review.units[1].dive.note, "rename it");
+        assert!(a.review.units[1].note_is_stale());
+        // The next re-run, with no notes out, changes nothing.
+        let same = Box::new(a.review.clone());
+        a.on_app_event(AppEvent::Rerun(Ok(same)));
+        assert_eq!(a.status, "Nothing changed since the last run.");
+        assert!(a.changed.is_empty());
+    }
+
+    #[test]
+    fn copied_notes_wait_read_only_until_the_files_settle() {
+        use crate::watch::Snapshot;
+        use std::time::Duration;
+        let mut a = app(4);
+        a.cfg.fix_loop.quiet_seconds = 2.0;
+        press(&mut a, "fx<cr>");
+        a.start_waiting(1);
+        assert_eq!(
+            a.status,
+            "Waiting for the changes to the note… (q to stop waiting)"
+        );
+        // Read-only: no decision, no note line; moves still move.
+        let before = decisions(&a);
+        press(&mut a, "afiAV");
+        assert_eq!(decisions(&a), before);
+        assert_eq!((a.overlay.clone(), a.visual), (Overlay::None, None));
+        let sel = a.sel;
+        press(&mut a, "j");
+        assert_eq!(a.sel, sel + 1);
+        assert!(
+            a.status.starts_with("Waiting for the changes"),
+            "{}",
+            a.status
+        );
+
+        // The first look is the baseline; one look at a time.
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        let seen = |snap: &str, at| AppEvent::Tree {
+            seen: Ok(Snapshot(snap.into())),
+            at,
+        };
+        assert_eq!(a.watch_due(t0), Some(a.review.repo_root.clone()));
+        assert_eq!(a.watch_due(t0), None);
+        assert!(a.on_app_event(seen("a", t0)).is_empty());
+        assert_eq!(a.watch_due(t0), None, "the next look comes later");
+        // A change, then two seconds the same.
+        assert!(a.watch_due(t0 + s(1)).is_some());
+        assert!(a.on_app_event(seen("b", t0 + s(1))).is_empty());
+        assert!(a.status.starts_with("Files are changing…"), "{}", a.status);
+        assert!(a.status.contains("quiet for 2 s"), "{}", a.status);
+        assert!(a.watch_due(t0 + s(2)).is_some());
+        assert!(a.on_app_event(seen("b", t0 + s(2))).is_empty());
+        assert!(a.watch_due(t0 + s(3)).is_some());
+        assert_eq!(a.on_app_event(seen("b", t0 + s(3))), vec![Effect::Rerun]);
+        assert!(a.waiting.is_none());
+        assert_eq!(a.watch_due(t0 + s(4)), None);
+        let new = rebuilt(&a, &[0]);
+        a.on_app_event(AppEvent::Rerun(Ok(new)));
+        assert_eq!(a.status, "1 unit changed since the notes were copied.");
+    }
+
+    #[test]
+    fn q_stops_waiting_and_colon_e_reruns_instead() {
+        let mut a = app(3);
+        a.start_waiting(2);
+        assert!(a.status.contains("the 2 notes"), "{}", a.status);
+        let e = press(&mut a, "q");
+        assert!(!e.contains(&Effect::Quit), "{e:?}");
+        assert!(a.waiting.is_none());
+        assert_eq!(
+            a.status,
+            "Stopped waiting. :e re-runs the review once the changes are in."
+        );
+        // A look that was on its way changes nothing now.
+        let late = AppEvent::Tree {
+            seen: Ok(crate::watch::Snapshot("x".into())),
+            at: Instant::now(),
+        };
+        assert!(a.on_app_event(late).is_empty());
+        // `q` again quits, as in the queue.
+        assert!(press(&mut a, "q").contains(&Effect::Quit));
+
+        let mut b = app(3);
+        b.start_waiting(1);
+        assert_eq!(press(&mut b, ":e<cr>"), vec![Effect::Rerun]);
+        assert!(b.waiting.is_none());
+        // Still the notes' changes.
+        b.on_app_event(AppEvent::Rerun(Ok(rebuilt(&b, &[2]))));
+        assert_eq!(b.status, "1 unit changed since the notes were copied.");
+    }
+
+    #[test]
+    fn a_puts_away_a_note_on_changed_code_and_u_brings_it_back() {
+        use crate::review::model::ArchivedNote;
+        let mut a = app(4);
+        let stale = |a: &mut App, i: usize, note: &str| {
+            a.review.units[i].dive.note = note.into();
+            a.review.units[i].dive.note_on = Some("old".into());
+        };
+        stale(&mut a, 0, "check the limit");
+        a.sel = 0;
+        press(&mut a, "a");
+        let archived = vec![ArchivedNote {
+            text: "check the limit".into(),
+            on: Some("old".into()),
+        }];
+        let u = &a.review.units[0];
+        assert_eq!((u.decision, u.dive.note.as_str()), (Acc, ""));
+        assert_eq!(u.dive.archived, archived);
+        assert!(crate::notes::listed(&a.review).is_empty());
+        press(&mut a, "u");
+        let u = &a.review.units[0];
+        assert_eq!(
+            (u.decision, u.dive.note.as_str()),
+            (Pend, "check the limit")
+        );
+        assert!(u.dive.archived.is_empty() && u.note_is_stale());
+        press(&mut a, "<c-r>");
+        assert_eq!(a.review.units[0].dive.archived, archived);
+
+        // A note on code that didn't change stays when its unit is accepted.
+        a.review.units[1].dive.note = "fine".into();
+        a.review.units[1].dive.note_on = Some(String::new());
+        a.sel = a.position_of("u1").unwrap();
+        press(&mut a, "a");
+        assert_eq!(a.review.units[1].dive.note, "fine");
+
+        // `i` edits it without deciding; the edit is on the code as it is.
+        stale(&mut a, 2, "old note");
+        a.sel = a.position_of("u2").unwrap();
+        press(&mut a, "i<c-u>new note<cr>");
+        let u = &a.review.units[2];
+        assert_eq!((u.decision, u.dive.note.as_str()), (Pend, "new note"));
+        assert!(!u.note_is_stale());
+
+        // `f` flags it and opens the note line on it.
+        stale(&mut a, 3, "still wrong");
+        a.sel = a.position_of("u3").unwrap();
+        press(&mut a, "f");
+        assert!(
+            matches!(&a.overlay, Overlay::Note { id, text, .. } if id == "u3" && text == "still wrong")
+        );
+        press(&mut a, "<cr>");
+        let u = &a.review.units[3];
+        assert_eq!((u.decision, u.dive.note.as_str()), (Flag, "still wrong"));
+        assert!(!u.note_is_stale());
+    }
+
+    #[test]
+    fn colon_e_bang_resets_every_decision_then_reruns() {
+        let mut a = app(4);
+        press(&mut a, "aaf<esc>");
+        press(&mut a, ":e!<cr>");
+        assert_eq!(a.overlay, Overlay::ConfirmReset);
+        assert_eq!(a.reset_count(), 4);
+        assert_eq!(press(&mut a, "y"), vec![Effect::Save, Effect::Rerun]);
+        assert_eq!(decisions(&a), vec![Pend; 4]);
+        // No is no: nothing reset, nothing re-run.
+        a.sel = 0;
+        press(&mut a, "a");
+        press(&mut a, ":e!<cr>");
+        assert!(press(&mut a, "n").is_empty());
+        assert_eq!(dec(&a, 0), Acc);
     }
 }

@@ -158,6 +158,8 @@ pub async fn run(l: Launch) -> Result<()> {
                     app.tick = app.tick.wrapping_add(1);
                     // A key prefix waiting past `timeoutlen` is dropped.
                     app.keys.tick(std::time::Instant::now());
+                    // Waiting for copied notes' changes: look at the tree.
+                    rt.watch(&mut app, std::time::Instant::now());
                     Vec::new()
                 }
             };
@@ -184,16 +186,10 @@ pub async fn run(l: Launch) -> Result<()> {
                 {
                     // The agent CLI needs the terminal and stdin to itself.
                     drop(events);
-                    let rerun = app.keys.label(crate::keymap::Action::ReviewRerun);
-                    app.status = open_agent(
-                        &mut terminal,
-                        cli,
-                        &rt.tools,
-                        &cwd,
-                        &prompt,
-                        resume.as_deref(),
-                        &rerun,
-                    );
+                    let ran = with_terminal_released(&mut terminal, || {
+                        run_agent(&rt.tools, cli, &cwd, &prompt, resume.as_deref())
+                    });
+                    quit |= rt.agent_exited(&mut app, cli, ran);
                     events = EventStream::new();
                 } else if let Effect::EditComment { text } = e {
                     drop(events);
@@ -245,6 +241,47 @@ pub async fn run(l: Launch) -> Result<()> {
 }
 
 impl Runtime {
+    /// The agent CLI the notes were handed to ([`Effect::OpenAgent`], run
+    /// with [`run_agent`]) is done, `ran` being how: its exit is the signal
+    /// that the changes are in, so the review re-runs now
+    /// ([`App::agent_returned`]); one that couldn't start says why. The run
+    /// loop calls this once it has the terminal back. Returns true to quit.
+    pub fn agent_exited(
+        &self,
+        app: &mut App,
+        cli: crate::config::Provider,
+        ran: std::io::Result<std::process::ExitStatus>,
+    ) -> bool {
+        match ran {
+            Ok(_) => {
+                let mut quit = false;
+                for follow in app.agent_returned(cli) {
+                    quit |= self.exec(app, follow);
+                }
+                quit
+            }
+            Err(e) => {
+                app.status = agent_failed(&self.tools, cli, &e);
+                false
+            }
+        }
+    }
+
+    /// While the app waits for the changes to copied notes, look at the
+    /// working tree when a look is due ([`App::watch_due`]), off the UI
+    /// thread; what it saw comes back as [`AppEvent::Tree`].
+    pub fn watch(&self, app: &mut App, now: std::time::Instant) {
+        let Some(repo) = app.watch_due(now) else {
+            return;
+        };
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let seen = crate::watch::snapshot(&repo).map_err(|e| format!("{e:#}"));
+            let at = std::time::Instant::now();
+            let _ = tx.send(AppEvent::Tree { seen, at });
+        });
+    }
+
     fn agent(
         &self,
         app: &App,
@@ -325,12 +362,18 @@ impl Runtime {
                 let opts = self.build.clone();
                 let pr = app.review.pr.clone();
                 tokio::task::spawn_blocking(move || {
-                    let r = crate::review::build_review(&repo, &opts)
-                        .map(|mut r| {
+                    let r = match pr {
+                        // A pull request is fetched again: a pushed fix
+                        // shows up (Q14).
+                        Some(pr) if pr.repo_dir.is_some() => {
+                            crate::pr::refresh(&repo, &pr, opts.languages.clone())
+                        }
+                        pr => crate::review::build_review(&repo, &opts).map(|mut r| {
                             r.pr = pr;
                             r
-                        })
-                        .map_err(|e| format!("{e:#}"));
+                        }),
+                    };
+                    let r = r.map_err(|e| format!("{e:#}"));
                     let _ = tx.send(AppEvent::Rerun(r.map(Box::new)));
                 });
             }
@@ -512,10 +555,23 @@ impl Runtime {
                 });
             }
             Effect::Copy { text, what } => {
-                app.status = match crate::clipboard::copy(&text) {
-                    crate::clipboard::Via::Program(_) => format!("Copied {what} to the clipboard."),
-                    crate::clipboard::Via::Terminal => {
-                        format!("Sent {what} to the terminal's clipboard (OSC 52).")
+                let via = crate::clipboard::copy(&text);
+                app.status = if app.waiting.is_some() {
+                    // Copied to be fixed elsewhere: short, so the line
+                    // that teer waits, and how to stop, stays in view.
+                    let copied = match via {
+                        crate::clipboard::Via::Program(_) => "Copied to the clipboard.",
+                        crate::clipboard::Via::Terminal => "Sent to the terminal's clipboard.",
+                    };
+                    format!("{copied} {}", app.waiting_line())
+                } else {
+                    match via {
+                        crate::clipboard::Via::Program(_) => {
+                            format!("Copied {what} to the clipboard.")
+                        }
+                        crate::clipboard::Via::Terminal => {
+                            format!("Sent {what} to the terminal's clipboard (OSC 52).")
+                        }
                     }
                 };
             }
@@ -677,36 +733,44 @@ fn open_editor(
     }
 }
 
-/// Run the agent CLI `cli` in `cwd` with `prompt` as its first message
-/// (Claude Code resumes a fork of session `resume` when there is one, so a
-/// session open elsewhere stays as it is), then take the terminal back.
-/// Returns the status line to show afterwards; `rerun` is the key that
-/// re-runs the review.
-fn open_agent(
-    terminal: &mut ratatui::DefaultTerminal,
-    cli: crate::config::Provider,
+/// The program that runs agent CLI `cli`.
+fn agent_program(tools: &crate::approve::Tools, cli: crate::config::Provider) -> &std::ffi::OsStr {
+    match cli {
+        crate::config::Provider::Codex => &tools.codex,
+        _ => &tools.claude,
+    }
+}
+
+/// Run the agent CLI `cli` in `cwd` with `prompt` as its first message, on
+/// this terminal, and wait for it to exit (Claude Code resumes a fork of
+/// session `resume` when there is one, so a session open elsewhere stays as
+/// it is). The caller hands it the terminal first; its exit, however it
+/// went, is the signal that the changes to the notes are in.
+pub fn run_agent(
     tools: &crate::approve::Tools,
+    cli: crate::config::Provider,
     cwd: &std::path::Path,
     prompt: &str,
     resume: Option<&str>,
-    rerun: &str,
-) -> String {
-    let program = match cli {
-        crate::config::Provider::Codex => &tools.codex,
-        _ => &tools.claude,
-    };
-    let result = with_terminal_released(terminal, || {
-        let mut cmd = std::process::Command::new(program);
-        if let Some(id) = resume {
-            cmd.args(["--resume", id, "--fork-session"]);
-        }
-        cmd.arg(prompt).current_dir(cwd).status()
-    });
-    let name = cli.title();
-    match result {
-        Ok(_) => format!("Back from {name}. {rerun} re-runs the review on what it changed."),
-        Err(e) => format!("Couldn't start {name} ({}): {e}", program.to_string_lossy()),
+) -> std::io::Result<std::process::ExitStatus> {
+    let mut cmd = std::process::Command::new(agent_program(tools, cli));
+    if let Some(id) = resume {
+        cmd.args(["--resume", id, "--fork-session"]);
     }
+    cmd.arg(prompt).current_dir(cwd).status()
+}
+
+/// The status line when the agent CLI couldn't start.
+fn agent_failed(
+    tools: &crate::approve::Tools,
+    cli: crate::config::Provider,
+    e: &std::io::Error,
+) -> String {
+    format!(
+        "Couldn't start {} ({}): {e}",
+        cli.title(),
+        agent_program(tools, cli).to_string_lossy()
+    )
 }
 
 /// `<space>s`: the setup screen on the review's terminal, the review

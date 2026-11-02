@@ -229,9 +229,9 @@ fn the_reset_prompt_says_no_to_n_and_yes_to_y() {
     assert_eq!(a.review.units[0].decision, Decision::Accepted);
     press(&mut a, ":e!<cr>");
     assert_eq!(a.overlay, Overlay::ConfirmReset);
-    // `y` (finish.yank elsewhere) is yes.
+    // `y` (finish.yank elsewhere) is yes: reset, then re-run (Phase 7).
     let e = press(&mut a, "y");
-    assert_eq!(e, vec![Effect::Save]);
+    assert_eq!(e, vec![Effect::Save, Effect::Rerun]);
     assert_eq!(a.overlay, Overlay::None);
     assert_eq!(a.review.units[0].decision, Decision::Pending);
 }

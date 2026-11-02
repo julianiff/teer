@@ -23,6 +23,9 @@
 //! base_url = ""             # empty: https://api.anthropic.com or https://api.openai.com/v1
 //! key_env = "ANTHROPIC_API_KEY"  # the environment variable holding the key; empty for none
 //!
+//! [fix_loop]                # after the notes were copied (`y`, or for the model API)
+//! quiet_seconds = 5         # re-run once the files changed and then stayed the same this long
+//!
 //! [keys]                    # action id = key or keys, in Neovim notation (see `crate::keymap`)
 //! "decide.accept" = "a"
 //! "move.down" = ["j", "<down>"]
@@ -163,6 +166,34 @@ impl ApiConfig {
     }
 }
 
+/// `[fix_loop]`: how teer waits for the changes to notes it copied out
+/// (`y` on the `:w` sheet, or for the model API), watching the working tree.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct FixLoop {
+    /// Seconds the files must stay the same, after they changed, before
+    /// teer re-runs the review on its own. Fractions work.
+    pub quiet_seconds: f64,
+}
+
+impl Default for FixLoop {
+    fn default() -> Self {
+        FixLoop { quiet_seconds: 5.0 }
+    }
+}
+
+impl FixLoop {
+    /// `quiet_seconds` as a duration; a negative or unreadable one is none.
+    pub fn quiet(&self) -> std::time::Duration {
+        let s = self.quiet_seconds;
+        std::time::Duration::from_secs_f64(if s.is_finite() {
+            s.clamp(0.0, 86_400.0)
+        } else {
+            0.0
+        })
+    }
+}
+
 /// What a model is used for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -215,6 +246,8 @@ pub struct Config {
     pub editor: String,
     /// Milliseconds a key prefix waits for the next key (Neovim's name).
     pub timeoutlen: u64,
+    /// Waiting for the changes to copied notes.
+    pub fix_loop: FixLoop,
     /// Action id to its keys (see [`crate::keymap`]).
     pub keys: HashMap<String, KeySpec>,
 }
@@ -240,6 +273,7 @@ impl Default for Config {
             behavior_timeout: 120,
             editor: crate::editor::DEFAULT.into(),
             timeoutlen: 1000,
+            fix_loop: FixLoop::default(),
             keys: HashMap::new(),
         }
     }
@@ -558,5 +592,17 @@ mod tests {
             Theme::Dark
         );
         assert_eq!(dark().with_no_color(None).theme, Theme::Dark);
+    }
+
+    #[test]
+    fn the_fix_loop_waits_five_quiet_seconds_unless_set() {
+        use std::time::Duration;
+        assert_eq!(Config::default().fix_loop.quiet(), Duration::from_secs(5));
+        let c: Config = toml::from_str("[fix_loop]\nquiet_seconds = 2\n").unwrap();
+        assert_eq!(c.fix_loop.quiet(), Duration::from_secs(2));
+        let c: Config = toml::from_str("[fix_loop]\nquiet_seconds = 0.25\n").unwrap();
+        assert_eq!(c.fix_loop.quiet(), Duration::from_millis(250));
+        let c: Config = toml::from_str("[fix_loop]\nquiet_seconds = -3\n").unwrap();
+        assert_eq!(c.fix_loop.quiet(), Duration::ZERO);
     }
 }

@@ -806,9 +806,25 @@ pub struct Dive {
     /// the clipboard, or the PR review.
     pub note: String,
     /// The unit's fingerprint when the note was written. The note stays when
-    /// the code changes; this tells that it was about other code.
+    /// the code changes; this tells that it was about other code
+    /// ([`Unit::note_is_stale`]: "the code changed since this note").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_on: Option<String>,
+    /// Notes put away, oldest first: each was on code that changed since,
+    /// and the reviewer accepted the new code (`a`). Kept with the unit, out
+    /// of the queue, the notes and what finishing sends.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub archived: Vec<ArchivedNote>,
+}
+
+/// A note put away when the reviewer accepted the code that changed under
+/// it (see [`Dive::archived`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchivedNote {
+    pub text: String,
+    /// The unit's fingerprint when the note was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<String>,
 }
 
 /// Where the agent-provided details for a unit stand.
@@ -899,6 +915,30 @@ impl Unit {
                 .note_on
                 .as_ref()
                 .is_some_and(|f| *f != self.fingerprint)
+    }
+
+    /// Put the note away in [`Dive::archived`] (it was on code that changed
+    /// since, and that code is accepted). False, and nothing changes,
+    /// without a note.
+    pub fn archive_note(&mut self) -> bool {
+        if self.dive.note.trim().is_empty() {
+            return false;
+        }
+        let text = std::mem::take(&mut self.dive.note);
+        let on = self.dive.note_on.take();
+        self.dive.archived.push(ArchivedNote { text, on });
+        true
+    }
+
+    /// Take back the note [`Unit::archive_note`] put away last, if it is
+    /// `text` written on `on`: it is the unit's note again.
+    pub fn unarchive_note(&mut self, text: &str, on: Option<&str>) {
+        let last = self.dive.archived.last();
+        if last.is_some_and(|a| a.text == text && a.on.as_deref() == on) {
+            self.dive.archived.pop();
+        }
+        self.dive.note = text.to_string();
+        self.dive.note_on = on.map(String::from);
     }
 
     pub fn short_name(&self) -> &str {

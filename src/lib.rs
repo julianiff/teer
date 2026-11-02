@@ -24,3 +24,4 @@ pub mod setup;
 pub mod tui;
 pub mod units;
 pub mod util;
+pub mod watch;
