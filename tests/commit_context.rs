@@ -349,7 +349,8 @@ mod screen {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use teer::config::{Config, KeyMap};
+    use teer::config::Config;
+    use teer::keymap::Keymap;
     use teer::review::model::{Decision, Prep};
     use teer::tui::{app::App, ui};
     use unicode_width::UnicodeWidthStr;
@@ -384,7 +385,7 @@ mod screen {
         r.units[0].prep = Prep::Pending;
         r.units[1].prep = Prep::Ready;
         r.units[1].decision = Decision::Investigate;
-        App::new(r, Config::default(), KeyMap::default())
+        App::new(r, Config::default(), Keymap::default())
     }
 
     /// The status sits whole at the right edge with at least two blanks before it.
@@ -423,7 +424,7 @@ mod screen {
     #[test]
     fn without_gh_the_header_names_the_commits() {
         let (r, _repo) = pr_review(None);
-        let app = App::new(r, Config::default(), KeyMap::default());
+        let app = App::new(r, Config::default(), Keymap::default());
         let h = row(&render(&app, 120, 20), 0);
         assert_eq!(h.trim_end(), " 4 commits");
     }
@@ -439,12 +440,12 @@ mod screen {
             },
         )
         .unwrap();
-        let app = App::new(r, Config::default(), KeyMap::default());
+        let app = App::new(r, Config::default(), Keymap::default());
         assert_eq!(row(&render(&app, 120, 20), 0).trim_end(), " 4 commits");
 
         repo.write("a.py", "def f():\n    return 9\n");
         let r = build_review(&repo.path(), &BuildOptions::default()).unwrap();
-        let app = App::new(r, Config::default(), KeyMap::default());
+        let app = App::new(r, Config::default(), Keymap::default());
         assert_eq!(
             row(&render(&app, 120, 20), 0).trim_end(),
             " Uncommitted changes"
@@ -461,11 +462,17 @@ mod view {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::{Color, Modifier};
-    use teer::config::{Config, KeyMap};
+    use teer::config::Config;
+    use teer::keymap::Keymap;
     use teer::tui::app::{App, Overlay};
 
     fn key(app: &mut App, c: KeyCode) {
         app.on_key(KeyEvent::new(c, KeyModifiers::NONE));
+    }
+
+    /// Type `keys` in Neovim notation (`<space>c`).
+    fn keys(app: &mut App, keys: &str) {
+        crate::common::v2::press(app, keys);
     }
 
     fn text(t: &Terminal<TestBackend>) -> String {
@@ -486,10 +493,10 @@ mod view {
     }
 
     #[test]
-    fn c_lists_the_pr_and_its_commits_with_types_tickets_and_units() {
+    fn leader_c_lists_the_pr_and_its_commits_with_types_tickets_and_units() {
         let (r, _repo) = pr_review(Some(meta()));
-        let mut app = App::new(r, Config::default(), KeyMap::default());
-        key(&mut app, KeyCode::Char('C'));
+        let mut app = App::new(r, Config::default(), Keymap::default());
+        keys(&mut app, "<space>c");
         assert_eq!(app.overlay, Overlay::Commits { sel: 0, unit: None });
         let t = render(&app, 110, 40);
         let s = text(&t);
@@ -511,7 +518,7 @@ mod view {
         assert!(s.contains("h returns three."), "{s}");
         assert!(s.contains("Changes 3 units:"), "{s}");
         assert!(s.contains("files: a.py, b.py"), "{s}");
-        assert!(s.contains("⏎ its units · esc close"), "{s}");
+        assert!(s.contains("j k move · l its units · q close"), "{s}");
 
         // Tickets stand out; a fixup is muted.
         let buf = t.backend().buffer().clone();
@@ -529,8 +536,8 @@ mod view {
     #[test]
     fn enter_on_a_unit_of_a_commit_goes_to_it_in_the_list() {
         let (r, _repo) = pr_review(None);
-        let mut app = App::new(r, Config::default(), KeyMap::default());
-        key(&mut app, KeyCode::Char('C'));
+        let mut app = App::new(r, Config::default(), Keymap::default());
+        keys(&mut app, "<space>c");
         key(&mut app, KeyCode::Char('j'));
         assert_eq!(app.overlay, Overlay::Commits { sel: 1, unit: None });
         let s = text(&render(&app, 100, 30));
@@ -548,7 +555,7 @@ mod view {
             }
         );
         let s = text(&render(&app, 100, 30));
-        assert!(s.contains("⏎ go to the unit · esc back"), "{s}");
+        assert!(s.contains("j k move · l go to the unit · h back"), "{s}");
         // esc steps back out of the units, then closes.
         key(&mut app, KeyCode::Esc);
         assert_eq!(app.overlay, Overlay::Commits { sel: 1, unit: None });
@@ -566,10 +573,10 @@ mod view {
         assert_eq!(app.overlay, Overlay::None);
         assert_eq!(app.selected().unwrap().symbol, "g");
 
-        key(&mut app, KeyCode::Char('C'));
+        keys(&mut app, "<space>c");
         key(&mut app, KeyCode::Esc);
         assert_eq!(app.overlay, Overlay::None);
-        key(&mut app, KeyCode::Char('C'));
+        keys(&mut app, "<space>c");
         key(&mut app, KeyCode::Char('q'));
         assert_eq!(app.overlay, Overlay::None);
     }
@@ -604,12 +611,13 @@ mod view {
         .unwrap();
         assert_eq!(r.intent.commits.len(), 3);
         assert!(r.intent.commits.iter().any(|c| c.merge));
-        let cfg: Config = toml::from_str("[keys]\ncommits = \"y\"\n").unwrap();
-        let keys = cfg.keymap().unwrap();
-        let mut app = App::new(r, cfg, keys);
-        key(&mut app, KeyCode::Char('C'));
+        let cfg: Config = toml::from_str("[keys]\n\"tool.history\" = \"<space>h\"\n").unwrap();
+        let (km, warnings) = cfg.keymap().unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let mut app = App::new(r, cfg, km);
+        keys(&mut app, "<space>c");
         assert_eq!(app.overlay, Overlay::None);
-        key(&mut app, KeyCode::Char('y'));
+        keys(&mut app, "<space>h");
         assert!(matches!(app.overlay, Overlay::Commits { .. }));
         let t = render(&app, 100, 30);
         let s = text(&t);
@@ -629,8 +637,8 @@ mod view {
         let (repo, _) = history();
         repo.write("a.py", "def f():\n    return 5\n");
         let r = build_review(&repo.path(), &BuildOptions::default()).unwrap();
-        let mut app = App::new(r, Config::default(), KeyMap::default());
-        key(&mut app, KeyCode::Char('C'));
+        let mut app = App::new(r, Config::default(), Keymap::default());
+        keys(&mut app, "<space>c");
         assert_eq!(app.overlay, Overlay::None);
         assert_eq!(
             app.status,
@@ -641,16 +649,15 @@ mod view {
     #[test]
     fn the_view_survives_small_terminals_and_is_in_the_help() {
         let (r, _repo) = pr_review(Some(meta()));
-        let mut app = App::new(r, Config::default(), KeyMap::default());
-        key(&mut app, KeyCode::Char('C'));
+        let mut app = App::new(r, Config::default(), Keymap::default());
+        keys(&mut app, "<space>c");
         key(&mut app, KeyCode::Enter);
         for (w, h) in [(1u16, 1u16), (20, 8), (40, 10), (60, 20), (80, 24)] {
             render(&app, w, h);
         }
         app.overlay = Overlay::Help;
         let s = text(&render(&app, 80, 24));
-        assert!(s.contains("C m N  commits"), "{s}");
-        assert!(s.contains("needs fix"), "{s}");
+        assert!(s.contains("␣c  commits and PR description"), "{s}");
     }
 }
 
@@ -659,7 +666,8 @@ mod view {
 mod preview {
     use super::screen::{render, row};
     use super::*;
-    use teer::config::{Config, KeyMap};
+    use teer::config::Config;
+    use teer::keymap::Keymap;
     use teer::tui::app::{App, Screen};
 
     fn text(t: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
@@ -680,7 +688,7 @@ mod preview {
     fn the_preview_and_the_card_name_the_commits_that_touched_the_unit() {
         let (r, _repo) = pr_review(None);
         let short: Vec<String> = r.intent.commits.iter().map(|c| c.short.clone()).collect();
-        let mut app = App::new(r, Config::default(), KeyMap::default());
+        let mut app = App::new(r, Config::default(), Keymap::default());
         select(&mut app, "g");
         let s = text(&render(&app, 180, 30));
         let want = format!(
@@ -723,7 +731,7 @@ mod preview {
         let (repo, _) = history();
         repo.write("a.py", "def f():\n    return 5\n");
         let r = build_review(&repo.path(), &BuildOptions::default()).unwrap();
-        let mut app = App::new(r, Config::default(), KeyMap::default());
+        let mut app = App::new(r, Config::default(), Keymap::default());
         select(&mut app, "f");
         assert!(!text(&render(&app, 140, 30)).contains("commits:"));
     }
@@ -737,7 +745,8 @@ mod agent {
     use serde_json::{Value, json};
     use std::sync::{Arc, Mutex};
     use teer::agent::mock::MockAdapter;
-    use teer::config::{Config, KeyMap};
+    use teer::config::Config;
+    use teer::keymap::Keymap;
     use teer::review::model::{Decision, SessionRef};
     use teer::tui::app::{App, Screen};
 
@@ -905,7 +914,7 @@ mod agent {
         };
         let gi = r.units.iter().position(|u| u.symbol == "g").unwrap();
         r.units[gi].decision = Decision::Investigate;
-        let mut app = App::new(r, Config::default(), KeyMap::default());
+        let mut app = App::new(r, Config::default(), Keymap::default());
         app.sel = app.order.iter().position(|&i| i == gi).unwrap();
         assert!(
             text(&app, 160, 30).contains(want),
@@ -929,7 +938,7 @@ mod agent {
             "{card}"
         );
         app.screen = Screen::Slim;
-        app.on_action(teer::config::Action::Flagged);
+        app.on_action(teer::keymap::Action::ViewOpen);
         assert_eq!(app.screen, Screen::Flagged);
         assert!(
             text(&app, 140, 40).contains(want),
@@ -948,7 +957,8 @@ mod summary {
     use std::sync::Arc;
     use std::time::Duration;
     use teer::agent::mock::MockAdapter;
-    use teer::config::{Config, KeyMap};
+    use teer::config::Config;
+    use teer::keymap::Keymap;
     use teer::review::model::{Prep, SessionRef};
     use teer::review::prompts::SUMMARY_RULES;
     use teer::tui::Runtime;
@@ -990,7 +1000,7 @@ mod summary {
             second_opinion: false,
             ..Default::default()
         };
-        let mut app = App::new(r, cfg, KeyMap::default());
+        let mut app = App::new(r, cfg, Keymap::default());
         let mock = MockAdapter::new(responder);
         let prompts = mock.prompts.clone();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1055,14 +1065,14 @@ mod summary {
         again.intent.summary = None;
         teer::review::store::merge_previous(&mut again, &app.review);
         assert!(again.intent.summary.is_some());
-        let mut next = App::new(again, Config::default(), KeyMap::default());
+        let mut next = App::new(again, Config::default(), Keymap::default());
         let s = SessionRef::fresh("mock", next.review.repo_root.clone());
         let effects = next.start(true, None, Vec::new(), Some(s.clone()), false);
         assert!(!effects.contains(&Effect::Summarize), "{effects:?}");
         // Described in an earlier run but never summed up: asked on start.
         let mut bare = app.review.clone();
         bare.intent.summary = None;
-        let mut next = App::new(bare, Config::default(), KeyMap::default());
+        let mut next = App::new(bare, Config::default(), Keymap::default());
         let effects = next.start(true, None, Vec::new(), Some(s), false);
         assert!(effects.contains(&Effect::Summarize), "{effects:?}");
     }

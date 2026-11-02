@@ -1,13 +1,26 @@
 //! Persistence: reviews as JSON in the XDG data dir, keyed by repo, base
 //! and head, so reopening teer restores decisions.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 use super::model::{PrInfo, Prep, Review};
 use crate::util::hash_hex;
+
+/// The version of the saved format. 1 added the version itself and the
+/// undo history (`Review.history`). A file without one is 0 and loads as it
+/// is; a file from a newer teer doesn't load.
+pub const CURRENT: u32 = 1;
+
+/// Writes `Review.version`: always [`CURRENT`], the format this teer writes.
+pub(crate) fn current_version<S: serde::Serializer>(
+    _: &u32,
+    s: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    s.serialize_u32(CURRENT)
+}
 
 fn home() -> PathBuf {
     directories::BaseDirs::new()
@@ -120,14 +133,20 @@ pub fn load(
     head: &str,
     head_commit: &str,
 ) -> Option<Review> {
-    let bytes = std::fs::read(review_path(repo, pr, base, head, head_commit)).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    read(&review_path(repo, pr, base, head, head_commit))
 }
 
 /// The most recently saved review of the repo, or of the PR when `pr` is given.
 pub fn load_latest(repo: &Path, pr: Option<&PrInfo>) -> Option<Review> {
     let path = std::fs::read_to_string(scope_dir(repo, pr).join("latest")).ok()?;
-    serde_json::from_slice(&std::fs::read(path.trim()).ok()?).ok()
+    read(Path::new(path.trim()))
+}
+
+/// The review saved at `path`, unless it doesn't parse or a newer teer
+/// saved it in a format this one doesn't know.
+fn read(path: &Path) -> Option<Review> {
+    let review: Review = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    (review.version <= CURRENT).then_some(review)
 }
 
 /// Carry decisions and agent answers over from a previous review for units
@@ -155,6 +174,21 @@ pub fn merge_previous(new: &mut Review, old: &Review) {
             u.dive.note_on = prev.dive.note_on.clone();
         }
     }
+    // Undo and redo go on for units whose decision came along: their code
+    // didn't change.
+    let same: HashSet<&str> = new
+        .units
+        .iter()
+        .filter(|u| {
+            by_id
+                .get(u.id.as_str())
+                .is_some_and(|p| p.fingerprint == u.fingerprint)
+        })
+        .map(|u| u.id.as_str())
+        .collect();
+    let mut history = old.history.clone();
+    history.retain_units(|id| same.contains(id));
+    new.history = history;
     if new.agent_session.is_none() {
         new.agent_session = old.agent_session.clone();
     }
@@ -187,6 +221,7 @@ pub fn merge_previous(new: &mut Review, old: &Review) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::review::history::{Change, Step};
     use crate::review::model::{Decision, Dive, DiveKind, DiveResult, Unit};
 
     fn unit(fingerprint: &str) -> Unit {
@@ -215,6 +250,8 @@ mod tests {
             skipped: Vec::new(),
             graph: Default::default(),
             questions: Vec::new(),
+            version: 0,
+            history: Default::default(),
         }
     }
 
@@ -260,5 +297,145 @@ mod tests {
         assert!(new.units[0].note_is_stale());
         // Same as before this feature: a changed unit starts undecided.
         assert_eq!(new.units[0].decision, Decision::Pending);
+    }
+
+    fn named(id: &str, fingerprint: &str) -> Unit {
+        Unit {
+            id: id.into(),
+            ..unit(fingerprint)
+        }
+    }
+
+    fn change(id: &str, before: Decision, after: Decision) -> Change {
+        Change {
+            id: id.into(),
+            before,
+            after,
+        }
+    }
+
+    /// A review saved where no other test saves one.
+    fn saved_at(repo: &str, units: Vec<Unit>) -> Review {
+        let mut r = review(unit("x"));
+        r.repo_root = PathBuf::from(repo);
+        r.units = units;
+        r
+    }
+
+    /// What teer 0.1 wrote: no `version`, no `history`.
+    const V1_REVIEW: &str = r#"{
+      "id": "v1",
+      "repo_root": "/teer-tests/v1",
+      "base": "abc123",
+      "head": "WORKTREE",
+      "head_commit": "def456",
+      "agent_session": { "agent": "claude", "id": "", "cwd": "/teer-tests/v1" },
+      "created_at": "2026-10-27T12:00:00Z",
+      "files": [],
+      "units": [{
+        "id": "a.rs::f", "file": "a.rs", "symbol": "f", "kind": "Function",
+        "status": "Changed", "old_range": null, "new_range": null,
+        "fingerprint": "fp", "changes": [], "callers": [], "callees": [],
+        "decision": "Accepted"
+      }],
+      "skipped": [],
+      "questions": []
+    }"#;
+
+    fn write_v1(text: &str) {
+        let path = review_path(
+            Path::new("/teer-tests/v1"),
+            None,
+            "abc123",
+            "WORKTREE",
+            "def456",
+        );
+        write_atomic(&path, text.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn a_review_saved_before_versions_loads_as_version_0() {
+        write_v1(V1_REVIEW);
+        let r = load(
+            Path::new("/teer-tests/v1"),
+            None,
+            "abc123",
+            "WORKTREE",
+            "def456",
+        )
+        .expect("a v1 file loads");
+        assert_eq!(r.version, 0);
+        assert!(r.history.is_empty());
+        assert_eq!(r.units[0].decision, Decision::Accepted);
+        // Saved again, it is the current format.
+        let path = save(&r).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(json["version"], CURRENT);
+        assert_eq!(
+            load_latest(Path::new("/teer-tests/v1"), None)
+                .unwrap()
+                .version,
+            CURRENT
+        );
+    }
+
+    #[test]
+    fn a_review_from_a_newer_teer_is_not_loaded() {
+        let mut r = saved_at("/teer-tests/newer", vec![unit("x")]);
+        r.version = CURRENT;
+        let path = save(&r).unwrap();
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        json["version"] = (CURRENT + 1).into();
+        write_atomic(&path, &serde_json::to_vec(&json).unwrap()).unwrap();
+        assert!(load(&r.repo_root, None, &r.base, &r.head, &r.head_commit).is_none());
+        assert!(load_latest(&r.repo_root, None).is_none());
+    }
+
+    #[test]
+    fn the_history_is_saved_and_loaded() {
+        let mut r = saved_at(
+            "/teer-tests/history",
+            vec![named("a", "1"), named("b", "2")],
+        );
+        r.history.record(Step {
+            changes: vec![
+                change("a", Decision::Pending, Decision::Accepted),
+                change("b", Decision::Pending, Decision::Investigate),
+            ],
+        });
+        r.history.record(Step {
+            changes: vec![change("a", Decision::Accepted, Decision::Investigate)],
+        });
+        r.history.undo();
+        save(&r).unwrap();
+        let back = load(&r.repo_root, None, &r.base, &r.head, &r.head_commit).unwrap();
+        assert_eq!(back.history, r.history);
+        assert_eq!(back.version, CURRENT);
+    }
+
+    #[test]
+    fn a_rerun_keeps_the_history_of_units_whose_code_stayed() {
+        let mut old = saved_at("/teer-tests/rerun", vec![named("a", "1"), named("b", "2")]);
+        old.history.record(Step {
+            changes: vec![
+                change("a", Decision::Pending, Decision::Accepted),
+                change("b", Decision::Pending, Decision::Accepted),
+            ],
+        });
+        old.history.record(Step {
+            changes: vec![change("b", Decision::Accepted, Decision::Investigate)],
+        });
+        // `b` changed; `a` didn't.
+        let mut new = saved_at("/teer-tests/rerun", vec![named("a", "1"), named("b", "2b")]);
+        merge_previous(&mut new, &old);
+        assert_eq!(
+            new.history.undo,
+            vec![Step {
+                changes: vec![change("a", Decision::Pending, Decision::Accepted)],
+            }]
+        );
+        assert!(new.history.redo.is_empty());
     }
 }

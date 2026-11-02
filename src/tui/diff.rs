@@ -4,7 +4,7 @@
 //! review, so drawing never runs git. Changed lines keep [`CONTEXT`]
 //! unchanged lines around them; longer unchanged runs between changes
 //! fold into one gap row. Line numbers are those of the new file, where
-//! `e` opens the unit; removed lines show their number in the old file,
+//! `gf` opens the unit; removed lines show their number in the old file,
 //! styled apart. Each statement can be written into the code under the rows
 //! it cites, like a review comment; then the code change shows only what
 //! they cite: each cited line keeps [`NOTE_CONTEXT`] lines around it, and
@@ -193,7 +193,7 @@ fn rows_near(
     (rows, added, removed)
 }
 
-/// The new file's line at the unit's first change, where `e` opens a whole
+/// The new file's line at the unit's first change, where `gf` opens a whole
 /// file: the line added there, else the next (or last) line the new file has.
 pub fn first_change(review: &Review, u: &Unit) -> Option<u32> {
     let rows = unit_rows(review, u);
@@ -693,6 +693,8 @@ mod tests {
             skipped: Vec::new(),
             graph: Default::default(),
             questions: Vec::new(),
+            version: 0,
+            history: Default::default(),
         }
     }
 
@@ -789,7 +791,8 @@ mod tests {
     /// each line's number, its sign and its last span (the code, on a code
     /// row).
     fn drawn(theme: crate::config::Theme, notes: Notes) -> Vec<(String, Style, Style, Style)> {
-        use crate::config::{Config, KeyMap};
+        use crate::config::Config;
+        use crate::keymap::Keymap;
         let old = "def f():\n    a = 1\n    return a\n";
         let new = "def f():\n    a = 2\n    return a\n";
         let mut u = unit(UnitStatus::Changed, Some((1, 3)), Some((1, 3)));
@@ -802,7 +805,7 @@ mod tests {
             theme,
             ..Config::default()
         };
-        let app = App::new(review(Some(old), Some(new), u), cfg, KeyMap::default());
+        let app = App::new(review(Some(old), Some(new), u), cfg, Keymap::default());
         let u = &app.review.units[0];
         code_change(&app, u, 40, notes)
             .0
@@ -889,7 +892,8 @@ mod tests {
 
     #[test]
     fn drawn_statements_show_only_the_code_they_cite() {
-        use crate::config::{Config, KeyMap};
+        use crate::config::Config;
+        use crate::keymap::Keymap;
         let (old, new) = twenty();
         let mut u = unit(UnitStatus::Changed, Some((1, 20)), Some((1, 20)));
         u.prep = Prep::Ready;
@@ -897,7 +901,7 @@ mod tests {
         let app = App::new(
             review(Some(&old), Some(&new), u),
             Config::default(),
-            KeyMap::default(),
+            Keymap::default(),
         );
         let lines = |notes| -> Vec<Line<'static>> {
             code_change(&app, &app.review.units[0], 40, notes)
@@ -943,7 +947,8 @@ mod tests {
 
     #[test]
     fn code_keeps_its_syntax_colours_and_removed_lines_are_tinted() {
-        use crate::config::{Config, KeyMap, Theme};
+        use crate::config::{Config, Theme};
+        use crate::keymap::Keymap;
         let old = "def f(order):\n\ta = 1\n\treturn a\n";
         let new = "def f(order):\n\ta = price(order)\n\treturn a\n";
         let app = |theme| {
@@ -952,7 +957,7 @@ mod tests {
                 ..Config::default()
             };
             let u = unit(UnitStatus::Changed, Some((1, 3)), Some((1, 3)));
-            App::new(review(Some(old), Some(new), u), cfg, KeyMap::default())
+            App::new(review(Some(old), Some(new), u), cfg, Keymap::default())
         };
         let spans = |app: &App, row: usize| -> Vec<Span<'static>> {
             code_change(app, &app.review.units[0], 50, Notes::Off)

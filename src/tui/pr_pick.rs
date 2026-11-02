@@ -1,13 +1,15 @@
 //! The picker `teer pr list` opens on a terminal: the open pull requests
-//! that involve you, by section, one of them selected. Enter reviews it
-//! (as `teer pr <url>` would), q leaves. It is up while gh is still asked.
+//! that involve you, by section, one of them selected. `view.open` reviews
+//! it (as `teer pr <url>` would), `view.close` or `view.back` leaves;
+//! `move.next_file` and `move.prev_file` jump between sections. It is up
+//! while gh is still asked.
 
 use std::future::Future;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, EventStream, KeyEvent, KeyEventKind};
 use futures::StreamExt;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -18,7 +20,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::slim::SPINNER;
 use super::theme::Theme;
-use crate::config::{Action, KeyMap};
+use crate::keymap::{Action, Keymap, Outcome};
 use crate::pr_list::{LIMIT, ListedPr, Listing, RepoRef, SHOWN, Section, age, details};
 use crate::util::{truncate, truncate_pad};
 
@@ -46,12 +48,12 @@ pub struct Picker {
     page: usize,
     pub now: DateTime<Utc>,
     pub theme: Theme,
-    pub keys: KeyMap,
+    pub keys: Keymap,
     pub tick: u64,
 }
 
 impl Picker {
-    pub fn new(repo: RepoRef, theme: Theme, keys: KeyMap, now: DateTime<Utc>) -> Picker {
+    pub fn new(repo: RepoRef, theme: Theme, keys: Keymap, now: DateTime<Utc>) -> Picker {
         Picker {
             repo,
             listing: None,
@@ -90,40 +92,53 @@ impl Picker {
         if k.kind == KeyEventKind::Release {
             return None;
         }
-        let is = |a: Action| self.keys.is(a, &k);
-        let ctrl_c = k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL);
-        if ctrl_c || is(Action::Quit) || is(Action::Back) {
+        if self.keys.is_interrupt(&k) {
             return Some(Picked::Quit);
         }
+        match self.keys.feed(&k, Instant::now()) {
+            Outcome::Run { action, count } => self.on_action(action, count.unwrap_or(1) as usize),
+            _ => None,
+        }
+    }
+
+    /// Run `action`; moves go `n` times. `Some` ends the picker.
+    fn on_action(&mut self, action: Action, n: usize) -> Option<Picked> {
         let last = self.rows.len().saturating_sub(1);
         let page = self.page.max(1);
-        if is(Action::Open) || k.code == KeyCode::Enter {
-            return self.selected().cloned().map(Picked::Pr);
-        } else if is(Action::Down) || k.code == KeyCode::Down {
-            self.sel = (self.sel + 1).min(last);
-        } else if is(Action::Up) || k.code == KeyCode::Up {
-            self.sel = self.sel.saturating_sub(1);
-        } else if is(Action::Top) || k.code == KeyCode::Home {
-            self.sel = 0;
-        } else if is(Action::Bottom) || k.code == KeyCode::End {
-            self.sel = last;
-        } else if is(Action::NextGroup) {
-            if let Some(p) = (self.sel + 1..self.rows.len()).find(|&p| self.section_starts(p)) {
-                self.sel = p;
+        let half = (page / 2).max(1);
+        let down = |sel: usize, by: usize| sel.saturating_add(by).min(last);
+        match action {
+            Action::ViewClose | Action::ViewBack => return Some(Picked::Quit),
+            Action::ViewOpen => return self.selected().cloned().map(Picked::Pr),
+            Action::MoveDown => self.sel = down(self.sel, n),
+            Action::MoveUp => self.sel = self.sel.saturating_sub(n),
+            Action::MoveFirst => self.sel = 0,
+            Action::MoveLast => self.sel = last,
+            Action::MoveNextFile => {
+                for _ in 0..n {
+                    let next = (self.sel + 1..self.rows.len()).find(|&p| self.section_starts(p));
+                    let Some(p) = next else { break };
+                    self.sel = p;
+                }
             }
-        } else if is(Action::PrevGroup) {
-            // The first of this section, then the first of the one above.
-            let start = (0..=self.sel).rev().find(|&p| self.section_starts(p));
-            if let Some(start) = start.filter(|&s| s > 0) {
-                self.sel = (0..start)
-                    .rev()
-                    .find(|&p| self.section_starts(p))
-                    .unwrap_or(0);
+            Action::MovePrevFile => {
+                for _ in 0..n {
+                    // The first of this section, then the first of the one above.
+                    let start = (0..=self.sel).rev().find(|&p| self.section_starts(p));
+                    let Some(start) = start.filter(|&s| s > 0) else {
+                        break;
+                    };
+                    self.sel = (0..start)
+                        .rev()
+                        .find(|&p| self.section_starts(p))
+                        .unwrap_or(0);
+                }
             }
-        } else if k.code == KeyCode::PageDown {
-            self.sel = (self.sel + page).min(last);
-        } else if k.code == KeyCode::PageUp {
-            self.sel = self.sel.saturating_sub(page);
+            Action::ScrollHalfDown => self.sel = down(self.sel, half),
+            Action::ScrollHalfUp => self.sel = self.sel.saturating_sub(half),
+            Action::ScrollPageDown => self.sel = down(self.sel, page),
+            Action::ScrollPageUp => self.sel = self.sel.saturating_sub(page),
+            _ => {}
         }
         None
     }
@@ -284,16 +299,16 @@ fn draw_header(f: &mut Frame, p: &Picker, area: Rect) {
 
 fn draw_footer(f: &mut Frame, p: &Picker, area: Rect) {
     let buttons = [
-        (p.keys.label(Action::Open), "review"),
+        (p.keys.labels(Action::ViewOpen), "review"),
         (
             format!(
                 "{}/{}",
-                p.keys.label(Action::Down),
-                p.keys.label(Action::Up)
+                p.keys.label(Action::MoveDown),
+                p.keys.label(Action::MoveUp)
             ),
             "move",
         ),
-        (p.keys.label(Action::Quit), "quit"),
+        (p.keys.label(Action::ViewClose), "quit"),
     ];
     let url = p.selected().map(|s| s.url.as_str()).unwrap_or_default();
     let (line, _) = super::ui::footer_line(&p.theme, &buttons, url, area.width as usize);
@@ -306,7 +321,7 @@ pub async fn pick(
     repo: RepoRef,
     listing: impl Future<Output = Result<Listing>>,
     theme: Theme,
-    keys: KeyMap,
+    keys: Keymap,
 ) -> Result<Picked> {
     let mut p = Picker::new(repo, theme, keys, Utc::now());
     let mut terminal = ratatui::init();

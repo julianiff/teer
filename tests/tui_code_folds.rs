@@ -14,7 +14,8 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use serde_json::{Value, json};
 use teer::agent::mock::MockAdapter;
-use teer::config::{Config, KeyMap};
+use teer::config::Config;
+use teer::keymap::Keymap;
 use teer::review::model::{Decision, SessionRef};
 use teer::review::{BuildOptions, build_review};
 use teer::tui::app::{App, Screen};
@@ -71,7 +72,7 @@ async fn app() -> (App, FixtureRepo) {
         2,
     )
     .await;
-    let mut app = App::new(review, Config::default(), KeyMap::default());
+    let mut app = App::new(review, Config::default(), Keymap::default());
     app.start(true, None, Vec::new(), Some(session), false);
     (app, repo)
 }
@@ -115,7 +116,7 @@ async fn every_code_box_with_statements_shows_only_the_code_they_cite() {
     folded(&screen(&app), "swipe card");
     press(&mut app, KeyCode::Esc);
     app.review.units[0].decision = Decision::Investigate;
-    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Char('l'));
     assert_eq!(app.screen, Screen::Flagged);
     let out = screen(&app);
     folded(&out, "Flagged screen");
@@ -142,7 +143,7 @@ async fn every_code_box_with_statements_shows_only_the_code_they_cite() {
         "{out}"
     );
     assert!(
-        out.contains("╭ n Recommend ✓") && out.contains("Looks fine."),
+        out.contains("╭ ␣w Recommend ✓") && out.contains("Looks fine."),
         "{out}"
     );
 }

@@ -1,6 +1,5 @@
 ---
 source: tests/tui.rs
-assertion_line: 305
 expression: "render(&app, 90, 20).backend()"
 ---
 " Uncommitted changes                                                           1 flagged  "
@@ -13,13 +12,13 @@ expression: "render(&app, 90, 20).backend()"
 "                 │  All changes triaged                                 │                 "
 "                 │                                                      │                 "
 "                 │  3 accepted                                          │                 "
-"                 │  1 flagged — press d to see them                     │                 "
+"                 │  1 flagged                                           │                 "
 "                 │                                                      │                 "
-"                 │  h back to the last card                             │                 "
+"                 │  k back to the last card                             │                 "
 "                 │                                                      │                 "
 "                 ╰──────────────────────────────────────────────────────╯                 "
 "                                                                                          "
 "                                                                                          "
 "                                                                                          "
 "                                                                                          "
-" h previous   u undo   esc back                                                           "
+" k previous   u undo   h back                                                             "

@@ -88,6 +88,14 @@ pub struct Review {
     /// What the reviewer asked about the code (Ask), oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub questions: Vec<Question>,
+    /// The saved format's version it was read as ([`super::store::CURRENT`]),
+    /// 0 for files from before it was kept. Always written as the current
+    /// one: this teer writes no other.
+    #[serde(default, serialize_with = "super::store::current_version")]
+    pub version: u32,
+    /// Undo and redo of decisions.
+    #[serde(default, skip_serializing_if = "super::history::History::is_empty")]
+    pub history: super::history::History,
 }
 
 /// A question about the code, asked during the review, and the agent's

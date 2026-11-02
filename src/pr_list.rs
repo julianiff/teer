@@ -18,7 +18,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::approve::tidy_output;
-use crate::config::{Config, KeyMap};
+use crate::config::Config;
+use crate::keymap::Keymap;
 use crate::pr;
 use crate::tui::pr_pick::Picked;
 use crate::util::{sanitize, truncate};
@@ -424,7 +425,7 @@ pub fn render(l: &Listing, now: DateTime<Utc>, width: Option<usize>, color: bool
 /// `teer pr list` for the repository at `cwd`. On a terminal the pull
 /// requests open in a picker and the one picked is returned, to be reviewed;
 /// piped or with `json`, they are printed.
-pub async fn run(cwd: &Path, json: bool, cfg: &Config, keys: KeyMap) -> Result<Option<ListedPr>> {
+pub async fn run(cwd: &Path, json: bool, cfg: &Config, keys: Keymap) -> Result<Option<ListedPr>> {
     use std::io::IsTerminal;
     let repo = crate::git::repo_root(cwd)
         .context("teer pr list must run inside a clone of a GitHub repository")?;

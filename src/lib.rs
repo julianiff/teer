@@ -13,6 +13,7 @@ pub mod editor;
 pub mod gh;
 pub mod git;
 pub mod graph;
+pub mod keymap;
 pub mod log;
 pub mod notes;
 pub mod pr;

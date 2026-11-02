@@ -1,6 +1,5 @@
 ---
 source: tests/tui.rs
-assertion_line: 156
 expression: "render(&app, 90, 30).backend()"
 ---
 " Uncommitted changes                                                                      "
@@ -31,5 +30,5 @@ expression: "render(&app, 90, 30).backend()"
 " │     │ Rejects unsupported currencies. 2 callers don't handle it. │                   │ "
 " │     ╰────────────────────────────────────────────────────────────╯                   │ "
 " │                                                                                      │ "
-" │ … 7 more lines · J scroll · e editor                                                 │ "
-" e open in editor   s swipe   ? help   i investigate   / ask   J K scroll   m note        "
+" │ … 7 more lines · ^d scroll · gf editor                                               │ "
+" gf open in editor   s swipe   ? help   f flag   K ask   ^d ^u scroll   i note            "

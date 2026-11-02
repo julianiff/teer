@@ -1,6 +1,5 @@
 ---
 source: tests/tui.rs
-assertion_line: 432
 expression: "render(&app, 90, 26).backend()"
 ---
 " Uncommitted changes                                                                      "
@@ -23,9 +22,9 @@ expression: "render(&app, 90, 26).backend()"
 "        │  │     ╰────────────────────────────────────────────────────────────╯       │  │"
 "        │  │                                                                          │  │"
 "        │  │                                                                          │  │"
-"        │  │ … 7 more lines · J scroll · e editor                                     │  │"
+"        │  │ … 7 more lines · ^d scroll · gf editor                                   │  │"
 "        │                                                                                │"
 "        │  not reviewed yet                                                              │"
 "        ╰──────────────────────────────────────────────────────────────────────── accept ╯"
-"                                                                         accept [l] →     "
-" l accept · next   h previous   ← i investigate   u undo   esc back   e open in editor    "
+"                                                                         accept [a] →     "
+" a accept · next   k previous   f flag   u undo   h back   gf open in editor              "

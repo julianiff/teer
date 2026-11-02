@@ -333,6 +333,8 @@ mod tests {
             skipped: Vec::new(),
             graph: Default::default(),
             questions: Vec::new(),
+            version: 0,
+            history: Default::default(),
         }
     }
 

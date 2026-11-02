@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use teer::config::{Action, Config, KeyMap};
+use teer::config::Config;
+use teer::keymap::{Action, Keymap, Trigger};
 use teer::review::model::{
     Change, Decision, Marker, Prep, Range, Review, Risk, Unit, UnitKind, UnitStatus,
 };
@@ -67,8 +68,10 @@ fn app_of(units: Vec<Unit>) -> App {
         skipped: Vec::new(),
         graph: Default::default(),
         questions: Vec::new(),
+        version: 0,
+        history: Default::default(),
     };
-    App::new(review, Config::default(), KeyMap::default())
+    App::new(review, Config::default(), Keymap::default())
 }
 
 fn app(n: usize) -> App {
@@ -152,6 +155,21 @@ fn empty_review_renders_and_handles_every_key() {
         render(&a, 80, 24);
         a.overlay = Overlay::None;
     }
+    // Every default binding, sequences and commands too.
+    let typed: Vec<String> = Keymap::default()
+        .bindings()
+        .map(|(_, t)| match t {
+            Trigger::Keys(_) => t.notation(),
+            Trigger::Command(c) => format!(":{c}<cr>"),
+        })
+        .collect();
+    for keys in typed {
+        a.keys.reset();
+        common::v2::press(&mut a, &keys);
+        render(&a, 80, 24);
+        a.overlay = Overlay::None;
+        a.screen = teer::tui::app::Screen::Slim;
+    }
     for code in [
         KeyCode::Down,
         KeyCode::Up,
@@ -172,16 +190,16 @@ fn empty_review_renders_and_handles_every_key() {
 fn single_unit() {
     let mut a = app(1);
     render_all_sizes(&a);
-    a.on_action(Action::Down);
-    a.on_action(Action::Up);
-    a.on_action(Action::NextPending);
-    a.on_action(Action::PrevGroup);
-    a.on_action(Action::NextGroup);
+    a.on_action(Action::MoveDown);
+    a.on_action(Action::MoveUp);
+    a.on_action(Action::MoveNextPending);
+    a.on_action(Action::MovePrevFile);
+    a.on_action(Action::MoveNextFile);
     assert_eq!(a.sel, 0);
     render_all_sizes(&a);
-    a.on_action(Action::Accept);
+    a.on_action(Action::DecideAccept);
     render_all_sizes(&a);
-    a.on_action(Action::Undo);
+    a.on_action(Action::HistoryUndo);
     assert_eq!(a.review.units[0].decision, Decision::Pending);
 }
 
@@ -193,11 +211,11 @@ fn all_units_decided() {
             u.decision = d;
         }
         render_all_sizes(&a);
-        a.on_action(Action::NextPending);
-        a.on_action(Action::PrevPending);
+        a.on_action(Action::MoveNextPending);
+        a.on_action(Action::MovePrevPending);
         assert!(a.status.contains("No more pending"));
-        a.on_action(Action::Bottom);
-        a.on_action(Action::Accept);
+        a.on_action(Action::MoveLast);
+        a.on_action(Action::DecideAccept);
         render(&a, 80, 24);
     }
 }
@@ -214,17 +232,17 @@ fn a_thousand_units_half_of_them_decided() {
         render(&a, 39, 10);
         render(&a, 500, 60);
     }
-    a.on_action(Action::Bottom);
+    a.on_action(Action::MoveLast);
     assert_eq!(a.sel, 999);
-    a.on_action(Action::Down);
+    a.on_action(Action::MoveDown);
     assert_eq!(a.sel, 999);
     // Deciding the last unit asks nothing and undoes in one step.
-    a.on_action(Action::Accept);
+    a.on_action(Action::DecideAccept);
     assert_eq!(a.overlay, Overlay::None);
     assert_eq!(a.review.units[999].decision, Decision::Accepted);
     render(&a, 80, 24);
     render(&a, 10, 3);
-    a.on_action(Action::Undo);
+    a.on_action(Action::HistoryUndo);
     assert_eq!(a.review.units[999].decision, Decision::Pending);
     assert_eq!(
         a.review
@@ -381,9 +399,9 @@ fn scrolling_keeps_the_selected_row_visible() {
             key(&mut a, 'k');
             check(&a, "up");
         }
-        a.on_action(Action::Bottom);
+        a.on_action(Action::MoveLast);
         check(&a, "bottom");
-        a.on_action(Action::Top);
+        a.on_action(Action::MoveFirst);
         check(&a, "top");
     }
 }
@@ -466,7 +484,7 @@ fn p_does_nothing_and_the_reset_confirm_still_works() {
     key(&mut a, 'p');
     assert_eq!(a.sel, sel);
     assert_eq!(a.overlay, Overlay::None);
-    a.on_action(Action::Reset);
+    a.on_action(Action::ReviewReset);
     assert_eq!(a.overlay, Overlay::ConfirmReset);
     for &(w, h) in SIZES {
         render(&a, w, h);
@@ -476,7 +494,7 @@ fn p_does_nothing_and_the_reset_confirm_still_works() {
     key(&mut a, 'p');
     assert_eq!(a.overlay, Overlay::None);
     assert_eq!(a.review.units[0].decision, Decision::Accepted, "not reset");
-    a.on_action(Action::Investigate);
+    a.on_action(Action::DecideFlag);
     render(&a, 120, 40);
     assert_eq!(
         a.review
@@ -523,10 +541,10 @@ fn rebuild_order_when_units_leave_the_list() {
     assert!(a.order.is_empty());
     assert_eq!(a.sel, 0);
     render_all_sizes(&a);
-    a.on_action(Action::Accept);
-    a.on_action(Action::Undo);
-    a.on_action(Action::NextGroup);
-    a.on_action(Action::PrevGroup);
+    a.on_action(Action::DecideAccept);
+    a.on_action(Action::HistoryUndo);
+    a.on_action(Action::MoveNextFile);
+    a.on_action(Action::MovePrevFile);
     render(&a, 80, 24);
 }
 
@@ -538,7 +556,7 @@ fn rebuild_order_with_a_stale_selection_past_the_end() {
     assert_eq!(a.sel, 4);
     render(&a, 80, 24);
     // Deciding after the clamp touches the last listed unit.
-    a.on_action(Action::Accept);
+    a.on_action(Action::DecideAccept);
     assert_eq!(a.review.units[a.order[4]].decision, Decision::Accepted);
 }
 
@@ -596,28 +614,28 @@ fn control_characters_and_newlines_keep_rows_on_one_line() {
 }
 
 #[test]
-fn investigate_button_and_help_show_i_and_k_is_up() {
+fn flag_button_and_help_show_f_and_k_is_up() {
     let mut a = app(3);
     let footer = |a: &App| {
         let t = render(a, 100, 10);
         text(&t)
             .lines()
             .rev()
-            .find(|l| l.contains("investigate"))
+            .find(|l| l.contains("flag"))
             .unwrap()
             .to_string()
     };
-    assert!(footer(&a).contains("i investigate"), "{}", footer(&a));
+    assert!(footer(&a).contains("f flag"), "{}", footer(&a));
     a.overlay = Overlay::Help;
     let help = text(&render(&a, 100, 40));
-    assert!(help.contains("l  i") || help.contains("l i"), "{help}");
+    assert!(help.contains("a  f") || help.contains("a f"), "{help}");
     assert!(help.contains("k") && !help.contains("later"), "{help}");
 }
 
 #[test]
 fn the_last_unit_shows_its_boxs_bottom_edge_and_a_blank_row() {
     let mut a = app_of((0..40).map(|i| with_change(unit(i), "Changes")).collect());
-    a.on_action(Action::Bottom);
+    a.on_action(Action::MoveLast);
     let s = text(&render(&a, 140, 24));
     let rows: Vec<&str> = s.lines().collect();
     let n = rows.len();

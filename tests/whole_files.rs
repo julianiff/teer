@@ -14,8 +14,9 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use serde_json::{Value, json};
 use teer::agent::mock::MockAdapter;
-use teer::config::{Config, KeyMap};
+use teer::config::Config;
 use teer::git::FileStatus;
+use teer::keymap::Keymap;
 use teer::review::attention::Level;
 use teer::review::model::{Decision, Prep, Review, SessionRef, UnitKind, UnitStatus};
 use teer::review::{BuildOptions, build_review};
@@ -125,7 +126,7 @@ fn every_changed_text_file_is_a_unit_and_the_rest_are_listed() {
 #[test]
 fn levels_name_lock_files_snapshots_and_files_too_large_to_describe() {
     let r = review();
-    let a = App::new(r, Config::default(), KeyMap::default());
+    let a = App::new(r, Config::default(), Keymap::default());
     let level = |file: &str| {
         let i = a
             .review
@@ -211,7 +212,7 @@ fn key(app: &mut App, c: char) {
 
 #[test]
 fn the_list_shows_whole_files_and_the_files_it_cant_show_last() {
-    let a = App::new(review(), Config::default(), KeyMap::default());
+    let a = App::new(review(), Config::default(), Keymap::default());
     let t = draw(&a, 120, 50);
     // A whole file goes by its file name, in the list and over the preview.
     assert!(t.lines().any(|l| l.starts_with("│ README.md")), "{t}");
@@ -260,7 +261,7 @@ fn a_change_of_only_a_binary_file_still_says_so() {
     repo.write("logo.png", "PNG\0");
     let r = build_review(&repo.path(), &BuildOptions::default()).unwrap();
     assert!(r.units.is_empty());
-    let a = App::new(r, Config::default(), KeyMap::default());
+    let a = App::new(r, Config::default(), Keymap::default());
     let t = draw(&a, 80, 20);
     assert!(t.contains("╭─ Not shown · 1 file"), "{t}");
     assert!(
@@ -271,7 +272,7 @@ fn a_change_of_only_a_binary_file_still_says_so() {
 
 #[test]
 fn a_file_too_large_to_describe_says_so_and_shows_its_diff() {
-    let mut a = App::new(review(), Config::default(), KeyMap::default());
+    let mut a = App::new(review(), Config::default(), Keymap::default());
     a.sel = a
         .order
         .iter()
@@ -285,7 +286,7 @@ fn a_file_too_large_to_describe_says_so_and_shows_its_diff() {
 
 #[test]
 fn all_done_waits_for_whole_files_and_names_what_was_not_shown() {
-    let mut a = App::new(review(), Config::default(), KeyMap::default());
+    let mut a = App::new(review(), Config::default(), Keymap::default());
     // Every unit accepted but one whole file.
     let last = a
         .review
@@ -300,7 +301,7 @@ fn all_done_waits_for_whole_files_and_names_what_was_not_shown() {
     }
     assert!(!a.all_reviewed(), "a pending whole file holds it back");
     a.sel = a.order.iter().position(|&i| i == last).unwrap();
-    key(&mut a, 'l');
+    key(&mut a, 'a');
     assert_eq!(a.overlay, Overlay::AllDone);
     let t = draw(&a, 100, 30);
     assert!(t.contains("Hurray! All changes reviewed."), "{t}");
@@ -311,17 +312,14 @@ fn all_done_waits_for_whole_files_and_names_what_was_not_shown() {
 }
 
 #[test]
-fn e_opens_a_whole_file_at_its_first_change() {
-    let mut a = App::new(review(), Config::default(), KeyMap::default());
+fn gf_opens_a_whole_file_at_its_first_change() {
+    let mut a = App::new(review(), Config::default(), Keymap::default());
     a.sel = a
         .order
         .iter()
         .position(|&i| a.review.units[i].file.ends_with("new.md"))
         .unwrap();
-    let effects = a.on_event(Event::Key(KeyEvent::new(
-        KeyCode::Char('e'),
-        KeyModifiers::NONE,
-    )));
+    let effects = v2::press(&mut a, "gf");
     assert_eq!(
         effects,
         [teer::tui::app::Effect::Edit {

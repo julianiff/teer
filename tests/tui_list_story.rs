@@ -8,7 +8,8 @@ use std::path::PathBuf;
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use teer::config::{Config, KeyMap, Order};
+use teer::config::{Config, Order};
+use teer::keymap::Keymap;
 use teer::review::model::{Decision, Prep, Range, Review, Unit, UnitKind, UnitStatus};
 use teer::tui::app::App;
 use teer::tui::ui;
@@ -71,8 +72,10 @@ fn app_of(units: Vec<Unit>, cfg: Config) -> App {
         skipped: Vec::new(),
         graph: Default::default(),
         questions: Vec::new(),
+        version: 0,
+        history: Default::default(),
     };
-    App::new(review, cfg, KeyMap::default())
+    App::new(review, cfg, Keymap::default())
 }
 
 fn names(a: &App) -> Vec<&str> {

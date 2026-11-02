@@ -11,7 +11,8 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use teer::agent::mock::{MockAdapter, dive_responder};
-use teer::config::{Config, KeyMap};
+use teer::config::Config;
+use teer::keymap::Keymap;
 use teer::review::dive::{DiveEvent, run_dive};
 use teer::review::model::{Decision, DiveKind, Review, SessionRef};
 use teer::review::{BuildOptions, build_review};
@@ -42,7 +43,7 @@ fn fixture_with(cfg: Config, adapter: MockAdapter) -> Fixture {
     repo.write("checkout.py", PY_NEW);
     let mut review: Review = build_review(&repo.path(), &BuildOptions::default()).unwrap();
     review.agent_session = Some(session());
-    let app = App::new(review, cfg, KeyMap::default());
+    let app = App::new(review, cfg, Keymap::default());
     assert_eq!(app.screen, Screen::Slim);
     Fixture {
         app,
@@ -64,6 +65,29 @@ fn key(a: &mut App, c: char) -> Vec<Effect> {
 
 fn code(a: &mut App, c: KeyCode) -> Vec<Effect> {
     a.on_event(Event::Key(KeyEvent::new(c, KeyModifiers::NONE)))
+}
+
+/// Type `keys` in Neovim notation (`<space>v`).
+fn keys(a: &mut App, keys: &str) -> Vec<Effect> {
+    common::v2::press(a, keys)
+}
+
+/// Leave swipe for the list and open the Flagged screen on the first
+/// flagged unit: `l` with the cursor on it.
+fn open_flagged(app: &mut App) {
+    if app.screen == Screen::Swipe {
+        code(app, KeyCode::Esc);
+    }
+    assert_eq!(app.screen, Screen::Slim);
+    let first = app.flagged_units()[0].id.clone();
+    app.sel = app
+        .order
+        .iter()
+        .position(|&i| app.review.units[i].id == first)
+        .unwrap();
+    key(app, 'l');
+    assert_eq!(app.screen, Screen::Flagged);
+    assert_eq!(app.flagged_unit_id(), Some(first));
 }
 
 fn screen_text(app: &App) -> String {
@@ -155,8 +179,8 @@ fn deliver(app: &mut App, events: Vec<DiveEvent>) {
     }
 }
 
-/// Swipe through everything: the first card flagged with `←`, the second
-/// with `i`, the rest accepted with `l`. Returns the number flagged.
+/// Swipe through everything: the first two cards flagged with `f`, the
+/// rest accepted with `a`. Returns the ids flagged.
 fn swipe_and_flag(app: &mut App) -> Vec<String> {
     key(app, 's');
     assert_eq!(app.screen, Screen::Swipe);
@@ -164,10 +188,10 @@ fn swipe_and_flag(app: &mut App) -> Vec<String> {
     let mut flagged = Vec::new();
     while let Some(id) = app.swipe_current().cloned() {
         match n {
-            0 => code(app, KeyCode::Left),
-            1 => key(app, 'i'),
-            _ => key(app, 'l'),
+            0 | 1 => key(app, 'f'),
+            _ => key(app, 'a'),
         };
+        assert_eq!(app.overlay, Overlay::None, "no note line in swipe");
         if n < 2 {
             flagged.push(id);
         }
@@ -179,7 +203,7 @@ fn swipe_and_flag(app: &mut App) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn swiping_flags_units_and_the_summary_offers_the_flagged_screen() {
+async fn swiping_flags_units_and_the_summary_counts_them() {
     let mut f = fixture();
     let flagged = swipe_and_flag(&mut f.app);
     assert_eq!(f.app.flagged_units().len(), 2);
@@ -190,15 +214,17 @@ async fn swiping_flags_units_and_the_summary_offers_the_flagged_screen() {
         );
     }
     let text = screen_text(&f.app);
-    assert!(text.contains("2 flagged — press d to see them"), "{text}");
+    // Swipe has no way into Flagged (that is `l` on the list), so the
+    // summary only counts them.
+    assert!(text.contains("2 flagged"), "{text}");
+    assert!(!text.contains("press"), "{text}");
 }
 
 #[tokio::test]
-async fn d_opens_the_flagged_screen_listing_exactly_the_flagged_units() {
+async fn l_opens_the_flagged_screen_listing_exactly_the_flagged_units() {
     let mut f = fixture();
     let flagged = swipe_and_flag(&mut f.app);
-    key(&mut f.app, 'd');
-    assert_eq!(f.app.screen, Screen::Flagged);
+    open_flagged(&mut f.app);
     let heads = heads(&mut f.app);
     assert_eq!(heads.len(), flagged.len());
     for id in &flagged {
@@ -217,9 +243,9 @@ async fn d_opens_the_flagged_screen_listing_exactly_the_flagged_units() {
 async fn visualize_is_asked_once_and_the_answer_shows_after_delivery() {
     let mut f = fixture();
     swipe_and_flag(&mut f.app);
-    key(&mut f.app, 'd');
+    open_flagged(&mut f.app);
 
-    let effects = key(&mut f.app, 'v');
+    let effects = keys(&mut f.app, "<space>v");
     let asked = dive_effects(&effects);
     assert_eq!(asked.len(), 1, "{effects:?}");
     assert_eq!(asked[0].1, DiveKind::Visualize);
@@ -258,8 +284,8 @@ async fn visualize_is_asked_once_and_the_answer_shows_after_delivery() {
     assert!(!text.contains("asking the agent"), "{text}");
     assert!(f.app.review.unit(&id).unwrap().dive_pending.is_empty());
 
-    // Cached: a second v asks nothing.
-    let again = key(&mut f.app, 'v');
+    // Cached: a second ␣v asks nothing.
+    let again = keys(&mut f.app, "<space>v");
     assert!(dive_effects(&again).is_empty(), "{again:?}");
     assert_eq!(f.adapter.web_calls.lock().unwrap().len(), 1);
     assert_eq!(f.adapter.prompts.lock().unwrap().len(), 1);
@@ -269,19 +295,19 @@ async fn visualize_is_asked_once_and_the_answer_shows_after_delivery() {
 async fn a_pending_question_is_not_asked_twice() {
     let mut f = fixture();
     swipe_and_flag(&mut f.app);
-    key(&mut f.app, 'd');
-    assert_eq!(dive_effects(&key(&mut f.app, 'v')).len(), 1);
-    assert!(dive_effects(&key(&mut f.app, 'v')).is_empty());
+    open_flagged(&mut f.app);
+    assert_eq!(dive_effects(&keys(&mut f.app, "<space>v")).len(), 1);
+    assert!(dive_effects(&keys(&mut f.app, "<space>v")).is_empty());
 }
 
 #[tokio::test]
 async fn web_kinds_confirm_once_then_only_they_use_the_web() {
     let mut f = fixture();
     swipe_and_flag(&mut f.app);
-    key(&mut f.app, 'd');
+    open_flagged(&mut f.app);
 
     // First web-backed request: confirmation, nothing sent yet.
-    let effects = key(&mut f.app, 'n');
+    let effects = keys(&mut f.app, "<space>w");
     assert!(dive_effects(&effects).is_empty(), "{effects:?}");
     assert_eq!(f.app.overlay, Overlay::ConfirmWeb);
     let text = screen_text(&f.app);
@@ -298,24 +324,24 @@ async fn web_kinds_confirm_once_then_only_they_use_the_web() {
 
     // Later web requests (the next unit) don't ask again.
     key(&mut f.app, 'j');
-    let effects = key(&mut f.app, 'n');
+    let effects = keys(&mut f.app, "<space>w");
     assert_eq!(f.app.overlay, Overlay::None);
     assert_eq!(dive_effects(&effects).len(), 1);
     assert_eq!(dive_effects(&effects)[0].1, DiveKind::Recommend);
     events.extend(run_effects(&f, &effects).await);
 
     // Visualize after confirmation: the agent is called with web = false.
-    let effects = key(&mut f.app, 'v');
+    let effects = keys(&mut f.app, "<space>v");
     events.extend(run_effects(&f, &effects).await);
     assert_eq!(*f.adapter.web_calls.lock().unwrap(), [true, true, false]);
 
     deliver(&mut f.app, events);
-    key(&mut f.app, 'n');
+    keys(&mut f.app, "<space>w");
     assert!(screen_text(&f.app).contains("mock Recommend answer"));
-    key(&mut f.app, 'v');
+    keys(&mut f.app, "<space>v");
     assert!(screen_text(&f.app).contains("mock picture"));
     key(&mut f.app, 'k');
-    key(&mut f.app, 'n');
+    keys(&mut f.app, "<space>w");
     assert!(screen_text(&f.app).contains("mock Recommend answer"));
 }
 
@@ -323,8 +349,8 @@ async fn web_kinds_confirm_once_then_only_they_use_the_web() {
 async fn declining_the_web_confirmation_asks_nothing_and_clears_the_spinner() {
     let mut f = fixture();
     swipe_and_flag(&mut f.app);
-    key(&mut f.app, 'd');
-    key(&mut f.app, 'n');
+    open_flagged(&mut f.app);
+    keys(&mut f.app, "<space>w");
     assert_eq!(f.app.overlay, Overlay::ConfirmWeb);
     let effects = key(&mut f.app, 'q'); // anything but y / enter declines
     assert!(dive_effects(&effects).is_empty());
@@ -334,7 +360,7 @@ async fn declining_the_web_confirmation_asks_nothing_and_clears_the_spinner() {
     assert!(u.dive.results.is_empty());
     assert!(f.adapter.web_calls.lock().unwrap().is_empty());
     // Asking again re-prompts.
-    key(&mut f.app, 'n');
+    keys(&mut f.app, "<space>w");
     assert_eq!(f.app.overlay, Overlay::ConfirmWeb);
 }
 
@@ -346,8 +372,8 @@ async fn dive_web_off_never_asks_and_never_uses_the_web() {
     };
     let mut f = fixture_with(cfg, MockAdapter::new(dive_responder));
     swipe_and_flag(&mut f.app);
-    key(&mut f.app, 'd');
-    let effects = key(&mut f.app, 'n');
+    open_flagged(&mut f.app);
+    let effects = keys(&mut f.app, "<space>w");
     assert_eq!(f.app.overlay, Overlay::None);
     let asked = dive_effects(&effects);
     assert_eq!(asked.len(), 1);
@@ -369,8 +395,8 @@ async fn pr_reviews_never_use_the_web_and_never_ask() {
         ..Default::default()
     });
     swipe_and_flag(&mut f.app);
-    key(&mut f.app, 'd');
-    let effects = key(&mut f.app, 'n');
+    open_flagged(&mut f.app);
+    let effects = keys(&mut f.app, "<space>w");
     assert_eq!(f.app.overlay, Overlay::None, "no web confirmation for a PR");
     let asked = dive_effects(&effects);
     assert_eq!(asked.len(), 1);
@@ -378,7 +404,7 @@ async fn pr_reviews_never_use_the_web_and_never_ask() {
     assert!(f.app.status.contains("disabled for PR"), "{}", f.app.status);
     run_effects(&f, &effects).await;
     // Visualize never uses the web anyway.
-    let effects = key(&mut f.app, 'v');
+    let effects = keys(&mut f.app, "<space>v");
     assert!(!dive_effects(&effects)[0].2);
     run_effects(&f, &effects).await;
     assert_eq!(*f.adapter.web_calls.lock().unwrap(), [false, false]);
@@ -389,8 +415,8 @@ async fn a_failed_dive_shows_the_error_and_clears_the_spinner() {
     let broken = MockAdapter::new(|_, _| anyhow::bail!("agent exploded"));
     let mut f = fixture_with(Config::default(), broken);
     swipe_and_flag(&mut f.app);
-    key(&mut f.app, 'd');
-    let effects = key(&mut f.app, 'v');
+    open_flagged(&mut f.app);
+    let effects = keys(&mut f.app, "<space>v");
     assert_eq!(dive_effects(&effects).len(), 1);
     assert!(screen_text(&f.app).contains("asking the agent"));
     let events = run_effects(&f, &effects).await;
@@ -410,15 +436,15 @@ async fn a_failed_dive_shows_the_error_and_clears_the_spinner() {
     assert!(u.dive_pending.is_empty());
     assert!(u.dive.results.is_empty());
     // It can be asked again.
-    assert_eq!(dive_effects(&key(&mut f.app, 'v')).len(), 1);
+    assert_eq!(dive_effects(&keys(&mut f.app, "<space>v")).len(), 1);
 }
 
 #[tokio::test]
 async fn r_asks_the_open_tab_again() {
     let mut f = fixture();
     swipe_and_flag(&mut f.app);
-    key(&mut f.app, 'd');
-    let effects = key(&mut f.app, 'v');
+    open_flagged(&mut f.app);
+    let effects = keys(&mut f.app, "<space>v");
     let events = run_effects(&f, &effects).await;
     deliver(&mut f.app, events);
     let again = key(&mut f.app, 'r');
@@ -433,10 +459,10 @@ async fn r_asks_the_open_tab_again() {
 }
 
 #[tokio::test]
-async fn o_and_f_toggle_the_resolution_glyph() {
+async fn o_and_x_toggle_the_resolution_glyph() {
     let mut f = fixture();
     swipe_and_flag(&mut f.app);
-    key(&mut f.app, 'd');
+    open_flagged(&mut f.app);
     assert_eq!(row_glyphs(&mut f.app), ['⚑', '⚑']);
 
     key(&mut f.app, 'o');
@@ -444,13 +470,13 @@ async fn o_and_f_toggle_the_resolution_glyph() {
     assert_eq!(row_glyphs(&mut f.app), ['●', '⚑'], "{text}");
     assert!(text.contains("resolved: ok"), "{text}");
 
-    key(&mut f.app, 'f');
+    key(&mut f.app, 'x');
     let text = screen_text(&f.app);
     assert_eq!(row_glyphs(&mut f.app), ['✗', '⚑'], "{text}");
     assert!(text.contains("needs fix"), "{text}");
 
     // Same key again clears it.
-    key(&mut f.app, 'f');
+    key(&mut f.app, 'x');
     let text = screen_text(&f.app);
     assert_eq!(row_glyphs(&mut f.app), ['⚑', '⚑'], "{text}");
     assert_eq!(f.app.flagged_unit().unwrap().dive.resolution, None);
@@ -460,8 +486,8 @@ async fn o_and_f_toggle_the_resolution_glyph() {
 async fn note_round_trip() {
     let mut f = fixture();
     swipe_and_flag(&mut f.app);
-    key(&mut f.app, 'd');
-    key(&mut f.app, 'm');
+    open_flagged(&mut f.app);
+    key(&mut f.app, 'i');
     assert!(matches!(f.app.overlay, Overlay::Note { .. }));
     assert!(screen_text(&f.app).contains(" Note "));
     for c in "ask Sam".chars() {
@@ -477,7 +503,7 @@ async fn note_round_trip() {
     assert!(screen_text(&f.app).contains("ask Sam"));
 
     // Reopening starts from the stored note; Esc cancels edits.
-    key(&mut f.app, 'm');
+    key(&mut f.app, 'i');
     assert!(matches!(&f.app.overlay, Overlay::Note { text, .. } if text == "ask Sam"));
     key(&mut f.app, '!');
     code(&mut f.app, KeyCode::Esc);
@@ -489,37 +515,39 @@ async fn note_round_trip() {
 #[tokio::test]
 async fn esc_returns_to_where_the_dive_started() {
     let mut f = fixture();
-    swipe_and_flag(&mut f.app);
-    assert_eq!(f.app.screen, Screen::Swipe);
-    key(&mut f.app, 'd');
+    key(&mut f.app, 's');
+    let first = f.app.swipe_current().cloned().unwrap();
+    key(&mut f.app, 'f');
+    key(&mut f.app, 'k');
+    assert_eq!(
+        f.app.swipe_current(),
+        Some(&first),
+        "back on the flagged card"
+    );
+    // A tool key on a flagged card opens Flagged from swipe.
+    keys(&mut f.app, "<space>v");
     assert_eq!(f.app.screen, Screen::Flagged);
+    assert_eq!(f.app.flagged_unit_id(), Some(first));
     code(&mut f.app, KeyCode::Esc);
     assert_eq!(f.app.screen, Screen::Swipe);
 
     // From the list too.
     code(&mut f.app, KeyCode::Esc);
-    if f.app.screen == Screen::Slim {
-        key(&mut f.app, 'd');
-        assert_eq!(f.app.screen, Screen::Flagged);
-        code(&mut f.app, KeyCode::Esc);
-        assert_eq!(f.app.screen, Screen::Slim);
-    }
+    assert_eq!(f.app.screen, Screen::Slim);
+    open_flagged(&mut f.app);
+    code(&mut f.app, KeyCode::Esc);
+    assert_eq!(f.app.screen, Screen::Slim);
 }
 
 #[tokio::test]
-async fn d_with_nothing_flagged_stays_put_with_a_message() {
+async fn l_on_a_unit_not_flagged_stays_put_with_a_message() {
     let mut f = fixture();
     assert!(f.app.flagged_units().is_empty());
-    key(&mut f.app, 'd');
+    key(&mut f.app, 'l');
     assert_eq!(f.app.screen, Screen::Slim);
-    assert!(
-        f.app.status.to_lowercase().contains("nothing flagged"),
-        "{}",
-        f.app.status
+    assert_eq!(
+        f.app.status,
+        "Only flagged units open for now. f flags this one."
     );
-    assert!(
-        screen_text(&f.app)
-            .to_lowercase()
-            .contains("nothing flagged")
-    );
+    assert!(screen_text(&f.app).contains("Only flagged units open for now"));
 }

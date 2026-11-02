@@ -1015,9 +1015,10 @@ fn cli_errors_and_help() {
 fn header_of(r: &Review) -> String {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use teer::config::{Config, KeyMap};
+    use teer::config::Config;
+    use teer::keymap::Keymap;
     use teer::tui::{app::App, ui};
-    let app = App::new(r.clone(), Config::default(), KeyMap::default());
+    let app = App::new(r.clone(), Config::default(), Keymap::default());
     let mut t = Terminal::new(TestBackend::new(120, 20)).unwrap();
     t.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = t.backend().buffer().clone();

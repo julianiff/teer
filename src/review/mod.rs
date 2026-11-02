@@ -5,6 +5,7 @@ pub mod ask;
 pub mod attention;
 pub mod behavior;
 pub mod dive;
+pub mod history;
 pub mod intent;
 pub mod model;
 pub mod prepare;
@@ -66,6 +67,8 @@ pub fn build_review(cwd: &Path, opts: &BuildOptions) -> Result<Review> {
         pr: None,
         intent,
         questions: Vec::new(),
+        version: 0,
+        history: Default::default(),
     })
 }
 

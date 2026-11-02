@@ -13,7 +13,8 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use serde_json::json;
 use teer::agent::mock::MockAdapter;
-use teer::config::{Action, Config, KeyMap};
+use teer::config::Config;
+use teer::keymap::{Action, Keymap};
 use teer::review::model::{Answer, Decision, DiveKind, DiveResult, Question, Review, SessionRef};
 use teer::review::prompts::ask_prompt;
 use teer::review::validate::validate_answer;
@@ -213,7 +214,7 @@ async fn what_the_agent_does_is_told_before_the_answer_comes() {
 // ---- The view ---------------------------------------------------------------
 
 fn app(review: Review) -> App {
-    let mut a = App::new(review, Config::default(), KeyMap::default());
+    let mut a = App::new(review, Config::default(), Keymap::default());
     a.has_agent = true;
     a
 }
@@ -246,11 +247,11 @@ fn select(a: &mut App, id: &str) {
 }
 
 #[test]
-fn slash_asks_about_the_unit_on_show_and_shows_the_answer() {
+fn shift_k_asks_about_the_unit_on_show_and_shows_the_answer() {
     let (_repo, review) = fixture();
     let mut a = app(review);
     select(&mut a, CHARGE);
-    assert!(code(&mut a, KeyCode::Char('/')).is_empty());
+    assert!(code(&mut a, KeyCode::Char('K')).is_empty());
     assert_eq!(a.overlay, Overlay::Ask);
     assert!(screen(&a, 120, 40).contains("Ask anything about the code"));
     typed(&mut a, "how is an order charged?");
@@ -313,7 +314,7 @@ fn a_question_on_its_way_shows_the_agents_steps_then_its_answer_as_it_is_written
     let (_repo, review) = fixture();
     let mut a = app(review);
     select(&mut a, CHARGE);
-    code(&mut a, KeyCode::Char('/'));
+    code(&mut a, KeyCode::Char('K'));
     typed(&mut a, "how is an order charged?");
     code(&mut a, KeyCode::Enter);
     asking(&mut a, 0, Step("search “charge”".into()));
@@ -374,7 +375,7 @@ fn a_question_on_its_way_shows_the_agents_steps_then_its_answer_as_it_is_written
 fn a_chat_shows_its_answer_as_it_is_written() {
     let (_repo, review) = fixture();
     let mut a = flagged(review);
-    code(&mut a, KeyCode::Char('/'));
+    code(&mut a, KeyCode::Char('K'));
     typed(&mut a, "does it charge twice?");
     code(&mut a, KeyCode::Enter);
     asking(&mut a, 0, ask::Progress::Step("read checkout.py".into()));
@@ -395,7 +396,7 @@ fn links_go_to_the_unit_in_the_list_and_open_code_in_the_editor() {
         error: None,
     });
     let mut a = app(review);
-    code(&mut a, KeyCode::Char('/'));
+    code(&mut a, KeyCode::Char('K'));
     // tab: the newest answer's first link, the unit; then its two pieces of code.
     code(&mut a, KeyCode::Tab);
     assert_eq!(a.ask.link, Some(0));
@@ -447,7 +448,7 @@ fn an_answer_is_noted_on_its_unit_where_it_is_seen() {
     let text = screen(&a, 140, 50);
     assert!(text.contains("╭ ? how is an order charged?"), "{text}");
     assert!(text.contains("charge_order checks the currency"), "{text}");
-    assert!(text.contains("2 pieces of code · / shows them"), "{text}");
+    assert!(text.contains("2 pieces of code · K shows them"), "{text}");
     // Not on other units.
     a.sel = (a.sel + 1) % a.order.len();
     assert!(!screen(&a, 140, 50).contains("? how is an order charged?"));
@@ -458,7 +459,7 @@ fn without_an_agent_or_when_it_fails_the_question_says_why() {
     let (_repo, review) = fixture();
     let mut a = app(review);
     a.has_agent = false;
-    code(&mut a, KeyCode::Char('/'));
+    code(&mut a, KeyCode::Char('K'));
     typed(&mut a, "anything?");
     assert_eq!(code(&mut a, KeyCode::Enter), [Effect::Save]);
     assert!(screen(&a, 120, 40).contains("✗ no agent"));
@@ -474,7 +475,7 @@ fn without_an_agent_or_when_it_fails_the_question_says_why() {
         index: 0,
         result: Err("boom".into()),
     });
-    assert!(screen(&a, 120, 40).contains("✗ boom · ctrl+r asks again"));
+    assert!(screen(&a, 120, 40).contains("✗ boom · ^r asks again"));
     code(&mut a, KeyCode::Esc);
     assert_eq!(a.overlay, Overlay::None);
 }
@@ -511,29 +512,30 @@ fn questions_are_saved_and_survive_a_rerun() {
 fn flagged(review: Review) -> App {
     let mut a = app(review);
     a.review.unit_mut(CHARGE).unwrap().decision = Decision::Investigate;
-    a.on_action(Action::Flagged);
+    select(&mut a, CHARGE);
+    a.on_action(Action::ViewOpen);
     assert_eq!(a.screen, Screen::Flagged);
     a
 }
 
 #[test]
-fn slash_on_a_flagged_unit_opens_its_chat_and_keeps_the_conversation() {
+fn shift_k_on_a_flagged_unit_opens_its_chat_and_keeps_the_conversation() {
     let (_repo, review) = fixture();
     let mut a = flagged(review);
     // Offered in the tile that asks for more.
     let text = screen(&a, 160, 50);
-    assert!(text.contains(" /  Chat "), "{text}");
+    assert!(text.contains(" K  Chat "), "{text}");
     assert!(text.contains("ask about it in your own words"), "{text}");
-    assert!(code(&mut a, KeyCode::Char('/')).is_empty());
+    assert!(code(&mut a, KeyCode::Char('K')).is_empty());
     assert_eq!(a.flagged.pane, Pane::Chat);
     assert!(a.flagged.typing);
     let text = screen(&a, 160, 50);
-    assert!(text.contains("/ Chat"), "{text}");
+    assert!(text.contains("K Chat"), "{text}");
     assert!(
         text.contains("Ask about this unit in your own words"),
         "{text}"
     );
-    // Letters go into the question, not to the screen's keys (q quits, d, r…).
+    // Letters go into the question, not to the screen's keys (q, a, r…).
     typed(&mut a, "does it charge twice? q");
     assert_eq!(a.ask.draft, "does it charge twice? q");
     assert_eq!(a.screen, Screen::Flagged);
@@ -582,7 +584,8 @@ fn slash_on_a_flagged_unit_opens_its_chat_and_keeps_the_conversation() {
     assert_eq!(a.screen, Screen::Flagged);
     code(&mut a, KeyCode::Esc);
     assert_eq!(a.screen, Screen::Slim);
-    a.on_action(Action::Flagged);
+    select(&mut a, CHARGE);
+    a.on_action(Action::ViewOpen);
     let u = a.flagged_unit().unwrap();
     assert!(a.flagged_panes(u).contains(&Pane::Chat));
     a.flagged.pane = Pane::Chat;
@@ -590,8 +593,8 @@ fn slash_on_a_flagged_unit_opens_its_chat_and_keeps_the_conversation() {
     assert!(text.contains("› does it charge twice? q"), "{text}");
     assert!(text.contains("› and if pay fails?"), "{text}");
     // Both are in the Ask view too, noted on the unit.
-    a.on_action(Action::Back);
-    code(&mut a, KeyCode::Char('/'));
+    a.on_action(Action::ViewBack);
+    code(&mut a, KeyCode::Char('K'));
     assert_eq!(a.overlay, Overlay::Ask);
     assert!(screen(&a, 120, 50).contains("noted on charge_order"));
 }
@@ -600,7 +603,7 @@ fn slash_on_a_flagged_unit_opens_its_chat_and_keeps_the_conversation() {
 fn an_empty_chat_closes_when_left_and_keys_move_in_and_out_of_it() {
     let (_repo, review) = fixture();
     let mut a = flagged(review);
-    code(&mut a, KeyCode::Char('/'));
+    code(&mut a, KeyCode::Char('K'));
     typed(&mut a, "x");
     // tab leaves for the next tile; nothing was asked, so the chat goes.
     code(&mut a, KeyCode::Tab);
@@ -609,19 +612,18 @@ fn an_empty_chat_closes_when_left_and_keys_move_in_and_out_of_it() {
     let u = a.flagged_unit().unwrap();
     assert!(!a.flagged_panes(u).contains(&Pane::Chat));
     // The question typed so far waits for the next time.
-    code(&mut a, KeyCode::Char('/'));
+    code(&mut a, KeyCode::Char('K'));
     assert_eq!(a.ask.draft, "x");
     code(&mut a, KeyCode::Backspace);
-    // Not typing, q quits as anywhere on the screen; enter types again.
+    // Not typing, q goes back to the list as anywhere on the screen;
+    // enter types again.
     code(&mut a, KeyCode::Esc);
     assert_eq!(a.flagged.pane, Pane::Chat);
     code(&mut a, KeyCode::Enter);
     assert!(a.flagged.typing);
     code(&mut a, KeyCode::Esc);
-    assert_eq!(
-        code(&mut a, KeyCode::Char('q')),
-        [Effect::Save, Effect::Quit]
-    );
+    assert!(!code(&mut a, KeyCode::Char('q')).contains(&Effect::Quit));
+    assert_eq!(a.screen, Screen::Slim);
 }
 
 #[test]
@@ -690,7 +692,7 @@ async fn live_ask() {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut review = build_review(&root, &BuildOptions::default()).unwrap();
     review.questions.push(Question {
-        text: "Show me the KeyMap struct and how a key is matched to an action.".into(),
+        text: "Show me the Keymap struct and how a key is matched to an action.".into(),
         ..Default::default()
     });
     let started = std::time::Instant::now();

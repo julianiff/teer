@@ -6,7 +6,8 @@ mod common;
 use std::path::PathBuf;
 
 use common::*;
-use teer::config::{Config, KeyMap};
+use teer::config::Config;
+use teer::keymap::Keymap;
 use teer::review::model::{Decision, Dive, DiveKind, DiveResult, Resolution, Review, Unit};
 use teer::review::store;
 use teer::review::{BuildOptions, build_review};
@@ -38,6 +39,8 @@ fn review(tag: &str, units: Vec<Unit>) -> Review {
         skipped: Vec::new(),
         graph: Default::default(),
         questions: Vec::new(),
+        version: 0,
+        history: Default::default(),
     }
 }
 
@@ -140,7 +143,7 @@ fn rerunning_a_review_keeps_resolved_dives_for_unchanged_units() {
     }
     let want = first.units[0].dive.clone();
 
-    let mut app = App::new(first, Config::default(), KeyMap::default());
+    let mut app = App::new(first, Config::default(), Keymap::default());
     let again = build_review(&repo.path(), &BuildOptions::default()).unwrap();
     app.on_app_event(AppEvent::Rerun(Ok(Box::new(again))));
 

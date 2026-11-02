@@ -6,6 +6,7 @@ pub mod ask;
 pub mod commits;
 pub mod diff;
 pub mod flagged;
+pub mod jump;
 pub mod notes;
 pub mod picture;
 pub mod pr_pick;
@@ -35,7 +36,8 @@ use futures::StreamExt;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::agent::AgentAdapter;
-use crate::config::{Config, KeyMap};
+use crate::config::Config;
+use crate::keymap::Keymap;
 use crate::review::dive::DiveEvent;
 use crate::review::model::{DiveKind, Review};
 use crate::review::{BuildOptions, prepare, store};
@@ -62,7 +64,7 @@ pub struct Launch {
     pub session_arg: Option<String>,
     pub swipe: bool,
     pub cfg: Config,
-    pub keymap: KeyMap,
+    pub keymap: Keymap,
 }
 
 /// Carries out effects. Public so tests can drive it with a mock agent.
@@ -148,6 +150,8 @@ pub async fn run(l: Launch) -> Result<()> {
                 _ = crate::cli::SHUTDOWN.notified() => vec![Effect::Quit],
                 _ = tick.tick() => {
                     app.tick = app.tick.wrapping_add(1);
+                    // A key prefix waiting past `timeoutlen` is dropped.
+                    app.keys.tick(std::time::Instant::now());
                     Vec::new()
                 }
             };
@@ -155,7 +159,7 @@ pub async fn run(l: Launch) -> Result<()> {
                 if let Effect::Edit { file, line } = e {
                     // The editor needs the terminal and stdin to itself.
                     drop(events);
-                    let rerun = app.keys.label(crate::config::Action::Rerun);
+                    let rerun = app.keys.label(crate::keymap::Action::ReviewRerun);
                     app.status = open_editor(
                         &mut terminal,
                         &rt.tools.editor,
@@ -174,7 +178,7 @@ pub async fn run(l: Launch) -> Result<()> {
                 {
                     // The agent CLI needs the terminal and stdin to itself.
                     drop(events);
-                    let rerun = app.keys.label(crate::config::Action::Rerun);
+                    let rerun = app.keys.label(crate::keymap::Action::ReviewRerun);
                     app.status = open_agent(
                         &mut terminal,
                         cli,
@@ -211,6 +215,11 @@ pub async fn run(l: Launch) -> Result<()> {
                     for follow in app.commit_finished(outcome) {
                         quit |= rt.exec(&mut app, follow);
                     }
+                    events = EventStream::new();
+                } else if let Effect::Settings = e {
+                    // The setup screen draws on this terminal and reads its own keys.
+                    drop(events);
+                    quit |= open_settings(&mut terminal, &mut app).await;
                     events = EventStream::new();
                 } else {
                     quit |= rt.exec(&mut app, e);
@@ -531,7 +540,8 @@ impl Runtime {
             Effect::Edit { .. }
             | Effect::EditComment { .. }
             | Effect::Commit { .. }
-            | Effect::OpenAgent { .. } => {}
+            | Effect::OpenAgent { .. }
+            | Effect::Settings => {}
         }
         false
     }
@@ -683,6 +693,58 @@ fn open_agent(
     }
 }
 
+/// `<space>s`: the setup screen on the review's terminal, the review
+/// waiting meanwhile. True when ctrl+c left it, which quits teer too.
+async fn open_settings(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> bool {
+    let path = store::config_path();
+    let opened = setup::Opened::Review;
+    match setup::run_on(terminal, app.cfg.clone(), &path, opened, app.keys.clone()).await {
+        Ok(setup::Ended::Saved(cfg)) => app.status = settings_saved(app, *cfg),
+        Ok(setup::Ended::Left) => {}
+        Ok(setup::Ended::Quit) => return true,
+        Err(e) => app.status = format!("Couldn't change the settings: {e:#}"),
+    }
+    false
+}
+
+/// The settings that made the running agent: changing them takes a new
+/// start.
+fn agent_settings(c: &Config) -> impl PartialEq + use<> {
+    (
+        c.provider,
+        c.api.clone(),
+        c.prepare_model.clone(),
+        c.prepare_effort.clone(),
+        c.second_model.clone(),
+        c.second_effort.clone(),
+    )
+}
+
+/// Take the config setup saved: the app reads it, and its keys, from now
+/// on. The agent keeps what it was started with until teer starts again,
+/// and so do the names the screens give its models. The status line to
+/// show.
+pub fn settings_saved(app: &mut App, saved: Config) -> String {
+    let mut cfg = saved.with_no_color(std::env::var_os("NO_COLOR").as_deref());
+    let mut status = "Settings saved.".to_string();
+    if agent_settings(&cfg) != agent_settings(&app.cfg) {
+        let old = &app.cfg;
+        cfg.provider = old.provider;
+        cfg.api = old.api.clone();
+        cfg.prepare_model = old.prepare_model.clone();
+        cfg.prepare_effort = old.prepare_effort.clone();
+        cfg.second_model = old.second_model.clone();
+        cfg.second_effort = old.second_effort.clone();
+        status.push_str(" The new agent and models take over when teer starts again.");
+    }
+    match cfg.keymap() {
+        Ok((keys, _)) => app.keys = keys,
+        Err(e) => status.push_str(&format!(" The keys stay as they were: {e:#}")),
+    }
+    app.cfg = cfg;
+    status
+}
+
 #[cfg(test)]
 mod tests {
     use ratatui::Terminal;
@@ -715,5 +777,67 @@ mod tests {
         frame(&mut t);
         t.backend()
             .assert_buffer_lines([format!("{:20}", "teer").as_str(), &blank]);
+    }
+
+    fn app(cfg: crate::config::Config) -> super::App {
+        let review = crate::review::model::Review {
+            id: "t".into(),
+            repo_root: Default::default(),
+            base: String::new(),
+            head: String::new(),
+            head_commit: String::new(),
+            agent_session: None,
+            pr: None,
+            intent: Default::default(),
+            created_at: chrono::Utc::now(),
+            files: Vec::new(),
+            units: Vec::new(),
+            skipped: Vec::new(),
+            graph: Default::default(),
+            questions: Vec::new(),
+            version: 0,
+            history: Default::default(),
+        };
+        super::App::new(review, cfg, Default::default())
+    }
+
+    /// `<space>s` saved: the keys apply at once, the agent's models only
+    /// from the next start, and the screens keep naming the ones running.
+    #[test]
+    fn saved_settings_bring_their_keys_and_keep_the_running_agent() {
+        use crate::config::{Config, Provider};
+        use crate::keymap::{Action, KeySpec};
+        let cfg = Config {
+            provider: Some(Provider::Claude),
+            prepare_model: Some("haiku".into()),
+            ..Config::default()
+        };
+        let mut app = app(cfg.clone());
+        let mut saved = cfg.clone();
+        saved
+            .keys
+            .insert("decide.accept".into(), KeySpec::One("y".into()));
+        assert_eq!(
+            super::settings_saved(&mut app, saved.clone()),
+            "Settings saved."
+        );
+        assert_eq!(app.keys.label(Action::DecideAccept), "y");
+
+        saved.prepare_model = Some("sonnet".into());
+        saved.second_opinion = false;
+        let status = super::settings_saved(&mut app, saved.clone());
+        assert!(status.contains("when teer starts again"), "{status}");
+        assert_eq!(app.cfg.prepare_model.as_deref(), Some("haiku"));
+        // What doesn't make the agent applies now.
+        assert!(!app.cfg.second_opinion);
+
+        // Keys that don't load leave the ones there are.
+        saved.prepare_model = Some("haiku".into());
+        saved
+            .keys
+            .insert("move.down".into(), KeySpec::One("y".into()));
+        let status = super::settings_saved(&mut app, saved);
+        assert!(status.contains("The keys stay as they were"), "{status}");
+        assert_eq!(app.keys.label(Action::DecideAccept), "y");
     }
 }

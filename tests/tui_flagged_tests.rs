@@ -15,7 +15,8 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use serde_json::{Value, json};
 use teer::agent::mock::MockAdapter;
-use teer::config::{Config, KeyMap};
+use teer::config::Config;
+use teer::keymap::Keymap;
 use teer::review::dive::{DiveEvent, TestsJob, interpret_tests, search_tests};
 use teer::review::model::{Decision, DiveKind, Risk, SessionRef};
 use teer::review::prompts::{ProbeSetting, behavior_prompt};
@@ -83,6 +84,11 @@ fn key(a: &mut App, c: char) -> Vec<Effect> {
     )))
 }
 
+/// Type `keys` in Neovim notation (`<space>t`, `zz`).
+fn keys(a: &mut App, keys: &str) -> Vec<Effect> {
+    common::v2::press(a, keys)
+}
+
 fn text(app: &App) -> String {
     let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
     t.draw(|f| ui::draw(f, app)).unwrap();
@@ -93,7 +99,7 @@ fn text(app: &App) -> String {
 }
 
 #[tokio::test]
-async fn c_lists_the_found_tests_and_a_has_the_agent_read_them() {
+async fn leader_t_lists_the_found_tests_and_leader_a_has_the_agent_read_them() {
     isolate_env();
     let repo = FixtureRepo::new();
     repo.write("checkout.py", PY_OLD)
@@ -110,17 +116,22 @@ async fn c_lists_the_found_tests_and_a_has_the_agent_read_them() {
     {
         u.decision = Decision::Investigate;
     }
-    let mut app = App::new(review, Config::default(), KeyMap::default());
-    key(&mut app, 'd');
+    let mut app = App::new(review, Config::default(), Keymap::default());
+    app.sel = app
+        .order
+        .iter()
+        .position(|&i| app.review.units[i].symbol == "charge_order")
+        .unwrap();
+    key(&mut app, 'l');
     assert_eq!(app.screen, Screen::Flagged);
-    // Before anything was found, `a` has nothing to read.
-    assert!(key(&mut app, 'a').is_empty());
+    // Before anything was found, `␣a` has nothing to read.
+    assert!(keys(&mut app, "<space>a").is_empty());
     assert!(
         app.status.contains("searches the tests first"),
         "{}",
         app.status
     );
-    let effects = key(&mut app, 'c');
+    let effects = keys(&mut app, "<space>t");
     assert_eq!(app.flagged.pane, Pane::Answer(DiveKind::Tests));
     let [Effect::Dive { unit_id, kind, .. }] = &effects[..] else {
         panic!("{effects:?}")
@@ -132,7 +143,7 @@ async fn c_lists_the_found_tests_and_a_has_the_agent_read_them() {
     let unit = app.review.unit(unit_id).unwrap().clone();
     let callers = test_search::callers(&app.review, &unit);
     app.on_app_event(AppEvent::Dive(search_tests(&repo.path(), &unit, &callers)));
-    key(&mut app, 'z');
+    keys(&mut app, "zz");
     let screen = text(&app);
     assert!(screen.contains("1 test reaches it"), "{screen}");
     assert!(screen.contains("· test_charges_once"), "{screen}");
@@ -142,14 +153,14 @@ async fn c_lists_the_found_tests_and_a_has_the_agent_read_them() {
     );
     assert!(!screen.contains("test_tax"), "{screen}");
     assert!(
-        screen.contains("a  the agent reads them: which really cover it"),
+        screen.contains("␣a  the agent reads them: which really cover it"),
         "{screen}"
     );
     assert!(screen.contains("found by teer "), "{screen}");
-    key(&mut app, 'z');
+    keys(&mut app, "zz");
 
-    // `a` has the agent read them.
-    let effects = key(&mut app, 'a');
+    // `␣a` has the agent read them.
+    let effects = keys(&mut app, "<space>a");
     let [Effect::InterpretTests { unit_id }] = &effects[..] else {
         panic!("{effects:?}")
     };
@@ -193,9 +204,9 @@ async fn c_lists_the_found_tests_and_a_has_the_agent_read_them() {
     );
     assert_eq!(c.gaps[0].risk, Risk::High);
 
-    assert!(text(&app).contains("╭ c Tests ✓"), "{}", text(&app));
+    assert!(text(&app).contains("╭ ␣t Tests ✓"), "{}", text(&app));
     // Zoomed, the tile is as wide as the screen.
-    key(&mut app, 'z');
+    keys(&mut app, "zz");
     let screen = text(&app);
     assert!(screen.contains("1 test covers it"), "{screen}");
     assert!(

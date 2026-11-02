@@ -15,7 +15,8 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use serde_json::{Value, json};
 use teer::agent::mock::MockAdapter;
-use teer::config::{Config, KeyMap};
+use teer::config::Config;
+use teer::keymap::Keymap;
 use teer::review::model::{Decision, Review, SessionRef};
 use teer::review::{BuildOptions, build_review};
 use teer::tui::app::{App, AppEvent, Effect, Overlay, Screen};
@@ -104,7 +105,7 @@ async fn fixture_review() -> (Review, FixtureRepo) {
 }
 
 fn app_for(review: Review, cfg: Config) -> App {
-    let mut app = App::new(review, cfg, KeyMap::default());
+    let mut app = App::new(review, cfg, Keymap::default());
     let effects = app.start(true, None, Vec::new(), Some(session()), false);
     assert!(
         !effects.iter().any(|e| matches!(e, Effect::Prepare(_))),
@@ -166,7 +167,7 @@ async fn slim_navigation() {
     key(&mut app, 'G');
     assert_eq!(app.sel, n - 1);
     // The file's name is no stop: the first row is its first unit.
-    key(&mut app, 'g');
+    v2::press(&mut app, "gg");
     assert_eq!(app.sel, 0);
     key(&mut app, 'k');
     assert_eq!(app.sel, 0);
@@ -253,7 +254,7 @@ async fn swipe_card_snapshot_and_keys() {
     insta::assert_snapshot!("swipe_card", render(&app, 90, 26).backend());
 
     // Accept.
-    code(&mut app, KeyCode::Right);
+    key(&mut app, 'a');
     assert_eq!(
         app.review.unit(&first).unwrap().decision,
         Decision::Accepted
@@ -268,16 +269,21 @@ async fn swipe_card_snapshot_and_keys() {
     key(&mut app, 'j');
     code(&mut app, KeyCode::Down);
     assert_eq!(app.swipe_current(), Some(&second));
-    // k and ↑ are plain "up" and decide nothing.
+    // k goes back a card and decides nothing; ↑ too.
     key(&mut app, 'k');
+    assert_eq!(app.swipe_current(), Some(&first));
     code(&mut app, KeyCode::Up);
+    assert_eq!(app.swipe_current(), Some(&first));
+    key(&mut app, 'a');
     assert_eq!(app.swipe_current(), Some(&second));
     assert_eq!(
         app.review.unit(&second).unwrap().decision,
         Decision::Pending
     );
-    // i flags the card for a closer look and moves on; undo brings it back.
-    key(&mut app, 'i');
+    // f flags the card for a closer look and moves on (no note line in
+    // swipe); undo brings it back.
+    key(&mut app, 'f');
+    assert_eq!(app.overlay, Overlay::None);
     assert_ne!(app.swipe_current(), Some(&second));
     assert_eq!(
         app.review.unit(&second).unwrap().decision,
@@ -289,8 +295,14 @@ async fn swipe_card_snapshot_and_keys() {
         app.review.unit(&second).unwrap().decision,
         Decision::Pending
     );
-    // ← flags too; h no longer does (see h_goes_back_...).
+    // ← no longer flags: it moves between the Flagged screen's tiles.
     code(&mut app, KeyCode::Left);
+    assert_eq!(
+        app.review.unit(&second).unwrap().decision,
+        Decision::Pending
+    );
+    assert_eq!(app.swipe_current(), Some(&second));
+    key(&mut app, 'f');
     assert_eq!(
         app.review.unit(&second).unwrap().decision,
         Decision::Investigate
@@ -300,7 +312,7 @@ async fn swipe_card_snapshot_and_keys() {
     assert_eq!(app.screen, Screen::Swipe);
 
     while app.swipe_current().is_some() {
-        key(&mut app, 'l');
+        key(&mut app, 'a');
     }
     insta::assert_snapshot!("swipe_summary", render(&app, 90, 20).backend());
 }
@@ -362,7 +374,7 @@ async fn statements_sit_in_the_code_under_the_rows_they_cite() {
     // Further down, scrolling, the removed row and the other two cards.
     let mut seen = card;
     for _ in 0..10 {
-        key(&mut app, 'J');
+        ctrl(&mut app, 'd');
         seen.push_str(&format!("{}", render(&app, 80, 24).backend()));
     }
     for row in [
@@ -497,7 +509,7 @@ async fn large_reviews_prepare_close_looks_first_and_the_rest_per_file() {
         large_review: 3,
         ..Config::default()
     };
-    let mut app = App::new(review, cfg, KeyMap::default());
+    let mut app = App::new(review, cfg, Keymap::default());
     let effects = app.start(true, None, Vec::new(), Some(session()), false);
     // Straight into the list: there is no file overview any more.
     assert_eq!(app.screen, Screen::Slim);
@@ -539,7 +551,7 @@ async fn large_reviews_prepare_close_looks_first_and_the_rest_per_file() {
     });
     let mut effects = Vec::new();
     for _ in 0..10 {
-        effects = ctrl(&mut app, 'd');
+        effects = v2::press(&mut app, "]f");
         if app.selected().unwrap().file == other {
             break;
         }
@@ -560,7 +572,7 @@ async fn starts_on_the_review_without_asking_for_a_session() {
         u.prep = teer::review::model::Prep::NotRequested;
         u.changes.clear();
     }
-    let mut app = App::new(fresh, Config::default(), KeyMap::default());
+    let mut app = App::new(fresh, Config::default(), Keymap::default());
     let s = SessionRef::fresh("claude", "/work/shop".into());
     let effects = app.start(true, None, Vec::new(), Some(s.clone()), false);
     assert_eq!(app.screen, Screen::Slim);
@@ -574,7 +586,7 @@ async fn starts_on_the_review_without_asking_for_a_session() {
     assert!(screen.contains("preparing 0/4"), "{screen}");
 
     // Without Claude Code, the review still opens and says why.
-    let mut app = App::new(review, Config::default(), KeyMap::default());
+    let mut app = App::new(review, Config::default(), Keymap::default());
     let effects = app.start(
         false,
         Some("Claude Code ('claude') isn't on your PATH.".into()),
@@ -740,15 +752,18 @@ async fn flagged_only_keys_do_nothing_in_the_list() {
     let (review, _repo) = fixture_review().await;
     let mut app = app_for(review, Config::default());
     select(&mut app, "charge_order");
-    for c in ['c', 'v', 'o', 'n', 't', 'x', 'z'] {
-        assert!(key(&mut app, c).is_empty(), "{c}");
-        assert_eq!(app.screen, Screen::Slim, "{c}");
-        assert_eq!(app.overlay, Overlay::None, "{c}");
+    for keys in [
+        "o", "x", "r", "zz", "gt", "gT", "<tab>", "<s-tab>", "<right>", "<left>",
+    ] {
+        assert!(v2::press(&mut app, keys).is_empty(), "{keys}");
+        assert_eq!(app.screen, Screen::Slim, "{keys}");
+        assert_eq!(app.overlay, Overlay::None, "{keys}");
+        assert_eq!(app.selected().unwrap().symbol, "charge_order", "{keys}");
     }
 }
 
 #[tokio::test]
-async fn e_opens_the_unit_in_the_editor_at_its_line() {
+async fn gf_opens_the_unit_in_the_editor_at_its_line() {
     let (review, _repo) = fixture_review().await;
     let mut app = app_for(review, Config::default());
     select(&mut app, "charge_order");
@@ -757,7 +772,7 @@ async fn e_opens_the_unit_in_the_editor_at_its_line() {
         file: "checkout.py".into(),
         line,
     };
-    assert_eq!(key(&mut app, 'e'), vec![want]);
+    assert_eq!(v2::press(&mut app, "gf"), vec![want]);
     // From a swipe card it's the card on top.
     key(&mut app, 's');
     let top = app.swipe_current().cloned().unwrap();
@@ -765,7 +780,7 @@ async fn e_opens_the_unit_in_the_editor_at_its_line() {
         let u = app.review.unit(&top).unwrap();
         (u.file.clone(), u.display_line())
     };
-    assert_eq!(key(&mut app, 'e'), vec![Effect::Edit { file, line }]);
+    assert_eq!(v2::press(&mut app, "gf"), vec![Effect::Edit { file, line }]);
 }
 
 #[tokio::test]
@@ -773,9 +788,9 @@ async fn reset_clears_every_decision_after_confirming() {
     let (review, _repo) = fixture_review().await;
     let mut app = app_for(review, Config::default());
     key(&mut app, 's');
-    code(&mut app, KeyCode::Right);
-    key(&mut app, 'i');
-    key(&mut app, 'h');
+    key(&mut app, 'a');
+    key(&mut app, 'f');
+    key(&mut app, 'k');
     assert!(
         app.review
             .units
@@ -790,7 +805,7 @@ async fn reset_clears_every_decision_after_confirming() {
         .count();
 
     // esc cancels.
-    assert!(key(&mut app, 'R').is_empty());
+    assert!(v2::press(&mut app, ":e!<cr>").is_empty());
     assert_eq!(app.overlay, Overlay::ConfirmReset);
     insta::assert_snapshot!("confirm_reset", render(&app, 90, 20).backend());
     code(&mut app, KeyCode::Esc);
@@ -803,7 +818,7 @@ async fn reset_clears_every_decision_after_confirming() {
     );
 
     // enter resets: nothing is looked at, the swipe stack is full again.
-    key(&mut app, 'R');
+    v2::press(&mut app, ":e!<cr>");
     assert_eq!(code(&mut app, KeyCode::Enter), vec![Effect::Save]);
     assert!(
         app.review
@@ -813,7 +828,6 @@ async fn reset_clears_every_decision_after_confirming() {
     );
     assert_eq!(app.swipe.cards.len(), total);
     assert_eq!(app.swipe.cursor, 0);
-    assert!(app.swipe.history.is_empty());
 }
 
 #[tokio::test]
@@ -822,14 +836,14 @@ async fn the_accept_button_sits_bottom_right_and_is_clickable() {
     let mut app = app_for(review, Config::default());
     key(&mut app, 's');
     let screen = format!("{}", render(&app, 90, 26).backend());
-    assert!(screen.contains("accept [l]"), "{screen}");
+    assert!(screen.contains("accept [a]"), "{screen}");
     let first = app.swipe_current().cloned().unwrap();
     let card = app.swipe_card.get();
     let (rect, _) = *app
         .targets
         .borrow()
         .iter()
-        .find(|(_, t)| *t == teer::tui::app::Target::Action(teer::config::Action::Accept))
+        .find(|(_, t)| *t == teer::tui::app::Target::Action(teer::keymap::Action::DecideAccept))
         .expect("accept button");
     // Under the card, at its right edge.
     assert_eq!(rect.y, card.y + card.height);
@@ -890,7 +904,7 @@ async fn deciding_does_not_move_units_and_pending_jumps_skip_decided() {
     let mut app = app_for(review, Config::default());
     let before = symbols(&app);
     // Accept the first (charge_order); selection moves to the next pending one.
-    key(&mut app, 'l');
+    key(&mut app, 'a');
     assert_eq!(symbols(&app), before);
     assert_eq!(app.selected().unwrap().symbol, "old_helper");
     assert_eq!(app.review.units[app.order[0]].decision, Decision::Accepted);
@@ -898,17 +912,18 @@ async fn deciding_does_not_move_units_and_pending_jumps_skip_decided() {
     assert_eq!(symbols(&app), before, "rebuilding keeps the order too");
     assert_eq!(app.selected().unwrap().symbol, "old_helper");
 
-    // Flag old_helper; decided units are skipped by ] and [.
-    key(&mut app, 'i');
+    // Flag old_helper (esc leaves its note line); decided units are skipped
+    // by n and N.
+    v2::press(&mut app, "f<esc>");
     assert_eq!(app.selected().unwrap().symbol, "new_helper");
-    key(&mut app, 'g');
+    v2::press(&mut app, "gg");
     assert_eq!(app.sel, 0);
-    key(&mut app, ']');
+    key(&mut app, 'n');
     assert_eq!(app.selected().unwrap().symbol, "new_helper");
-    key(&mut app, '[');
+    key(&mut app, 'N');
     assert_eq!(app.sel, 2, "no pending unit before new_helper");
     app.sel = 3;
-    key(&mut app, '[');
+    key(&mut app, 'N');
     assert_eq!(app.selected().unwrap().symbol, "new_helper");
 
     // Rows are unchanged in count and mouse targets still map to positions.
@@ -985,9 +1000,9 @@ async fn entering_swipe_keeps_only_flagged_and_pending_cards_starting_on_the_fir
 async fn accepted_cards_stay_for_the_session_and_are_dropped_on_re_entry() {
     let mut app = swipe_app().await;
     let first = app.swipe_current().cloned().unwrap();
-    key(&mut app, 'l');
+    key(&mut app, 'a');
     assert_eq!(app.swipe.cards.len(), 4);
-    key(&mut app, 'h');
+    key(&mut app, 'k');
     assert_eq!(app.swipe_current(), Some(&first));
     assert!(screen_text(&app).contains("✓ accepted"));
     code(&mut app, KeyCode::Esc);
@@ -1012,18 +1027,16 @@ async fn all_accepted_opens_on_the_summary_and_says_nothing_needs_a_look() {
     assert!(text.contains("Nothing needs a look"), "{text}");
     assert!(text.contains("4 accepted"), "{text}");
     // With a flagged unit left over the deck is not empty; the summary
-    // after it still points at the Flagged screen.
+    // after it counts it (Flagged opens from the list, not from swipe).
     let id = app.review.units[0].id.clone();
     app.review.unit_mut(&id).unwrap().decision = Decision::Investigate;
     code(&mut app, KeyCode::Esc);
     key(&mut app, 's');
     assert_eq!(app.swipe.cards.len(), 1);
-    key(&mut app, 'i');
+    key(&mut app, 'f');
     let text = screen_text(&app);
-    assert!(
-        text.contains("press d to see them") || text.contains("press d"),
-        "{text}"
-    );
+    assert!(text.contains("1 flagged"), "{text}");
+    assert!(!text.contains("press"), "{text}");
 }
 
 #[tokio::test]
@@ -1036,7 +1049,7 @@ async fn reset_in_swipe_brings_every_card_back() {
     app.review.units[0].decision = Decision::Pending;
     key(&mut app, 's');
     assert_eq!(app.swipe.cards.len(), 1);
-    key(&mut app, 'R');
+    v2::press(&mut app, ":e!<cr>");
     key(&mut app, 'y');
     assert_eq!(app.swipe.cards.len(), 4);
     assert_eq!(app.swipe.cursor, 0);
@@ -1060,10 +1073,10 @@ fn screen_text(app: &App) -> String {
 }
 
 #[tokio::test]
-async fn l_accepts_and_advances() {
+async fn a_accepts_and_advances() {
     let mut app = swipe_app().await;
     let first = app.swipe_current().cloned().unwrap();
-    key(&mut app, 'l');
+    key(&mut app, 'a');
     assert_eq!(decision_of(&app, &first), Decision::Accepted);
     assert_eq!(app.swipe.cursor, 1);
     assert_ne!(app.swipe_current(), Some(&first));
@@ -1072,12 +1085,12 @@ async fn l_accepts_and_advances() {
 }
 
 #[tokio::test]
-async fn h_goes_back_and_the_card_shows_its_state() {
+async fn k_goes_back_and_the_card_shows_its_state() {
     let mut app = swipe_app().await;
     let first = app.swipe_current().cloned().unwrap();
     assert!(screen_text(&app).contains("not reviewed yet"));
-    key(&mut app, 'l');
-    key(&mut app, 'h');
+    key(&mut app, 'a');
+    key(&mut app, 'k');
     assert_eq!(app.swipe_current(), Some(&first));
     // Going back changes no decision.
     assert_eq!(decision_of(&app, &first), Decision::Accepted);
@@ -1086,38 +1099,38 @@ async fn h_goes_back_and_the_card_shows_its_state() {
     assert!(text.contains("1 of 4"), "{text}");
     insta::assert_snapshot!("swipe_card_accepted", render(&app, 90, 26).backend());
     // A flagged card says so too.
-    key(&mut app, 'i');
-    key(&mut app, 'h');
+    key(&mut app, 'f');
+    key(&mut app, 'k');
     assert!(screen_text(&app).contains("⚑ flagged"));
-    // → still accepts a card that is shown again, and advances.
-    code(&mut app, KeyCode::Right);
+    // a still accepts a card that is shown again, and advances.
+    key(&mut app, 'a');
     assert_eq!(decision_of(&app, &first), Decision::Accepted);
     assert_eq!(app.swipe.cursor, 1);
 }
 
 #[tokio::test]
-async fn h_on_the_first_card_does_nothing() {
+async fn k_on_the_first_card_does_nothing() {
     let mut app = swipe_app().await;
     let first = app.swipe_current().cloned().unwrap();
-    key(&mut app, 'h');
+    key(&mut app, 'k');
     assert_eq!(app.swipe_current(), Some(&first));
     assert_eq!(decision_of(&app, &first), Decision::Pending);
     assert_eq!(app.screen, Screen::Swipe);
 }
 
 #[tokio::test]
-async fn h_from_the_summary_returns_to_the_last_card() {
+async fn k_from_the_summary_returns_to_the_last_card() {
     let mut app = swipe_app().await;
     let last = app.swipe.cards.last().cloned().unwrap();
     while app.swipe_current().is_some() {
-        key(&mut app, 'l');
+        key(&mut app, 'a');
     }
     // Accepting the last card opens the all-done popup; a key dismisses it.
     assert_eq!(app.overlay, Overlay::AllDone);
     assert!(screen_text(&app).contains("Hurray!"));
     code(&mut app, KeyCode::Esc);
     assert!(screen_text(&app).contains("All changes triaged"));
-    key(&mut app, 'h');
+    key(&mut app, 'k');
     assert_eq!(app.swipe_current(), Some(&last));
     assert!(screen_text(&app).contains("4 of 4"));
     assert_eq!(decision_of(&app, &last), Decision::Accepted);
@@ -1127,13 +1140,13 @@ async fn h_from_the_summary_returns_to_the_last_card() {
 async fn re_deciding_a_card_overrides_it() {
     let mut app = swipe_app().await;
     let first = app.swipe_current().cloned().unwrap();
-    key(&mut app, 'l');
-    key(&mut app, 'h');
-    key(&mut app, 'i');
+    key(&mut app, 'a');
+    key(&mut app, 'k');
+    key(&mut app, 'f');
     assert_eq!(decision_of(&app, &first), Decision::Investigate);
     assert_eq!(app.decision_counts(), (0, 1, 3));
-    key(&mut app, 'h');
-    code(&mut app, KeyCode::Right);
+    key(&mut app, 'k');
+    key(&mut app, 'a');
     assert_eq!(decision_of(&app, &first), Decision::Accepted);
     assert_eq!(app.decision_counts(), (1, 0, 3));
 }
@@ -1142,11 +1155,11 @@ async fn re_deciding_a_card_overrides_it() {
 async fn undo_restores_the_previous_decision_and_the_cursor() {
     let mut app = swipe_app().await;
     let first = app.swipe_current().cloned().unwrap();
-    key(&mut app, 'l'); // first accepted
-    key(&mut app, 'l'); // second accepted
-    key(&mut app, 'h');
-    key(&mut app, 'h'); // back on first
-    key(&mut app, 'i'); // first accepted -> flagged, cursor on second
+    key(&mut app, 'a'); // first accepted
+    key(&mut app, 'a'); // second accepted
+    key(&mut app, 'k');
+    key(&mut app, 'k'); // back on first
+    key(&mut app, 'f'); // first accepted -> flagged, cursor on second
     assert_eq!(app.swipe.cursor, 1);
     key(&mut app, 'u');
     // The earlier decision comes back (not "pending") and so does the cursor.
@@ -1161,32 +1174,38 @@ async fn undo_restores_the_previous_decision_and_the_cursor() {
 }
 
 #[tokio::test]
-async fn i_and_left_investigate_but_h_does_not() {
+async fn f_flags_and_k_goes_back_without_deciding() {
     let mut app = swipe_app().await;
     let ids = app.swipe.cards.clone();
-    key(&mut app, 'i');
-    code(&mut app, KeyCode::Left);
+    key(&mut app, 'f');
+    key(&mut app, 'f');
     assert_eq!(decision_of(&app, &ids[0]), Decision::Investigate);
     assert_eq!(decision_of(&app, &ids[1]), Decision::Investigate);
-    // h moves back without deciding anything.
-    key(&mut app, 'h');
+    // k moves back without deciding anything.
+    key(&mut app, 'k');
     assert_eq!(app.swipe.cursor, 1);
     assert_eq!(decision_of(&app, &ids[2]), Decision::Pending);
     assert_eq!(app.decision_counts(), (0, 2, 2));
+    // h goes back to the list, deciding nothing.
+    key(&mut app, 'h');
+    assert_eq!(app.screen, Screen::Slim);
+    assert_eq!(app.decision_counts(), (0, 2, 2));
 
-    // In the list, h still investigates.
+    // In the list, f flags too, and h no longer does.
     let (review, _repo) = fixture_review().await;
     let mut list = app_for(review, Config::default());
     let id = list.selected_id().unwrap();
     key(&mut list, 'h');
+    assert_eq!(decision_of(&list, &id), Decision::Pending);
+    v2::press(&mut list, "f<esc>");
     assert_eq!(decision_of(&list, &id), Decision::Investigate);
 }
 
 #[tokio::test]
-async fn the_swipe_footer_shows_next_previous_and_investigate() {
+async fn the_swipe_footer_shows_next_previous_and_flag() {
     let mut app = swipe_app().await;
     let text = screen_text(&app);
-    for hint in ["l accept · next", "h previous", "i investigate", "u undo"] {
+    for hint in ["a accept · next", "k previous", "f flag", "u undo"] {
         assert!(text.contains(hint), "{hint} missing:\n{text}");
     }
     // Wide enough for everything: the buttons are clickable.
@@ -1214,16 +1233,16 @@ async fn the_swipe_footer_shows_next_previous_and_investigate() {
             }));
         }
     };
-    let r = find_footer(&app, teer::config::Action::Accept);
+    let r = find_footer(&app, teer::keymap::Action::DecideAccept);
     press(&mut app, r);
     assert_eq!(decision_of(&app, &ids[0]), Decision::Accepted);
     assert_eq!(app.swipe.cursor, 1);
     render(&app, 90, 26);
-    let r = find_footer(&app, teer::config::Action::PrevCard);
+    let r = find_footer(&app, teer::keymap::Action::MoveUp);
     press(&mut app, r);
     assert_eq!(app.swipe.cursor, 0);
     render(&app, 90, 26);
-    let r = find_footer(&app, teer::config::Action::Investigate);
+    let r = find_footer(&app, teer::keymap::Action::DecideFlag);
     press(&mut app, r);
     assert_eq!(decision_of(&app, &ids[0]), Decision::Investigate);
 }

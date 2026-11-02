@@ -498,7 +498,7 @@ fn scroll_in(
     editor: bool,
     offset: usize,
 ) -> Scroll {
-    use crate::config::Action;
+    use crate::keymap::Action;
     let total: usize = blocks.iter().map(Vec::len).sum();
     let starts: Vec<usize> = blocks
         .iter()
@@ -539,7 +539,7 @@ fn scroll_in(
         out.push(hint(format!(
             "… {above} line{} above · {} scroll up",
             plural(above),
-            k(Action::PreviewUp)
+            k(Action::ScrollHalfUp)
         )));
         top = 1;
     }
@@ -568,10 +568,10 @@ fn scroll_in(
         let mut more = format!(
             "… {left} more line{} · {} scroll",
             plural(left),
-            k(Action::PreviewDown)
+            k(Action::ScrollHalfDown)
         );
         if editor {
-            more.push_str(&format!(" · {} editor", k(Action::Edit)));
+            more.push_str(&format!(" · {} editor", k(Action::GotoEditor)));
         }
         out.push(hint(more));
     }
@@ -796,7 +796,8 @@ mod tests {
     }
 
     fn app(with_unit: bool) -> App {
-        use crate::config::{Config, KeyMap};
+        use crate::config::Config;
+        use crate::keymap::Keymap;
         use crate::review::model::{Range, Review, Unit, UnitKind, UnitStatus};
         use std::path::PathBuf;
         let units = if with_unit {
@@ -839,8 +840,10 @@ mod tests {
             skipped: Vec::new(),
             graph: Default::default(),
             questions: Vec::new(),
+            version: 0,
+            history: Default::default(),
         };
-        App::new(review, Config::default(), KeyMap::default())
+        App::new(review, Config::default(), Keymap::default())
     }
 
     fn render(app: &App, w: u16, h: u16, pane: Pane) -> String {

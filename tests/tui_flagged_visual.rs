@@ -1,6 +1,6 @@
-//! The Visualize question end to end with the mock agent: `v` asks (never
+//! The Visualize question end to end with the mock agent: `␣v` asks (never
 //! with the web), the picture is validated and saved as an HTML page, the tab
-//! shows the claim and the edges in its tile, `b` opens the page, and it
+//! shows the claim and the edges in its tile, `gx` opens the page, and it
 //! survives a reload.
 
 mod common;
@@ -17,7 +17,8 @@ use ratatui::backend::TestBackend;
 use ratatui_image::picker::{Picker, ProtocolType};
 use teer::agent::mock::{MockAdapter, dive_responder};
 use teer::approve::Tools;
-use teer::config::{Config, KeyMap};
+use teer::config::Config;
+use teer::keymap::{KeySpec, Keymap};
 use teer::review::dive::{DiveEvent, run_dive};
 use teer::review::model::{Decision, DiveKind, SessionRef, Visual};
 use teer::review::{BuildOptions, build_review, store, visual};
@@ -33,7 +34,7 @@ struct Fixture {
 }
 
 /// The Python fixture with its first two units flagged, on the Flagged screen.
-fn fixture(keys: KeyMap) -> Fixture {
+fn fixture(keys: Keymap) -> Fixture {
     let _env = isolate_env();
     let repo = FixtureRepo::new();
     repo.write("checkout.py", PY_OLD).commit("init");
@@ -44,8 +45,7 @@ fn fixture(keys: KeyMap) -> Fixture {
         u.decision = Decision::Investigate;
     }
     let mut app = App::new(review, Config::default(), keys);
-    key(&mut app, 'd');
-    assert_eq!(app.screen, Screen::Flagged);
+    open_flagged(&mut app);
     Fixture {
         app,
         adapter: MockAdapter::new(dive_responder),
@@ -66,6 +66,23 @@ fn key(a: &mut App, c: char) -> Vec<Effect> {
         KeyCode::Char(c),
         KeyModifiers::NONE,
     )))
+}
+
+/// Type `keys` in Neovim notation (`<space>v`, `zz`).
+fn keys(a: &mut App, keys: &str) -> Vec<Effect> {
+    common::v2::press(a, keys)
+}
+
+/// Open the Flagged screen (`l`) on the first flagged unit.
+fn open_flagged(app: &mut App) {
+    let first = app.flagged_units()[0].id.clone();
+    app.sel = app
+        .order
+        .iter()
+        .position(|&i| app.review.units[i].id == first)
+        .unwrap();
+    key(app, 'l');
+    assert_eq!(app.screen, Screen::Flagged);
 }
 
 fn screen(app: &App, w: u16, h: u16) -> Terminal<TestBackend> {
@@ -180,9 +197,9 @@ fn runtime(tools: Tools) -> Runtime {
 }
 
 #[tokio::test]
-async fn v_asks_without_the_web_and_the_tab_shows_the_picture() {
-    let mut f = fixture(KeyMap::default());
-    let effects = key(&mut f.app, 'v');
+async fn leader_v_asks_without_the_web_and_the_tab_shows_the_picture() {
+    let mut f = fixture(Keymap::default());
+    let effects = keys(&mut f.app, "<space>v");
     assert_eq!(f.app.flagged.pane, Pane::Answer(DiveKind::Visualize));
     assert!(
         matches!(
@@ -197,7 +214,7 @@ async fn v_asks_without_the_web_and_the_tab_shows_the_picture() {
     assert_eq!(f.app.overlay, Overlay::None, "no web, so no confirmation");
     assert!(screen_text(&f.app).contains("asking the agent"));
     // Asked again while in flight: nothing new.
-    assert!(key(&mut f.app, 'v').is_empty());
+    assert!(keys(&mut f.app, "<space>v").is_empty());
 
     answer(&mut f, &effects).await;
     assert_eq!(*f.adapter.web_calls.lock().unwrap(), [false]);
@@ -205,17 +222,17 @@ async fn v_asks_without_the_web_and_the_tab_shows_the_picture() {
     assert!(prompt.starts_with("DIVE:Visualize"), "{prompt}");
     assert!(prompt.contains("Code you may cite"), "{prompt}");
 
-    assert!(screen_text(&f.app).contains("╭ v Visualize ✓"));
+    assert!(screen_text(&f.app).contains("╭ ␣v Visualize ✓"));
     // Zoomed, the tile is as wide as the screen.
-    key(&mut f.app, 'z');
+    keys(&mut f.app, "zz");
     let text = screen_text(&f.app);
     for want in [
         "mock picture: the unit now writes to a store.",
         "caller ─calls→ this unit  [unchanged]",
         "this unit ─writes→ store  [added]",
         "saved to",
-        "b opens it in the browser",
-        "╭ v Visualize ✓",
+        "gx opens it in the browser",
+        "╭ ␣v Visualize ✓",
     ] {
         assert!(text.contains(want), "{want:?} missing:\n{text}");
     }
@@ -233,8 +250,8 @@ async fn v_asks_without_the_web_and_the_tab_shows_the_picture() {
 
 #[tokio::test]
 async fn visualize_tab_snapshot() {
-    let mut f = fixture(KeyMap::default());
-    let effects = key(&mut f.app, 'v');
+    let mut f = fixture(Keymap::default());
+    let effects = keys(&mut f.app, "<space>v");
     answer(&mut f, &effects).await;
     // Fixed paths, so the snapshot is the same on every machine.
     f.app.review.repo_root = PathBuf::from("/work/shop");
@@ -247,21 +264,21 @@ async fn visualize_tab_snapshot() {
 }
 
 #[tokio::test]
-async fn b_opens_the_page_and_writes_it_again_when_it_is_gone() {
-    let mut f = fixture(KeyMap::default());
+async fn gx_opens_the_page_and_writes_it_again_when_it_is_gone() {
+    let mut f = fixture(Keymap::default());
     let dir = tempfile::tempdir().unwrap();
     let rt = runtime(tools(dir.path()));
 
     // Nothing drawn yet: say how to draw one.
-    assert!(key(&mut f.app, 'b').is_empty());
-    assert_eq!(f.app.status, "No picture yet: press v to draw one.");
+    assert!(keys(&mut f.app, "gx").is_empty());
+    assert_eq!(f.app.status, "No picture yet: press ␣v to draw one.");
 
-    let effects = key(&mut f.app, 'v');
+    let effects = keys(&mut f.app, "<space>v");
     answer(&mut f, &effects).await;
-    // `b` works from any tab.
-    key(&mut f.app, 'x');
+    // `gx` works from any tab.
+    keys(&mut f.app, "<space>m");
     let id = f.app.flagged_unit_id().unwrap();
-    let effects = key(&mut f.app, 'b');
+    let effects = keys(&mut f.app, "gx");
     assert_eq!(
         effects,
         vec![Effect::OpenVisual {
@@ -277,7 +294,7 @@ async fn b_opens_the_page_and_writes_it_again_when_it_is_gone() {
 
     // Deleted: written again from the saved picture, then opened.
     std::fs::remove_file(&path).unwrap();
-    for e in key(&mut f.app, 'b') {
+    for e in keys(&mut f.app, "gx") {
         rt.exec(&mut f.app, e);
     }
     assert!(path.is_file());
@@ -288,7 +305,7 @@ async fn b_opens_the_page_and_writes_it_again_when_it_is_gone() {
     let u = f.app.review.unit_mut(&id).unwrap();
     let res = u.dive.results.get_mut(&DiveKind::Visualize).unwrap();
     res.visual.as_mut().unwrap().path = outside.clone();
-    for e in key(&mut f.app, 'b') {
+    for e in keys(&mut f.app, "gx") {
         rt.exec(&mut f.app, e);
     }
     assert!(!outside.exists());
@@ -298,8 +315,8 @@ async fn b_opens_the_page_and_writes_it_again_when_it_is_gone() {
 
 #[tokio::test]
 async fn r_on_the_visualize_tab_asks_again() {
-    let mut f = fixture(KeyMap::default());
-    let effects = key(&mut f.app, 'v');
+    let mut f = fixture(Keymap::default());
+    let effects = keys(&mut f.app, "<space>v");
     answer(&mut f, &effects).await;
     let effects = key(&mut f.app, 'r');
     assert!(
@@ -319,16 +336,20 @@ async fn r_on_the_visualize_tab_asks_again() {
 
 #[tokio::test]
 async fn the_keys_can_be_rebound() {
-    let keys = KeyMap::with_overrides(&HashMap::from([
-        ("dive_visualize".to_string(), "V".to_string()),
-        ("open_visual".to_string(), "ctrl+o".to_string()),
-    ]))
+    let (km, warnings) = Keymap::new(
+        &HashMap::from([
+            ("tool.diagram".to_string(), KeySpec::One("<space>d".into())),
+            ("goto.browser".to_string(), KeySpec::One("<c-o>".into())),
+        ]),
+        1000,
+    )
     .unwrap();
-    let mut f = fixture(keys);
-    assert!(key(&mut f.app, 'v').is_empty());
-    assert!(key(&mut f.app, 'b').is_empty());
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let mut f = fixture(km);
+    assert!(keys(&mut f.app, "<space>v").is_empty());
+    assert!(keys(&mut f.app, "gx").is_empty());
     assert!(f.app.status.is_empty(), "{}", f.app.status);
-    let effects = key(&mut f.app, 'V');
+    let effects = keys(&mut f.app, "<space>d");
     assert!(matches!(
         &effects[..],
         [Effect::Dive {
@@ -350,8 +371,8 @@ async fn the_keys_can_be_rebound() {
 
 #[tokio::test]
 async fn the_picture_survives_a_save_and_reload() {
-    let mut f = fixture(KeyMap::default());
-    let effects = key(&mut f.app, 'v');
+    let mut f = fixture(Keymap::default());
+    let effects = keys(&mut f.app, "<space>v");
     answer(&mut f, &effects).await;
     let before = picture(&f.app);
     store::save(&f.app.review).unwrap();
@@ -361,18 +382,18 @@ async fn the_picture_survives_a_save_and_reload() {
     assert_eq!(res.visual.as_ref(), Some(&before));
     assert_eq!(res.text, before.claim);
 
-    let mut app = App::new(back, Config::default(), KeyMap::default());
-    key(&mut app, 'd');
-    key(&mut app, 'v');
-    key(&mut app, 'z');
+    let mut app = App::new(back, Config::default(), Keymap::default());
+    open_flagged(&mut app);
+    keys(&mut app, "<space>v");
+    keys(&mut app, "zz");
     let text = screen_text(&app);
     assert!(text.contains("this unit ─writes→ store  [added]"), "{text}");
 }
 
 #[tokio::test]
 async fn with_images_the_tile_shows_the_picture_instead_of_the_list() {
-    let mut f = fixture(KeyMap::default());
-    let effects = key(&mut f.app, 'v');
+    let mut f = fixture(Keymap::default());
+    let effects = keys(&mut f.app, "<space>v");
     answer(&mut f, &effects).await;
     f.app.pictures = Some(kitty());
     // In its tile, with or without the focus.
@@ -380,8 +401,8 @@ async fn with_images_the_tile_shows_the_picture_instead_of_the_list() {
     code_right(&mut f.app);
     assert!(screen_text(&f.app).contains(PLACEHOLDER));
     code_right(&mut f.app);
-    key(&mut f.app, 'v');
-    key(&mut f.app, 'z');
+    keys(&mut f.app, "<space>v");
+    keys(&mut f.app, "zz");
     let text = screen_text(&f.app);
     assert!(text.contains(PLACEHOLDER), "{text}");
     assert!(
@@ -392,7 +413,7 @@ async fn with_images_the_tile_shows_the_picture_instead_of_the_list() {
         !text.contains("─calls→"),
         "the picture replaces the list:\n{text}"
     );
-    assert!(text.contains("b opens it in the browser · "), "{text}");
+    assert!(text.contains("gx opens it in the browser · "), "{text}");
     // Drawn again from the same pixels on the next frame.
     assert!(screen_text(&f.app).contains(PLACEHOLDER));
 
@@ -403,7 +424,7 @@ async fn with_images_the_tile_shows_the_picture_instead_of_the_list() {
         teer::tui::app::Pane::Answer(DiveKind::Visualize)
     );
     assert!(!screen_text(&f.app).contains(PLACEHOLDER));
-    key(&mut f.app, 'v');
+    keys(&mut f.app, "<space>v");
 
     // Too little room for a picture: the list again.
     let small = text_at(&f.app, 120, 14);
@@ -421,11 +442,11 @@ async fn with_images_the_tile_shows_the_picture_instead_of_the_list() {
 
 #[tokio::test]
 async fn without_images_the_tab_keeps_the_list() {
-    let mut f = fixture(KeyMap::default());
-    let effects = key(&mut f.app, 'v');
+    let mut f = fixture(Keymap::default());
+    let effects = keys(&mut f.app, "<space>v");
     answer(&mut f, &effects).await;
     assert!(f.app.pictures.is_none(), "tests never ask a real terminal");
-    key(&mut f.app, 'z');
+    keys(&mut f.app, "zz");
     let text = screen_text(&f.app);
     assert!(!text.contains(PLACEHOLDER));
     assert!(text.contains("this unit ─writes→ store  [added]"), "{text}");

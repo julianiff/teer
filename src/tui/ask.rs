@@ -1,4 +1,4 @@
-//! The Ask view (`/`): questions about the code and the agent's answers,
+//! The Ask view (`K`): questions about the code and the agent's answers,
 //! oldest first. Each answer names the units of this change it has to do
 //! with and shows the code it means, read by teer, in boxes; code of the
 //! change is marked so, its changed lines with `+`. The question being
@@ -18,7 +18,8 @@ use unicode_width::UnicodeWidthStr;
 use super::app::{App, LiveAnswer, Target};
 use super::preview::barred;
 use super::slim;
-use crate::config::Action;
+use super::ui::{fixed, hint, hint_line};
+use crate::keymap::Action;
 use crate::review::model::{Question, Shown, Unit};
 use crate::util::{sanitize, truncate, wrap};
 
@@ -87,18 +88,36 @@ pub fn draw_ask(f: &mut Frame, app: &App) {
         Paragraph::new(input_line(app, " ask › ", &app.ask.input, typing, w)),
         input,
     );
+    // Typing, the keys are the text input's; moving between links, they
+    // are the keymap's.
+    let k = |a: Action| app.keys.label(a);
     let keys_text = if app.ask.link.is_some() {
-        "↑ ↓ links · ⏎ open · tab type · esc back"
+        vec![
+            hint(
+                format!("{} {}", k(Action::MoveDown), k(Action::MoveUp)),
+                "links",
+            ),
+            hint(k(Action::ViewOpen), "open"),
+            hint(k(Action::ViewBack), "type"),
+            hint(k(Action::ViewClose), "close"),
+        ]
     } else {
-        "⏎ ask · tab links · ↑ ↓ scroll · ctrl+r ask again · esc close"
+        vec![
+            hint(fixed::ENTER, "ask"),
+            hint(fixed::TAB, "links"),
+            hint(format!("{} {}", fixed::PAGE_DOWN, fixed::PAGE_UP), "scroll"),
+            hint(fixed::RETRY, "ask again"),
+            hint(fixed::ESC, "close"),
+        ]
     };
+    let (_, keys_text) = hint_line(app, &keys_text);
     f.render_widget(
-        Paragraph::new(Line::styled(truncate(keys_text, w), t.muted())),
+        Paragraph::new(Line::styled(truncate(&keys_text, w), t.muted())),
         keys,
     );
     super::ui::text_area(app, talk, 0);
     super::ui::text_area(app, keys, 0);
-    super::ui::click_hints(f, app, keys, keys_text);
+    super::ui::click_hints(f, app, keys, &keys_text);
 }
 
 /// A conversation to draw: the questions, by index; whether it is one
@@ -177,7 +196,7 @@ pub fn draw_chat(f: &mut Frame, app: &App, u: &Unit, area: Rect, focus: bool) {
     let line = if typing || !app.ask.draft.is_empty() {
         input_line(app, " › ", &app.ask.draft, typing, w)
     } else {
-        let start = format!(" › {} to ask about it", app.keys.label(Action::Ask));
+        let start = format!(" › {} to ask about it", app.keys.label(Action::AskOpen));
         Line::styled(truncate(&start, w), t.muted())
     };
     f.render_widget(Paragraph::new(line), input);
@@ -186,9 +205,14 @@ pub fn draw_chat(f: &mut Frame, app: &App, u: &Unit, area: Rect, focus: bool) {
 /// What the chat's border says about its keys.
 pub fn chat_keys(app: &App, focus: bool) -> String {
     if focus && app.flagged.typing {
-        " ⏎ ask · ctrl+r again · esc done ".into()
+        format!(
+            " {} ask · {} again · {} done ",
+            fixed::ENTER,
+            fixed::RETRY,
+            fixed::ESC
+        )
     } else {
-        format!(" {} type ", app.keys.label(Action::Ask))
+        format!(" {} type ", app.keys.label(Action::AskOpen))
     }
 }
 
@@ -304,7 +328,7 @@ question has to do with. Each answer is also noted on the unit it is about."
 }
 
 /// `› the question`, where its answer is noted (not in a chat), and how it
-/// stands; `ctrl+r` asks the `last` again.
+/// stands; `^r` asks the `last` again.
 fn question_lines(
     app: &App,
     n: usize,
@@ -350,13 +374,21 @@ fn question_lines(
             t.muted(),
         ));
     } else if let Some(e) = &q.error {
-        let again = if last { " · ctrl+r asks again" } else { "" };
+        let again = if last {
+            format!(" · {} asks again", fixed::RETRY)
+        } else {
+            String::new()
+        };
         lines.push(Line::styled(
             truncate(&format!("  ✗ {}{again}", sanitize(e)), w),
             t.needs_fix(),
         ));
     } else if q.answer.is_none() {
-        let again = if last { " · ctrl+r asks it" } else { "" };
+        let again = if last {
+            format!(" · {} asks it", fixed::RETRY)
+        } else {
+            String::new()
+        };
         lines.push(Line::styled(format!("  not answered{again}"), t.muted()));
     }
 }
@@ -501,10 +533,13 @@ pub fn note_lines(app: &App, id: &str, w: usize) -> Vec<Line<'static>> {
         }
         let more = match a.shown.len() {
             0 => String::new(),
-            1 => format!("1 piece of code · {} shows it", app.keys.label(Action::Ask)),
+            1 => format!(
+                "1 piece of code · {} shows it",
+                app.keys.label(Action::AskOpen)
+            ),
             n => format!(
                 "{n} pieces of code · {} shows them",
-                app.keys.label(Action::Ask)
+                app.keys.label(Action::AskOpen)
             ),
         };
         let card_line = |text: String, style: Style| {

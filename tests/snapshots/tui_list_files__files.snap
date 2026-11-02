@@ -1,6 +1,5 @@
 ---
 source: tests/tui_list_files.rs
-assertion_line: 267
 expression: "render(&a, 120, 60).backend()"
 ---
 " b..h                                                                                                                   "
@@ -62,4 +61,4 @@ expression: "render(&a, 120, 60).backend()"
 "│   assets/logo.png  binary      │                                                                                      "
 "╰────────────────────────────────╯                                                                                      "
 "                                                                                                                        "
-" e open in editor   s swipe   ? help   i investigate   / ask   m note                                                   "
+" gf open in editor   s swipe   ? help   f flag   K ask   i note                                                         "

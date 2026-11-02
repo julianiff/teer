@@ -14,8 +14,9 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use teer::approve::{self, EditOutcome, Tools, Verdict};
-use teer::config::{Config, KeyMap};
+use teer::config::Config;
 use teer::git::{ChangedFile, FileStatus};
+use teer::keymap::Keymap;
 use teer::review::BuildOptions;
 use teer::review::model::{Decision, PrInfo, Prep, Range, Review, Unit, UnitKind, UnitStatus};
 use teer::tui::app::{App, AppEvent, Effect, Overlay};
@@ -89,6 +90,8 @@ fn review(units: Vec<Unit>, pr: Option<PrInfo>) -> Review {
         graph: Default::default(),
         intent: Default::default(),
         questions: Vec::new(),
+        version: 0,
+        history: Default::default(),
     }
 }
 
@@ -101,12 +104,12 @@ fn notes_units() -> Vec<Unit> {
     ]
 }
 
-fn app_for(units: Vec<Unit>, pr: Option<PrInfo>, keys: KeyMap) -> App {
+fn app_for(units: Vec<Unit>, pr: Option<PrInfo>, keys: Keymap) -> App {
     App::new(review(units, pr), Config::default(), keys)
 }
 
 fn pr_app() -> App {
-    let mut a = app_for(notes_units(), Some(pr_info()), KeyMap::default());
+    let mut a = app_for(notes_units(), Some(pr_info()), Keymap::default());
     a.overlay = Overlay::AllDone;
     a
 }
@@ -117,6 +120,11 @@ fn press(a: &mut App, code: KeyCode) -> Vec<Effect> {
 
 fn key(a: &mut App, c: char) -> Vec<Effect> {
     press(a, KeyCode::Char(c))
+}
+
+/// `⏎`: a sheet's confirm (approve on the popup, send on the review).
+fn enter(a: &mut App) -> Vec<Effect> {
+    press(a, KeyCode::Enter)
 }
 
 fn draw(a: &App, w: u16, h: u16) -> String {
@@ -151,21 +159,21 @@ fn overlay_parts(a: &App) -> (Vec<approve::NoteEntry>, String, bool) {
 fn the_popup_offers_approval_only_for_pr_reviews() {
     let a = pr_app();
     let t = draw(&a, 100, 30);
-    assert!(t.contains("a approve PR #7 on GitHub"), "{t}");
+    assert!(t.contains("⏎ approve PR #7 on GitHub"), "{t}");
 
-    let mut plain = app_for(notes_units(), None, KeyMap::default());
+    let mut plain = app_for(notes_units(), None, Keymap::default());
     plain.overlay = Overlay::AllDone;
     let t = draw(&plain, 100, 30);
     assert!(!t.contains("approve"), "{t}");
-    // `a` just closes it: no overlay, no effect.
-    assert!(key(&mut plain, 'a').is_empty());
+    // `⏎` just closes it: no overlay, no effect.
+    assert!(enter(&mut plain).is_empty());
     assert_eq!(plain.overlay, Overlay::None);
 }
 
 #[test]
-fn a_opens_the_overlay_with_the_notes() {
+fn enter_opens_the_overlay_with_the_notes() {
     let mut a = pr_app();
-    assert!(key(&mut a, 'a').is_empty());
+    assert!(enter(&mut a).is_empty());
     let (notes, intro, inline_on) = overlay_parts(&a);
     assert_eq!(intro, "Reviewed with teer.");
     assert!(inline_on);
@@ -184,9 +192,9 @@ fn a_opens_the_overlay_with_the_notes() {
 #[test]
 fn without_notes_the_comment_is_just_the_intro() {
     let units = vec![unit("f", "a.py", (1, 2), (1, 2), "")];
-    let mut a = app_for(units, Some(pr_info()), KeyMap::default());
+    let mut a = app_for(units, Some(pr_info()), Keymap::default());
     a.overlay = Overlay::AllDone;
-    key(&mut a, 'a');
+    enter(&mut a);
     let (notes, intro, _) = overlay_parts(&a);
     assert!(notes.is_empty());
     let plan = approve::build_plan(&notes, &intro, true);
@@ -210,9 +218,9 @@ fn control_characters_are_stripped_and_sizes_capped() {
     for i in 0..80 {
         units.push(unit(&format!("n{i}"), "b.py", (1, 1), (1, 1), "later"));
     }
-    let mut a = app_for(units, Some(pr_info()), KeyMap::default());
+    let mut a = app_for(units, Some(pr_info()), Keymap::default());
     a.overlay = Overlay::AllDone;
-    key(&mut a, 'a');
+    enter(&mut a);
     let (notes, intro, _) = overlay_parts(&a);
     let plan = approve::build_plan(&notes, &intro, true);
     for c in &plan.inline {
@@ -234,7 +242,7 @@ fn control_characters_are_stripped_and_sizes_capped() {
 #[test]
 fn esc_cancels_and_stray_keys_do_nothing() {
     let mut a = pr_app();
-    key(&mut a, 'a');
+    enter(&mut a);
     let before = a.overlay.clone();
     for c in ['x', 'a', 'q', 'n', 'R', ' '] {
         assert!(key(&mut a, c).is_empty(), "{c}");
@@ -250,7 +258,7 @@ fn esc_cancels_and_stray_keys_do_nothing() {
 #[test]
 fn ctrl_c_still_quits_from_the_overlay() {
     let mut a = pr_app();
-    key(&mut a, 'a');
+    enter(&mut a);
     let e = a.on_event(Event::Key(KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::CONTROL,
@@ -261,8 +269,8 @@ fn ctrl_c_still_quits_from_the_overlay() {
 #[test]
 fn the_inline_toggle_moves_notes_into_the_summary() {
     let mut a = pr_app();
-    key(&mut a, 'a');
-    key(&mut a, 'i');
+    enter(&mut a);
+    key(&mut a, 't');
     assert!(!overlay_parts(&a).2);
     let t = draw(&a, 100, 30);
     assert!(
@@ -270,7 +278,7 @@ fn the_inline_toggle_moves_notes_into_the_summary() {
         "{t}"
     );
     assert!(t.contains("- f (a.py:1): check the \"limit\""), "{t}");
-    let e = key(&mut a, 'y');
+    let e = enter(&mut a);
     let Effect::PostReview {
         inline,
         body,
@@ -289,10 +297,10 @@ fn the_inline_toggle_moves_notes_into_the_summary() {
 fn a_guessed_base_never_gets_inline_comments() {
     let mut pr = pr_info();
     pr.base_assumed = Some("main".into());
-    let mut a = app_for(notes_units(), Some(pr), KeyMap::default());
+    let mut a = app_for(notes_units(), Some(pr), Keymap::default());
     a.overlay = Overlay::AllDone;
-    key(&mut a, 'a');
-    let e = key(&mut a, 'y');
+    enter(&mut a);
+    let e = enter(&mut a);
     let Effect::PostReview { inline, body, .. } = &e[0] else {
         panic!("{e:?}")
     };
@@ -301,11 +309,11 @@ fn a_guessed_base_never_gets_inline_comments() {
 }
 
 #[test]
-fn y_and_enter_send_once_and_close_the_overlay() {
-    for send in [KeyCode::Char('y'), KeyCode::Enter] {
+fn enter_sends_once_and_closes_the_overlay() {
+    {
         let mut a = pr_app();
-        key(&mut a, 'a');
-        let e = press(&mut a, send);
+        enter(&mut a);
+        let e = enter(&mut a);
         assert_eq!(e.len(), 1, "{e:?}");
         let Effect::PostReview {
             pr, body, inline, ..
@@ -321,7 +329,7 @@ fn y_and_enter_send_once_and_close_the_overlay() {
         assert!(a.status.contains("Approving PR #7"));
         // While it is in flight another popup cannot send again.
         a.overlay = Overlay::AllDone;
-        key(&mut a, 'a');
+        enter(&mut a);
         assert_eq!(a.overlay, Overlay::None);
     }
 }
@@ -338,9 +346,9 @@ fn the_overlay_scrolls_and_never_overflows_the_screen() {
             "a fairly long note about this unit",
         ));
     }
-    let mut a = app_for(units, Some(pr_info()), KeyMap::default());
+    let mut a = app_for(units, Some(pr_info()), Keymap::default());
     a.overlay = Overlay::AllDone;
-    key(&mut a, 'a');
+    enter(&mut a);
     for (w, h) in [
         (120, 40),
         (80, 24),
@@ -379,7 +387,7 @@ fn the_overlay_scrolls_and_never_overflows_the_screen() {
 #[test]
 fn rendering_with_inline_list_and_editor_fits_common_sizes() {
     let mut a = pr_app();
-    key(&mut a, 'a');
+    enter(&mut a);
     for (w, h) in [(60, 20), (80, 24), (120, 40), (30, 10), (10, 4)] {
         let t = draw(&a, w, h);
         assert_eq!(t.lines().count(), h as usize);
@@ -394,23 +402,26 @@ fn rendering_with_inline_list_and_editor_fits_common_sizes() {
 }
 
 #[test]
-fn approve_pr_can_be_rebound() {
-    let mut keys = std::collections::HashMap::new();
-    keys.insert("approve_pr".to_string(), "p".to_string());
-    let km = KeyMap::with_overrides(&keys).unwrap();
-    let mut a = app_for(notes_units(), Some(pr_info()), km.clone());
-    a.overlay = Overlay::AllDone;
-    assert!(draw(&a, 100, 30).contains("p approve PR #7"));
-    key(&mut a, 'a');
-    assert_eq!(
-        a.overlay,
-        Overlay::None,
-        "the default key no longer approves"
-    );
-    a.overlay = Overlay::AllDone;
-    key(&mut a, 'p');
+fn finish_open_can_be_rebound_and_opens_the_approval() {
+    // The popup's keys are fixed (a sheet); what opens it can be rebound.
+    let over = std::collections::HashMap::from([(
+        "finish.open".to_string(),
+        teer::keymap::KeySpec::One(":done".into()),
+    )]);
+    let (km, _) = Keymap::new(&over, 1000).unwrap();
+    let mut units = notes_units();
+    for u in &mut units {
+        u.decision = Decision::Accepted;
+    }
+    let mut a = app_for(units, Some(pr_info()), km);
+    assert_eq!(a.keys.label(teer::keymap::Action::FinishOpen), ":done");
+    common::v2::press(&mut a, ":w<cr>");
+    assert_eq!(a.overlay, Overlay::None, "`:w` is no command now");
+    assert_eq!(a.status, "Not a command: :w");
+    common::v2::press(&mut a, ":done<cr>");
+    assert_eq!(a.overlay, Overlay::AllDone);
+    enter(&mut a);
     assert!(matches!(a.overlay, Overlay::PostReview { .. }));
-    assert_eq!(a.keys.label(teer::config::Action::ApprovePr), "p");
 }
 
 // ------------------------------------------------------ approval outcome
@@ -418,8 +429,8 @@ fn approve_pr_can_be_rebound() {
 #[test]
 fn success_is_remembered_and_the_popup_says_approved() {
     let mut a = pr_app();
-    key(&mut a, 'a');
-    key(&mut a, 'y');
+    enter(&mut a);
+    enter(&mut a);
     let e = a.on_app_event(AppEvent::PrReviewed {
         verdict: Verdict::Approve,
         result: Ok("PR #7 approved on GitHub.".into()),
@@ -434,19 +445,19 @@ fn success_is_remembered_and_the_popup_says_approved() {
     a.overlay = Overlay::AllDone;
     let t = draw(&a, 100, 30);
     assert!(
-        t.contains("PR #7 approved") && !t.contains("a approve PR"),
+        t.contains("PR #7 approved") && !t.contains("⏎ approve PR"),
         "{t}"
     );
-    // `a` is inert now.
-    key(&mut a, 'a');
+    // `⏎` is inert now.
+    enter(&mut a);
     assert_eq!(a.overlay, Overlay::None);
 }
 
 #[test]
 fn failure_keeps_it_unapproved() {
     let mut a = pr_app();
-    key(&mut a, 'a');
-    key(&mut a, 'y');
+    enter(&mut a);
+    enter(&mut a);
     a.on_app_event(AppEvent::PrReviewed {
         verdict: Verdict::Approve,
         result: Err("gh failed: nope".into()),
@@ -454,7 +465,7 @@ fn failure_keeps_it_unapproved() {
     assert_eq!(a.status, "gh failed: nope");
     assert!(a.review.pr.as_ref().unwrap().approved_head.is_none());
     a.overlay = Overlay::AllDone;
-    key(&mut a, 'a');
+    enter(&mut a);
     assert!(
         matches!(a.overlay, Overlay::PostReview { .. }),
         "can try again"
@@ -554,8 +565,8 @@ fn editing_round_trip_uses_a_temp_file_and_deletes_it() {
 #[test]
 fn an_edited_summary_is_used_and_cancel_keeps_the_old_one() {
     let mut a = pr_app();
-    key(&mut a, 'a');
-    let e = key(&mut a, 'e');
+    enter(&mut a);
+    let e = key(&mut a, 'i');
     assert_eq!(
         e,
         vec![Effect::EditComment {
@@ -573,7 +584,7 @@ fn an_edited_summary_is_used_and_cancel_keeps_the_old_one() {
         "Looks good to me",
         "an empty result keeps the old text"
     );
-    let e = key(&mut a, 'y');
+    let e = enter(&mut a);
     let Effect::PostReview { body, .. } = &e[0] else {
         panic!()
     };
@@ -583,8 +594,8 @@ fn an_edited_summary_is_used_and_cancel_keeps_the_old_one() {
 #[test]
 fn without_an_editor_a_one_line_editor_takes_over() {
     let mut a = pr_app();
-    key(&mut a, 'a');
-    key(&mut a, 'e');
+    enter(&mut a);
+    key(&mut a, 'i');
     a.comment_edited(EditOutcome::Unavailable("not found".into()));
     assert!(a.status.contains("editing on one line"), "{}", a.status);
     let Overlay::PostReview {
@@ -785,7 +796,7 @@ fn plan_for(a: &App) -> (String, Vec<approve::Inline>, String) {
 
 /// An app whose review is the fixture (a.py f/g/h notes) of PR `o`.
 fn app_of(o: &Origin) -> App {
-    app_for(notes_units(), Some(o.info()), KeyMap::default())
+    app_for(notes_units(), Some(o.info()), Keymap::default())
 }
 
 #[tokio::test]
@@ -866,7 +877,7 @@ async fn json_escaping_survives_quotes_newlines_and_unicode() {
     let fk = fakes("ok");
     let mut u = notes_units();
     u[0].dive.note = "say \"hi\" \\ ✓ 日本 `code`".into();
-    let a = app_for(u, Some(o.info()), KeyMap::default());
+    let a = app_for(u, Some(o.info()), Keymap::default());
     let notes = approve::collect_notes(&a.review, &a.order);
     let p = approve::build_plan(&notes, "Intro \"q\"\nsecond line ✓", true);
     approve::post(
@@ -1156,8 +1167,8 @@ fn runtime(fk: &Fakes) -> (Runtime, tokio::sync::mpsc::UnboundedReceiver<AppEven
 async fn send_through_runtime(app: &mut App, fk: &Fakes) -> Vec<Effect> {
     let (rt, mut rx) = runtime(fk);
     app.overlay = Overlay::AllDone;
-    key(app, 'a');
-    let effects = key(app, 'y');
+    enter(app);
+    let effects = enter(app);
     assert!(
         matches!(effects[0], Effect::PostReview { .. }),
         "{effects:?}"
@@ -1185,10 +1196,10 @@ async fn the_whole_flow_approves_through_the_runtime() {
         Some(o.head.as_str())
     );
     assert_eq!(fk.calls(), 1);
-    // The popup now says approved and `a` does nothing.
+    // The popup now says approved and `⏎` does nothing.
     app.overlay = Overlay::AllDone;
     assert!(draw(&app, 100, 30).contains(&format!("PR #{} approved", o.n)));
-    key(&mut app, 'a');
+    enter(&mut app);
     assert_eq!(app.overlay, Overlay::None);
     assert_eq!(fk.calls(), 1);
 }
@@ -1228,10 +1239,10 @@ async fn the_whole_flow_with_a_moved_head_does_not_call_gh() {
 #[tokio::test]
 async fn a_non_pr_review_never_reaches_the_effect() {
     let fk = fakes("ok");
-    let mut app = app_for(notes_units(), None, KeyMap::default());
+    let mut app = app_for(notes_units(), None, Keymap::default());
     app.overlay = Overlay::AllDone;
-    assert!(key(&mut app, 'a').is_empty());
-    assert!(key(&mut app, 'y').is_empty());
+    assert!(enter(&mut app).is_empty());
+    assert!(enter(&mut app).is_empty());
     assert_eq!(app.overlay, Overlay::None);
     assert_eq!(fk.calls(), 0);
 }

@@ -11,6 +11,7 @@ use crate::agent::claude::{ClaudeAdapter, is_installed};
 use crate::agent::codex::CodexAdapter;
 use crate::agent::{AgentAdapter, SessionInfo};
 use crate::config::{ApiConfig, Config, Provider, Role};
+use crate::keymap::{Action, Keymap};
 use crate::review::model::{Review, SessionRef};
 use crate::review::prepare;
 use crate::review::{BuildOptions, build_review, store};
@@ -322,18 +323,39 @@ pub async fn run(args: Args) -> Result<()> {
     let path = store::config_path();
     let no_color = std::env::var_os("NO_COLOR");
     let mut cfg = Config::load(&path)?.with_no_color(no_color.as_deref());
-    let keymap = cfg.keymap()?;
+    let keys = cfg
+        .keymap()
+        .with_context(|| format!("invalid [keys] in {}", path.display()));
+    let warn = |warnings: &[String]| {
+        for w in warnings {
+            eprintln!("teer: {w} (in {})", path.display());
+        }
+    };
     if matches!(args.command, Some(Command::Setup)) {
         if !crate::tui::setup::can_run() {
             anyhow::bail!("teer setup needs a terminal");
         }
+        // Keys that don't load don't keep setup from running.
+        let keymap = match keys {
+            Ok((keymap, warnings)) => {
+                warn(&warnings);
+                keymap
+            }
+            Err(e) => {
+                eprintln!("teer: {e:#}; setup uses the default keys");
+                Keymap::default()
+            }
+        };
+        let opened = crate::tui::setup::Opened::Command;
         if let crate::tui::setup::Ended::Saved(_) =
-            crate::tui::setup::run(cfg, &path, false).await?
+            crate::tui::setup::run(cfg, &path, opened, keymap).await?
         {
             println!("teer: saved to {}", path.display());
         }
         return Ok(());
     }
+    let (keymap, key_warnings) = keys?;
+    warn(&key_warnings);
     let needs_agent = !args.no_agent && !matches!(args.command, Some(Command::Notes { .. }));
     if cfg.provider.is_none() && needs_agent {
         // First start: ask in a terminal; elsewhere (scripts, --json) the
@@ -341,7 +363,8 @@ pub async fn run(args: Args) -> Result<()> {
         // next time.
         use crate::tui::setup::Ended;
         let asked = if !args.json && crate::tui::setup::can_run() {
-            crate::tui::setup::run(cfg.clone(), &path, true).await?
+            let opened = crate::tui::setup::Opened::First;
+            crate::tui::setup::run(cfg.clone(), &path, opened, keymap.clone()).await?
         } else {
             Ended::Left
         };
@@ -386,7 +409,7 @@ pub async fn run(args: Args) -> Result<()> {
             };
             review_pr(args, cwd, pr.url, cfg, keymap).await
         }
-        Some(Command::Notes { url }) => print_notes(&cwd, url.as_deref()),
+        Some(Command::Notes { url }) => print_notes(&cwd, url.as_deref(), &keymap),
         Some(Command::Setup) => unreachable!("handled above"),
         Some(Command::Pr { url, .. }) => {
             let url = url.context("teer pr needs the URL of a pull request")?;
@@ -401,8 +424,9 @@ pub async fn run(args: Args) -> Result<()> {
 }
 
 /// `teer notes`: the notes of the repository's last review, or of the pull
-/// request at `url`, as Markdown on stdout.
-fn print_notes(cwd: &Path, url: Option<&str>) -> Result<()> {
+/// request at `url`, as Markdown on stdout. `keys` name the key that writes
+/// a note.
+fn print_notes(cwd: &Path, url: Option<&str>, keys: &Keymap) -> Result<()> {
     let pr = url.map(crate::pr::parse_url).transpose()?;
     let repo = match &pr {
         // A pull request's reviews are kept by the pull request.
@@ -417,7 +441,10 @@ fn print_notes(cwd: &Path, url: Option<&str>) -> Result<()> {
     };
     let notes = crate::notes::markdown(&review);
     if notes.is_empty() {
-        eprintln!("teer: the last review has no notes (m writes one on the unit on show)");
+        eprintln!(
+            "teer: the last review has no notes ({} writes one on the unit on show)",
+            keys.label(Action::NoteEdit)
+        );
     } else {
         print!("{notes}");
     }
@@ -430,7 +457,7 @@ async fn review_pr(
     cwd: PathBuf,
     url: String,
     cfg: Config,
-    keymap: crate::config::KeyMap,
+    keymap: Keymap,
 ) -> Result<()> {
     // Fetching and checking out block; no TUI is up yet.
     let langs = cfg.languages.clone();
@@ -515,12 +542,7 @@ fn exit_if_signalled() {
 }
 
 /// Prepare and show a built review: `--json`, or the TUI.
-async fn run_review(
-    args: Args,
-    mut review: Review,
-    mut cfg: Config,
-    keymap: crate::config::KeyMap,
-) -> Result<()> {
+async fn run_review(args: Args, mut review: Review, mut cfg: Config, keymap: Keymap) -> Result<()> {
     let repo = review.repo_root.clone();
     let is_pr = review.pr.is_some();
 

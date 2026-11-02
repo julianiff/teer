@@ -8,6 +8,8 @@
 
 mod common;
 
+use common::v2;
+
 use std::path::PathBuf;
 
 use crossterm::event::{
@@ -15,7 +17,8 @@ use crossterm::event::{
 };
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use teer::config::{Action, Config, KeyMap};
+use teer::config::Config;
+use teer::keymap::{Action, Keymap};
 use teer::review::model::{Decision, Prep, Range, Review, SessionRef, Unit, UnitKind, UnitStatus};
 use teer::tui::app::{App, Effect, Grouping, Overlay, Screen, Target};
 use teer::tui::{slim, ui};
@@ -99,10 +102,10 @@ fn units() -> Vec<Unit> {
 }
 
 fn app_with(units: Vec<Unit>, cfg: Config) -> App {
-    app_keys(units, cfg, KeyMap::default())
+    app_keys(units, cfg, Keymap::default())
 }
 
-fn app_keys(units: Vec<Unit>, cfg: Config, keys: KeyMap) -> App {
+fn app_keys(units: Vec<Unit>, cfg: Config, keys: Keymap) -> App {
     common::isolate_env();
     let mut paths: Vec<PathBuf> = units.iter().map(|u| u.file.clone()).collect();
     paths.dedup();
@@ -135,6 +138,8 @@ fn app_keys(units: Vec<Unit>, cfg: Config, keys: KeyMap) -> App {
         }],
         graph: Default::default(),
         questions: Vec::new(),
+        version: 0,
+        history: Default::default(),
     };
     App::new(review, cfg, keys)
 }
@@ -422,7 +427,7 @@ fn clicks_select_units_and_do_nothing_anywhere_else_in_the_list() {
 // ---- Moving -----------------------------------------------------------------
 
 #[test]
-fn j_and_k_move_over_units_only_and_enter_and_esc_do_nothing() {
+fn j_and_k_move_over_units_only_and_esc_and_tab_do_nothing() {
     let mut a = app();
     assert_eq!(a.sel, 0);
     assert_eq!(symbol(&a), "close_a");
@@ -438,70 +443,82 @@ fn j_and_k_move_over_units_only_and_enter_and_esc_do_nothing() {
     assert_eq!(symbol(&a), "r4_3");
     key(&mut a, 'j');
     assert_eq!(symbol(&a), "r4_3");
-    key(&mut a, 'g');
+    v2::press(&mut a, "gg");
     assert_eq!(a.sel, 0);
     key(&mut a, 'k');
     assert_eq!(a.sel, 0);
-    for k in [KeyCode::Enter, KeyCode::Esc, KeyCode::Tab] {
+    for k in [KeyCode::Esc, KeyCode::Tab] {
         let before = text(&a, 120, 30);
         assert!(code(&mut a, k).is_empty());
         assert_eq!(text(&a, 120, 30), before, "{k:?}");
     }
+    // Enter opens only a flagged unit; on this one it says so.
+    assert!(code(&mut a, KeyCode::Enter).is_empty());
+    assert_eq!((a.screen, a.sel), (Screen::Slim, 0));
+    assert_eq!(
+        a.status,
+        "Only flagged units open for now. f flags this one."
+    );
     // Deciding moves on to the next pending unit, across files.
     a.sel = 2;
-    key(&mut a, 'l');
+    key(&mut a, 'a');
     assert_eq!(symbol(&a), "look_a");
 }
 
 #[test]
-fn ctrl_d_and_ctrl_u_go_to_the_first_unit_of_the_next_or_previous_file() {
+fn bracket_f_goes_to_the_first_unit_of_the_next_or_previous_file() {
     let mut a = app();
-    ctrl(&mut a, 'd');
+    v2::press(&mut a, "]f");
     assert_eq!(symbol(&a), "look_a");
     a.sel = 4;
-    ctrl(&mut a, 'd');
+    v2::press(&mut a, "]f");
     assert_eq!(symbol(&a), "look_c");
     // From the middle of a file: the file above, not the start of this one.
     a.sel = 8;
-    ctrl(&mut a, 'u');
+    v2::press(&mut a, "[f");
     assert_eq!(symbol(&a), "look_c");
     a.sel = 1;
-    ctrl(&mut a, 'u');
+    v2::press(&mut a, "[f");
     assert_eq!(a.sel, 1);
     assert_eq!(a.status, "first file");
     key(&mut a, 'j');
     assert!(a.status.is_empty());
     a.sel = 23;
-    ctrl(&mut a, 'd');
+    v2::press(&mut a, "]f");
     assert_eq!(a.sel, 23);
     assert_eq!(a.status, "last file");
     // The actions do the same.
     a.sel = 0;
-    a.on_action(Action::NextGroup);
+    a.on_action(Action::MoveNextFile);
     assert_eq!(symbol(&a), "look_a");
-    a.on_action(Action::PrevGroup);
+    a.on_action(Action::MovePrevFile);
     assert_eq!(symbol(&a), "close_a");
 }
 
 #[test]
-fn ctrl_d_is_list_only_and_plain_d_still_opens_flagged() {
+fn bracket_f_is_list_only_and_l_opens_a_flagged_unit() {
     let mut a = app();
     a.review.units[1].decision = Decision::Investigate;
-    ctrl(&mut a, 'd');
+    v2::press(&mut a, "]f");
     assert_eq!((a.screen, symbol(&a)), (Screen::Slim, "look_a"));
-    key(&mut a, 'd');
+    a.sel = a.order.iter().position(|&i| i == 1).unwrap();
+    key(&mut a, 'l');
     assert_eq!(a.screen, Screen::Flagged);
     let sel = a.flagged.sel;
-    ctrl(&mut a, 'd');
+    v2::press(&mut a, "]f");
     assert_eq!((a.screen, a.flagged.sel), (Screen::Flagged, sel));
     let mut b = app();
     key(&mut b, 's');
     let cursor = b.swipe.cursor;
-    ctrl(&mut b, 'd');
+    v2::press(&mut b, "]f");
     assert_eq!((b.screen, b.swipe.cursor), (Screen::Swipe, cursor));
+    // ctrl+d scrolls now: no file jump.
     let mut c = app();
+    ctrl(&mut c, 'd');
+    assert_eq!((c.screen, c.sel), (Screen::Slim, 0));
+    // `d` is the notes view's alone.
     key(&mut c, 'd');
-    assert_eq!(c.sel, 0);
+    assert_eq!((c.screen, c.sel), (Screen::Slim, 0));
 }
 
 #[test]
@@ -542,7 +559,7 @@ fn a_asks_first_then_accepts_the_files_pending_units_in_one_undo_step() {
         assert_eq!(a.overlay, Overlay::None);
         assert_eq!(accepted(&a), ["r2_0", "r2_1", "r2_3"]);
         assert_eq!(a.sel, 15);
-        assert_eq!(a.swipe.history.len(), 1);
+        assert_eq!(a.review.history.undo.len(), 1);
         key(&mut a, 'u');
         assert_eq!(decisions(&a), before);
     }
@@ -551,10 +568,8 @@ fn a_asks_first_then_accepts_the_files_pending_units_in_one_undo_step() {
     b.review.units[2].decision = Decision::Accepted;
     shift_a(&mut b);
     let s = text(&b, 100, 24);
-    assert!(
-        s.contains("Accept 1 pending unit in \"src/c.rs\"? (y/n)"),
-        "{s}"
-    );
+    assert!(s.contains("Accept 1 pending unit in \"src/c.rs\"?"), "{s}");
+    assert!(s.contains("y/⏎ yes · esc no"), "{s}");
 }
 
 #[test]
@@ -579,17 +594,18 @@ fn other_keys_cancel_the_file_accept_and_nothing_pending_asks_nothing() {
     shift_a(&mut b);
     assert_eq!(b.overlay, Overlay::None);
     let mut c = app();
-    key(&mut c, 'R');
+    v2::press(&mut c, ":e!<cr>");
     assert_eq!(c.overlay, Overlay::ConfirmReset);
 }
 
 #[test]
 fn both_keys_can_be_rebound_in_the_config() {
     let cfg: Config =
-        toml::from_str("[keys]\nnext_group = \"n\"\naccept_file = \"ctrl+a\"\n").unwrap();
-    let keys = cfg.keymap().unwrap();
+        toml::from_str("[keys]\n\"move.next_file\" = \"n\"\n\"decide.accept_file\" = \"<c-a>\"\n")
+            .unwrap();
+    let (keys, _) = cfg.keymap().unwrap();
     let mut a = app_keys(units(), cfg, keys);
-    ctrl(&mut a, 'd');
+    v2::press(&mut a, "]f");
     assert_eq!(a.sel, 0);
     key(&mut a, 'n');
     assert_eq!(symbol(&a), "look_a");
@@ -606,7 +622,7 @@ fn f_lists_each_unit_in_its_own_levels_box_with_its_file_on_its_row() {
     let mut a = app();
     a.sel = 2;
     assert_eq!(symbol(&a), "c_helper");
-    assert!(key(&mut a, 'f').is_empty());
+    assert!(v2::press(&mut a, "zf").is_empty());
     assert_eq!(
         (a.grouping, a.status.as_str()),
         (Grouping::Unit, "listed by unit")
@@ -659,8 +675,8 @@ fn f_lists_each_unit_in_its_own_levels_box_with_its_file_on_its_row() {
     assert!(row("look_c").ends_with(" l1.rs │"), "{}", row("look_c"));
     assert!(row("r4_3").ends_with(" r4.rs │"), "{}", row("r4_3"));
     insta::assert_snapshot!("units", render(&a, 120, 60).backend());
-    // `f` again: by file, the cursor still on its unit.
-    key(&mut a, 'f');
+    // `zf` again: by file, the cursor still on its unit.
+    v2::press(&mut a, "zf");
     assert_eq!(
         (a.grouping, a.status.as_str()),
         (Grouping::File, "listed by file")
@@ -682,7 +698,7 @@ fn listed_by_unit_a_row_names_its_file_by_as_much_path_as_tells_it_apart() {
         readme,
     ];
     let mut a = app_with(units, Config::default());
-    key(&mut a, 'f');
+    v2::press(&mut a, "zf");
     let rows: Vec<String> = slim::build(&a, 60).lines.iter().map(row_text).collect();
     let row = |name: &str| {
         rows.iter()
@@ -701,7 +717,7 @@ fn listed_by_unit_a_row_names_its_file_by_as_much_path_as_tells_it_apart() {
 #[test]
 fn listed_by_unit_every_row_fits_and_nothing_is_cut_at_the_fitted_width() {
     let mut a = app();
-    key(&mut a, 'f');
+    v2::press(&mut a, "zf");
     for w in 0u16..=120 {
         for l in &slim::build(&a, w).lines {
             assert!(l.width() <= w as usize, "{w}: {l:?}");
@@ -731,7 +747,7 @@ fn listed_by_unit_every_row_fits_and_nothing_is_cut_at_the_fitted_width() {
 }
 
 #[test]
-fn listed_by_unit_ctrl_d_and_a_go_by_the_files_units_in_the_box() {
+fn listed_by_unit_bracket_f_and_a_go_by_the_files_units_in_the_box() {
     // `src/a.rs` ends the worth-a-look box and starts the routine one.
     let units = vec![
         unit("a_look", "src/a.rs", 10, Kind::Look),
@@ -740,19 +756,19 @@ fn listed_by_unit_ctrl_d_and_a_go_by_the_files_units_in_the_box() {
         unit("b_routine", "src/b.rs", 10, Kind::Routine),
     ];
     let mut a = app_with(units, Config::default());
-    key(&mut a, 'f');
+    v2::press(&mut a, "zf");
     let s = text(&a, 100, 30);
     assert!(s.contains("╭─ Worth a look · 1 unit "), "{s}");
     assert!(s.contains("╭─ Routine · 3 units "), "{s}");
     assert_eq!(symbol(&a), "a_look");
     assert!(a.starts_file(1));
-    ctrl(&mut a, 'd');
+    v2::press(&mut a, "]f");
     assert_eq!(symbol(&a), "a_routine");
-    ctrl(&mut a, 'd');
+    v2::press(&mut a, "]f");
     assert_eq!(symbol(&a), "b_routine");
-    ctrl(&mut a, 'u');
+    v2::press(&mut a, "[f");
     assert_eq!(symbol(&a), "a_routine");
-    ctrl(&mut a, 'u');
+    v2::press(&mut a, "[f");
     assert_eq!(symbol(&a), "a_look");
     // `A` takes the file's pending units in this box only.
     a.sel = 2;
@@ -771,20 +787,21 @@ fn listed_by_unit_ctrl_d_and_a_go_by_the_files_units_in_the_box() {
 }
 
 #[test]
-fn f_is_list_only_and_can_be_rebound() {
+fn zf_is_list_only_and_can_be_rebound() {
     let mut a = app();
     a.review.units[1].decision = Decision::Investigate;
-    key(&mut a, 'd');
-    key(&mut a, 'f');
+    a.sel = a.order.iter().position(|&i| i == 1).unwrap();
+    key(&mut a, 'l');
+    v2::press(&mut a, "zf");
     assert_eq!((a.screen, a.grouping), (Screen::Flagged, Grouping::File));
     let mut b = app();
     key(&mut b, 's');
-    key(&mut b, 'f');
+    v2::press(&mut b, "zf");
     assert_eq!((b.screen, b.grouping), (Screen::Swipe, Grouping::File));
-    let cfg: Config = toml::from_str("[keys]\ngrouping = \"w\"\n").unwrap();
-    let keys = cfg.keymap().unwrap();
+    let cfg: Config = toml::from_str("[keys]\n\"toggle.by_file\" = \"w\"\n").unwrap();
+    let (keys, _) = cfg.keymap().unwrap();
     let mut c = app_keys(units(), cfg, keys);
-    key(&mut c, 'f');
+    v2::press(&mut c, "zf");
     assert_eq!(c.grouping, Grouping::File);
     key(&mut c, 'w');
     assert_eq!(c.grouping, Grouping::Unit);
@@ -793,35 +810,51 @@ fn f_is_list_only_and_can_be_rebound() {
 // ---- Help, paths -------------------------------------------------------------
 
 #[test]
-fn the_keys_are_in_the_help_overlay_and_the_legend_still_fits() {
-    for (w, h) in [(60u16, 20u16), (80, 24), (100, 40)] {
+fn the_keys_are_in_the_help_overlay_and_the_legend_shows_when_it_fits() {
+    for (w, h) in [(60u16, 20u16), (80, 24), (100, 40), (120, 50)] {
         let mut a = app();
         a.overlay = Overlay::Help;
         let out = text(&a, w, h);
         assert!(
-            out.contains("^d ^u f  next / prev file, list by file or unit"),
+            out.contains("]f [f  next / previous file"),
             "{w}x{h}\n{out}"
         );
-        assert!(
-            out.contains("accept all pending in the file"),
-            "{w}x{h}\n{out}"
-        );
+        assert!(out.contains("A F  accept / flag the f"), "{w}x{h}\n{out}");
         assert!(
             !out.contains("sidebar") && !out.contains("open / close"),
             "{w}x{h}\n{out}"
         );
+    }
+    // With room: the grouping switch, and the legend under the keys.
+    let mut a = app();
+    a.overlay = Overlay::Help;
+    let out = text(&a, 100, 40);
+    assert!(out.contains("zf  list by file or by level"), "{out}");
+    // A bigger terminal never loses the legend: the keys take another
+    // column rather than the legend's room.
+    for (w, h) in [(100u16, 40u16), (120, 50), (160, 50)] {
+        let out = text(&a, w, h);
         assert!(
             out.contains("legend") && out.contains("▲ close look") && out.contains("needs fix"),
             "{w}x{h}\n{out}"
         );
     }
-    // The Flagged keys need the extra rows: shown at 26, not at 25.
-    let mut a = app();
-    a.overlay = Overlay::Help;
-    let at26 = text(&a, 80, 26);
-    assert!(at26.contains("recommend / visualize / tests"), "{at26}");
-    assert!(at26.contains("again, ok / needs fix, browser"), "{at26}");
-    assert!(!text(&a, 80, 25).contains("Flagged"));
+    // The help lists the keys of the screen it is opened on: the Flagged
+    // screen's tiles, zoom and resolution only there.
+    assert!(
+        !out.contains("zoom the tile") && !out.contains("resolved: ok"),
+        "{out}"
+    );
+    let mut f = app();
+    f.review.units[1].decision = Decision::Investigate;
+    f.sel = f.order.iter().position(|&i| i == 1).unwrap();
+    key(&mut f, 'l');
+    assert_eq!(f.screen, Screen::Flagged);
+    f.overlay = Overlay::Help;
+    let out = text(&f, 100, 40);
+    assert!(out.contains("keys · Flagged"), "{out}");
+    assert!(out.contains("zz  zoom the tile"), "{out}");
+    assert!(out.contains("o x  resolved: ok / needs fix"), "{out}");
     // The footer has no file button.
     a.overlay = Overlay::None;
     let out = text(&a, 120, 30);
@@ -924,10 +957,10 @@ fn a_thousand_units_in_a_hundred_files() {
             key(a, 'j');
         },
         &|a| {
-            key(a, 'l');
+            key(a, 'a');
         },
         &|a| {
-            ctrl(a, 'd');
+            v2::press(a, "]f");
         },
         &|a| {
             key(a, 'G');
@@ -936,10 +969,10 @@ fn a_thousand_units_in_a_hundred_files() {
             key(a, 'k');
         },
         &|a| {
-            ctrl(a, 'u');
+            v2::press(a, "[f");
         },
         &|a| {
-            key(a, 'g');
+            v2::press(a, "gg");
         },
         &|a| {
             key(a, 'u');
@@ -973,7 +1006,7 @@ fn the_selection_stays_visible_with_its_box_title_or_file_name_when_they_fit() {
     ] {
         let mut a = app();
         if by_unit {
-            key(&mut a, 'f');
+            v2::press(&mut a, "zf");
         }
         for _ in 0..a.order.len() {
             let s = lines(&a, w, h);

@@ -1,6 +1,5 @@
 ---
 source: tests/tui.rs
-assertion_line: 343
 expression: card
 ---
 " Uncommitted changes                                                            "
@@ -21,9 +20,9 @@ expression: card
 "  │  │     ╰────────────────────────────────────────────────────────────╯ │  │  "
 "  │  │  11       result = pay(order)                                      │  │  "
 "  │  │  10 -     send_receipt(order)                                      │  │  "
-"  │  │ … 9 more lines · J scroll · e editor                               │  │  "
+"  │  │ … 9 more lines · ^d scroll · gf editor                             │  │  "
 "  │                                                                          │  "
 "  │  not reviewed yet                                                        │  "
 "  ╰──────────────────────────────────────────────────────────────────────────╯  "
-"                                                                 accept [l] →   "
-" l accept · next   h previous   ← i investigate   u undo   esc back             "
+"                                                                 accept [a] →   "
+" a accept · next   k previous   f flag   u undo   h back   gf open in editor    "

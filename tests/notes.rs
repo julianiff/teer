@@ -10,8 +10,9 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use teer::approve::Verdict;
-use teer::config::{Config, KeyMap, Provider};
+use teer::config::{Config, Provider};
 use teer::git::{ChangedFile, FileStatus};
+use teer::keymap::Keymap;
 use teer::review::model::{
     Decision, PrInfo, Prep, Range, Review, SessionRef, Unit, UnitKind, UnitStatus,
 };
@@ -88,8 +89,10 @@ fn app(notes: [&str; 2], pr: Option<PrInfo>) -> App {
         graph: Default::default(),
         intent: Default::default(),
         questions: Vec::new(),
+        version: 0,
+        history: Default::default(),
     };
-    App::new(review, Config::default(), KeyMap::default())
+    App::new(review, Config::default(), Keymap::default())
 }
 
 fn code(a: &mut App, c: KeyCode) -> Vec<Effect> {
@@ -98,6 +101,11 @@ fn code(a: &mut App, c: KeyCode) -> Vec<Effect> {
 
 fn key(a: &mut App, c: char) -> Vec<Effect> {
     code(a, KeyCode::Char(c))
+}
+
+/// Type `k` in Neovim notation (`<space>n`).
+fn keys(a: &mut App, k: &str) -> Vec<Effect> {
+    common::v2::press(a, k)
 }
 
 fn typed(a: &mut App, text: &str) {
@@ -127,10 +135,10 @@ fn draw(a: &App, w: u16, h: u16) -> String {
 // ---------------------------------------------------------------- writing
 
 #[test]
-fn m_writes_a_note_in_the_list_and_in_swipe() {
+fn i_writes_a_note_in_the_list_and_in_swipe() {
     let mut a = app(["", ""], None);
     let id = a.selected().unwrap().id.clone();
-    key(&mut a, 'm');
+    key(&mut a, 'i');
     assert!(matches!(&a.overlay, Overlay::Note { id: i, back: None, .. } if *i == id));
     // Letters that are actions elsewhere are text here.
     typed(&mut a, "zero amounts?");
@@ -144,10 +152,10 @@ fn m_writes_a_note_in_the_list_and_in_swipe() {
 
     key(&mut a, 's');
     assert_eq!(a.screen, Screen::Swipe);
-    key(&mut a, 'l');
+    key(&mut a, 'a');
     let card = a.swipe_current().unwrap().clone();
     assert_ne!(card, id);
-    key(&mut a, 'm');
+    key(&mut a, 'i');
     assert!(matches!(&a.overlay, Overlay::Note { id: i, .. } if *i == card));
     typed(&mut a, "and here");
     code(&mut a, KeyCode::Enter);
@@ -158,7 +166,7 @@ fn m_writes_a_note_in_the_list_and_in_swipe() {
 fn an_emptied_note_is_no_note() {
     let mut a = app(["fix", ""], None);
     a.review.units[0].dive.note_on = Some("fp-f".into());
-    key(&mut a, 'm');
+    key(&mut a, 'i');
     for _ in 0..3 {
         code(&mut a, KeyCode::Backspace);
     }
@@ -188,9 +196,9 @@ fn the_note_shows_under_the_code_and_marks_the_row() {
 // ------------------------------------------------------------- notes view
 
 #[test]
-fn n_without_notes_says_how_to_write_one() {
+fn leader_n_without_notes_says_how_to_write_one() {
     let mut a = app(["", ""], None);
-    key(&mut a, 'N');
+    keys(&mut a, "<space>n");
     assert_eq!(a.overlay, Overlay::None);
     assert!(a.status.contains("No notes yet"), "{}", a.status);
 }
@@ -198,7 +206,7 @@ fn n_without_notes_says_how_to_write_one() {
 #[test]
 fn the_notes_view_lists_moves_and_goes_to_a_unit() {
     let mut a = app(["first", "second"], None);
-    key(&mut a, 'N');
+    keys(&mut a, "<space>n");
     assert_eq!(a.overlay, Overlay::Notes { sel: 0 });
     let out = draw(&a, 100, 30);
     assert!(out.contains("Notes · 2 notes"), "{out}");
@@ -213,7 +221,7 @@ fn the_notes_view_lists_moves_and_goes_to_a_unit() {
     assert_eq!(a.overlay, Overlay::None);
     assert_eq!(a.selected().unwrap().symbol, "g");
     // Opening it again starts on the note of the unit on show.
-    key(&mut a, 'N');
+    keys(&mut a, "<space>n");
     assert_eq!(a.overlay, Overlay::Notes { sel: 1 });
     code(&mut a, KeyCode::Esc);
     assert_eq!(a.overlay, Overlay::None);
@@ -222,15 +230,15 @@ fn the_notes_view_lists_moves_and_goes_to_a_unit() {
 #[test]
 fn editing_from_the_view_goes_back_to_it() {
     let mut a = app(["first", "second"], None);
-    key(&mut a, 'N');
+    keys(&mut a, "<space>n");
     key(&mut a, 'j');
-    key(&mut a, 'm');
+    key(&mut a, 'i');
     assert!(matches!(&a.overlay, Overlay::Note { back: Some(1), text, .. } if text == "second"));
     typed(&mut a, "!");
     code(&mut a, KeyCode::Enter);
     assert_eq!(a.overlay, Overlay::Notes { sel: 1 });
     assert_eq!(note(&a, "g"), "second!");
-    key(&mut a, 'm');
+    key(&mut a, 'i');
     code(&mut a, KeyCode::Esc);
     assert_eq!(a.overlay, Overlay::Notes { sel: 1 });
 }
@@ -238,7 +246,7 @@ fn editing_from_the_view_goes_back_to_it() {
 #[test]
 fn d_deletes_a_note_after_asking() {
     let mut a = app(["first", "second"], None);
-    key(&mut a, 'N');
+    keys(&mut a, "<space>n");
     key(&mut a, 'd');
     assert!(matches!(
         &a.overlay,
@@ -261,7 +269,7 @@ fn d_deletes_a_note_after_asking() {
 #[test]
 fn y_copies_every_note_as_markdown() {
     let mut a = app(["first", "second"], None);
-    key(&mut a, 'N');
+    keys(&mut a, "<space>n");
     let e = key(&mut a, 'y');
     let [Effect::Copy { text, what }] = &e[..] else {
         panic!("{e:?}")
@@ -277,7 +285,7 @@ fn y_copies_every_note_as_markdown() {
 #[test]
 fn c_hands_the_notes_to_claude_code() {
     let mut a = app(["first", ""], None);
-    key(&mut a, 'N');
+    keys(&mut a, "<space>n");
     let e = key(&mut a, 'c');
     let [
         Effect::OpenAgent {
@@ -302,7 +310,7 @@ fn c_hands_the_notes_to_claude_code() {
         id: "abc-123".into(),
         cwd: PathBuf::from("/repo/sub"),
     });
-    key(&mut a, 'N');
+    keys(&mut a, "<space>n");
     let e = key(&mut a, 'c');
     let [Effect::OpenAgent { cwd, resume, .. }] = &e[..] else {
         panic!("{e:?}")
@@ -320,7 +328,7 @@ fn c_hands_the_notes_to_codex_without_a_claude_session_and_not_to_an_api() {
         cwd: PathBuf::from("/repo/sub"),
     });
     a.cfg.provider = Some(Provider::Codex);
-    key(&mut a, 'N');
+    keys(&mut a, "<space>n");
     let e = key(&mut a, 'c');
     let [
         Effect::OpenAgent {
@@ -336,7 +344,7 @@ fn c_hands_the_notes_to_codex_without_a_claude_session_and_not_to_an_api() {
     assert_eq!(cwd, &PathBuf::from("/repo"));
 
     a.cfg.provider = Some(Provider::Api);
-    key(&mut a, 'N');
+    keys(&mut a, "<space>n");
     assert!(key(&mut a, 'c').is_empty());
     assert!(a.status.contains("Claude Code or Codex"), "{}", a.status);
 }
@@ -346,7 +354,7 @@ fn c_hands_the_notes_to_codex_without_a_claude_session_and_not_to_an_api() {
 #[test]
 fn a_pull_request_posts_the_notes_and_never_hands_them_to_claude() {
     let mut a = app(["first", ""], Some(pr_info()));
-    key(&mut a, 'N');
+    keys(&mut a, "<space>n");
     assert!(draw(&a, 100, 30).contains("p post on the PR"));
     assert!(key(&mut a, 'c').is_empty());
     assert!(a.status.contains("untrusted"), "{}", a.status);
@@ -375,7 +383,7 @@ fn a_pull_request_posts_the_notes_and_never_hands_them_to_claude() {
             ..
         }
     ));
-    let e = key(&mut a, 'y');
+    let e = code(&mut a, KeyCode::Enter);
     let [
         Effect::PostReview {
             verdict, inline, ..
@@ -406,7 +414,7 @@ fn approving_is_on_offer_once_everything_was_reviewed() {
     for u in &mut a.review.units {
         u.decision = Decision::Accepted;
     }
-    key(&mut a, 'N');
+    keys(&mut a, "<space>n");
     key(&mut a, 'p');
     key(&mut a, 'v');
     key(&mut a, 'v');

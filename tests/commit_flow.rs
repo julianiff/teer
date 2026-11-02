@@ -17,7 +17,8 @@ use teer::agent::AgentAdapter;
 use teer::agent::mock::MockAdapter;
 use teer::approve::{self, EditOutcome};
 use teer::commit::{self, Branch, Io, Outcome};
-use teer::config::{Config, KeyMap};
+use teer::config::Config;
+use teer::keymap::Keymap;
 use teer::review::model::{Decision, PrInfo, Review, SessionRef};
 use teer::review::{BuildOptions, build_review, store};
 use teer::tui::Runtime;
@@ -78,7 +79,7 @@ fn accept_all(rv: &mut Review) {
 }
 
 fn app_of(rv: Review) -> App {
-    App::new(rv, Config::default(), KeyMap::default())
+    App::new(rv, Config::default(), Keymap::default())
 }
 
 /// The finished review of the fixture, started like the real thing (so the
@@ -107,6 +108,11 @@ fn press(a: &mut App, code: KeyCode) -> Vec<Effect> {
 
 fn key(a: &mut App, c: char) -> Vec<Effect> {
     press(a, KeyCode::Char(c))
+}
+
+/// `⏎`: a sheet's confirm (commit on the popup and on the overlay).
+fn enter(a: &mut App) -> Vec<Effect> {
+    press(a, KeyCode::Enter)
 }
 
 fn draw(a: &App, w: u16, h: u16) -> String {
@@ -156,7 +162,7 @@ fn parts(a: &App) -> Parts {
 /// Open the overlay from the popup.
 fn open(a: &mut App) -> Vec<Effect> {
     assert_eq!(a.overlay, Overlay::AllDone);
-    let e = key(a, 'c');
+    let e = enter(a);
     assert!(
         matches!(a.overlay, Overlay::Commit { .. }),
         "{:?}",
@@ -169,9 +175,9 @@ fn set_message(a: &mut App, m: &str) {
     a.comment_edited(EditOutcome::Edited(m.into()));
 }
 
-/// Press `y` and, if git is asked to commit, do it (without a terminal).
+/// Press `⏎` and, if git is asked to commit, do it (without a terminal).
 fn confirm(a: &mut App) -> Outcome {
-    let e = key(a, 'y');
+    let e = enter(a);
     let [
         Effect::Commit {
             repo,
@@ -227,7 +233,7 @@ fn the_popup_offers_commit_for_a_local_worktree_review() {
     let a = done_app(&r);
     let t = draw(&a, 100, 30);
     assert!(t.contains("Hurray!"), "{t}");
-    assert!(t.contains("c commit these changes"), "{t}");
+    assert!(t.contains("⏎ commit these changes"), "{t}");
     assert!(a.can_commit());
 }
 
@@ -246,8 +252,15 @@ fn the_popup_does_not_offer_commit_for_prs_or_base_reviews() {
     let mut a = app_of(rv);
     a.overlay = Overlay::AllDone;
     assert!(!draw(&a, 100, 30).contains("commit these changes"));
-    key(&mut a, 'c');
-    assert_eq!(a.overlay, Overlay::None);
+    // `⏎` is the PR's approval here (this one can't be posted: no remote),
+    // never the commit overlay.
+    enter(&mut a);
+    assert!(
+        !matches!(a.overlay, Overlay::Commit { .. }),
+        "{:?}",
+        a.overlay
+    );
+    assert!(a.status.contains("PR #1"), "{}", a.status);
 
     // A --base review reviews commits, not the working tree.
     let r2 = base_repo();
@@ -264,16 +277,16 @@ fn the_popup_does_not_offer_commit_for_prs_or_base_reviews() {
     b.overlay = Overlay::AllDone;
     assert!(!b.can_commit());
     assert!(!draw(&b, 100, 30).contains("commit these changes"));
-    key(&mut b, 'c');
+    enter(&mut b);
     assert_eq!(b.overlay, Overlay::None);
 }
 
 #[test]
-fn c_with_something_still_flagged_commits_nothing() {
+fn enter_with_something_still_flagged_commits_nothing() {
     let r = fixture();
     let mut a = done_app(&r);
     a.review.units[0].decision = Decision::Investigate;
-    let e = key(&mut a, 'c');
+    let e = enter(&mut a);
     assert!(e.is_empty());
     assert_eq!(a.overlay, Overlay::None);
     assert!(a.status.contains("Not everything"), "{}", a.status);
@@ -290,7 +303,7 @@ fn a_complete_saved_review_shows_the_popup_once_at_launch() {
     let mut a = app_of(fresh);
     a.start(false, None, Vec::new(), None, false);
     assert_eq!(a.overlay, Overlay::AllDone);
-    assert!(draw(&a, 100, 30).contains("c commit these changes"));
+    assert!(draw(&a, 100, 30).contains("⏎ commit these changes"));
     // Dismissing it simply continues.
     key(&mut a, 'x');
     assert_eq!(a.overlay, Overlay::None);
@@ -377,7 +390,7 @@ fn the_overlay_lists_the_files_the_branch_and_the_other_changes() {
     );
     assert!(t.contains("Update a.py, gone.py, new.py"), "{t}");
     assert!(
-        t.contains("y/⏎ commit") && t.contains("e edit message"),
+        t.contains("⏎ commit") && t.contains("i edit message") && !t.contains("y/⏎"),
         "{t}"
     );
 }
@@ -443,7 +456,8 @@ fn esc_cancels_and_stray_keys_do_nothing() {
     let mut a = done_app(&r);
     open(&mut a);
     let before = a.overlay.clone();
-    for c in ['x', 'q', 'n', 'c', 'a', 'R', 'i', ' '] {
+    // `i` edits the message now; `e` and `y` are stray.
+    for c in ['x', 'q', 'n', 'c', 'a', 'R', 'e', ' '] {
         assert!(key(&mut a, c).is_empty(), "{c}");
         assert_eq!(a.overlay, before, "{c}");
     }
@@ -558,24 +572,27 @@ fn every_state_renders_at_common_and_tiny_sizes() {
 }
 
 #[test]
-fn commit_can_be_rebound() {
+fn finish_open_can_be_rebound_and_the_popup_still_commits_on_enter() {
+    // The popup's keys are fixed (a sheet); what opens it can be rebound.
     let r = fixture();
     let mut rv = review_of(&r);
     accept_all(&mut rv);
-    let ov = [("commit".to_string(), "m".to_string())]
-        .into_iter()
-        .collect();
-    let keys = KeyMap::with_overrides(&ov).unwrap();
+    let ov = std::collections::HashMap::from([(
+        "finish.open".to_string(),
+        teer::keymap::KeySpec::One(":done".into()),
+    )]);
+    let (keys, _) = Keymap::new(&ov, 1000).unwrap();
     let mut a = App::new(rv, Config::default(), keys);
     a.start(false, None, Vec::new(), None, false);
     assert_eq!(a.overlay, Overlay::AllDone);
     let t = draw(&a, 100, 30);
-    assert!(t.contains("m commit these changes"), "{t}");
-    // The default key no longer does it.
-    key(&mut a, 'c');
+    assert!(t.contains("⏎ commit these changes"), "{t}");
+    // Dismissed, the rebound command opens it again.
+    key(&mut a, 'x');
     assert_eq!(a.overlay, Overlay::None);
-    a.overlay = Overlay::AllDone;
-    key(&mut a, 'm');
+    common::v2::press(&mut a, ":done<cr>");
+    assert_eq!(a.overlay, Overlay::AllDone);
+    enter(&mut a);
     assert!(matches!(a.overlay, Overlay::Commit { .. }));
 }
 
@@ -674,13 +691,13 @@ async fn a_draft_never_overwrites_what_the_user_started_typing() {
     let mock =
         MockAdapter::new(|_, _| Ok(serde_json::json!({"subject": "Agent subject", "body": ""})));
     let (rt, mut rx) = runtime(Arc::new(mock));
-    // `e` pressed before the draft arrives.
+    // `i` pressed before the draft arrives.
     let mut a = agent_app(&r);
     let effects = open(&mut a);
     for e in effects {
         rt.exec(&mut a, e);
     }
-    let e = key(&mut a, 'e');
+    let e = key(&mut a, 'i');
     assert!(matches!(&e[..], [Effect::EditComment { .. }]));
     let ev = next_event(&mut rx).await;
     a.on_app_event(ev);
@@ -695,7 +712,7 @@ async fn a_draft_never_overwrites_what_the_user_started_typing() {
     for e in effects {
         rt.exec(&mut b, e);
     }
-    key(&mut b, 'e');
+    key(&mut b, 'i');
     b.comment_edited(EditOutcome::Unavailable("no nvim".into()));
     key(&mut b, '!');
     let ev = next_event(&mut rx).await;
@@ -704,10 +721,10 @@ async fn a_draft_never_overwrites_what_the_user_started_typing() {
     assert!(p.message.starts_with("Update a.py"), "{}", p.message);
     assert!(p.editing.unwrap().ends_with('!'));
 
-    // Pressing y before the draft arrives also freezes the text.
+    // Pressing ⏎ before the draft arrives also freezes the text.
     let mut c = agent_app(&r);
     open(&mut c);
-    key(&mut c, 'y');
+    enter(&mut c);
     c.on_app_event(AppEvent::CommitDrafted(Ok("Late".into())));
     assert!(parts(&c).message.starts_with("Update a.py"));
 }
@@ -822,7 +839,7 @@ fn editing_with_an_external_editor_round_trips_through_a_temp_file() {
     let r = fixture();
     let mut a = done_app(&r);
     let original = open_message(&mut a);
-    let e = key(&mut a, 'e');
+    let e = key(&mut a, 'i');
     assert_eq!(
         e,
         vec![Effect::EditComment {
@@ -883,7 +900,7 @@ fn without_an_editor_the_subject_is_edited_on_one_line() {
     let mut a = done_app(&r);
     open(&mut a);
     set_message(&mut a, "Old subject\n\n- keep this body");
-    key(&mut a, 'e');
+    key(&mut a, 'i');
     a.comment_edited(EditOutcome::Unavailable("not found".into()));
     assert!(a.status.contains("one line"), "{}", a.status);
     assert_eq!(parts(&a).editing.as_deref(), Some("Old subject"));
@@ -899,7 +916,7 @@ fn without_an_editor_the_subject_is_edited_on_one_line() {
     assert_eq!(p.editing, None);
     assert_eq!(p.message, "Old subject ye\n\n- keep this body");
     // Esc leaves the editor without saving, and a second Esc closes the overlay.
-    key(&mut a, 'e');
+    key(&mut a, 'i');
     a.comment_edited(EditOutcome::Unavailable("x".into()));
     key(&mut a, 'z');
     press(&mut a, KeyCode::Esc);
@@ -912,7 +929,7 @@ fn without_an_editor_the_subject_is_edited_on_one_line() {
 // -------------------------------------------------------------- commit
 
 #[test]
-fn y_commits_exactly_the_reviewed_files_with_the_given_message() {
+fn enter_commits_exactly_the_reviewed_files_with_the_given_message() {
     let r = fixture();
     let mut a = done_app(&r);
     add_unrelated(&r);
@@ -963,8 +980,8 @@ fn y_commits_exactly_the_reviewed_files_with_the_given_message() {
         !t.contains("commit these changes") && !t.contains("Hurray"),
         "{t}"
     );
-    key(&mut a, 'c');
-    assert_eq!(a.overlay, Overlay::None, "c only dismisses the variant");
+    enter(&mut a);
+    assert_eq!(a.overlay, Overlay::None, "⏎ only dismisses the variant");
     a.overlay = Overlay::AllDone;
     let e = key(&mut a, 'q');
     assert_eq!(e, vec![Effect::Save, Effect::Quit]);
@@ -977,11 +994,11 @@ fn y_commits_exactly_the_reviewed_files_with_the_given_message() {
 }
 
 #[test]
-fn enter_commits_too_and_the_message_file_is_gone_afterwards() {
+fn enter_commits_and_the_message_file_is_gone_afterwards() {
     let r = fixture();
     let mut a = done_app(&r);
     open(&mut a);
-    let e = press(&mut a, KeyCode::Enter);
+    let e = enter(&mut a);
     let [
         Effect::Commit {
             repo,
@@ -1194,12 +1211,12 @@ fn the_hardened_read_helpers_still_do_not_run_hooks() {
 
 // --------------------------------------------------------------- guards
 
-/// Press y, expect a refusal: no effect, the overlay closed, and nothing in
+/// Press ⏎, expect a refusal: no effect, the overlay closed, and nothing in
 /// the repository touched (index, working tree, HEAD).
 fn refused(a: &mut App, r: &FixtureRepo) -> String {
     let before = (status(r), r.git(&["rev-parse", "HEAD"]));
     let staged_before = r.git(&["diff", "--cached", "--name-only"]);
-    let e = key(a, 'y');
+    let e = enter(a);
     assert!(e.is_empty(), "{e:?}");
     assert_eq!(a.overlay, Overlay::None);
     assert_eq!((status(r), r.git(&["rev-parse", "HEAD"])), before);
@@ -1217,7 +1234,7 @@ fn a_file_changed_after_the_review_is_never_committed() {
     let s = refused(&mut a, &r);
     assert!(
         s.contains("Files changed since you reviewed them (a.py)")
-            && s.contains("Press r to re-run the review."),
+            && s.contains("Press :e to re-run the review."),
         "{s}"
     );
     assert!(
@@ -1255,7 +1272,7 @@ fn a_moved_head_is_never_committed() {
     r.git(&["commit", "--allow-empty", "-q", "-m", "elsewhere"]);
     let s = refused(&mut a, &r);
     assert!(s.starts_with("HEAD moved since you reviewed"), "{s}");
-    assert!(s.contains("Press r"), "{s}");
+    assert!(s.contains("Press :e"), "{s}");
 }
 
 #[test]
@@ -1345,7 +1362,7 @@ fn the_commit_effect_is_left_to_the_terminal_loop() {
     let r = fixture();
     let mut a = done_app(&r);
     open(&mut a);
-    let e = key(&mut a, 'y');
+    let e = enter(&mut a);
     let (rt, _rx) = runtime(Arc::new(MockAdapter::new(|_, _| anyhow::bail!("no"))));
     for e in e {
         assert!(!rt.exec(&mut a, e));

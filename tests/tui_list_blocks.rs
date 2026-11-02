@@ -14,7 +14,8 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use teer::config::{Config, KeyMap};
+use teer::config::Config;
+use teer::keymap::Keymap;
 use teer::review::model::{Decision, Prep, Range, Review, Unit, UnitKind, UnitStatus};
 use teer::tui::app::{App, Target};
 use teer::tui::{preview, ui};
@@ -76,8 +77,10 @@ fn app(n: usize) -> App {
         skipped: Vec::new(),
         graph: Default::default(),
         questions: Vec::new(),
+        version: 0,
+        history: Default::default(),
     };
-    App::new(review, Config::default(), KeyMap::default())
+    App::new(review, Config::default(), Keymap::default())
 }
 
 fn draw(app: &App, w: u16, h: u16) -> Buffer {

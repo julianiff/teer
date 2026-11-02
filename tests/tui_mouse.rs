@@ -11,7 +11,8 @@ use crossterm::event::{
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::style::Modifier;
-use teer::config::{Config, KeyMap};
+use teer::config::Config;
+use teer::keymap::Keymap;
 use teer::review::model::Decision;
 use teer::review::{BuildOptions, build_review};
 use teer::tui::app::{App, Effect, Overlay, Screen};
@@ -35,7 +36,7 @@ fn app() -> (App, FixtureRepo) {
         "def total(price, qty):\n    subtotal = price * qty\n    return subtotal + fee(subtotal)\n\n\ndef fee(x):\n    return x + 2\n",
     );
     let review = build_review(&repo.path(), &BuildOptions::default()).unwrap();
-    let mut app = App::new(review, Config::default(), KeyMap::default());
+    let mut app = App::new(review, Config::default(), Keymap::default());
     app.start(false, None, Vec::new(), None, false);
     assert_eq!(app.selected().unwrap().symbol, "total");
     (app, repo)
@@ -198,7 +199,7 @@ fn a_double_click_on_a_button_presses_it_twice_and_copies_nothing() {
 #[test]
 fn keys_named_in_an_overlay_can_be_clicked() {
     let (mut a, _repo) = app();
-    key(&mut a, KeyCode::Char('R'));
+    v2::press(&mut a, ":e!<cr>");
     assert_eq!(a.overlay, Overlay::ConfirmReset);
     let (rows, _) = draw(&a);
     click(&mut a, at(&rows, "esc cancel"));
@@ -208,8 +209,7 @@ fn keys_named_in_an_overlay_can_be_clicked() {
     key(&mut a, KeyCode::Char('A'));
     assert!(matches!(a.overlay, Overlay::ConfirmAcceptFile { .. }));
     let (rows, _) = draw(&a);
-    let (x, y) = at(&rows, "(y/n)");
-    click(&mut a, (x + 1, y));
+    click(&mut a, at(&rows, "y/⏎ yes"));
     assert!(
         a.review
             .units
@@ -225,7 +225,7 @@ fn notes_can_be_picked_and_closed_with_the_mouse() {
     for u in a.review.units.iter_mut() {
         u.dive.note = format!("look at {}", u.symbol);
     }
-    key(&mut a, KeyCode::Char('N'));
+    v2::press(&mut a, "<space>n");
     assert_eq!(a.overlay, Overlay::Notes { sel: 0 });
     let (rows, _) = draw(&a);
     click(&mut a, at(&rows, "look at fee"));
@@ -234,7 +234,7 @@ fn notes_can_be_picked_and_closed_with_the_mouse() {
     let e = click(&mut a, at(&rows, "y copy all"));
     assert_eq!(copied(&e).unwrap().1, "2 notes as Markdown");
     let (rows, _) = draw(&a);
-    click(&mut a, at(&rows, "esc close"));
+    click(&mut a, at(&rows, "q close"));
     assert_eq!(a.overlay, Overlay::None);
 }
 

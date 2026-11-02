@@ -16,7 +16,8 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use serde_json::{Value, json};
 use teer::agent::mock::MockAdapter;
-use teer::config::{Action, Config, KeyMap};
+use teer::config::Config;
+use teer::keymap::{Action, Keymap};
 use teer::review::model::{Decision, Review, SessionRef};
 use teer::review::{BuildOptions, build_review};
 use teer::tui::app::{App, Effect, Overlay, Screen, Target};
@@ -71,7 +72,7 @@ async fn app() -> (App, FixtureRepo) {
     review.repo_root = PathBuf::from("/work/shop");
     review.base = "a1b2c3d4e5f6".into();
     review.agent_session = Some(session());
-    let mut app = App::new(review, Config::default(), KeyMap::default());
+    let mut app = App::new(review, Config::default(), Keymap::default());
     app.start(true, None, Vec::new(), Some(session()), false);
     assert_eq!(app.screen, Screen::Slim);
     (app, repo)
@@ -328,9 +329,9 @@ async fn preview_shows_the_selected_symbol_and_follows_selection() {
             .position(|l| l.contains(" charge_order "))
             .unwrap();
         assert!(lines[head + 1].contains(" callers"), "{w}x{h}\n{b}");
-        // Moving with the keyboard updates it too: `g` is the first unit,
+        // Moving with the keyboard updates it too: `gg` is the first unit,
         // `j` the next.
-        key(&mut app, 'g');
+        v2::press(&mut app, "gg");
         assert_eq!(app.sel, 0);
         let first = app.selected().unwrap().symbol.clone();
         assert!(region(&app).contains(&format!(" {first} ")), "{w}x{h}");
@@ -369,19 +370,16 @@ async fn rows_start_with_border_and_gutter_and_the_footer_has_no_marks() {
 async fn help_lists_the_list_keys_and_the_style_legend() {
     for (w, h) in [(80u16, 24u16), (120, 40)] {
         let (mut app, _r) = app().await;
-        app.on_action(Action::Help);
+        app.on_action(Action::HelpOpen);
         assert_eq!(app.overlay, Overlay::Help);
         let s = text(&grid(&app, w, h));
+        // Every key from the keymap, with what it does.
         for want in [
-            "reset all decisions",
-            "accept / investigate",
-            "next / previous pending",
-            "next / prev file, list by file or unit",
-            "legend",
-            "accepted",
-            "removed",
-            "flagged",
-            "needs fix",
+            ":e!  re-run and reset every",
+            "a f  accept / flag the",
+            "n N  next / previous pen",
+            "]f [f  next / previous file",
+            "zf  list by file or by",
         ] {
             assert!(s.contains(want), "{w}x{h} missing {want:?}\n{s}");
         }
@@ -395,15 +393,24 @@ async fn help_lists_the_list_keys_and_the_style_legend() {
             assert!(!s.contains(gone), "{w}x{h} still lists {gone:?}\n{s}");
         }
     }
+    // The legend goes under the keys when there is room for it.
+    let (mut app, _r) = app().await;
+    app.on_action(Action::HelpOpen);
+    let s = text(&grid(&app, 120, 40));
+    for want in ["legend", "accepted", "removed", "flagged", "needs fix"] {
+        assert!(s.contains(want), "120x40 missing {want:?}\n{s}");
+    }
 }
 
 #[tokio::test]
-async fn help_fits_in_a_60x20_terminal() {
+async fn help_in_a_60x20_terminal_is_cut_with_a_note_and_its_border() {
     let (mut app, _r) = app().await;
-    app.on_action(Action::Help);
+    app.on_action(Action::HelpOpen);
     let s = text(&grid(&app, 60, 20));
-    // Last legend row and the border must not be cut off.
-    assert!(s.contains("✗ needs fix"), "legend clipped at 60x20\n{s}");
+    // Too many keys for 60x20: the last row says so, the border is whole.
+    assert!(s.contains("… a taller window shows more"), "{s}");
+    assert!(s.contains("any key closes ╯"), "{s}");
+    assert!(s.contains("j/↓ k/↑  move down / up"), "{s}");
     assert!(!s.contains("toggle preview"), "{s}");
 }
 
@@ -411,7 +418,7 @@ async fn help_fits_in_a_60x20_terminal() {
 async fn confirm_reset_overlay_renders() {
     for (w, h) in [(60u16, 20u16), (80, 24), (120, 40)] {
         let (mut app, _r) = app().await;
-        app.on_action(Action::Reset);
+        app.on_action(Action::ReviewReset);
         assert_eq!(app.overlay, Overlay::ConfirmReset);
         let s = text(&grid(&app, w, h));
         assert!(s.contains("Reset the review?"), "{w}x{h}\n{s}");

@@ -248,6 +248,12 @@ impl Theme {
         }
     }
 
+    /// A list row inside the visual selection (`V`): behind the bar's
+    /// colour, reversed without colour.
+    pub fn visual(&self) -> Style {
+        self.button()
+    }
+
     /// Name of an Investigate-flagged row in the list: a style, not a glyph.
     pub fn flagged_row(&self) -> Style {
         if self.mono() {

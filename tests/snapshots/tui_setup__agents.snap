@@ -18,9 +18,9 @@ expression: first
   Also used
     git             found                        reads the changes
     gh              not logged in                run `gh auth login`
-    nvim            not installed                `e` opens a unit in it
+    nvim            not installed                `gf` opens a unit in it
     sandbox-exec    found                        Behavior runs code in it
 
   Next: a fast model describes every change, a second one checks it.
 
- ⏎ next   ↑/↓ move   esc not now
+ l/⏎ next   j/k move   h/esc not now

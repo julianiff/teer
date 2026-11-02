@@ -1,6 +1,5 @@
 ---
 source: tests/tui.rs
-assertion_line: 795
 expression: "render(&app, 90, 20).backend()"
 ---
 " Uncommitted changes                                                           1 flagged  "
@@ -14,12 +13,12 @@ expression: "render(&app, 90, 20).backend()"
 "    │          │  Reset the review?                                       │          │    "
 "    │  ╭ code c│  Clears every decision, as if nothing was looked at.     │─── −2 ╮  │    "
 "    │  │  14 - │                                                          │       │  │    "
-"    │  │     ╭─│  enter reset · esc cancel                                │       │  │    "
+"    │  │     ╭─│  ⏎ reset · esc cancel                                    │       │  │    "
 "    │  │     │ │                                                          │       │  │    "
 "    │  │     ╰─╰──────────────────────────────────────────────────────────╯       │  │    "
-"    │  │ … 1 more line · J scroll · e editor                                      │  │    "
+"    │  │ … 1 more line · ^d scroll · gf editor                                    │  │    "
 "    │                                                                                │    "
 "    │  ⚑ flagged  ·  1 flagged                                                       │    "
 "    ╰────────────────────────────────────────────────────────────────────────────────╯    "
-"                                                                         accept [l] →     "
-" l accept · next   h previous   ← i investigate   u undo   esc back   e open in editor    "
+"                                                                         accept [a] →     "
+" a accept · next   k previous   f flag   u undo   h back   gf open in editor              "

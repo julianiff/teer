@@ -13,7 +13,8 @@ use ratatui::backend::TestBackend;
 use serde_json::{Value, json};
 use teer::agent::AgentAdapter;
 use teer::agent::mock::MockAdapter;
-use teer::config::{Config, KeyMap};
+use teer::config::Config;
+use teer::keymap::Keymap;
 use teer::review::attention::Level;
 use teer::review::model::{Decision, DiveKind, Review, SessionRef};
 use teer::review::prepare::{PrepareEvent, prepare};
@@ -129,6 +130,11 @@ fn press(app: &mut App, c: char) -> Vec<Effect> {
     )))
 }
 
+/// Type `keys` in Neovim notation (`<space>m`, `zz`).
+fn keys(app: &mut App, keys: &str) -> Vec<Effect> {
+    common::v2::press(app, keys)
+}
+
 #[tokio::test]
 async fn a_disputed_statement_and_an_expensive_change_are_warnings() {
     let (_repo, review, mock) = prepared(true).await;
@@ -172,7 +178,7 @@ async fn a_disputed_statement_and_an_expensive_change_are_warnings() {
     assert_eq!(a.doubts.len(), 2);
 
     // The list preview shows both, each on its own line.
-    let mut app = App::new(review, Config::default(), KeyMap::default());
+    let mut app = App::new(review, Config::default(), Keymap::default());
     while app.selected().is_some_and(|u| u.symbol != "charge_order") {
         press(&mut app, 'j');
     }
@@ -199,20 +205,23 @@ async fn the_disagreement_tab_shows_the_check_and_asks_again() {
     {
         u.decision = Decision::Investigate;
     }
-    let mut app = App::new(review, Config::default(), KeyMap::default());
-    press(&mut app, 'd');
+    let mut app = App::new(review, Config::default(), Keymap::default());
+    while app.selected().is_some_and(|u| u.symbol != "charge_order") {
+        press(&mut app, 'j');
+    }
+    press(&mut app, 'l');
     assert_eq!(app.screen, Screen::Flagged);
     // Already checked while preparing: the tile that asks for more says
-    // so, and `x` only gives it a tile.
-    assert!(screen(&app, 120, 40).contains("x  Disagreement ⚠"));
-    assert!(press(&mut app, 'x').is_empty());
+    // so, and `␣m` only gives it a tile.
+    assert!(screen(&app, 120, 40).contains("␣m  Disagreement ⚠"));
+    assert!(keys(&mut app, "<space>m").is_empty());
     assert_eq!(app.flagged.pane, Pane::Answer(DiveKind::Disagree));
     let text = screen(&app, 120, 40);
-    assert!(text.contains("╭ x Disagreement ⚠"), "{text}");
+    assert!(text.contains("╭ ␣m Disagreement ⚠"), "{text}");
     // The answer names the model that wrote it, under it.
     assert!(text.contains(" second opinion (sonnet) ╯"), "{text}");
     // Zoomed, the tile is as wide as the screen.
-    press(&mut app, 'z');
+    keys(&mut app, "zz");
     let text = screen(&app, 120, 40);
     assert!(
         text.contains("A second model disagrees on 2 points"),

@@ -10,7 +10,8 @@ use crossterm::event::{
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
-use teer::config::{Config, KeyMap};
+use teer::config::Config;
+use teer::keymap::Keymap;
 use teer::review::model::{Decision, Prep, Range, Review, Unit, UnitKind, UnitStatus};
 use teer::tui::app::{App, AppEvent, Effect, Overlay, Screen};
 use teer::tui::ui;
@@ -55,7 +56,7 @@ fn unit(i: usize) -> Unit {
     u
 }
 
-fn app_with(n: usize, cfg: Config, keys: KeyMap) -> App {
+fn app_with(n: usize, cfg: Config, keys: Keymap) -> App {
     common::isolate_env();
     let review = Review {
         id: "t".into(),
@@ -72,12 +73,14 @@ fn app_with(n: usize, cfg: Config, keys: KeyMap) -> App {
         skipped: Vec::new(),
         graph: Default::default(),
         questions: Vec::new(),
+        version: 0,
+        history: Default::default(),
     };
     App::new(review, cfg, keys)
 }
 
 fn app(n: usize) -> App {
-    app_with(n, Config::default(), KeyMap::default())
+    app_with(n, Config::default(), Keymap::default())
 }
 
 fn draw(app: &App, w: u16, h: u16) -> Buffer {
@@ -106,6 +109,11 @@ fn press(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Vec<Effect> {
 
 fn key(app: &mut App, c: char) -> Vec<Effect> {
     press(app, KeyCode::Char(c), KeyModifiers::NONE)
+}
+
+/// Type `k` in Neovim notation (`:e!<cr>`).
+fn keys(app: &mut App, k: &str) -> Vec<Effect> {
+    common::v2::press(app, k)
 }
 
 fn shift_a(app: &mut App) -> Vec<Effect> {
@@ -147,7 +155,7 @@ fn accept_last(a: &mut App) {
         .position(|&i| a.review.units[i].decision == Decision::Pending)
         .unwrap();
     a.sel = pos;
-    key(a, 'l');
+    key(a, 'a');
 }
 
 fn done() -> App {
@@ -163,10 +171,10 @@ fn done() -> App {
 fn accepting_the_last_pending_unit_in_the_list_opens_it() {
     let mut a = three();
     for _ in 0..2 {
-        key(&mut a, 'l');
+        key(&mut a, 'a');
         assert_eq!(a.overlay, Overlay::None);
     }
-    key(&mut a, 'l');
+    key(&mut a, 'a');
     assert_eq!(a.overlay, Overlay::AllDone);
 }
 
@@ -186,10 +194,10 @@ fn the_last_swipe_card_opens_it_over_the_summary() {
     let mut a = three();
     key(&mut a, 's');
     assert_eq!(a.screen, Screen::Swipe);
-    key(&mut a, 'l');
-    key(&mut a, 'l');
+    key(&mut a, 'a');
+    key(&mut a, 'a');
     assert_eq!(a.overlay, Overlay::None);
-    key(&mut a, 'l');
+    key(&mut a, 'a');
     assert_eq!(a.overlay, Overlay::AllDone);
     assert!(a.swipe_current().is_none());
     let t = text(&a, 90, 24);
@@ -198,10 +206,10 @@ fn the_last_swipe_card_opens_it_over_the_summary() {
 }
 
 #[test]
-fn right_arrow_and_drag_accept_open_it_too() {
+fn a_and_drag_accept_in_swipe_open_it_too() {
     let mut a = all_but_last();
     key(&mut a, 's');
-    press(&mut a, KeyCode::Right, KeyModifiers::NONE);
+    key(&mut a, 'a');
     assert_eq!(a.overlay, Overlay::AllDone);
     let mut b = all_but_last();
     key(&mut b, 's');
@@ -236,7 +244,7 @@ fn not_shown_while_a_unit_is_flagged() {
         .iter()
         .position(|&i| a.review.units[i].decision == Decision::Investigate)
         .unwrap();
-    key(&mut a, 'l');
+    key(&mut a, 'a');
     assert_eq!(a.overlay, Overlay::AllDone);
 }
 
@@ -268,7 +276,7 @@ fn not_shown_after_undo_reset_or_rerun() {
     // Undoing further and re-accepting is fine; undo itself never opens it.
     let mut b = done();
     key(&mut b, 'x');
-    key(&mut b, 'R');
+    keys(&mut b, ":e!<cr>");
     key(&mut b, 'y');
     assert_eq!(b.overlay, Overlay::None);
     assert!(
@@ -320,9 +328,13 @@ fn ctrl_c_still_quits() {
 }
 
 #[test]
-fn r_opens_the_reset_confirm_and_y_resets() {
+fn reset_is_colon_e_bang_after_the_popup_and_y_resets() {
     let mut a = done();
+    // The popup has no reset key: `R` only dismisses it.
     assert!(key(&mut a, 'R').is_empty());
+    assert_eq!(a.overlay, Overlay::None);
+    assert!(a.all_reviewed());
+    assert!(keys(&mut a, ":e!<cr>").is_empty());
     assert_eq!(a.overlay, Overlay::ConfirmReset);
     assert!(
         a.review
@@ -342,6 +354,8 @@ fn r_opens_the_reset_confirm_and_y_resets() {
 
 #[test]
 fn other_keys_only_dismiss() {
+    // `⏎` is the popup's confirm; with nothing to commit or approve here
+    // it only dismisses too.
     for code in [
         KeyCode::Esc,
         KeyCode::Enter,
@@ -357,14 +371,15 @@ fn other_keys_only_dismiss() {
         assert_eq!(decisions(&a), before);
         assert_eq!(a.screen, Screen::Slim);
     }
-    // `d` would open Flagged and `s` swipe, `?` help: none of that happens.
-    for c in ['d', 's', '?', 'u'] {
+    // `l` would open Flagged and `s` swipe, `?` help, `u` undo, `a`
+    // accept: none of that happens.
+    for c in ['l', 's', '?', 'u', 'a'] {
         let mut a = done();
-        let n = a.swipe.history.len();
+        let n = a.review.history.undo.len();
         key(&mut a, c);
         assert_eq!(a.overlay, Overlay::None);
         assert_eq!(a.screen, Screen::Slim, "{c}");
-        assert_eq!(a.swipe.history.len(), n, "{c} must not undo");
+        assert_eq!(a.review.history.undo.len(), n, "{c} must not undo");
         assert!(a.all_reviewed());
     }
 }
@@ -378,37 +393,38 @@ fn a_mouse_click_dismisses() {
 }
 
 #[test]
-fn rebound_quit_and_reset_keys() {
+fn the_popups_keys_stay_when_normal_keys_are_rebound() {
+    // A sheet has fixed keys (Q15): rebinding view.close or decide.accept
+    // changes the list, not the popup.
     let toml = r#"
 [keys]
-quit = "x"
-reset = "ctrl+r"
+"view.close" = "x"
+"decide.accept" = "e"
 "#;
     let cfg: Config = toml::from_str(toml).unwrap();
-    let keys = cfg.keymap().unwrap();
+    let (keys, _) = cfg.keymap().unwrap();
     let mut a = app_with(3, cfg.clone(), keys.clone());
     for u in a.review.units.iter_mut().take(2) {
         u.decision = Decision::Accepted;
     }
-    accept_last(&mut a);
+    a.sel = a
+        .order
+        .iter()
+        .position(|&i| a.review.units[i].decision == Decision::Pending)
+        .unwrap();
+    // The rebound accept key finishes the review.
+    key(&mut a, 'e');
     assert_eq!(a.overlay, Overlay::AllDone);
-    let t = text(&a, 80, 24);
-    assert!(t.contains("x quit"), "{t}");
-    assert!(t.contains("^r reset"), "{t}");
-    // The old keys now just dismiss.
-    let mut b = a;
-    assert!(key(&mut b, 'q').is_empty());
+    // `x` only dismisses the popup; `q` still quits from it.
+    let mut b = app_with(3, cfg.clone(), keys.clone());
+    b.overlay = Overlay::AllDone;
+    assert!(key(&mut b, 'x').is_empty());
     assert_eq!(b.overlay, Overlay::None);
     let mut c = app_with(3, cfg, keys);
-    for u in c.review.units.iter_mut().take(2) {
-        u.decision = Decision::Accepted;
-    }
-    accept_last(&mut c);
+    c.overlay = Overlay::AllDone;
+    assert_eq!(key(&mut c, 'q'), vec![Effect::Save, Effect::Quit]);
+    // On the list, the rebound key quits.
     assert_eq!(key(&mut c, 'x'), vec![Effect::Save, Effect::Quit]);
-    let mut d = app_with(3, Config::default(), KeyMap::default());
-    d.overlay = Overlay::AllDone;
-    press(&mut d, KeyCode::Char('r'), KeyModifiers::CONTROL);
-    assert_eq!(d.overlay, Overlay::None);
 }
 
 // ---- Rendering -------------------------------------------------------
@@ -421,7 +437,7 @@ fn popup_renders_inside_the_screen_at_common_sizes() {
         let joined = r.join("\n");
         assert!(joined.contains("Hurray! All changes reviewed."), "{w}x{h}");
         assert!(
-            joined.contains("q quit  ·  R reset  ·  any other key to continue"),
+            joined.contains("q quit") && joined.contains("any other key to continue"),
             "{w}x{h}\n{joined}"
         );
         assert!(joined.contains('╭') && joined.contains('╯'));

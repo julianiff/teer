@@ -247,11 +247,12 @@ print("TEER_CASE " + json.dumps({{"case": "small", "output": attempt(lambda: ope
 }
 
 #[tokio::test]
-async fn t_on_the_flagged_screen_runs_the_probe_and_shows_the_table() {
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+async fn leader_r_on_the_flagged_screen_runs_the_probe_and_shows_the_table() {
+    use common::v2::press;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use teer::config::{Config, KeyMap};
+    use teer::config::Config;
+    use teer::keymap::Keymap;
     use teer::review::model::{Decision, DiveKind};
     use teer::tui::Runtime;
     use teer::tui::app::{App, Effect, Screen};
@@ -265,16 +266,15 @@ async fn t_on_the_flagged_screen_runs_the_probe_and_shows_the_table() {
     for u in review.units.iter_mut().filter(|u| u.symbol == "discount") {
         u.decision = Decision::Investigate;
     }
-    let mut app = App::new(review, Config::default(), KeyMap::default());
-    let press = |app: &mut App, c: char| {
-        app.on_event(Event::Key(KeyEvent::new(
-            KeyCode::Char(c),
-            KeyModifiers::NONE,
-        )))
-    };
-    press(&mut app, 'd');
+    let mut app = App::new(review, Config::default(), Keymap::default());
+    app.sel = app
+        .order
+        .iter()
+        .position(|&i| app.review.units[i].symbol == "discount")
+        .unwrap();
+    press(&mut app, "l");
     assert_eq!(app.screen, Screen::Flagged);
-    let effects = press(&mut app, 't');
+    let effects = press(&mut app, "<space>r");
     assert!(
         matches!(
             &effects[..],
@@ -286,7 +286,7 @@ async fn t_on_the_flagged_screen_runs_the_probe_and_shows_the_table() {
         "{effects:?}"
     );
     // Zoomed, its tile is as wide as the screen.
-    press(&mut app, 'z');
+    press(&mut app, "zz");
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let m = MockAdapter::new(|_, _| Ok(plan(PROBE)));
     let rt = Runtime {

@@ -175,7 +175,8 @@ mod picker {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use teer::config::{KeyMap, Theme as ThemeName};
+    use teer::config::Theme as ThemeName;
+    use teer::keymap::{Keymap, parse_keys};
     use teer::pr_list::{self, ListedPr, RepoRef, Section};
     use teer::tui::pr_pick::{self, Picked, Picker};
     use teer::tui::theme::Theme;
@@ -238,7 +239,7 @@ mod picker {
         let mut p = Picker::new(
             repo(),
             Theme::new(ThemeName::Mono),
-            KeyMap::default(),
+            Keymap::default(),
             "2026-10-13T12:00:00Z".parse().unwrap(),
         );
         p.loaded(l);
@@ -247,6 +248,15 @@ mod picker {
 
     fn key(p: &mut Picker, code: KeyCode) -> Option<Picked> {
         p.on_key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    /// Type `keys`, in Neovim notation; what the last one did.
+    fn keys(p: &mut Picker, keys: &str) -> Option<Picked> {
+        let mut last = None;
+        for k in parse_keys(keys).unwrap() {
+            last = p.on_key(k.event());
+        }
+        last
     }
 
     fn render(p: &mut Picker, w: u16, h: u16) -> Terminal<TestBackend> {
@@ -271,52 +281,56 @@ mod picker {
     fn moves_across_sections_and_enter_picks_the_selected_one() {
         let mut p = picker();
         assert_eq!(p.selected().unwrap().number, 123);
-        assert_eq!(key(&mut p, KeyCode::Char('j')), None);
+        assert_eq!(keys(&mut p, "j"), None);
         assert_eq!(key(&mut p, KeyCode::Down), None);
         // Past the empty "Assigned to you" into "Yours".
         assert_eq!(p.selected().unwrap().number, 118);
-        key(&mut p, KeyCode::Down);
+        keys(&mut p, "j");
         assert_eq!(p.selected().unwrap().number, 118, "stays on the last");
-        key(&mut p, KeyCode::Char('g'));
+        keys(&mut p, "gg");
         assert_eq!(p.selected().unwrap().number, 123);
-        key(&mut p, KeyCode::Char('G'));
-        key(&mut p, KeyCode::Up);
+        keys(&mut p, "G");
+        keys(&mut p, "k");
         assert_eq!(p.selected().unwrap().number, 120);
-        match key(&mut p, KeyCode::Enter) {
+        keys(&mut p, "<home>2j");
+        assert_eq!(p.selected().unwrap().number, 118, "a count moves that far");
+        keys(&mut p, "<end><up>");
+        match keys(&mut p, "<cr>") {
             Some(Picked::Pr(pr)) => assert_eq!(pr.url, "https://github.com/acme/shop/pull/120"),
+            other => panic!("{other:?}"),
+        }
+        // `l` picks too.
+        match keys(&mut p, "l") {
+            Some(Picked::Pr(pr)) => assert_eq!(pr.number, 120),
             other => panic!("{other:?}"),
         }
     }
 
     #[test]
-    fn ctrl_d_and_ctrl_u_jump_between_sections() {
+    fn next_and_previous_file_jump_between_sections() {
         let mut p = picker();
-        let ctrl = |p: &mut Picker, c: char| {
-            p.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
-        };
         // Past the empty "Assigned to you" into "Yours", and no further.
-        ctrl(&mut p, 'd');
+        keys(&mut p, "]f");
         assert_eq!(p.selected().unwrap().number, 118);
-        ctrl(&mut p, 'd');
+        keys(&mut p, "]f");
         assert_eq!(p.selected().unwrap().number, 118);
-        ctrl(&mut p, 'u');
+        keys(&mut p, "[f");
         assert_eq!(p.selected().unwrap().number, 123);
         // From the middle of a section to the first of the one above: none
         // above, so it stays.
-        key(&mut p, KeyCode::Down);
-        ctrl(&mut p, 'u');
+        keys(&mut p, "j[f");
         assert_eq!(p.selected().unwrap().number, 120);
     }
 
     #[test]
-    fn q_esc_and_ctrl_c_leave_without_picking() {
+    fn q_h_esc_and_ctrl_c_leave_without_picking() {
         let mut p = picker();
-        assert_eq!(key(&mut p, KeyCode::Char('q')), Some(Picked::Quit));
-        assert_eq!(key(&mut p, KeyCode::Esc), Some(Picked::Quit));
-        assert_eq!(
-            p.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
-            Some(Picked::Quit)
-        );
+        assert_eq!(keys(&mut p, "q"), Some(Picked::Quit));
+        assert_eq!(keys(&mut p, "h"), Some(Picked::Quit));
+        assert_eq!(keys(&mut p, "<esc>"), Some(Picked::Quit));
+        assert_eq!(keys(&mut p, "<c-c>"), Some(Picked::Quit));
+        // ctrl+c also while a prefix waits for its next key.
+        assert_eq!(keys(&mut p, "g<c-c>"), Some(Picked::Quit));
     }
 
     #[test]
@@ -324,17 +338,18 @@ mod picker {
         let mut p = Picker::new(
             repo(),
             Theme::new(ThemeName::Mono),
-            KeyMap::default(),
+            Keymap::default(),
             chrono::Utc::now(),
         );
-        assert_eq!(key(&mut p, KeyCode::Enter), None);
-        assert_eq!(key(&mut p, KeyCode::Down), None);
+        assert_eq!(keys(&mut p, "<cr>"), None);
+        assert_eq!(keys(&mut p, "j"), None);
+        assert_eq!(keys(&mut p, "]f[f<c-d><pagedown>"), None);
         let text = screen(&render(&mut p, 70, 6));
         assert!(
             text.contains("Asking GitHub for the pull requests of acme/shop"),
             "{text}"
         );
-        assert_eq!(key(&mut p, KeyCode::Char('q')), Some(Picked::Quit));
+        assert_eq!(keys(&mut p, "q"), Some(Picked::Quit));
     }
 
     #[test]
@@ -346,9 +361,7 @@ mod picker {
             .map(|n| listed(*n, &format!("Change {n}"), "bob", "2026-10-12T12:00:00Z"))
             .collect();
         p.loaded(pr_list::merge(repo(), vec![(Section::NeedsReview, many)]));
-        for _ in 0..20 {
-            key(&mut p, KeyCode::Down);
-        }
+        keys(&mut p, "20j");
         let text = screen(&render(&mut p, 60, 10));
         let sel = p.selected().unwrap().number;
         assert!(
@@ -356,17 +369,24 @@ mod picker {
                 .any(|l| l.starts_with(" ▌") && l.contains(&format!("#{sel} "))),
             "{text}"
         );
-        key(&mut p, KeyCode::Char('g'));
+        keys(&mut p, "gg");
         let text = screen(&render(&mut p, 60, 10));
         assert!(text.contains("Waiting for your review · 30"), "{text}");
-        key(&mut p, KeyCode::PageDown);
+        // A page is the 7 rows on screen; half a page 3.
+        keys(&mut p, "<pagedown>");
         assert_eq!(p.selected().unwrap().number, 30 - 7);
+        keys(&mut p, "<c-u>");
+        assert_eq!(p.selected().unwrap().number, 30 - 4);
+        keys(&mut p, "<c-d><c-d>");
+        assert_eq!(p.selected().unwrap().number, 30 - 10);
+        keys(&mut p, "<pageup>");
+        assert_eq!(p.selected().unwrap().number, 30 - 3);
     }
 
     #[test]
     fn snapshot() {
         let mut p = picker();
-        key(&mut p, KeyCode::Down);
+        keys(&mut p, "j");
         insta::assert_snapshot!("pr_pick", render(&mut p, 90, 14).backend());
     }
 }

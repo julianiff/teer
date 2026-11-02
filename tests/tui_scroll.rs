@@ -11,7 +11,8 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, Mouse
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
-use teer::config::{Action, Config, KeyMap};
+use teer::config::Config;
+use teer::keymap::{Action, KeySpec, Keymap};
 use teer::review::model::{Cite, Coverage, CoveringTest, Decision, DiveKind, DiveResult, Review};
 use teer::review::{BuildOptions, build_review};
 use teer::tui::app::{App, Overlay, Pane, Screen, Target, pane_key};
@@ -41,7 +42,7 @@ fn review_of(old: &str, new: &str) -> (Review, FixtureRepo) {
     (review, repo)
 }
 
-fn app_with(review: Review, keys: KeyMap) -> App {
+fn app_with(review: Review, keys: Keymap) -> App {
     let mut app = App::new(review, Config::default(), keys);
     app.start(false, None, Vec::new(), None, false);
     app
@@ -51,7 +52,7 @@ fn app_with(review: Review, keys: KeyMap) -> App {
 fn app() -> (App, FixtureRepo) {
     let (old, new) = sources();
     let (review, repo) = review_of(&old, &new);
-    let app = app_with(review, KeyMap::default());
+    let app = app_with(review, Keymap::default());
     assert_eq!(app.selected().unwrap().symbol, "long_one");
     (app, repo)
 }
@@ -97,6 +98,16 @@ fn press(app: &mut App, code: KeyCode) {
     app.on_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
 }
 
+/// Type `k` in Neovim notation (`<c-d>`, `zz`, `<space>t`).
+fn keys(app: &mut App, k: &str) {
+    common::v2::press(app, k);
+}
+
+/// Lines `<c-d>` scrolls: half the detail's rows as last drawn.
+fn half(app: &App) -> usize {
+    app.detail_rows.get() / 2
+}
+
 fn wheel(app: &mut App, down: bool, column: u16, row: u16) {
     let kind = if down {
         MouseEventKind::ScrollDown
@@ -115,8 +126,8 @@ fn has(lines: &[String], text: &str) -> bool {
     lines.iter().any(|l| l.contains(text))
 }
 
-const ABOVE: &str = "lines above · K scroll up";
-const MORE: &str = "more lines · J scroll · e editor";
+const ABOVE: &str = "lines above · ^u scroll up";
+const MORE: &str = "more lines · ^d scroll · gf editor";
 
 #[test]
 fn the_preview_scrolls_down_to_the_cut_rows_and_back_up() {
@@ -132,19 +143,24 @@ fn the_preview_scrolls_down_to_the_cut_rows_and_back_up() {
     assert!(has(&first, " long_one "), "{text}");
     assert!(!has(&first, "a15 = x + 15"), "{text}");
 
-    key(&mut app, 'J');
+    let step = half(&app);
+    keys(&mut app, "<c-d>");
+    assert_eq!(app.detail_offset(), step, "half the rows");
     let after = pane(&app, w, h);
     let text = after.join("\n");
     // Only the code scrolls: the head stays and the box's first row says
     // what is above.
-    assert!(has(&after, "│ … 3 lines above · K scroll up"), "{text}");
+    assert!(
+        has(&after, &format!("│ … {step} lines above · ^u scroll up")),
+        "{text}"
+    );
     assert!(has(&after, " long_one "), "{text}");
     assert!(after[after.len() - 1].contains(MORE), "{text}");
     assert!(has(&after, "a15 = x + 15"), "{text}");
 
     // At the end the last row of the change shows and nothing is left below.
     for _ in 0..40 {
-        key(&mut app, 'J');
+        keys(&mut app, "<c-d>");
     }
     let end = pane(&app, w, h);
     let text = end.join("\n");
@@ -157,12 +173,12 @@ fn the_preview_scrolls_down_to_the_cut_rows_and_back_up() {
     assert!(end[end.len() - 1].contains("╰──"), "{text}");
     let max = app.detail_max_scroll.get();
     assert!(max > 0);
-    key(&mut app, 'J');
-    assert_eq!(app.detail_offset(), max, "J stops at the end");
+    keys(&mut app, "<c-d>");
+    assert_eq!(app.detail_offset(), max, "^d stops at the end");
 
-    // Back up: K undoes it step by step.
+    // Back up: ^u undoes it step by step.
     for _ in 0..40 {
-        key(&mut app, 'K');
+        keys(&mut app, "<c-u>");
     }
     assert_eq!(pane(&app, w, h), first);
     assert_eq!(app.detail_offset(), 0);
@@ -199,8 +215,8 @@ fn the_scroll_starts_over_when_the_selection_moves() {
     let (mut app, _repo) = app();
     let (w, h) = (100, 30);
     pane(&app, w, h);
-    key(&mut app, 'J');
-    key(&mut app, 'J');
+    keys(&mut app, "<c-d>");
+    keys(&mut app, "<c-d>");
     assert!(has(&pane(&app, w, h), ABOVE));
     key(&mut app, 'j');
     assert_eq!(app.selected().unwrap().symbol, "short_one");
@@ -246,16 +262,17 @@ fn the_wheel_scrolls_the_pane_under_it_and_moves_the_selection_over_the_list() {
 fn the_footer_offers_scrolling_only_while_something_is_cut_and_fits_at_80() {
     let (mut app, _repo) = app();
     let footer = |app: &App, w, h| screen(app, w, h).last().unwrap().clone();
-    assert!(footer(&app, 100, 30).contains("J K scroll"));
+    assert!(footer(&app, 100, 30).contains("^d ^u scroll"));
     // At 80 columns it fits after the other buttons, which all stay.
     let f = footer(&app, 80, 24);
-    assert!(f.contains("i investigate   / ask   J K scroll"), "{f}");
+    assert!(f.contains("f flag   K ask   ^d ^u scroll"), "{f}");
+    let step = half(&app);
     // Clicking it scrolls.
     let r = app
         .targets
         .borrow()
         .iter()
-        .find(|(_, t)| *t == Target::Action(Action::PreviewDown))
+        .find(|(_, t)| *t == Target::Action(Action::ScrollHalfDown))
         .map(|(r, _)| *r)
         .unwrap();
     app.on_event(Event::Mouse(MouseEvent {
@@ -264,7 +281,7 @@ fn the_footer_offers_scrolling_only_while_something_is_cut_and_fits_at_80() {
         row: r.y,
         modifiers: KeyModifiers::NONE,
     }));
-    assert_eq!(app.detail_offset(), 3);
+    assert_eq!(app.detail_offset(), step);
     // A unit whose change fits shows no scroll button.
     key(&mut app, 'j');
     assert!(!footer(&app, 100, 30).contains("scroll"));
@@ -273,51 +290,50 @@ fn the_footer_offers_scrolling_only_while_something_is_cut_and_fits_at_80() {
 #[test]
 fn help_lists_the_scroll_keys() {
     let (mut app, _repo) = app();
-    app.on_action(Action::Help);
-    let s = screen(&app, 80, 24).join("\n");
-    assert!(s.contains("J K  scroll the preview, card or answer"), "{s}");
-    // Still fits at 60x20, legend and all.
-    let s = screen(&app, 60, 20).join("\n");
-    assert!(
-        s.contains("✗ needs fix") && s.contains("scroll the preview"),
-        "{s}"
-    );
+    app.on_action(Action::HelpOpen);
+    for (w, h) in [(80, 24), (60, 20)] {
+        let s = screen(&app, w, h).join("\n");
+        assert!(s.contains("^d ^u  scroll half a page"), "{w}x{h}\n{s}");
+        assert!(s.contains("pgdn pgup  scroll a page"), "{w}x{h}\n{s}");
+    }
 }
 
 #[test]
 fn the_scroll_keys_can_be_rebound() {
-    let keys: HashMap<String, String> = [("preview_down", "w"), ("preview_up", "y")]
+    let want: HashMap<String, KeySpec> = [("scroll.half_down", "w"), ("scroll.half_up", "b")]
         .into_iter()
-        .map(|(a, k)| (a.to_string(), k.to_string()))
+        .map(|(a, k)| (a.to_string(), KeySpec::One(k.to_string())))
         .collect();
-    let toml = "[keys]\npreview_down = \"w\"\npreview_up = \"y\"\n";
+    let toml = "[keys]\n\"scroll.half_down\" = \"w\"\n\"scroll.half_up\" = \"b\"\n";
     let cfg: Config = toml::from_str(toml).unwrap();
-    assert_eq!(cfg.keys, keys);
+    assert_eq!(cfg.keys, want);
     let (old, new) = sources();
     let (review, _repo) = review_of(&old, &new);
-    let mut app = app_with(review, cfg.keymap().unwrap());
+    let (keymap, warnings) = cfg.keymap().unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let mut app = app_with(review, keymap);
     let (w, h) = (100, 30);
     let first = pane(&app, w, h);
     assert!(
-        has(&first, "more lines · w scroll · e editor"),
+        has(&first, "more lines · w scroll · gf editor"),
         "{}",
         first.join("\n")
     );
-    // J is nothing now; w scrolls and y goes back.
-    key(&mut app, 'J');
+    // ^d is nothing now; w scrolls and b goes back.
+    keys(&mut app, "<c-d>");
     assert_eq!(app.detail_offset(), 0);
     key(&mut app, 'w');
     let rows = pane(&app, w, h);
     assert!(
-        has(&rows, "lines above · y scroll up"),
+        has(&rows, "lines above · b scroll up"),
         "{}",
         rows.join("\n")
     );
-    key(&mut app, 'y');
+    key(&mut app, 'b');
     assert_eq!(app.detail_offset(), 0);
-    app.on_action(Action::Help);
+    app.on_action(Action::HelpOpen);
     let s = screen(&app, 80, 24).join("\n");
-    assert!(s.contains("w y  scroll the preview"), "{s}");
+    assert!(s.contains("w b  scroll half a page"), "{s}");
 }
 
 // ---- Layout ---------------------------------------------------------------
@@ -327,7 +343,7 @@ fn one_unit() -> (App, FixtureRepo) {
     let old = "def only(x):\n    return x\n";
     let new = "def only(x):\n    return compute_total(x, discount=0.1, currency=\"EUR\")\n";
     let (review, repo) = review_of(old, new);
-    (app_with(review, KeyMap::default()), repo)
+    (app_with(review, Keymap::default()), repo)
 }
 
 #[test]
@@ -372,7 +388,7 @@ fn a_wide_list_is_capped_at_35_percent() {
         &old.replace("long_one", long),
         &new.replace("long_one", long),
     );
-    let app = app_with(review, KeyMap::default());
+    let app = app_with(review, Keymap::default());
     let (list, p) = layout(&app, 120, 40);
     assert_eq!((list.width, p.x, p.width), (42, 42, 78));
     // Up to the cap, the list is just as wide as its rows need.
@@ -431,19 +447,21 @@ fn the_swipe_card_scrolls_and_starts_over_on_the_next_card() {
     let text = card.join("\n");
     assert!(has(&card, MORE), "{text}");
     assert!(!has(&card, "above"), "{text}");
-    key(&mut app, 'J');
+    let step = half(&app);
+    keys(&mut app, "<c-d>");
+    assert_eq!(app.detail_offset(), step);
     let after = screen(&app, w, h);
     assert!(has(&after, ABOVE), "{}", after.join("\n"));
-    // The wheel anywhere on the screen scrolls the card too.
+    // The wheel anywhere on the screen scrolls the card too, a few lines.
     wheel(&mut app, true, 1, 1);
-    assert_eq!(app.detail_offset(), 6);
+    assert_eq!(app.detail_offset(), step + 3);
     wheel(&mut app, false, 1, 1);
-    assert_eq!(app.detail_offset(), 3);
+    assert_eq!(app.detail_offset(), step);
     // Scrolling decides nothing.
     assert_eq!(app.swipe.cursor, 0);
     assert_eq!(app.review.units[0].decision, Decision::Pending);
     for _ in 0..40 {
-        key(&mut app, 'J');
+        keys(&mut app, "<c-d>");
     }
     let end = screen(&app, w, h);
     assert!(
@@ -452,12 +470,12 @@ fn the_swipe_card_scrolls_and_starts_over_on_the_next_card() {
         end.join("\n")
     );
     // The next card starts at the top, and so does the way back.
-    key(&mut app, 'l');
+    key(&mut app, 'a');
     assert_eq!(app.swipe.cursor, 1);
     screen(&app, w, h);
     assert_eq!(app.detail_offset(), 0);
-    key(&mut app, 'J');
-    key(&mut app, 'h');
+    keys(&mut app, "<c-d>");
+    key(&mut app, 'k');
     assert_eq!(app.swipe.cursor, 0);
     let back = screen(&app, w, h);
     assert!(
@@ -486,13 +504,14 @@ fn flagged() -> (App, FixtureRepo) {
             ..Default::default()
         },
     );
-    key(&mut app, 'd');
+    // `l` opens Flagged on the selected unit, long_one.
+    key(&mut app, 'l');
     assert_eq!(app.screen, Screen::Flagged);
     assert_eq!(app.flagged_unit().unwrap().symbol, "long_one");
     (app, repo)
 }
 
-const ANSWER_MORE: &str = "more lines · J scroll";
+const ANSWER_MORE: &str = "more lines · ^d scroll";
 
 /// How far the selected Flagged unit's tile `pane` is scrolled.
 fn tile_offset(app: &App, pane: Pane) -> usize {
@@ -512,7 +531,7 @@ fn a_long_answer_on_the_flagged_screen_scrolls_to_its_end() {
     let (w, h) = (100, 30);
     // The answer has the focus; zoomed, it is alone on the screen.
     assert_eq!(app.flagged.pane, RECOMMEND);
-    key(&mut app, 'z');
+    keys(&mut app, "zz");
     let first = screen(&app, w, h);
     let text = first.join("\n");
     assert!(has(&first, "step 1 of the answer"), "{text}");
@@ -524,20 +543,25 @@ fn a_long_answer_on_the_flagged_screen_scrolls_to_its_end() {
         .unwrap_or_else(|| panic!("{text}"));
     assert!(!hint.contains("editor"), "{hint}");
     // The unit and the tile's title stay; the answer scrolls under them.
-    key(&mut app, 'J');
+    let step = half(&app);
+    keys(&mut app, "<c-d>");
     let after = screen(&app, w, h);
     let text = after.join("\n");
-    assert!(has(&after, "… 3 lines above · K scroll up"), "{text}");
     assert!(
-        !has(&after, "step 3 of the answer") && has(&after, "step 4 of"),
+        has(&after, &format!("… {step} lines above · ^u scroll up")),
         "{text}"
     );
     assert!(
-        has(&after, "╭ n Recommend ✓") && has(&after, " long_one "),
+        !has(&after, &format!("step {step} of the answer"))
+            && has(&after, &format!("step {} of", step + 1)),
+        "{text}"
+    );
+    assert!(
+        has(&after, "╭ ␣w Recommend ✓") && has(&after, " long_one "),
         "{text}"
     );
     for _ in 0..20 {
-        key(&mut app, 'J');
+        keys(&mut app, "<c-d>");
     }
     let end = screen(&app, w, h);
     assert!(has(&end, "step 40 of the answer"), "{}", end.join("\n"));
@@ -549,29 +573,31 @@ fn each_tile_keeps_its_own_scroll() {
     let (mut app, _repo) = flagged();
     let (w, h) = (100, 30);
     screen(&app, w, h);
-    key(&mut app, 'J');
-    assert_eq!(tile_offset(&app, RECOMMEND), 3);
-    // The code is cut too; J scrolls the tile in focus only.
+    let answer_step = half(&app);
+    keys(&mut app, "<c-d>");
+    assert_eq!(tile_offset(&app, RECOMMEND), answer_step);
+    // The code is cut too; ^d scrolls the tile in focus only.
     press(&mut app, KeyCode::Left);
     assert_eq!(app.flagged.pane, Pane::Code);
     let code = screen(&app, w, h);
     assert!(
         code.iter()
-            .any(|l| l.starts_with("│ … 43 more lines · J scroll")),
+            .any(|l| l.starts_with("│ … 43 more lines · ^d scroll")),
         "{}",
         code.join("\n")
     );
-    key(&mut app, 'J');
+    let code_step = half(&app);
+    keys(&mut app, "<c-d>");
     screen(&app, w, h);
-    assert_eq!(tile_offset(&app, Pane::Code), 3);
-    assert_eq!(tile_offset(&app, RECOMMEND), 3);
+    assert_eq!(tile_offset(&app, Pane::Code), code_step);
+    assert_eq!(tile_offset(&app, RECOMMEND), answer_step);
     // Another unit starts at the top; coming back, where it was left.
     key(&mut app, 'j');
     assert_eq!(app.flagged_unit().unwrap().symbol, "short_one");
     screen(&app, w, h);
     assert_eq!(tile_offset(&app, Pane::Code), 0);
     key(&mut app, 'k');
-    assert_eq!(tile_offset(&app, RECOMMEND), 3);
+    assert_eq!(tile_offset(&app, RECOMMEND), answer_step);
     let back = screen(&app, w, h);
     assert!(!has(&back, "step 1 of the answer"), "{}", back.join("\n"));
 }
@@ -621,15 +647,15 @@ fn the_tests_tab_scrolls_too() {
             ..Default::default()
         },
     );
-    key(&mut app, 'c');
+    keys(&mut app, "<space>t");
     assert_eq!(app.flagged.pane, Pane::Answer(DiveKind::Tests));
-    key(&mut app, 'z');
+    keys(&mut app, "zz");
     let (w, h) = (100, 30);
     let first = screen(&app, w, h);
     assert!(has(&first, "25 tests cover it") && has(&first, ANSWER_MORE));
     assert!(!has(&first, "test_case_25"), "{}", first.join("\n"));
     for _ in 0..30 {
-        key(&mut app, 'J');
+        keys(&mut app, "<c-d>");
     }
     let end = screen(&app, w, h);
     assert!(has(&end, "test_case_25"), "{}", end.join("\n"));

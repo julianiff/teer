@@ -6,7 +6,8 @@ use std::path::PathBuf;
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use teer::config::{Config, KeyMap};
+use teer::config::Config;
+use teer::keymap::Keymap;
 use teer::review::model::{
     Behavior, Decision, DiveKind, DiveResult, Expect, Outcome, Prep, ProbeCase, Range, Resolution,
     Review, TestCheck, Unit, UnitKind, UnitStatus,
@@ -60,8 +61,10 @@ fn app() -> App {
         skipped: Vec::new(),
         graph: Default::default(),
         questions: Vec::new(),
+        version: 0,
+        history: Default::default(),
     };
-    let mut a = App::new(review, Config::default(), KeyMap::default());
+    let mut a = App::new(review, Config::default(), Keymap::default());
     a.screen = Screen::Flagged;
     a
 }
@@ -94,11 +97,11 @@ fn nothing_asked_yet_offers_every_question_with_its_key() {
         );
         // Each question once in the tile, after its key.
         for q in [
-            "n  Recommend",
-            "v  Visualize",
-            "c  Tests",
-            "t  Behavior",
-            "x  Disagreement",
+            "␣w  Recommend",
+            "␣v  Visualize",
+            "␣t  Tests",
+            "␣r  Behavior",
+            "␣m  Disagreement",
         ] {
             assert_eq!(out.matches(q).count(), 1, "{q} at {w}x{h}:\n{out}");
         }
@@ -108,8 +111,9 @@ fn nothing_asked_yet_offers_every_question_with_its_key() {
             .find(|l| l.contains("╭ +"))
             .unwrap_or_else(|| panic!("{w}x{h}:\n{out}"));
         assert!(
-            top.contains("+ n Recommend · v Visualize · c Tests · t Behavior · x Disagreement")
-                || top.contains("+ n v c t x"),
+            top.contains(
+                "+ ␣w Recommend · ␣v Visualize · ␣t Tests · ␣r Behavior · ␣m Disagreement"
+            ) || top.contains("+ ␣w ␣v ␣t ␣r ␣m"),
             "{w}x{h}: {top}"
         );
     }
@@ -170,7 +174,7 @@ fn result_sources_and_tab_checkmark() {
     let out = render(&a, 120, 40);
     let at = |s: &str| out.find(s).unwrap_or_else(|| panic!("{s} missing:\n{out}"));
     assert!(at("agent (Claude Code's default model)") > at("It rounds the total"));
-    assert!(out.contains("╭ n Recommend ✓"), "{out}");
+    assert!(out.contains("╭ ␣w Recommend ✓"), "{out}");
 }
 
 fn case(name: &str, expect: Expect, before: Outcome, after: Outcome) -> ProbeCase {
@@ -374,7 +378,7 @@ fn overlays_render() {
     let out = render(&a, 80, 24);
     assert!(out.contains("Note"), "{out}");
     assert!(out.contains("remember to check rounding"), "{out}");
-    assert!(out.contains("enter save"), "{out}");
+    assert!(out.contains("⏎ save"), "{out}");
     assert!(out.contains("esc cancel"), "{out}");
     a.overlay = Overlay::Note {
         id: String::new(),
@@ -382,11 +386,11 @@ fn overlays_render() {
         back: None,
     };
     let out = render(&a, 40, 12);
-    assert!(out.contains("enter save"), "{out}");
+    assert!(out.contains("⏎ save"), "{out}");
     a.overlay = Overlay::ConfirmWeb;
     let out = render(&a, 80, 24);
     assert!(out.contains("never your code"), "{out}");
-    assert!(out.contains("(y/n)"), "{out}");
+    assert!(out.contains("y/⏎ yes · esc no"), "{out}");
 }
 
 #[test]
@@ -418,7 +422,7 @@ fn header_says_flagged_with_the_count_on_the_screen() {
 }
 
 #[test]
-fn list_footer_is_editor_swipe_help_then_flagged_then_investigate() {
+fn list_footer_is_editor_swipe_help_then_open_then_flag() {
     let mut a = app();
     a.screen = Screen::Slim;
     let out = render(&a, 140, 30);
@@ -432,31 +436,31 @@ fn list_footer_is_editor_swipe_help_then_flagged_then_investigate() {
         "{last}"
     );
     assert!(
-        at("help") < at("flagged") && at("flagged") < at("investigate"),
+        at("help") < at("l open") && at("l open") < at("f flag"),
         "{last}"
     );
     for gone in ["accept", "reset", "preview", "dive"] {
         assert!(!last.contains(gone), "{gone}: {last}");
     }
     assert!(out.contains("3 flagged"), "{out}");
-    // Narrow footers drop from the end: investigate first, then flagged.
-    let out = render(&a, 55, 30);
+    // Narrow footers drop from the end: flag first, then open.
+    let out = render(&a, 50, 30);
     let last = out.lines().last().unwrap();
     assert!(
-        last.contains("flagged") && !last.contains("investigate"),
+        last.contains("l open") && !last.contains("f flag"),
         "{last}"
     );
     let out = render(&a, 40, 30);
     let last = out.lines().last().unwrap();
-    assert!(last.contains("help") && !last.contains("flagged"), "{last}");
-    // Nothing flagged: no flagged button.
+    assert!(last.contains("help") && !last.contains("l open"), "{last}");
+    // Nothing flagged: no button to open one.
     for u in &mut a.review.units {
         u.decision = Decision::Pending;
     }
     let out = render(&a, 140, 30);
     let last = out.lines().last().unwrap();
     assert!(
-        !last.contains("flagged") && last.contains("investigate"),
+        !last.contains("l open") && last.contains("f flag"),
         "{last}"
     );
 }

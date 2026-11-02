@@ -16,7 +16,8 @@ use unicode_width::UnicodeWidthStr;
 use super::app::{App, Pane, Target, pane_key, tile_kinds};
 use super::preview::{scroll_rows, unit_explain, unit_head};
 use super::slim;
-use crate::config::{Action, Role, Theme as ThemeName};
+use crate::config::{Role, Theme as ThemeName};
+use crate::keymap::Action;
 use crate::review::model::{
     Behavior, ClaimCheck, Coverage, Delta, DiveKind, Expect, FoundTest, Marker, Outcome, ProbeCase,
     Reach, Resolution, Risk, TestCheck, TestSearch, Unit, UnitStatus, Visual,
@@ -37,35 +38,35 @@ const TABS: [(DiveKind, &str, &str, Action, &str); 5] = [
         DiveKind::Recommend,
         "Recommend",
         "Rec",
-        Action::DiveRecommend,
+        Action::V1Recommend,
         "what to do about it, most important first",
     ),
     (
         DiveKind::Visualize,
         "Visualize",
         "Vis",
-        Action::DiveVisualize,
+        Action::ToolDiagram,
         "a picture of what it talks to and what changes",
     ),
     (
         DiveKind::Tests,
         "Tests",
         "Tests",
-        Action::DiveTests,
+        Action::ToolTests,
         "the tests that reach it, found at once; the agent can read them",
     ),
     (
         DiveKind::Behavior,
         "Behavior",
         "Run",
-        Action::DiveBehavior,
+        Action::ToolRunOldNew,
         "runs the old and the new code on the same inputs",
     ),
     (
         DiveKind::Disagree,
         "Disagreement",
         "Disagree",
-        Action::DiveDisagree,
+        Action::V1Disagree,
         "a second model checks the description",
     ),
 ];
@@ -87,7 +88,7 @@ fn left_to_ask(app: &App, u: &Unit) -> Vec<(Option<DiveKind>, &'static str, Acti
         .map(|q| (Some(q.0), q.1, q.3, q.4))
         .collect();
     if !app.flagged_panes(u).contains(&Pane::Chat) {
-        left.push((None, "Chat", Action::Ask, CHAT));
+        left.push((None, "Chat", Action::AskOpen, CHAT));
     }
     left
 }
@@ -187,7 +188,7 @@ fn more_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
     if left.is_empty() {
         let again = format!(
             "Every question is asked. {} asks the one in focus again.",
-            app.keys.label(Action::DiveRerun)
+            app.keys.label(Action::V1DiveRerun)
         );
         lines.extend(
             wrap(&again, w)
@@ -268,7 +269,7 @@ fn visual_lines(app: &App, v: &Visual, w: usize) -> Vec<Line<'static>> {
     lines.push(Line::styled(
         format!(
             " {} opens it in the browser",
-            app.keys.label(Action::OpenVisual)
+            app.keys.label(Action::GotoBrowser)
         ),
         t.muted(),
     ));
@@ -490,7 +491,7 @@ fn found_only(app: &App, s: &TestSearch, w: usize) -> Vec<Line<'static>> {
         ));
     }
     lines.push(Line::default());
-    let key = app.keys.label(Action::InterpretTests);
+    let key = app.keys.label(Action::V1InterpretTests);
     let what = if s.total == 0 {
         "the agent looks for tests teer can't see, and the risky cases none covers"
     } else {
@@ -766,7 +767,7 @@ fn draw_picture(f: &mut Frame, app: &App, u: &Unit, area: Rect, w: usize) -> boo
     f.render_widget(Paragraph::new(claim), top);
     let open = format!(
         "{} opens it in the browser · {}",
-        app.keys.label(Action::OpenVisual),
+        app.keys.label(Action::GotoBrowser),
         v.path.display()
     );
     f.render_widget(
@@ -797,7 +798,7 @@ fn tile_title(app: &App, u: &Unit, pane: Pane, width: usize) -> Line<'static> {
         }
         Pane::Chat => {
             let mut spans = vec![
-                Span::styled(format!(" {}", app.keys.label(Action::Ask)), t.accent()),
+                Span::styled(format!(" {}", app.keys.label(Action::AskOpen)), t.accent()),
                 Span::styled(" Chat ", t.bold()),
             ];
             let chat = app.chat_of(&u.id);
@@ -1007,8 +1008,8 @@ fn foot_line(app: &App, u: &Unit, w: usize) -> Line<'static> {
         None => Span::styled(
             format!(
                 "⚑ unresolved ({} ok · {} needs fix)",
-                app.keys.label(Action::ResolveOk),
-                app.keys.label(Action::ResolveFix)
+                app.keys.label(Action::V1ResolveOk),
+                app.keys.label(Action::V1ResolveFix)
             ),
             t.muted(),
         ),
@@ -1016,7 +1017,7 @@ fn foot_line(app: &App, u: &Unit, w: usize) -> Line<'static> {
     let used = res.content.width() + 12;
     let note = if u.dive.note.trim().is_empty() {
         Span::styled(
-            format!("press {} to add a note", app.keys.label(Action::EditNote)),
+            format!("press {} to add a note", app.keys.label(Action::NoteEdit)),
             t.muted(),
         )
     } else {
@@ -1092,7 +1093,7 @@ pub fn draw_flagged(f: &mut Frame, app: &App, area: Rect) {
             Paragraph::new(Line::styled(
                 format!(
                     " Nothing is flagged. Press {} to go back.",
-                    app.keys.label(Action::Back)
+                    app.keys.label(Action::ViewBack)
                 ),
                 t.muted(),
             )),
@@ -1113,8 +1114,8 @@ pub fn draw_flagged(f: &mut Frame, app: &App, area: Rect) {
             " {}/{} · {} {} other units ",
             sel + 1,
             flagged.len(),
-            app.keys.label(Action::Down),
-            app.keys.label(Action::Up)
+            app.keys.label(Action::MoveDown),
+            app.keys.label(Action::MoveUp)
         )
     } else {
         String::new()

@@ -14,7 +14,7 @@
 //! dimmed, removed names struck through, flagged names in the flagged
 //! style.
 //!
-//! Listed by unit (`f`, [`Grouping::Unit`]), each unit sits in its own
+//! Listed by unit (`zf`, [`Grouping::Unit`]), each unit sits in its own
 //! level's box instead, with no file names as labels: a muted column on the
 //! right of each row names its file, by as much of its path as tells it
 //! from the other listed files (`mod.rs`, `review/mod.rs`). Units with no
@@ -707,7 +707,22 @@ fn unit_row(app: &App, pos: usize, width: usize, file: &str, file_w: usize) -> L
         spans.push(Span::raw("  "));
         spans.push(Span::styled(fitted, t.muted()));
     }
+    // Inside the visual selection: the bar in front, the rest behind the
+    // selection's colour.
+    if in_visual(app, pos) {
+        spans[0] = Span::styled("▌", t.accent());
+        for s in spans.iter_mut().skip(1) {
+            s.style = s.style.patch(t.visual());
+        }
+    }
     Line::from(spans)
+}
+
+/// Is the unit at `pos` inside the visual selection, which runs from its
+/// anchor to the cursor?
+pub fn in_visual(app: &App, pos: usize) -> bool {
+    app.visual
+        .is_some_and(|anchor| (anchor.min(app.sel)..=anchor.max(app.sel)).contains(&pos))
 }
 
 /// Rows being built: the lines so far, and how a content line of `inner`
@@ -889,7 +904,8 @@ fn plural(n: usize, word: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, KeyMap};
+    use crate::config::Config;
+    use crate::keymap::Keymap;
     use crate::review::model::{Range, Review};
     use std::path::PathBuf;
 
@@ -938,8 +954,10 @@ mod tests {
             skipped: Vec::new(),
             graph: Default::default(),
             questions: Vec::new(),
+            version: 0,
+            history: Default::default(),
         };
-        App::new(review, Config::default(), KeyMap::default())
+        App::new(review, Config::default(), Keymap::default())
     }
 
     fn text_of(l: &Line) -> String {
@@ -1241,6 +1259,38 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::CROSSED_OUT)
         );
+    }
+
+    #[test]
+    fn visual_rows_run_from_the_anchor_to_the_cursor() {
+        use crate::config::Theme;
+        for theme in [Theme::Dark, Theme::Mono] {
+            let mut app = themed_app(theme);
+            assert_eq!(app.order.len(), 3);
+            let marked = |app: &App, pos: usize| {
+                let s = cell_style(app, pos, NAME_X, 120);
+                if theme == Theme::Mono {
+                    s.add_modifier.contains(Modifier::REVERSED)
+                } else {
+                    s.bg.is_some() && s.bg == app.theme.visual().bg
+                }
+            };
+            let gutter = |app: &App, pos: usize| {
+                let rows = build(app, 120);
+                rows.lines[rows.spans[pos].0].spans[1].content.to_string()
+            };
+            for (anchor, sel) in [(0, 1), (1, 0)] {
+                app.visual = Some(anchor);
+                app.sel = sel;
+                assert!(marked(&app, 0) && marked(&app, 1), "{theme:?}");
+                assert!(!marked(&app, 2), "{theme:?}");
+                assert_eq!(gutter(&app, 0), "▌");
+                assert_eq!(gutter(&app, 1), "▌");
+                assert_eq!(gutter(&app, 2), " ");
+            }
+            app.visual = None;
+            assert!((0..3).all(|pos| !marked(&app, pos)), "{theme:?}");
+        }
     }
 
     #[test]
