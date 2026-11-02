@@ -77,8 +77,12 @@ fn app_of(units: Vec<Unit>, cfg: Config) -> App {
         version: 0,
         history: Default::default(),
         branch: None,
+        cursor: None,
     };
-    App::new(review, cfg, Keymap::default())
+    // The v1 list (`--swipe`, until Phase 8).
+    let mut app = App::new(review, cfg, Keymap::default());
+    app.open_v1_list();
+    app
 }
 
 fn names(a: &App) -> Vec<&str> {

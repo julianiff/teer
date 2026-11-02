@@ -267,6 +267,8 @@ async fn leader_r_on_the_flagged_screen_runs_the_probe_and_shows_the_table() {
         u.decision = Decision::Investigate;
     }
     let mut app = App::new(review, Config::default(), Keymap::default());
+    // The Flagged screen is v1's (`--swipe`), entered from the v1 list.
+    app.open_v1_list();
     app.sel = app
         .order
         .iter()

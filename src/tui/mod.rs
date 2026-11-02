@@ -5,12 +5,14 @@ pub mod app;
 pub mod ask;
 pub mod commits;
 pub mod diff;
+pub mod finish;
 pub mod flagged;
 pub mod jump;
 pub mod notes;
 pub mod picture;
 pub mod pr_pick;
 pub mod preview;
+pub mod queue;
 pub mod select;
 pub mod setup;
 pub mod slim;
@@ -18,6 +20,7 @@ pub mod swipe;
 pub mod syntax;
 pub mod theme;
 pub mod ui;
+pub mod unit;
 
 use std::io::stdout;
 use std::sync::Arc;
@@ -62,6 +65,8 @@ pub struct Launch {
     pub review: Review,
     pub agent: std::result::Result<crate::cli::Agent, String>,
     pub session_arg: Option<String>,
+    /// `--swipe`: open the v1 screens, on swipe, instead of the queue
+    /// (until Phase 8).
     pub swipe: bool,
     pub cfg: Config,
     pub keymap: Keymap,
@@ -289,6 +294,11 @@ impl Runtime {
             Effect::Quit => return true,
             Effect::Save => {
                 if let Err(e) = store::save(&app.review) {
+                    app.status = format!("Couldn't save the review: {e:#}");
+                }
+            }
+            Effect::SaveCursor => {
+                if let Err(e) = store::save_cursor(&app.review) {
                     app.status = format!("Couldn't save the review: {e:#}");
                 }
             }
@@ -799,6 +809,7 @@ mod tests {
             version: 0,
             history: Default::default(),
             branch: None,
+            cursor: None,
         };
         super::App::new(review, cfg, Default::default())
     }

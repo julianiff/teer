@@ -388,9 +388,10 @@ mod screen {
         App::new(r, Config::default(), Keymap::default())
     }
 
-    /// The status sits whole at the right edge with at least two blanks before it.
+    /// The status sits whole at the right edge with at least two blanks
+    /// before it (the queue's bottom bar counts the flagged units).
     fn status_keeps_its_place(h: &str, w: usize) {
-        let status = "⠋ preparing 1/2  1 flagged  ";
+        let status = "⠋ preparing 1/2  ";
         assert!(h.ends_with(status), "{h:?}");
         assert_eq!(h.width(), w);
         let before = &h[..h.len() - status.len()];
@@ -657,6 +658,8 @@ mod view {
         for (w, h) in [(1u16, 1u16), (20, 8), (40, 10), (60, 20), (80, 24)] {
             render(&app, w, h);
         }
+        // The v1 list's help (the queue's lists `queue::ACTIONS`: Q-draw).
+        app.open_v1_list();
         app.overlay = Overlay::Help;
         let s = text(&render(&app, 80, 24));
         assert!(s.contains("␣c  commits and PR description"), "{s}");
@@ -691,6 +694,8 @@ mod preview {
         let (r, _repo) = pr_review(None);
         let short: Vec<String> = r.intent.commits.iter().map(|c| c.short.clone()).collect();
         let mut app = App::new(r, Config::default(), Keymap::default());
+        // The v1 list's preview (`--swipe`); the queue's is tests/v2_queue.rs.
+        app.open_v1_list();
         select(&mut app, "g");
         let s = text(&render(&app, 180, 30));
         let want = format!(
@@ -918,6 +923,8 @@ mod agent {
         let gi = r.units.iter().position(|u| u.symbol == "g").unwrap();
         r.units[gi].decision = Decision::Investigate;
         let mut app = App::new(r, Config::default(), Keymap::default());
+        // The v1 screens (`--swipe`): the list's preview, swipe, Flagged.
+        app.open_v1_list();
         app.sel = app.order.iter().position(|&i| i == gi).unwrap();
         assert!(
             text(&app, 160, 30).contains(want),

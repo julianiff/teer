@@ -21,6 +21,10 @@
 //! right of each row names its file, by as much of its path as tells it
 //! from the other listed files (`mod.rs`, `review/mod.rs`). Units accepted
 //! for you then all go in the "Accepted for you" box.
+//!
+//! The queue (v2, [`Flavor::Queue`]) uses the same boxes with rows of its
+//! own (see [`super::queue`]); this list stays for `--swipe` until v2
+//! removes it.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -308,7 +312,7 @@ pub fn fit_path(path: &str, w: usize) -> String {
 }
 
 /// The style of a level's icon in a row: the routine ones step back.
-fn icon_style(app: &App, level: Level) -> Style {
+pub(super) fn icon_style(app: &App, level: Level) -> Style {
     match level {
         Level::Same | Level::Routine => app.theme.muted(),
         _ => level_style(app, level),
@@ -316,7 +320,7 @@ fn icon_style(app: &App, level: Level) -> Style {
 }
 
 /// `path` in `w` cells, its folders muted and the file name in `style`.
-fn path_spans(app: &App, path: &str, w: usize, style: Style) -> Vec<Span<'static>> {
+pub(super) fn path_spans(app: &App, path: &str, w: usize, style: Style) -> Vec<Span<'static>> {
     let fitted = fit_path(path, w);
     let (dir, name) = match fitted.rfind('/') {
         Some(i) => fitted.split_at(i + 1),
@@ -440,18 +444,35 @@ const FIT_MAX: usize = 512;
 /// line about units accepted for you fits on one line (the muted box's
 /// title is cut as needed).
 pub fn fit_width(app: &App) -> usize {
+    fit_width_of(app, Flavor::List)
+}
+
+/// [`fit_width`] for the rows of `flavor`: the queue's rows are as wide as
+/// [`super::queue::rows_width`] says.
+pub fn fit_width_of(app: &App, flavor: Flavor) -> usize {
+    let queue = flavor == Flavor::Queue;
     let widest = widest_count(app);
     let path = |p: &std::path::Path| sanitize(&p.display().to_string()).width();
     let by_file = app.grouping == Grouping::File;
-    let short = short_paths(app);
+    let short = if queue {
+        HashMap::new()
+    } else {
+        short_paths(app)
+    };
     let shown = widest_shown(app, &short);
     // A file's path, beside its count; any other row's whole width.
     let mut file = 0;
-    let mut row = 0;
+    let mut row = if queue {
+        super::queue::rows_width(app)
+    } else {
+        0
+    };
     for (pos, &i) in app.order.iter().enumerate() {
         let u = &app.review.units[i];
-        let marks: usize = marks(app, i).iter().map(|m| 1 + m.0.width()).sum();
-        row = row.max(UNIT_LEAD + indent(app, i).width() + row_name(u).width() + marks);
+        if !queue {
+            let marks: usize = marks(app, i).iter().map(|m| 1 + m.0.width()).sum();
+            row = row.max(UNIT_LEAD + indent(app, i).width() + row_name(u).width() + marks);
+        }
         if by_file && app.starts_file(pos) {
             file = file.max(path(&u.file));
         }
@@ -463,9 +484,10 @@ pub fn fit_width(app: &App) -> usize {
         row = row.max(3 + path(&f.path));
     }
     // The line under the boxes takes the borders' cells too: a blank, then
-    // its text.
+    // its text (in the queue after a glyph and a blank).
     if let Some(text) = auto_line(app) {
-        row = row.max((1 + text.width()).saturating_sub(3));
+        let glyph = if queue { 2 } else { 0 };
+        row = row.max((1 + glyph + text.width()).saturating_sub(3));
     }
     // A title, its spaces, the corners and a few dashes.
     let title = boxes_of(app)
@@ -606,11 +628,11 @@ fn bottom_edge(app: &App, width: usize) -> Line<'static> {
 }
 
 /// Cells before a unit's name: the gutter, two blanks, its icon and a blank.
-const UNIT_LEAD: usize = 5;
+pub(super) const UNIT_LEAD: usize = 5;
 
 /// What unit `ui`'s name is indented by in a story: `↳ ` under the unit
 /// that calls it, two more cells per level down to the third.
-fn indent(app: &App, ui: usize) -> String {
+pub(super) fn indent(app: &App, ui: usize) -> String {
     match app.depth.get(ui).copied().unwrap_or(0) {
         0 => String::new(),
         depth => format!("{}↳ ", "  ".repeat(depth.min(3) - 1)),
@@ -627,9 +649,26 @@ pub fn file_name(path: &std::path::Path) -> String {
 /// files inside them.
 pub const PADDING_MIN_ROWS: usize = 14;
 
+/// Which list rows are built for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flavor {
+    /// The v1 list (`--swipe`): a unit's name and marks; listed by unit,
+    /// its file in a muted column on the right.
+    List,
+    /// The queue: a unit's glyph, file, name and state (see
+    /// [`super::queue::row`]).
+    Queue,
+}
+
 /// The rows with blank lines between boxes and files.
 pub fn build(app: &App, width: u16) -> Rows {
     build_with(app, width, true)
+}
+
+/// The queue's rows (see [`Flavor::Queue`]), with blank lines between boxes
+/// and files when `padded`.
+pub fn build_queue(app: &App, width: u16, padded: bool) -> Rows {
+    build_rows(app, width, padded, Flavor::Queue)
 }
 
 /// The unit row at `pos`, `width` cells: the name takes what the icon and
@@ -795,6 +834,12 @@ impl Builder<'_> {
 }
 
 pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
+    build_rows(app, width, padded, Flavor::List)
+}
+
+/// The rows of the list `flavor` names, `width` cells wide, with blank
+/// lines between boxes and files when `padded`.
+pub fn build_rows(app: &App, width: u16, padded: bool, flavor: Flavor) -> Rows {
     let t = &app.theme;
     let width = width as usize;
     // Below 4 cells there is no room for a box: bare rows.
@@ -819,8 +864,20 @@ pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
     };
     let by_file = app.grouping == Grouping::File;
     let (name_w, count_w) = column_widths(inner, widest_count(app));
-    let short = short_paths(app);
+    // The queue names a unit's file in front of its name; the list, listed
+    // by unit, in a column on the right.
+    let queue = flavor == Flavor::Queue;
+    let short = if queue {
+        HashMap::new()
+    } else {
+        short_paths(app)
+    };
     let file_w = file_column(inner, widest_shown(app, &short));
+    let path_w = if queue {
+        super::queue::path_column(app, inner)
+    } else {
+        0
+    };
     for (level, files) in boxes_of(app) {
         let title = b.open_box(&box_title(app, level, &files), level_style(app, level));
         for &start in &files {
@@ -836,8 +893,13 @@ pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
             }
             for pos in app.file_range(start) {
                 let line = b.rows.lines.len();
-                let file = shown_file(&app.review.units[app.order[pos]], &short);
-                b.row(unit_row(app, pos, inner, file, file_w).spans, Some(pos));
+                let row = if queue {
+                    super::queue::row(app, pos, inner, path_w)
+                } else {
+                    let file = shown_file(&app.review.units[app.order[pos]], &short);
+                    unit_row(app, pos, inner, file, file_w)
+                };
+                b.row(row.spans, Some(pos));
                 b.rows.spans[pos] = (line, line + 1);
                 // With no file name above it, a unit is its own head.
                 b.rows.heads[pos] = if by_file { head } else { line };
@@ -865,6 +927,12 @@ pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
         if b.padded && !b.rows.lines.is_empty() {
             b.rows.push(Line::raw(" ".repeat(width)), None);
         }
+        // The queue leads with the glyph of a unit accepted for you.
+        let text = if queue {
+            format!("{} {text}", Level::Same.icon())
+        } else {
+            text
+        };
         for l in wrap(&text, width.saturating_sub(1)) {
             let l = truncate_pad(&format!(" {l}"), width);
             b.rows.push(Line::styled(l, t.muted()), None);
@@ -944,8 +1012,11 @@ mod tests {
             version: 0,
             history: Default::default(),
             branch: None,
+            cursor: None,
         };
-        App::new(review, Config::default(), Keymap::default())
+        let mut app = App::new(review, Config::default(), Keymap::default());
+        app.open_v1_list();
+        app
     }
 
     fn text_of(l: &Line) -> String {

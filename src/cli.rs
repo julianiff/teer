@@ -54,7 +54,8 @@ pub struct Args {
     #[arg(global = true, long, value_name = "ID", hide = true)]
     pub session: Option<String>,
 
-    /// Open straight into swipe mode.
+    /// Open the v1 screens (swipe, the list, Flagged) instead of the
+    /// queue, on swipe. Hidden; Phase 8 removes it.
     #[arg(global = true, long, hide = true)]
     pub swipe: bool,
 

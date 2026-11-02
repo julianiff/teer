@@ -117,6 +117,7 @@ async fn leader_t_lists_the_found_tests_and_leader_a_has_the_agent_read_them() {
         u.decision = Decision::Investigate;
     }
     let mut app = App::new(review, Config::default(), Keymap::default());
+    app.open_v1_list();
     app.sel = app
         .order
         .iter()

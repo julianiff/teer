@@ -66,10 +66,12 @@ fn unit_of<'a>(d: &'a Driver, id: &str) -> &'a Unit {
 
 #[test]
 fn no_behavior_change_is_accepted_for_you_hidden_and_counted() {
-    let d = driver(
+    let mut d = driver(
         vec![unit(0, "a.rs"), same(1, "a.rs"), same(2, "b.rs")],
         Config::default(),
     );
+    // The v1 list's drawing (the queue's: tests/v2_queue.rs).
+    d.app.open_v1_list();
     for id in ["u1", "u2"] {
         assert_eq!(unit_of(&d, id).decision, Decision::Accepted, "{id}");
         assert_eq!(unit_of(&d, id).accepted_by, Some(AcceptedBy::Auto), "{id}");
@@ -106,6 +108,8 @@ fn za_lists_them_and_u_takes_one_back() {
         vec![unit(0, "a.rs"), same(1, "a.rs"), same(2, "b.rs")],
         Config::default(),
     );
+    // The v1 list's drawing (the queue's: tests/v2_queue.rs).
+    d.app.open_v1_list();
     d.keys("za");
     assert!(d.app.show_auto);
     // Last, in a box of their own when their file has nothing else.
@@ -220,7 +224,9 @@ fn marks_become_reasons_and_rows_show_only_the_dispute() {
         text: "Also stops sending the receipt.".into(),
         evidence: at(1),
     });
-    let d = driver(vec![u], Config::default());
+    let mut d = driver(vec![u], Config::default());
+    // The v1 list's rows and preview (the queue's: tests/v2_queue.rs).
+    d.app.open_v1_list();
     let u = unit_of(&d, "u0");
     assert_eq!(
         u.reasons,
@@ -294,21 +300,20 @@ fn queue_order_is_level_then_file_with_callers_first_and_starts_on_a_pending_att
         same(9, "a.rs"),
     ];
     let mut d = driver(units, Config::default());
-    // Listed by level (`zf`): ▲, ◆, ●, each by path, callers before callees.
-    d.keys("zf");
+    // The queue, by level: ▲, ◆, ●, each by path, callers before callees.
     assert_eq!(
         listed(&d),
         ["done", "close_c", "look_a", "look_b", "caller", "callee"]
     );
     // The review starts on the first pending ▲, whatever the grouping.
-    let start = driver(d.app.review.units.clone(), Config::default());
-    assert_eq!(start.selected().as_deref(), Some("close_c"));
-    // By file, files go by their most attention unit, then by path.
-    let d = start;
+    assert_eq!(d.selected().as_deref(), Some("close_c"));
+    // By file (`zf`), files go by their most attention unit, then by path.
+    d.keys("zf");
     assert_eq!(
         listed(&d),
         ["done", "look_a", "caller", "callee", "close_c", "look_b"]
     );
+    assert_eq!(d.selected().as_deref(), Some("close_c"));
 }
 
 #[test]

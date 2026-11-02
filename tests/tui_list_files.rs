@@ -143,8 +143,12 @@ fn app_keys(units: Vec<Unit>, cfg: Config, keys: Keymap) -> App {
         version: 0,
         history: Default::default(),
         branch: None,
+        cursor: None,
     };
-    App::new(review, cfg, keys)
+    // The v1 list (`--swipe`, until Phase 8).
+    let mut app = App::new(review, cfg, keys);
+    app.open_v1_list();
+    app
 }
 
 fn app() -> App {
@@ -573,7 +577,8 @@ fn a_asks_first_then_accepts_the_files_pending_units_in_one_undo_step() {
         a.sel = 15; // r2_1
         a.review.units[a.order[16]].decision = Decision::Investigate;
         let before = decisions(&a);
-        assert!(shift_a(&mut a).is_empty());
+        // The cursor was put on r2_1 by hand: the key saves it.
+        assert_eq!(shift_a(&mut a), vec![Effect::Save]);
         match &a.overlay {
             Overlay::ConfirmAcceptFile { file, ids } => {
                 assert_eq!(ids.len(), 3);
@@ -659,7 +664,8 @@ fn f_lists_each_unit_in_its_own_levels_box_with_its_file_on_its_row() {
     let mut a = app();
     a.sel = 2;
     assert_eq!(symbol(&a), "c_helper");
-    assert!(v2::press(&mut a, "zf").is_empty());
+    // The cursor was put on c_helper by hand: the key saves it.
+    assert_eq!(v2::press(&mut a, "zf"), vec![Effect::Save]);
     assert_eq!(
         (a.grouping, a.status.as_str()),
         (Grouping::Unit, "listed by unit")

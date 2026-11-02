@@ -35,6 +35,14 @@ fn accept(d: &mut Driver, at: &[usize]) {
     }
 }
 
+/// `n` pending units on the v1 list (`--swipe`, until Phase 8): swipe and
+/// the Flagged screen are entered from there.
+fn v1(n: usize) -> Driver {
+    let mut d = Driver::new(n);
+    d.app.open_v1_list();
+    d
+}
+
 /// `u` with one change statement, so the second model has something to check.
 fn described(mut u: teer::review::model::Unit) -> teer::review::model::Unit {
     u.changes = vec![Change {
@@ -50,6 +58,8 @@ fn described(mut u: teer::review::model::Unit) -> teer::review::model::Unit {
 /// search is off so questions go out at once.
 fn on_flagged() -> Driver {
     let mut d = Driver::of(units(6).into_iter().map(described).collect());
+    // The Flagged screen is v1's (`--swipe`), entered from the v1 list.
+    d.app.open_v1_list();
     d.app.cfg.dive_web = false;
     flag(&mut d, &[1, 3, 4]);
     d.select(1);
@@ -295,40 +305,28 @@ fn i_opens_the_note_line_and_decides_nothing() {
 }
 
 #[test]
-fn shift_a_asks_then_accepts_the_files_pending_units_in_one_step() {
+fn shift_a_accepts_the_files_pending_units_in_one_step() {
+    // The queue acts at once (Phase 4); the v1 list asks first.
     let mut d = Driver::new(6);
     flag(&mut d, &[1]);
     d.keys("A");
-    assert_eq!(
-        *d.overlay(),
-        Overlay::ConfirmAcceptFile {
-            file: PathBuf::from("f0.rs"),
-            ids: vec!["u0".into(), "u2".into()],
-        }
-    );
-    // Anything but yes cancels.
-    d.keys("n");
     assert_eq!(*d.overlay(), Overlay::None);
-    assert_eq!(d.positions(A), Vec::<usize>::new());
-    d.keys("Ay");
     assert_eq!(d.decisions(), vec![A, F, A, P, P, P]);
     assert_eq!(d.undo_steps(), 1);
 }
 
 #[test]
-fn shift_f_asks_then_flags_the_files_pending_units_in_one_step() {
+fn shift_f_flags_the_files_pending_units_in_one_step() {
     let mut d = Driver::new(6);
     accept(&mut d, &[1]);
     d.keys("F");
-    assert_eq!(
-        *d.overlay(),
-        Overlay::ConfirmFlagFile {
-            file: PathBuf::from("f0.rs"),
-            ids: vec!["u0".into(), "u2".into()],
-        }
+    assert_eq!(d.decisions(), vec![F, A, F, P, P, P]);
+    assert!(
+        matches!(d.overlay(), Overlay::Note { id, also, .. } if id == "u0" && also == &["u2"]),
+        "{:?}",
+        d.overlay()
     );
     d.keys("<cr>");
-    assert_eq!(d.decisions(), vec![F, A, F, P, P, P]);
     assert_eq!(d.undo_steps(), 1);
     d.keys("u");
     assert_eq!(d.decisions(), vec![P, A, P, P, P, P]);
@@ -352,12 +350,22 @@ fn visual_mode_applies_to_selection() {
 }
 
 #[test]
-fn visual_f_flags_the_selection_without_a_note_line() {
+fn visual_f_flags_the_selection_with_one_note_line() {
+    // The queue opens one line for the selection (Phase 4); the v1 list none.
     let mut d = Driver::new(6);
     d.keys("Vjf");
     assert_eq!(d.positions(F), vec![0, 1]);
-    assert_eq!(*d.overlay(), Overlay::None);
+    assert!(
+        matches!(d.overlay(), Overlay::Note { id, also, .. } if id == "u0" && also == &["u1"]),
+        "{:?}",
+        d.overlay()
+    );
     assert_eq!(d.app.visual, None);
+    let mut d = Driver::new(6);
+    d.app.open_v1_list();
+    d.keys("Vjf");
+    assert_eq!(d.positions(F), vec![0, 1]);
+    assert_eq!(*d.overlay(), Overlay::None);
 }
 
 #[test]
@@ -365,7 +373,7 @@ fn esc_leaves_visual_mode_and_decides_nothing() {
     let mut d = Driver::new(6);
     d.keys("Vj<esc>");
     assert_eq!(d.app.visual, None);
-    assert_eq!(d.screen(), Screen::Slim);
+    assert_eq!(d.screen(), Screen::Queue);
     assert!(d.decisions().iter().all(|x| *x == P));
     d.keys("Vh");
     assert_eq!(d.app.visual, None, "h is view.back too");
@@ -465,28 +473,34 @@ fn dot_after_visual_repeats_on_as_many_units() {
 }
 
 #[test]
-fn dot_after_a_file_decision_asks_again_for_the_file_under_the_cursor() {
+fn dot_after_a_file_decision_decides_the_file_under_the_cursor() {
     let mut d = Driver::new(9);
-    d.keys("Ay");
+    d.keys("A");
     assert_eq!(d.positions(A), vec![0, 1, 2]);
     d.select(4);
     d.keys(".");
-    assert_eq!(
-        *d.overlay(),
-        Overlay::ConfirmAcceptFile {
-            file: PathBuf::from("f1.rs"),
-            ids: vec!["u3".into(), "u4".into(), "u5".into()],
-        }
-    );
-    d.keys("y");
+    assert_eq!(*d.overlay(), Overlay::None, "at once, as `A`");
     assert_eq!(d.positions(A), vec![0, 1, 2, 3, 4, 5]);
 }
 
 // ---- Views ----------------------------------------------------------------------
 
 #[test]
+fn l_and_enter_open_any_unit_in_the_unit_view() {
+    for (pos, keys) in [(1, "l"), (2, "<cr>")] {
+        let mut d = Driver::new(6);
+        flag(&mut d, &[2]);
+        d.select(pos);
+        d.keys(keys);
+        assert_eq!(d.screen(), Screen::Unit, "{keys}");
+    }
+}
+
+#[test]
 fn l_and_enter_open_a_flagged_unit_on_the_flagged_screen() {
+    // The v1 list (`--swipe`).
     let mut d = Driver::new(6);
+    d.app.open_v1_list();
     flag(&mut d, &[2, 4]);
     d.select(4);
     d.keys("l");
@@ -502,7 +516,9 @@ fn l_and_enter_open_a_flagged_unit_on_the_flagged_screen() {
 
 #[test]
 fn l_on_a_unit_not_flagged_says_how_to_flag_it() {
+    // The v1 list (`--swipe`); the queue opens any unit.
     let mut d = Driver::new(6);
+    d.app.open_v1_list();
     flag(&mut d, &[2]);
     d.keys("l");
     assert_eq!(d.screen(), Screen::Slim);
@@ -518,7 +534,7 @@ fn h_and_esc_do_nothing_on_the_list_outside_visual_mode() {
     d.select(2);
     for keys in ["h", "<esc>"] {
         assert!(d.keys(keys).is_empty(), "{keys}");
-        assert_eq!(d.screen(), Screen::Slim);
+        assert_eq!(d.screen(), Screen::Queue);
         assert_eq!(d.sel(), 2);
         assert_eq!(*d.overlay(), Overlay::None);
     }
@@ -637,7 +653,9 @@ fn leader_tools_on_a_unit_not_flagged_say_to_flag_it_first() {
     for keys in [
         "<space>t", "<space>r", "<space>v", "<space>w", "<space>m", "<space>a",
     ] {
+        // The v1 list's tiles (the unit view replaces them).
         let mut d = Driver::new(3);
+        d.app.open_v1_list();
         assert!(d.keys(keys).is_empty(), "{keys}");
         assert_eq!(d.screen(), Screen::Slim, "{keys}");
         assert_eq!(d.status(), "Flag the unit (f) to use this.", "{keys}");
@@ -784,7 +802,7 @@ fn keys_of_the_notes_view_do_nothing_on_the_list() {
 
 #[test]
 fn s_enters_swipe_and_leaves_it() {
-    let mut d = Driver::new(3);
+    let mut d = v1(3);
     d.keys("s");
     assert_eq!(d.screen(), Screen::Swipe);
     d.keys("s");
@@ -792,19 +810,20 @@ fn s_enters_swipe_and_leaves_it() {
 }
 
 #[test]
-fn zf_switches_between_by_file_and_by_unit() {
+fn zf_switches_between_by_unit_and_by_file() {
+    // The queue starts by level (Grouping::Unit, Q3).
     let mut d = Driver::new(3);
     d.keys("zf");
-    assert_eq!(d.app.grouping, Grouping::Unit);
-    d.keys("zf");
     assert_eq!(d.app.grouping, Grouping::File);
+    d.keys("zf");
+    assert_eq!(d.app.grouping, Grouping::Unit);
 }
 
 // ---- Swipe ----------------------------------------------------------------------
 
 #[test]
 fn in_swipe_a_accepts_f_flags_and_k_goes_back_a_card() {
-    let mut d = Driver::new(6);
+    let mut d = v1(6);
     d.keys("s");
     assert_eq!(d.app.swipe_current().map(String::as_str), Some("u0"));
     d.keys("a");
@@ -827,7 +846,7 @@ fn in_swipe_a_accepts_f_flags_and_k_goes_back_a_card() {
 #[test]
 fn in_swipe_h_esc_and_q_go_back_to_the_list() {
     for keys in ["h", "<esc>", "q"] {
-        let mut d = Driver::new(3);
+        let mut d = v1(3);
         d.keys("s");
         let effects = d.keys(keys);
         assert_eq!(d.screen(), Screen::Slim, "{keys}");
@@ -837,7 +856,7 @@ fn in_swipe_h_esc_and_q_go_back_to_the_list() {
 
 #[test]
 fn in_swipe_u_undoes_the_last_card() {
-    let mut d = Driver::new(3);
+    let mut d = v1(3);
     d.keys("sa");
     assert_eq!(d.decision_of("u0"), A);
     d.keys("u");
@@ -1044,6 +1063,7 @@ fn screens_receive_actions_not_keys() {
     assert_eq!(d.decision(0), A);
 
     let mut d = Driver::with(review(units(6)), keys());
+    d.app.open_v1_list();
     d.keys("s");
     d.keys("a");
     assert_eq!(d.decision_of("u0"), P, "swipe: a is unbound");
@@ -1051,6 +1071,7 @@ fn screens_receive_actions_not_keys() {
     assert_eq!(d.decision_of("u0"), A, "swipe: e accepts");
 
     let mut d = Driver::with(review(units(6)), keys());
+    d.app.open_v1_list();
     flag(&mut d, &[0, 1]);
     d.keys("l");
     assert_eq!(d.screen(), Screen::Flagged);
@@ -1151,6 +1172,8 @@ fn rebinding_changes_dispatch_and_help() {
     d.keys("]f");
     assert_eq!(d.sel(), 3, "]f is no longer bound");
 
+    // The v1 list's help (the queue's lists `queue::ACTIONS`: Q-draw).
+    d.app.open_v1_list();
     d.keys("?");
     assert_eq!(*d.overlay(), Overlay::Help);
     let help = d.render(120, 50);

@@ -107,6 +107,10 @@ pub struct Review {
     /// them ("feature since main"); `None` for other reviews.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<BranchNames>,
+    /// The unit the queue's cursor was on, by id, so a review resumes
+    /// where it was left (Phase 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 /// A question about the code, asked during the review, and the agent's

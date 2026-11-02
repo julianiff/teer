@@ -263,6 +263,16 @@ impl Theme {
         }
     }
 
+    /// `accepted` at the end of a queue row: green, quieter than
+    /// [`Theme::ok`]; dimmed without colour.
+    pub fn accepted_state(&self) -> Style {
+        if self.mono() {
+            Style::new().add_modifier(Modifier::DIM)
+        } else {
+            Style::new().fg(self.added)
+        }
+    }
+
     /// `⚑` badge.
     pub fn badge_investigate(&self) -> Style {
         if self.mono() {

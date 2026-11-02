@@ -24,7 +24,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     // Nothing to scroll unless a detail area says so.
     app.detail_max_scroll.set(0);
     let [header, body, footer] = Layout::vertical([
-        Constraint::Length(1),
+        Constraint::Length(header_rows(app)),
         Constraint::Min(1),
         Constraint::Length(1),
     ])
@@ -33,6 +33,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     text_area(app, header, 0);
     text_area(app, footer, 0);
     match app.screen {
+        Screen::Queue => super::queue::draw(f, app, body),
+        Screen::Unit => super::unit::draw(f, app, body),
         Screen::Slim => draw_slim(f, app, body),
         Screen::Swipe => draw_swipe(f, app, body),
         Screen::Flagged => super::flagged::draw_flagged(f, app, body),
@@ -45,6 +47,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     match &app.overlay {
         Overlay::ConfirmReset => draw_confirm_reset(f, app),
         Overlay::Help => draw_help(f, app),
+        // On the v2 screens a note is typed in the bottom bar.
+        Overlay::Note { .. } if typed_note(app).is_some() => {}
         Overlay::Note { id, text, .. } => crate::tui::notes::draw_editor(f, app, id, text),
         Overlay::Notes { sel } => crate::tui::notes::draw_view(f, app, *sel),
         Overlay::ConfirmDeleteNote { id, sel } => {
@@ -81,6 +85,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             let units = if n == 1 { "unit" } else { "units" };
             draw_confirm(f, app, format!("Flag {n} pending {units} in \"{what}\"?"))
         }
+        Overlay::Finish { .. } => super::finish::draw(f, app),
         Overlay::AllDone => draw_all_done(f, app),
         Overlay::Jump { kind, query, sel } => draw_jump(f, app, kind, query, *sel),
         Overlay::PostReview {
@@ -265,8 +270,40 @@ fn fit(spans: Vec<Span<'static>>, w: usize) -> Vec<Span<'static>> {
     out
 }
 
+/// The screens of v2: the queue and the unit view. They share the bottom
+/// bar ([`draw_bar`]).
+fn v2_screen(app: &App) -> bool {
+    matches!(app.screen, Screen::Queue | Screen::Unit)
+}
+
+/// The summary of the whole change the queue's header shows under what is
+/// reviewed, on one line; `None` while there is none.
+fn summary_line(app: &App) -> Option<String> {
+    let s = app.review.intent.summary.as_deref()?;
+    let s = sanitize(s).split_whitespace().collect::<Vec<_>>().join(" ");
+    (app.screen == Screen::Queue && !s.is_empty()).then_some(s)
+}
+
+/// Rows of the header: what is reviewed, and on the queue the change's
+/// summary under it when there is one.
+fn header_rows(app: &App) -> u16 {
+    1 + u16::from(summary_line(app).is_some())
+}
+
+/// The header: what is reviewed (`your changes`, `feature since main, 6
+/// commits`, `PR #482 by ana`) and what the change is called, with what
+/// teer is doing on the right; on the queue, the summary of the change
+/// under it.
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
+    if let Some(summary) = summary_line(app)
+        && area.height > 1
+    {
+        let row = Rect::new(area.x, area.y + 1, area.width, 1);
+        let text = truncate(&format!(" {summary}"), area.width as usize);
+        f.render_widget(Paragraph::new(Line::styled(text, t.muted())), row);
+    }
+    let area = Rect::new(area.x, area.y, area.width, area.height.min(1));
     let r = &app.review;
     // What is reviewed, then what the change is called (the PR's title, the
     // only commit's subject): the commits view (`␣c`) has the rest.
@@ -286,8 +323,9 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             t.muted(),
         ));
     }
+    // The v2 bottom bar counts the flagged units.
     let flagged = app.flagged_units().len();
-    if flagged > 0 {
+    if flagged > 0 && !v2_screen(app) {
         let text = if app.screen == Screen::Flagged {
             format!("Flagged ({flagged})  ")
         } else {
@@ -305,13 +343,15 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(line)), area);
 }
 
-/// Footer buttons, highest priority first (the footer drops from the end).
-/// Accepting and `:e!` are deliberately absent: they work everywhere but
-/// are listed only in the help overlay.
+/// Footer buttons of the v1 screens, highest priority first (the footer
+/// drops from the end). Accepting and `:e!` are deliberately absent: they
+/// work everywhere but are listed only in the help overlay. The v2 screens
+/// have none (see [`draw_bar`]).
 fn buttons_for(app: &App) -> Vec<(Target, String, &'static str)> {
     let k = |a: Action| app.keys.label(a);
     let b = |a: Action, label: &'static str| (Target::Action(a), k(a), label);
     let mut v = match app.screen {
+        Screen::Queue | Screen::Unit => return Vec::new(),
         Screen::Slim => {
             let mut v = vec![
                 b(Action::GotoEditor, "open in editor"),
@@ -376,7 +416,7 @@ fn buttons_for(app: &App) -> Vec<(Target, String, &'static str)> {
     let on_unit = match app.screen {
         Screen::Slim => app.selected().is_some(),
         Screen::Swipe => app.swipe_current().is_some(),
-        Screen::Flagged => false,
+        Screen::Flagged | Screen::Queue | Screen::Unit => false,
     };
     if on_unit {
         v.push(b(Action::NoteEdit, "note"));
@@ -398,10 +438,15 @@ fn visual_buttons(app: &App) -> Vec<(Target, String, &'static str)> {
     ]
 }
 
-/// The bottom bar: the command line while one is typed, the keys that can
-/// follow while a sequence waits, else the buttons (after `-- VISUAL --`
-/// in visual mode) and the status on the right.
+/// The bottom bar: on the v2 screens [`draw_bar`]; on the others the
+/// command line while one is typed, the keys that can follow while a
+/// sequence waits, else the buttons (after `-- VISUAL --` in visual mode)
+/// and the status on the right.
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
+    if v2_screen(app) {
+        draw_bar(f, app, area);
+        return;
+    }
     let w = area.width as usize;
     if let Some(text) = app.keys.command_line() {
         f.render_widget(Paragraph::new(command_bar(app, text, w)), area);
@@ -444,9 +489,17 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
 /// The bottom bar while a sequence or a count waits: what was typed, then
 /// each key that can follow and what it does, cut at `w`.
 fn pending_bar(app: &App, typed: &str, w: usize) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(pending_spans(app, typed));
+    Line::from(fit(spans, w))
+}
+
+/// What was typed of a sequence or count, then each key that can follow
+/// and what it does.
+fn pending_spans(app: &App, typed: &str) -> Vec<Span<'static>> {
     let t = &app.theme;
     let mut spans = vec![Span::styled(
-        format!(" {typed}"),
+        typed.to_string(),
         t.accent().add_modifier(Modifier::BOLD),
     )];
     for (i, (rest, a)) in app.keys.hint().into_iter().enumerate() {
@@ -454,15 +507,23 @@ fn pending_bar(app: &App, typed: &str, w: usize) -> Line<'static> {
         spans.push(Span::styled(rest, t.accent()));
         spans.push(Span::raw(format!(" {}", a.describe())));
     }
-    Line::from(fit(spans, w))
+    spans
 }
 
 /// The bottom bar while a command is typed: `:`, the text and the cursor,
 /// then the commands it can still become.
 fn command_bar(app: &App, text: &str, w: usize) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(command_spans(app, text));
+    Line::from(fit(spans, w))
+}
+
+/// `:`, the command typed so far and the cursor, then the commands it can
+/// still become.
+fn command_spans(app: &App, text: &str) -> Vec<Span<'static>> {
     let t = &app.theme;
     let mut spans = vec![
-        Span::styled(format!(" :{}", sanitize(text)), t.bold()),
+        Span::styled(format!(":{}", sanitize(text)), t.bold()),
         Span::styled(" ", Style::new().add_modifier(Modifier::REVERSED)),
     ];
     let commands = app
@@ -477,7 +538,244 @@ fn command_bar(app: &App, text: &str, w: usize) -> Line<'static> {
         spans.push(Span::styled(label, t.accent()));
         spans.push(Span::styled(format!(" {}", a.describe()), t.muted()));
     }
-    Line::from(fit(spans, w))
+    spans
+}
+
+/// Cells `spans` take.
+fn spans_width(spans: &[Span]) -> usize {
+    spans.iter().map(|s| s.content.width()).sum()
+}
+
+/// What the v2 bar says first: `4 pending · 1 flagged · 37 accepted`
+/// (units accepted for you are accepted), or once nothing is pending
+/// `Nothing pending. :w to finish` and what is flagged and accepted, if
+/// anything. With it, which span names the finish key, to click.
+fn count_spans(app: &App) -> (Vec<Span<'static>>, Option<usize>) {
+    let t = &app.theme;
+    let (accepted, flagged, pending) = app.decision_counts();
+    let sep = || Span::styled(" · ", t.muted());
+    let flagged_style = if flagged > 0 { t.bad() } else { t.muted() };
+    if pending > 0 {
+        let spans = vec![
+            Span::styled(format!("{pending} pending"), t.bold()),
+            sep(),
+            Span::styled(format!("{flagged} flagged"), flagged_style),
+            sep(),
+            Span::styled(format!("{accepted} accepted"), t.muted()),
+        ];
+        return (spans, None);
+    }
+    let mut spans = vec![
+        Span::styled("Nothing pending. ", t.bold()),
+        Span::styled(app.keys.label(Action::FinishOpen), t.accent()),
+        Span::styled(" to finish", t.bold()),
+    ];
+    if flagged > 0 {
+        spans.extend([sep(), Span::styled(format!("{flagged} flagged"), t.bad())]);
+    }
+    if accepted > 0 {
+        spans.extend([
+            sep(),
+            Span::styled(format!("{accepted} accepted"), t.muted()),
+        ]);
+    }
+    (spans, Some(1))
+}
+
+/// The note being typed in the v2 bar: the unit's id and the text so far.
+/// `None` when no note is typed, on the v1 screens, and from the notes view
+/// (which keeps its editor).
+fn typed_note(app: &App) -> Option<(&str, &str)> {
+    match &app.overlay {
+        Overlay::Note {
+            id,
+            text,
+            back: None,
+            ..
+        } if v2_screen(app) => Some((id, text)),
+        _ => None,
+    }
+}
+
+/// The bottom bar of the v2 screens (the queue, the unit view, and under
+/// the `:w` sheet): the counts ([`count_spans`]), then the sequence or
+/// count that waits and what can follow, the command being typed, or
+/// `-- VISUAL --` and what applies to the selection; the status on the
+/// right, or where the keys are. While a note is typed, the note line.
+fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let w = area.width as usize;
+    if let Some((id, text)) = typed_note(app) {
+        draw_note_line(f, app, area, id, text);
+        return;
+    }
+    let (counts, finish) = count_spans(app);
+    let counts_w = spans_width(&counts);
+    // A command, a waiting sequence or count, or visual mode; with how many
+    // cells of it stay in view: the counts give way first.
+    let (mode, essential, visual) = if let Some(text) = app.keys.command_line() {
+        (command_spans(app, text), text.width() + 2, None)
+    } else if let Some(typed) = app.keys.pending() {
+        (pending_spans(app, &typed), typed.width(), None)
+    } else if let Some(anchor) = app.visual {
+        let lead = "-- VISUAL --";
+        (
+            vec![Span::styled(lead, t.bold())],
+            lead.width(),
+            Some(anchor),
+        )
+    } else {
+        (Vec::new(), 0, None)
+    };
+    let waiting = !mode.is_empty() && visual.is_none();
+    let with_counts = mode.is_empty() || 1 + counts_w + 2 + essential <= w;
+    let mut left = vec![Span::raw(" ")];
+    let finish = if with_counts {
+        let at = finish.map(|i| left.len() + i);
+        left.extend(counts);
+        if !mode.is_empty() {
+            left.push(Span::raw("  "));
+        }
+        at
+    } else {
+        None
+    };
+    left.extend(mode);
+    if let Some(anchor) = visual {
+        // What applies to the selection, as buttons, and how many units it
+        // holds, unless the status says something.
+        let n = anchor.abs_diff(app.sel) + 1;
+        let status = if app.status.is_empty() {
+            format!("{n} unit{} ", if n == 1 { "" } else { "s" })
+        } else {
+            app.status.clone()
+        };
+        // Each button starts with a blank of its own.
+        left.push(Span::raw(" "));
+        let left = fit(left, w);
+        finish_target(app, area, &left, finish);
+        let lead_w = spans_width(&left);
+        let buttons = visual_buttons(app);
+        let keys: Vec<(String, &str)> = buttons.iter().map(|(_, k, l)| (k.clone(), *l)).collect();
+        let (line, widths) = bar_line(t, &keys, &status, w - lead_w, true);
+        let mut x = area.x + lead_w as u16;
+        for ((tgt, ..), bw) in buttons.into_iter().zip(widths) {
+            target(app, Rect::new(x, area.y, bw as u16, 1), tgt);
+            x += bw as u16 + 1;
+        }
+        let mut spans = left;
+        spans.extend(line.spans);
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
+        return;
+    }
+    // On the right the status, which is never cut for the rest; with none,
+    // in normal mode, the key that lists the keys.
+    let mut help = false;
+    let right: Vec<Span> = if waiting {
+        Vec::new()
+    } else if !app.status.is_empty() {
+        vec![Span::styled(app.status.clone(), t.muted())]
+    } else {
+        help = true;
+        vec![
+            Span::styled(app.keys.label(Action::HelpOpen), t.accent()),
+            Span::styled(" keys ", t.muted()),
+        ]
+    };
+    let right_w = spans_width(&right).min(w.saturating_sub(2));
+    // The key hint gives way to the counts.
+    let (right, right_w) = if help && 1 + counts_w + 2 + right_w > w {
+        (Vec::new(), 0)
+    } else {
+        (fit(right, right_w), right_w)
+    };
+    let left = fit(left, w.saturating_sub(right_w + usize::from(right_w > 0)));
+    let left_w = spans_width(&left);
+    finish_target(app, area, &left, finish);
+    if help && right_w > 0 {
+        let r = Rect::new(area.x + (w - right_w) as u16, area.y, right_w as u16, 1);
+        target(app, r, Target::Action(Action::HelpOpen));
+    }
+    let mut spans = left;
+    spans.push(Span::raw(" ".repeat(w.saturating_sub(left_w + right_w))));
+    spans.extend(right);
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Make the finish key that `left[i]` names, drawn from the left of
+/// `area`, a click target, unless it was cut.
+fn finish_target(app: &App, area: Rect, left: &[Span], i: Option<usize>) {
+    let Some(i) = i else { return };
+    let key = app.keys.label(Action::FinishOpen);
+    if left.get(i).is_some_and(|s| s.content == key) {
+        let x = area.x + spans_width(&left[..i]) as u16;
+        let r = Rect::new(x, area.y, key.width() as u16, 1);
+        target(app, r, Target::Action(Action::FinishOpen));
+    }
+}
+
+/// Most cells of a unit's name the note line shows.
+const NOTE_LINE_NAME: usize = 24;
+
+/// The note line at the bottom (`f`, `i` on a v2 screen): which unit, the
+/// text with the cursor after it and its end in view, and on the right
+/// what enter and esc do.
+fn draw_note_line(f: &mut Frame, app: &App, area: Rect, id: &str, text: &str) {
+    use unicode_width::UnicodeWidthChar;
+    let t = &app.theme;
+    let w = area.width as usize;
+    let name = app
+        .review
+        .unit(id)
+        .map(slim::row_name)
+        .unwrap_or_else(|| sanitize(id));
+    let (keys, plain) = hint_line(
+        app,
+        &[hint(fixed::ENTER, "save"), hint(fixed::ESC, "cancel")],
+    );
+    let keys_w = plain.width();
+    // The keys only when the text keeps room.
+    let show_keys = w >= keys_w + 2 + 40;
+    let room = w.saturating_sub(if show_keys { keys_w + 2 } else { 0 });
+    let mut spans = vec![
+        Span::styled(" note on ", t.muted()),
+        Span::styled(truncate(&name, NOTE_LINE_NAME), t.bold()),
+        Span::styled(": ", t.muted()),
+    ];
+    let text_room = room.saturating_sub(spans_width(&spans) + 1);
+    let typed = sanitize(text);
+    // The end of the text in view, `…` in front when its start is cut.
+    let shown = if typed.width() <= text_room {
+        typed
+    } else {
+        let mut tail = Vec::new();
+        let mut used = 1;
+        for c in typed.chars().rev() {
+            let cw = c.width().unwrap_or(0);
+            if used + cw > text_room {
+                break;
+            }
+            used += cw;
+            tail.push(c);
+        }
+        std::iter::once('…').chain(tail.into_iter().rev()).collect()
+    };
+    spans.push(Span::raw(shown));
+    spans.push(Span::styled(
+        " ",
+        Style::new().add_modifier(Modifier::REVERSED),
+    ));
+    let mut spans = fit(spans, room);
+    if show_keys {
+        let used = spans_width(&spans);
+        spans.push(Span::raw(" ".repeat(w.saturating_sub(used + keys_w + 1))));
+        spans.extend(keys.spans);
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+    if show_keys {
+        let keys_area = Rect::new(area.x + (w - keys_w - 1) as u16, area.y, keys_w as u16, 1);
+        click_hints(f, app, keys_area, &plain);
+    }
 }
 
 /// A footer `w` cells wide: the buttons (`key label`) that fit, left to
@@ -540,9 +838,11 @@ fn pad(r: Rect, x: u16, y: u16) -> Rect {
     )
 }
 
-fn draw_slim(f: &mut Frame, app: &App, area: Rect) {
-    // Say once, above the review, why there are no behavior statements.
-    let area = match app.agent_note.as_deref() {
+/// Say once, above the review, why there are no behavior statements: a
+/// row on top of `area` when there is a reason other than `--no-agent`.
+/// What is left of `area`.
+pub(super) fn banner(f: &mut Frame, app: &App, area: Rect) -> Rect {
+    match app.agent_note.as_deref() {
         Some(note) if !app.has_agent && note != crate::cli::NO_AGENT && area.height > 2 => {
             let [banner, rest] =
                 Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
@@ -556,20 +856,30 @@ fn draw_slim(f: &mut Frame, app: &App, area: Rect) {
             rest
         }
         _ => area,
-    };
+    }
+}
+
+/// A list with no unit to decide: the muted rows that still say what
+/// changed (files teer can't show, units accepted for you), or that there
+/// is nothing to review.
+pub(super) fn draw_empty(f: &mut Frame, app: &App, area: Rect, flavor: slim::Flavor) {
+    text_area(app, area, 0);
+    let rows = slim::build_rows(app, area.width, true, flavor);
+    if !rows.lines.is_empty() {
+        f.render_widget(Paragraph::new(rows.lines), area);
+        return;
+    }
+    let msg = "Nothing to review in these changes.";
+    f.render_widget(
+        Paragraph::new(Line::styled(msg, app.theme.muted())).wrap(Wrap { trim: true }),
+        pad(area, 1, 1),
+    );
+}
+
+fn draw_slim(f: &mut Frame, app: &App, area: Rect) {
+    let area = banner(f, app, area);
     if app.order.is_empty() {
-        text_area(app, area, 0);
-        // Nothing to decide; the muted rows still say what changed.
-        let rows = slim::build(app, area.width);
-        if !rows.lines.is_empty() {
-            f.render_widget(Paragraph::new(rows.lines), area);
-            return;
-        }
-        let msg = "Nothing to review in these changes.";
-        f.render_widget(
-            Paragraph::new(Line::styled(msg, app.theme.muted())).wrap(Wrap { trim: true }),
-            pad(area, 1, 1),
-        );
+        draw_empty(f, app, area, slim::Flavor::List);
         return;
     }
     let (list, pane) = crate::tui::preview::layout_of(app, area);
@@ -577,6 +887,16 @@ fn draw_slim(f: &mut Frame, app: &App, area: Rect) {
     // The blank lines between boxes and files cost rows: only when the list
     // has room for them.
     let rows = slim::build_with(app, list.width, h >= slim::PADDING_MIN_ROWS);
+    draw_rows(f, app, list, &rows);
+    if let Some((rect, kind)) = pane {
+        crate::tui::preview::draw_preview(f, app, rect, kind);
+    }
+}
+
+/// `rows` in `list`, scrolled so the unit under the cursor is in view, each
+/// unit's row a click target that selects it.
+pub(super) fn draw_rows(f: &mut Frame, app: &App, list: Rect, rows: &slim::Rows) {
+    let h = list.height as usize;
     let (s, e) = rows.spans.get(app.sel).copied().unwrap_or((0, 0));
     let title = rows.titles.get(app.sel).copied().unwrap_or(s);
     let head = rows.heads.get(app.sel).copied().unwrap_or(s);
@@ -615,9 +935,6 @@ fn draw_slim(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(visible), list);
     // Inside the boxes' borders.
     text_area(app, pad(list, 1, 0), 0);
-    if let Some((rect, kind)) = pane {
-        crate::tui::preview::draw_preview(f, app, rect, kind);
-    }
 }
 
 fn centered(area: Rect, w: u16, h: u16) -> Rect {
@@ -1205,6 +1522,7 @@ fn help_panel(app: &App) -> Option<(&'static str, &'static [Action])> {
         Overlay::Notes { .. } | Overlay::ConfirmDeleteNote { .. } => Some(("notes", NOTES)),
         Overlay::Commits { .. } => Some(("commits", COMMITS)),
         Overlay::Jump { .. } => Some(("jump list", JUMP)),
+        Overlay::Finish { .. } => Some(("finish", super::finish::ACTIONS)),
         Overlay::Ask => Some(("ask", ASK)),
         _ => None,
     }
@@ -1216,6 +1534,8 @@ fn screen_actions(app: &App) -> &'static [Action] {
     match help_panel(app) {
         Some((_, actions)) => actions,
         None => match app.screen {
+            Screen::Queue => super::queue::ACTIONS,
+            Screen::Unit => super::unit::ACTIONS,
             Screen::Slim => LIST,
             Screen::Swipe => SWIPE,
             Screen::Flagged => FLAGGED,
@@ -1228,6 +1548,8 @@ fn screen_name(app: &App) -> &'static str {
     match help_panel(app) {
         Some((name, _)) => name,
         None => match app.screen {
+            Screen::Queue => "queue",
+            Screen::Unit => "unit",
             Screen::Slim => "list",
             Screen::Swipe => "swipe",
             Screen::Flagged => "Flagged",
@@ -1554,6 +1876,33 @@ fn help_legend(app: &App) -> Vec<Line<'static>> {
             Span::raw(format!(" {what}  ")),
         ]
     };
+    if app.screen == Screen::Queue {
+        // The queue's glyphs, and the states at the end of its rows.
+        return vec![
+            Line::from(
+                [Span::styled("legend  ", t.muted())]
+                    .into_iter()
+                    .chain(level(Level::Attention, "close look"))
+                    .chain(level(Level::Look, "worth a look"))
+                    .chain(level(Level::Routine, "routine"))
+                    .chain(level(Level::Same, "accepted for you"))
+                    .collect::<Vec<_>>(),
+            ),
+            Line::from(vec![
+                Span::raw(" ".repeat(8)),
+                Span::styled("pending", t.muted()),
+                Span::raw("  "),
+                Span::styled("accepted", t.accepted_state()),
+                Span::raw("  "),
+                Span::styled("flagged", t.flagged_row()),
+                Span::styled(" · “note”  ", t.muted()),
+                Span::styled("⚠", t.risk(crate::review::model::Risk::Medium)),
+                Span::raw(" disputed  "),
+                Span::styled("✎", t.accent()),
+                Span::raw(" has a note"),
+            ]),
+        ];
+    }
     vec![
         Line::from(vec![
             Span::styled("legend  ", t.muted()),

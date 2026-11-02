@@ -1,4 +1,5 @@
-//! Triage in place on the Slim list: decisions, jumps, undo.
+//! Triage in place in the queue (the v1 list shares it): decisions, jumps,
+//! undo.
 //! Driven through key events on a synthetic review (no repo, no agent).
 
 mod common;
@@ -160,13 +161,13 @@ fn esc_is_back_from_the_list() {
     // Small review: Back from the list has nowhere to go and doesn't quit.
     let mut a = app(5);
     assert!(a.keys("<esc>").is_empty());
-    assert_eq!(a.screen(), Screen::Slim);
+    assert_eq!(a.screen(), Screen::Queue);
 
     // Large review: there is no file overview to go back to either.
     let mut a = app(5);
     a.app.large = true;
     a.keys("<esc>");
-    assert_eq!(a.screen(), Screen::Slim);
+    assert_eq!(a.screen(), Screen::Queue);
 }
 
 #[test]
@@ -207,6 +208,8 @@ fn units_that_leave_the_list_are_not_decided_after_a_rebuild() {
 #[test]
 fn undo_history_is_shared_between_the_list_and_swipe() {
     let mut a = app(6);
+    // Swipe is on the v1 screens (`--swipe`).
+    a.app.open_v1_list();
     a.keys("a"); // list: u0 accepted
     assert_eq!(a.undo_steps(), 1);
 

@@ -112,6 +112,7 @@ fn app(notes: [&str; 2], pr: Option<PrInfo>) -> App {
         version: 0,
         history: Default::default(),
         branch: None,
+        cursor: None,
     };
     App::new(review, Config::default(), Keymap::default())
 }
@@ -184,7 +185,7 @@ fn the_note_line_takes_every_letter_and_saves_on_enter() {
     // `j`, `q`, `:` and `a` are actions in normal mode; here they are text.
     press(&mut a, "jq: a<bs>b");
     assert!(matches!(&a.overlay, Overlay::Note { text, .. } if text == "jq: b"));
-    assert_eq!(a.screen, Screen::Slim);
+    assert_eq!(a.screen, Screen::Queue);
     let e = press(&mut a, "<cr>");
     assert_eq!(e, vec![Effect::Save]);
     assert_eq!(a.overlay, Overlay::None);

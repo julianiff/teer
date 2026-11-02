@@ -38,6 +38,7 @@ fn app() -> (App, FixtureRepo) {
     let review = build_review(&repo.path(), &BuildOptions::default()).unwrap();
     let mut app = App::new(review, Config::default(), Keymap::default());
     app.start(false, None, Vec::new(), None, false);
+    app.open_v1_list();
     assert_eq!(app.selected().unwrap().symbol, "total");
     (app, repo)
 }

@@ -45,6 +45,7 @@ fn fixture(keys: Keymap) -> Fixture {
         u.decision = Decision::Investigate;
     }
     let mut app = App::new(review, Config::default(), keys);
+    app.open_v1_list();
     open_flagged(&mut app);
     Fixture {
         app,
@@ -383,6 +384,7 @@ async fn the_picture_survives_a_save_and_reload() {
     assert_eq!(res.text, before.claim);
 
     let mut app = App::new(back, Config::default(), Keymap::default());
+    app.open_v1_list();
     open_flagged(&mut app);
     keys(&mut app, "<space>v");
     keys(&mut app, "zz");

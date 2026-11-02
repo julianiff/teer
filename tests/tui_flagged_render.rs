@@ -66,6 +66,7 @@ fn app() -> App {
         version: 0,
         history: Default::default(),
         branch: None,
+        cursor: None,
     };
     let mut a = App::new(review, Config::default(), Keymap::default());
     a.screen = Screen::Flagged;
@@ -356,6 +357,8 @@ fn tiny_sizes_never_panic() {
             id: String::new(),
             text: "hello".into(),
             back: None,
+            also: Vec::new(),
+            joins: None,
         };
         render(&a, w, h);
         a.overlay = Overlay::ConfirmWeb;
@@ -378,6 +381,8 @@ fn overlays_render() {
         id: String::new(),
         text: "remember to check rounding".into(),
         back: None,
+        also: Vec::new(),
+        joins: None,
     };
     let out = render(&a, 80, 24);
     assert!(out.contains("Note"), "{out}");
@@ -388,6 +393,8 @@ fn overlays_render() {
         id: String::new(),
         text: "x".repeat(300),
         back: None,
+        also: Vec::new(),
+        joins: None,
     };
     let out = render(&a, 40, 12);
     assert!(out.contains("⏎ save"), "{out}");

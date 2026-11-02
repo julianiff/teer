@@ -45,6 +45,7 @@ fn review_of(old: &str, new: &str) -> (Review, FixtureRepo) {
 fn app_with(review: Review, keys: Keymap) -> App {
     let mut app = App::new(review, Config::default(), keys);
     app.start(false, None, Vec::new(), None, false);
+    app.open_v1_list();
     app
 }
 

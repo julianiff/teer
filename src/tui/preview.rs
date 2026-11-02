@@ -1,4 +1,5 @@
-//! Live preview pane for the selected unit in the Slim list.
+//! Live preview pane for the unit under the cursor in the queue and the
+//! v1 list.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -7,8 +8,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use super::app::{App, Target};
-use super::slim;
+use super::app::{App, Screen, Target};
+use super::slim::{self, Flavor};
 use crate::review::model::{Prep, Unit};
 use crate::util::{truncate, wrap};
 
@@ -28,6 +29,9 @@ pub const MIN_BOX_ROWS: usize = 5;
 const MIN_SIDE_LIST: u16 = 24;
 /// Widest list beside the pane, in percent: the code change gets the rest.
 const SIDE_LIST_MOST: u32 = 35;
+/// Widest queue beside the pane, in percent: its rows name the file and
+/// the state too.
+const SIDE_QUEUE_MOST: u32 = 45;
 
 /// Which edge of the list the preview sits on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,10 +58,11 @@ impl ListSize {
         padded_rows: u16::MAX,
     };
 
-    /// The size of `app`'s list, as far as a layout of `area` needs it.
-    pub fn of(app: &App, area: Rect) -> ListSize {
+    /// The size of `app`'s list of `flavor`, as far as a layout of `area`
+    /// needs it.
+    pub fn of(app: &App, area: Rect, flavor: Flavor) -> ListSize {
         if area.width >= SIDE_WIDTH {
-            let width = slim::fit_width(app).min(u16::MAX as usize) as u16;
+            let width = slim::fit_width_of(app, flavor).min(u16::MAX as usize) as u16;
             return ListSize {
                 width,
                 ..ListSize::FULL
@@ -67,7 +72,11 @@ impl ListSize {
         if app.order.len() >= area.height as usize {
             return ListSize::FULL;
         }
-        let count = |padded| slim::build_with(app, area.width, padded).lines.len() as u16;
+        let count = |padded| {
+            slim::build_rows(app, area.width, padded, flavor)
+                .lines
+                .len() as u16
+        };
         let rows = count(false);
         let padded_rows = if rows as usize >= slim::PADDING_MIN_ROWS {
             count(true)
@@ -93,11 +102,16 @@ impl ListSize {
 /// 14) and at
 /// least 3. A pane under 2 rows is not drawn.
 pub fn layout_fit(area: Rect, code: bool, list: ListSize) -> (Rect, Option<(Rect, Pane)>) {
+    layout_split(area, code, list, SIDE_LIST_MOST)
+}
+
+/// [`layout_fit`] with a list beside the pane of at most `most` percent.
+fn layout_split(area: Rect, code: bool, list: ListSize, most: u32) -> (Rect, Option<(Rect, Pane)>) {
     if area.width == 0 || area.height == 0 {
         return (area, None);
     }
     if area.width >= SIDE_WIDTH {
-        let most = (u32::from(area.width) * SIDE_LIST_MOST / 100) as u16;
+        let most = (u32::from(area.width) * most / 100) as u16;
         let width = list.width.clamp(MIN_SIDE_LIST, most);
         let [list, pane] =
             Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area);
@@ -124,10 +138,15 @@ pub fn layout_fit(area: Rect, code: bool, list: ListSize) -> (Rect, Option<(Rect
     (list, Some((pane, Pane::Bottom)))
 }
 
-/// The list and the pane for `app` in `area`, as the list view draws them.
+/// The list and the pane for `app` in `area`, as the screen on show draws
+/// them: the queue gets up to 45% beside the pane, the list 35%.
 pub fn layout_of(app: &App, area: Rect) -> (Rect, Option<(Rect, Pane)>) {
     let code = app.selected().is_some_and(|u| super::diff::shows(app, u));
-    layout_fit(area, code, ListSize::of(app, area))
+    let (flavor, most) = match app.screen {
+        Screen::Queue => (Flavor::Queue, SIDE_QUEUE_MOST),
+        _ => (Flavor::List, SIDE_LIST_MOST),
+    };
+    layout_split(area, code, ListSize::of(app, area, flavor), most)
 }
 
 /// The change itself as lines: its name, why it matters and its commits
@@ -798,6 +817,7 @@ mod tests {
             version: 0,
             history: Default::default(),
             branch: None,
+            cursor: None,
         };
         App::new(review, Config::default(), Keymap::default())
     }

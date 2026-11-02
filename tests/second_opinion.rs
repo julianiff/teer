@@ -180,6 +180,7 @@ async fn a_disputed_statement_and_an_expensive_change_are_warnings() {
     // The list preview says why, a reason per line under "Why this level";
     // the row keeps only the dispute's ⚠.
     let mut app = App::new(review, Config::default(), Keymap::default());
+    app.open_v1_list();
     while app.selected().is_some_and(|u| u.symbol != "charge_order") {
         press(&mut app, 'j');
     }
@@ -208,6 +209,7 @@ async fn the_disagreement_tab_shows_the_check_and_asks_again() {
         u.decision = Decision::Investigate;
     }
     let mut app = App::new(review, Config::default(), Keymap::default());
+    app.open_v1_list();
     while app.selected().is_some_and(|u| u.symbol != "charge_order") {
         press(&mut app, 'j');
     }

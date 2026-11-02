@@ -74,6 +74,7 @@ async fn app() -> (App, FixtureRepo) {
     review.agent_session = Some(session());
     let mut app = App::new(review, Config::default(), Keymap::default());
     app.start(true, None, Vec::new(), Some(session()), false);
+    app.open_v1_list();
     assert_eq!(app.screen, Screen::Slim);
     (app, repo)
 }
@@ -460,6 +461,8 @@ async fn clicking_the_preview_pane_does_nothing() {
     for (w, h) in [(120u16, 40u16), (160, 50), (80, 32), (80, 24), (60, 20)] {
         let (mut app, _r) = app().await;
         app.sel = 1;
+        // Saved where the cursor is, as a key would.
+        app.review.cursor = app.selected_id();
         let g = grid(&app, w, h);
         let at = preview_at(&app, &g);
         let (lx, lw) = list_x_w(&app);

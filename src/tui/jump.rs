@@ -255,6 +255,7 @@ mod tests {
             version: 0,
             history: Default::default(),
             branch: None,
+            cursor: None,
         };
         App::new(review, Config::default(), Keymap::default())
     }
@@ -412,7 +413,7 @@ mod tests {
         a.open_jump(JumpKind::Find);
         press(&mut a, "refund<cr>");
         assert_eq!(a.overlay, Overlay::None);
-        assert_eq!(a.screen, Screen::Slim);
+        assert_eq!(a.screen, Screen::Queue, "in the queue, the queue");
         assert_eq!(selected(&a), "app.rs::refund");
         // gd: a panel; `j` moves, `l` goes.
         a.open_jump(JumpKind::Definition {

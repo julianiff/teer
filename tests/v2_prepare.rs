@@ -70,6 +70,8 @@ fn open(review: Review, cfg: Config) -> Driver {
         None,
         false,
     );
+    // The v1 list's drawing (`--swipe`); the queue's is tests/v2_queue.rs.
+    app.open_v1_list();
     Driver { app, effects }
 }
 

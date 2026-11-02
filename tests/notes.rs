@@ -94,8 +94,12 @@ fn app(notes: [&str; 2], pr: Option<PrInfo>) -> App {
         version: 0,
         history: Default::default(),
         branch: None,
+        cursor: None,
     };
-    App::new(review, Config::default(), Keymap::default())
+    // The v1 list (`--swipe`, until Phase 8).
+    let mut app = App::new(review, Config::default(), Keymap::default());
+    app.open_v1_list();
+    app
 }
 
 fn code(a: &mut App, c: KeyCode) -> Vec<Effect> {

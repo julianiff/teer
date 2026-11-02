@@ -32,7 +32,9 @@ fn review() -> (Review, FixtureRepo) {
 
 fn app_with(keys: Keymap) -> (App, FixtureRepo) {
     let (review, repo) = review();
-    let app = App::new(review, Config::default(), keys);
+    let mut app = App::new(review, Config::default(), keys);
+    // The v1 list's drawing (`--swipe`); the queue's is tests/v2_queue.rs.
+    app.open_v1_list();
     assert!(app.order.len() >= 2, "the fixture lists units");
     (app, repo)
 }

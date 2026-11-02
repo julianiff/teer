@@ -111,6 +111,8 @@ fn app_for(review: Review, cfg: Config) -> App {
         !effects.iter().any(|e| matches!(e, Effect::Prepare(_))),
         "already prepared: {effects:?}"
     );
+    // These are the v1 screens (`--swipe`): the list, swipe, Flagged.
+    app.open_v1_list();
     app
 }
 
@@ -511,8 +513,8 @@ async fn large_reviews_prepare_close_looks_first_and_the_rest_per_file() {
     };
     let mut app = App::new(review, cfg, Keymap::default());
     let effects = app.start(true, None, Vec::new(), Some(session()), false);
-    // Straight into the list: there is no file overview any more.
-    assert_eq!(app.screen, Screen::Slim);
+    // Straight into the queue: there is no file overview any more.
+    assert_eq!(app.screen, Screen::Queue);
     let asked = |effects: &[Effect]| -> Vec<String> {
         effects
             .iter()
@@ -575,7 +577,7 @@ async fn starts_on_the_review_without_asking_for_a_session() {
     let mut app = App::new(fresh, Config::default(), Keymap::default());
     let s = SessionRef::fresh("claude", "/work/shop".into());
     let effects = app.start(true, None, Vec::new(), Some(s.clone()), false);
-    assert_eq!(app.screen, Screen::Slim);
+    assert_eq!(app.screen, Screen::Queue);
     assert_eq!(app.review.agent_session, Some(s));
     assert!(
         effects
@@ -595,8 +597,10 @@ async fn starts_on_the_review_without_asking_for_a_session() {
         false,
     );
     assert!(effects.is_empty());
-    assert_eq!(app.screen, Screen::Slim);
+    assert_eq!(app.screen, Screen::Queue);
     assert!(app.review.agent_session.is_none());
+    // The v1 list says why (the queue's drawing: tests/v2_queue.rs).
+    app.open_v1_list();
     let screen = format!("{}", render(&app, 90, 12).backend());
     assert!(screen.contains("isn't on your PATH"), "{screen}");
 }

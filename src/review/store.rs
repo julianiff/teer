@@ -11,7 +11,8 @@ use crate::util::hash_hex;
 
 /// The version of the saved format. 1 added the version itself and the
 /// undo history (`Review.history`). A file without one is 0 and loads as it
-/// is; a file from a newer teer doesn't load.
+/// is; a file from a newer teer doesn't load. Fields that may be missing
+/// (`Review.cursor`, a step's `notes`) need no new version.
 pub const CURRENT: u32 = 1;
 
 /// Writes `Review.version`: always [`CURRENT`], the format this teer writes.
@@ -117,11 +118,35 @@ pub fn save(review: &Review) -> Result<PathBuf> {
         &review.head_commit,
     );
     write_atomic(&path, &serde_json::to_vec_pretty(review)?)?;
+    write_atomic(&cursor_path(&path), cursor_bytes(review))?;
     write_atomic(
         &scope_dir(&review.repo_root, pr).join("latest"),
         path.to_string_lossy().as_bytes(),
     )?;
     Ok(path)
+}
+
+/// Save only where the queue's cursor is (`Review.cursor`), next to the
+/// review: a review can be tens of megabytes, and the cursor moves on every
+/// key.
+pub fn save_cursor(review: &Review) -> Result<()> {
+    let path = review_path(
+        &review.repo_root,
+        review.pr.as_ref(),
+        &review.base,
+        &review.head,
+        &review.head_commit,
+    );
+    write_atomic(&cursor_path(&path), cursor_bytes(review))
+}
+
+/// Where the cursor of the review saved at `path` is kept.
+fn cursor_path(path: &Path) -> PathBuf {
+    path.with_extension("cursor")
+}
+
+fn cursor_bytes(review: &Review) -> &[u8] {
+    review.cursor.as_deref().unwrap_or_default().as_bytes()
 }
 
 /// The saved review of `base..head` at `head_commit`, in the PR's namespace
@@ -145,7 +170,11 @@ pub fn load_latest(repo: &Path, pr: Option<&PrInfo>) -> Option<Review> {
 /// The review saved at `path`, unless it doesn't parse or a newer teer
 /// saved it in a format this one doesn't know.
 fn read(path: &Path) -> Option<Review> {
-    let review: Review = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    let mut review: Review = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    // The cursor moves more often than the review is saved.
+    if let Ok(id) = std::fs::read_to_string(cursor_path(path)) {
+        review.cursor = (!id.is_empty()).then_some(id);
+    }
     (review.version <= CURRENT).then_some(review)
 }
 
@@ -191,6 +220,11 @@ pub fn merge_previous(new: &mut Review, old: &Review) {
     let mut history = old.history.clone();
     history.retain_units(|id| same.contains(id));
     new.history = history;
+    // The queue resumes on the unit it was left on, if it is still there
+    // (else on the first pending ▲: see `App::new`).
+    if new.cursor.is_none() {
+        new.cursor = old.cursor.clone();
+    }
     if new.agent_session.is_none() {
         new.agent_session = old.agent_session.clone();
     }
@@ -259,6 +293,7 @@ mod tests {
             version: 0,
             history: Default::default(),
             branch: None,
+            cursor: None,
         }
     }
 
@@ -433,9 +468,11 @@ mod tests {
                 change("a", Decision::Pending, Decision::Accepted),
                 change("b", Decision::Pending, Decision::Investigate),
             ],
+            ..Default::default()
         });
         r.history.record(Step {
             changes: vec![change("a", Decision::Accepted, Decision::Investigate)],
+            ..Default::default()
         });
         r.history.undo();
         save(&r).unwrap();
@@ -452,9 +489,11 @@ mod tests {
                 change("a", Decision::Pending, Decision::Accepted),
                 change("b", Decision::Pending, Decision::Accepted),
             ],
+            ..Default::default()
         });
         old.history.record(Step {
             changes: vec![change("b", Decision::Accepted, Decision::Investigate)],
+            ..Default::default()
         });
         // `b` changed; `a` didn't.
         let mut new = saved_at("/teer-tests/rerun", vec![named("a", "1"), named("b", "2b")]);
@@ -463,8 +502,26 @@ mod tests {
             new.history.undo,
             vec![Step {
                 changes: vec![change("a", Decision::Pending, Decision::Accepted)],
+                ..Default::default()
             }]
         );
         assert!(new.history.redo.is_empty());
+    }
+
+    #[test]
+    fn the_cursor_is_saved_and_carried_over() {
+        let mut r = saved_at("/teer-tests/cursor", vec![named("a", "1"), named("b", "2")]);
+        r.cursor = Some("b".into());
+        save(&r).unwrap();
+        let back = load(&r.repo_root, None, &r.base, &r.head, &r.head_commit).unwrap();
+        assert_eq!(back.cursor.as_deref(), Some("b"));
+        // A new run of the same changes starts where the last one was left,
+        // even when the unit's code changed since.
+        let mut new = saved_at(
+            "/teer-tests/cursor",
+            vec![named("a", "1"), named("b", "2b")],
+        );
+        merge_previous(&mut new, &back);
+        assert_eq!(new.cursor.as_deref(), Some("b"));
     }
 }

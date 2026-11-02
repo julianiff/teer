@@ -74,6 +74,7 @@ async fn app() -> (App, FixtureRepo) {
     .await;
     let mut app = App::new(review, Config::default(), Keymap::default());
     app.start(true, None, Vec::new(), Some(session), false);
+    app.open_v1_list();
     (app, repo)
 }
 

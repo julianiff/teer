@@ -70,6 +70,7 @@ pub fn build_review(cwd: &Path, opts: &BuildOptions) -> Result<Review> {
         version: 0,
         history: Default::default(),
         branch: None,
+        cursor: None,
     })
 }
 

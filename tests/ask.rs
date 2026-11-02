@@ -215,6 +215,8 @@ async fn what_the_agent_does_is_told_before_the_answer_comes() {
 
 fn app(review: Review) -> App {
     let mut a = App::new(review, Config::default(), Keymap::default());
+    // The v1 list and Flagged screen (`--swipe`); the unit view replaces them.
+    a.open_v1_list();
     a.has_agent = true;
     a
 }

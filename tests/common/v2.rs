@@ -10,7 +10,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use teer::config::Config;
 use teer::keymap::{Keymap, parse_keys};
-use teer::review::model::{Decision, Prep, Review, Unit, UnitKind, UnitStatus};
+use teer::review::model::{Decision, Prep, Review, SessionRef, Unit, UnitKind, UnitStatus};
 use teer::tui::app::{App, Effect, Overlay, Screen};
 use teer::tui::ui;
 
@@ -69,6 +69,7 @@ pub fn review(units: Vec<Unit>) -> Review {
         version: 0,
         history: Default::default(),
         branch: None,
+        cursor: None,
     }
 }
 
@@ -117,7 +118,7 @@ impl Driver {
     pub fn with(review: Review, keys: Keymap) -> Driver {
         super::isolate_env();
         let app = App::new(review, Config::default(), keys);
-        assert_eq!(app.screen, Screen::Slim);
+        assert_eq!(app.screen, Screen::Queue);
         Driver {
             app,
             effects: Vec::new(),
@@ -164,10 +165,12 @@ impl Driver {
             .collect()
     }
 
-    /// Put the list cursor on position `pos`.
+    /// Put the list cursor on position `pos`, saved there as a move would
+    /// (so the next key has no cursor to save).
     pub fn select(&mut self, pos: usize) {
         assert!(pos < self.app.order.len(), "row {pos} is listed");
         self.app.sel = pos;
+        self.app.review.cursor = self.app.selected_id();
     }
 
     /// The list position of unit `id`.
@@ -177,9 +180,9 @@ impl Driver {
             .unwrap_or_else(|| panic!("{id} is listed"))
     }
 
-    /// Put the list cursor on unit `id`.
+    /// Put the list cursor on unit `id` (see [`Driver::select`]).
     pub fn select_id(&mut self, id: &str) {
-        self.app.sel = self.pos(id);
+        self.select(self.pos(id));
     }
 
     /// The list cursor's position.
@@ -218,4 +221,65 @@ impl Driver {
     pub fn undo_steps(&self) -> usize {
         self.app.review.history.undo.len()
     }
+}
+
+// ---- Opening a review as `teer` does (Phases 4-6) --------------------------
+
+impl Driver {
+    /// `review` under `cfg`, opened as `teer --no-agent` opens it:
+    /// [`App::new`], then [`App::start`] without an agent and without
+    /// `--swipe`. What `start` returned is in [`Driver::effects`].
+    pub fn open(review: Review, cfg: Config) -> Driver {
+        Driver::start(review, cfg, false, false)
+    }
+
+    /// As [`Driver::open`], with an agent set up: a fresh session in the
+    /// review's repo, as `teer` runs one when no session wrote the change.
+    pub fn open_with_agent(review: Review, cfg: Config) -> Driver {
+        Driver::start(review, cfg, true, false)
+    }
+
+    /// `review` under `cfg`, started the way the runtime starts it
+    /// (`tui::run`): `agent` is whether an agent is set up, `swipe` is
+    /// `--swipe`. Teer's data and config point at a temp dir.
+    pub fn start(review: Review, cfg: Config, agent: bool, swipe: bool) -> Driver {
+        super::isolate_env();
+        let mut app = App::new(review, cfg, Keymap::default());
+        let session = SessionRef::fresh("mock", app.review.repo_root.clone());
+        let note = (!agent).then(|| teer::cli::NO_AGENT.to_string());
+        let effects = app.start(agent, note, Vec::new(), Some(session), swipe);
+        Driver { app, effects }
+    }
+
+    /// The bottom row of the screen drawn at `w` x `h`.
+    pub fn bar(&self, w: u16, h: u16) -> String {
+        self.render(w, h)
+            .lines()
+            .last()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// The id of the unit at list position `pos`.
+    pub fn id_at(&self, pos: usize) -> String {
+        self.app.review.units[self.app.order[pos]].id.clone()
+    }
+
+    /// Save the review when `effects` ask to, as the runtime does.
+    pub fn save_if_asked(&self, effects: &[Effect]) {
+        if effects.contains(&Effect::Save) {
+            teer::review::store::save(&self.app.review).unwrap();
+        } else if effects.contains(&Effect::SaveCursor) {
+            teer::review::store::save_cursor(&self.app.review).unwrap();
+        }
+    }
+}
+
+/// Where `text` is first drawn on `screen` (one line per row): its column
+/// and row, in cells.
+pub fn find(screen: &str, text: &str) -> Option<(u16, u16)> {
+    screen.lines().enumerate().find_map(|(y, row)| {
+        row.find(text)
+            .map(|i| (row[..i].chars().count() as u16, y as u16))
+    })
 }

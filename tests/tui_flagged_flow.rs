@@ -43,7 +43,9 @@ fn fixture_with(cfg: Config, adapter: MockAdapter) -> Fixture {
     repo.write("checkout.py", PY_NEW);
     let mut review: Review = build_review(&repo.path(), &BuildOptions::default()).unwrap();
     review.agent_session = Some(session());
-    let app = App::new(review, cfg, Keymap::default());
+    let mut app = App::new(review, cfg, Keymap::default());
+    // The v1 screens (`--swipe`): the list and Flagged.
+    app.open_v1_list();
     assert_eq!(app.screen, Screen::Slim);
     Fixture {
         app,

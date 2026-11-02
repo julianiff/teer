@@ -42,6 +42,7 @@ fn review(tag: &str, units: Vec<Unit>) -> Review {
         version: 0,
         history: Default::default(),
         branch: None,
+        cursor: None,
     }
 }
 

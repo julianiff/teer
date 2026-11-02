@@ -78,8 +78,12 @@ fn app_with(n: usize, cfg: Config, keys: Keymap) -> App {
         version: 0,
         history: Default::default(),
         branch: None,
+        cursor: None,
     };
-    App::new(review, cfg, keys)
+    // The popup is the v1 screens' (`--swipe`); `:w` replaces it.
+    let mut app = App::new(review, cfg, keys);
+    app.open_v1_list();
+    app
 }
 
 fn app(n: usize) -> App {

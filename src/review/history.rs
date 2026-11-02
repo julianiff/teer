@@ -1,6 +1,8 @@
 //! Undo and redo of decisions (`history.undo`, `history.redo`), one stack
 //! per review, saved with it so they survive quitting; a re-run keeps the
-//! steps of units whose code didn't change (`store::merge_previous`).
+//! steps of units whose code didn't change (`store::merge_previous`). A
+//! flag's step also holds the note typed on the line it opened, so `u`
+//! takes the flag and its note back together.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,10 +19,14 @@ pub struct History {
 }
 
 /// One decision action: a unit, or every unit of a file or a selection.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Step {
     /// In the order they were made.
     pub changes: Vec<Change>,
+    /// The notes written on the line the action opened (`f`, `F`, `f` on a
+    /// selection), in the order they were written.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<NoteChange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +34,23 @@ pub struct Change {
     pub id: String,
     pub before: Decision,
     pub after: Decision,
+}
+
+/// What a step did to the note on unit `id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteChange {
+    pub id: String,
+    pub before: Note,
+    pub after: Note,
+}
+
+/// A unit's note and the code it was written on (`Dive.note`,
+/// `Dive.note_on`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Note {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<String>,
 }
 
 impl History {
@@ -39,11 +62,21 @@ impl History {
     /// Changes that change nothing are left out, and a step of none is not kept.
     pub fn record(&mut self, mut step: Step) {
         step.changes.retain(|c| c.before != c.after);
-        if step.changes.is_empty() {
+        step.notes.retain(|n| n.before != n.after);
+        if step.changes.is_empty() && step.notes.is_empty() {
             return;
         }
         self.undo.push(step);
         self.redo.clear();
+    }
+
+    /// Add `notes` to the step on top of the undo stack: the flag whose note
+    /// line wrote them. Notes that change nothing are left out.
+    pub fn add_notes(&mut self, notes: Vec<NoteChange>) {
+        if let Some(step) = self.undo.last_mut() {
+            step.notes
+                .extend(notes.into_iter().filter(|n| n.before != n.after));
+        }
     }
 
     /// The step to take back: put each change's `before` back, last first.
@@ -66,8 +99,9 @@ impl History {
         for stack in [&mut self.undo, &mut self.redo] {
             for step in stack.iter_mut() {
                 step.changes.retain(|c| keep(&c.id));
+                step.notes.retain(|n| keep(&n.id));
             }
-            stack.retain(|s| !s.changes.is_empty());
+            stack.retain(|s| !s.changes.is_empty() || !s.notes.is_empty());
         }
     }
 }
@@ -83,6 +117,22 @@ mod tests {
                 before,
                 after,
             }],
+            ..Default::default()
+        }
+    }
+
+    fn note(text: &str) -> Note {
+        Note {
+            text: text.into(),
+            on: Some("fp".into()),
+        }
+    }
+
+    fn noted(id: &str, before: Note, after: Note) -> NoteChange {
+        NoteChange {
+            id: id.into(),
+            before,
+            after,
         }
     }
 
@@ -105,7 +155,7 @@ mod tests {
     fn steps_that_change_nothing_are_not_kept() {
         let mut h = History::default();
         h.record(step("a", Decision::Accepted, Decision::Accepted));
-        h.record(Step { changes: vec![] });
+        h.record(Step::default());
         assert!(h.is_empty());
     }
 
@@ -126,6 +176,7 @@ mod tests {
                     after: Decision::Accepted,
                 },
             ],
+            ..Default::default()
         });
         h.undo();
         h.retain_units(|id| id != "a" && id != "b");
@@ -133,6 +184,26 @@ mod tests {
         assert_eq!(h.redo.len(), 1);
         assert_eq!(h.redo[0].changes.len(), 1);
         assert_eq!(h.redo[0].changes[0].id, "c");
+    }
+
+    #[test]
+    fn notes_join_the_last_step_and_go_with_it() {
+        let mut h = History::default();
+        h.add_notes(vec![noted("a", Note::default(), note("x"))]);
+        assert!(h.is_empty(), "no step to join");
+        h.record(step("a", Decision::Pending, Decision::Investigate));
+        h.add_notes(vec![
+            noted("a", Note::default(), note("x")),
+            noted("b", note("same"), note("same")),
+        ]);
+        assert_eq!(h.undo[0].notes, [noted("a", Note::default(), note("x"))]);
+        let json = serde_json::to_string(&h).unwrap();
+        assert_eq!(serde_json::from_str::<History>(&json).unwrap(), h);
+        h.retain_units(|id| id != "a");
+        assert!(
+            h.is_empty(),
+            "its unit changed: the step goes, note and all"
+        );
     }
 
     #[test]

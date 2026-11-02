@@ -538,6 +538,7 @@ mod tests {
                 before: Decision::Accepted,
                 after: Decision::Pending,
             }],
+            ..Default::default()
         });
         r.units[1].decision = Decision::Accepted;
         r.settle(AutoAccept::NoBehaviorChange);
