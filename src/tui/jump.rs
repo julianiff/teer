@@ -101,7 +101,8 @@ impl App {
     }
 
     /// Close the list and go to unit `i` (an index into `review.units`):
-    /// on the Flagged screen when it is flagged there, else in the list.
+    /// in the unit view when it is open, on the Flagged screen when it is
+    /// flagged there, else in the list.
     fn jump_to(&mut self, i: usize) -> Vec<Effect> {
         let id = self.review.units[i].id.clone();
         self.overlay = Overlay::None;

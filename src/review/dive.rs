@@ -1,5 +1,5 @@
-//! Agent questions asked about a flagged unit (the "dive" naming is kept here;
-//! the screen that asks them is the Flagged screen).
+//! Agent questions asked about a unit (the "dive" naming is kept here): the
+//! unit view's recommendation and tools, and the Flagged screen's tiles.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -86,6 +86,18 @@ fn rows_near(
     cites: &[LineRef],
     syntax: Option<&Cache>,
 ) -> (Vec<Row>, usize, usize) {
+    rows_around(review, u, cites, false, syntax)
+}
+
+/// [`rows_near`]; with `every`, every change is kept as well as the lines
+/// in `cites`, each with [`CONTEXT`] lines around it.
+fn rows_around(
+    review: &Review,
+    u: &Unit,
+    cites: &[LineRef],
+    every: bool,
+    syntax: Option<&Cache>,
+) -> (Vec<Row>, usize, usize) {
     let Some(f) = review.file_of(u) else {
         return (Vec::new(), 0, 0);
     };
@@ -113,7 +125,9 @@ fn rows_near(
             })
         })
         .collect();
-    let (around, context) = if cited.is_empty() {
+    let (around, context) = if every {
+        (changed.into_iter().chain(cited).collect(), CONTEXT)
+    } else if cited.is_empty() {
         (changed, CONTEXT)
     } else {
         (cited, NOTE_CONTEXT)
@@ -393,6 +407,9 @@ pub enum Notes {
     /// Each statement written into the code under the last row it cites,
     /// like a review comment; only the code they cite is shown.
     Inline,
+    /// The statements written in as with `Inline`, and every change shown
+    /// (the unit view, where `]c` and `[c` go from hunk to hunk).
+    Full,
 }
 
 /// The code change of `u` as blocks, each row as the lines it wraps into,
@@ -406,11 +423,32 @@ pub fn code_change(
     w: usize,
     notes: Notes,
 ) -> (Vec<Vec<Line<'static>>>, usize, usize, u16) {
+    let c = code_change_of(app, u, w, notes);
+    (c.blocks, c.added, c.removed, c.gutter)
+}
+
+/// The code change of a unit as [`code_change`] draws it, and where its
+/// hunks start.
+#[derive(Debug, Default)]
+pub struct CodeChange {
+    pub blocks: Vec<Vec<Line<'static>>>,
+    pub added: usize,
+    pub removed: usize,
+    /// Columns the line numbers and signs take.
+    pub gutter: u16,
+    /// The block each hunk (a run of added and removed rows) starts at, in
+    /// order: where `]c` and `[c` go.
+    pub hunks: Vec<usize>,
+}
+
+/// [`code_change`] with the hunks.
+pub fn code_change_of(app: &App, u: &Unit, w: usize, notes: Notes) -> CodeChange {
     if app.assessment(&u.id).is_none_or(|a| a.level < DIFF_LEVEL) {
-        return (Vec::new(), 0, 0, 0);
+        return CodeChange::default();
     }
-    let said = notes == Notes::Inline && u.prep == Prep::Ready;
-    // Where the statements are drawn, they show only the code they cite.
+    let said = notes != Notes::Off && u.prep == Prep::Ready;
+    // Where the statements are drawn inline, they show only the code they
+    // cite; in full, the code they cite as well as every change.
     let cites: Vec<LineRef> = if said {
         u.changes
             .iter()
@@ -419,10 +457,15 @@ pub fn code_change(
     } else {
         Vec::new()
     };
-    let (rows, added, removed) = rows_near(&app.review, u, &cites, Some(&app.syntax));
+    let every = notes == Notes::Full;
+    let (rows, added, removed) = rows_around(&app.review, u, &cites, every, Some(&app.syntax));
     if rows.is_empty() {
-        return (Vec::new(), 0, 0, 0);
+        return CodeChange::default();
     }
+    let changes = |k: usize| matches!(rows[k].kind, Kind::Added | Kind::Removed);
+    let mut hunks: Vec<usize> = (0..rows.len())
+        .filter(|&k| changes(k) && (k == 0 || !changes(k - 1)))
+        .collect();
     let t = &app.theme;
     let digits = rows
         .iter()
@@ -504,8 +547,19 @@ pub fn code_change(
             let note = note_lines(app, &u.changes[n], digits + 1, w);
             blocks.insert(k, note);
         }
+        // A row moves down by the notes inserted before it.
+        for h in &mut hunks {
+            let row = *h;
+            *h = row + at.iter().filter(|&&(k, _)| k <= row).count();
+        }
     }
-    (blocks, added, removed, (digits + 3) as u16)
+    CodeChange {
+        blocks,
+        added,
+        removed,
+        gutter: (digits + 3) as u16,
+        hunks,
+    }
 }
 
 /// The row a statement is written under: the last one it cites, else the
@@ -940,6 +994,11 @@ mod tests {
                 " 19   l19",
             ]
         );
+        // In full, every change shows too, the statement under its line.
+        let full = text(Notes::Full);
+        assert!(full.contains(&"  2 + L2".to_string()), "{full:?}");
+        let note = full.iter().position(|l| l == "    │ s │").unwrap();
+        assert_eq!(full[note - 2], " 17 + L17", "{full:?}");
         // Without statements, every change shows.
         let all = text(Notes::Off);
         assert!(all.contains(&"  2 + L2".to_string()), "{all:?}");
@@ -948,6 +1007,42 @@ mod tests {
         let dots = &lines(Notes::Inline)[0];
         assert!(dots.spans.iter().all(|s| s.style.bg.is_none()), "{dots:?}");
         assert_eq!(dots.style, app.theme.muted());
+    }
+
+    #[test]
+    fn hunks_start_at_the_first_changed_row_of_each_run_past_the_notes() {
+        use crate::config::Config;
+        use crate::keymap::Keymap;
+        let (old, new) = twenty();
+        let mut u = unit(UnitStatus::Changed, Some((1, 20)), Some((1, 20)));
+        u.prep = Prep::Ready;
+        u.changes = vec![change(&[(Side::New, 2)]), change(&[(Side::New, 17)])];
+        let app = App::new(
+            review(Some(&old), Some(&new), u),
+            Config::default(),
+            Keymap::default(),
+        );
+        let text = |l: &Line| -> String { l.spans.iter().map(|s| s.content.to_string()).collect() };
+        for notes in [Notes::Off, Notes::Inline, Notes::Full] {
+            let c = code_change_of(&app, &app.review.units[0], 40, notes);
+            assert_eq!(c.hunks.len(), 2, "{notes:?}");
+            for &h in &c.hunks {
+                let first = text(&c.blocks[h][0]);
+                assert!(
+                    first.starts_with("  2 -") || first.starts_with(" 17 -"),
+                    "{notes:?} {first}"
+                );
+                let before = text(&c.blocks[h - 1][0]);
+                assert!(
+                    !before.contains(" - ") && !before.contains(" + "),
+                    "{notes:?} {before}"
+                );
+            }
+        }
+        // Without statements: l1, then the first hunk; the second after
+        // l3, l4, the gap, l15 and l16.
+        let c = code_change_of(&app, &app.review.units[0], 40, Notes::Off);
+        assert_eq!(c.hunks, [1, 8]);
     }
 
     #[test]

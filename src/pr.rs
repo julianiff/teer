@@ -1180,6 +1180,21 @@ impl AgentAdapter for UntrustedCode {
             .await
     }
 
+    /// Streams as the wrapped adapter does; never with the web, as above.
+    async fn ask_live(
+        &self,
+        s: &SessionRef,
+        prompt: &str,
+        schema: &Value,
+        web: bool,
+        live: crate::agent::live::LiveTx,
+    ) -> Result<Value> {
+        let _ = web;
+        self.0
+            .ask_live(s, &with_notice(prompt), schema, false, live)
+            .await
+    }
+
     async fn ask_prepare(&self, s: &SessionRef, prompt: &str, schema: &Value) -> Result<Value> {
         self.0.ask_prepare(s, &with_notice(prompt), schema).await
     }
@@ -1372,5 +1387,24 @@ mod tests {
         assert!(p.starts_with("DIVE:Recommend\n"));
         assert!(p.contains(UNTRUSTED_NOTICE) && p.contains("You are helping"));
         assert!(with_notice("Rules").starts_with("SECURITY NOTE"));
+    }
+
+    #[tokio::test]
+    async fn untrusted_code_streams_asks_with_the_notice_and_without_the_web() {
+        use crate::agent::live::Live;
+        use crate::agent::mock::MockAdapter;
+        let mut mock = MockAdapter::new(|_, _| Ok(serde_json::json!({ "text": "ok" })));
+        mock.live = vec![Live::Step("read cart.py".into())];
+        let wrapped = UntrustedCode(Arc::new(mock.clone()));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let s = SessionRef::fresh("mock", PathBuf::from("/r"));
+        let v = wrapped
+            .ask_live(&s, "ASK\n\nwhy?", &serde_json::json!({}), true, tx)
+            .await
+            .unwrap();
+        assert_eq!(v["text"], "ok");
+        assert_eq!(rx.recv().await, Some(Live::Step("read cart.py".into())));
+        assert_eq!(*mock.web_calls.lock().unwrap(), [false]);
+        assert!(mock.prompts.lock().unwrap()[0].starts_with("SECURITY NOTE"));
     }
 }

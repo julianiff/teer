@@ -454,7 +454,8 @@ impl Runtime {
                 };
                 // The code is read where the agent reads it: the repository,
                 // or the PR's checkout.
-                let job = crate::review::ask::Job::new(&app.review, index, session.cwd.clone());
+                let job = crate::review::ask::Job::new(&app.review, index, session.cwd.clone())
+                    .with_web(app.web_allowed());
                 let ptx = tx.clone();
                 let progress = move |progress| {
                     let _ = ptx.send(AppEvent::Asking { index, progress });

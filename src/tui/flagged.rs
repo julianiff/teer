@@ -98,6 +98,13 @@ fn name_of(kind: DiveKind) -> &'static str {
     TABS.iter().find(|t| t.0 == kind).map_or("", |t| t.1)
 }
 
+/// `kind`'s name and what it brings to light, for the unit view.
+pub(super) fn light(kind: DiveKind) -> (&'static str, &'static str) {
+    TABS.iter()
+        .find(|t| t.0 == kind)
+        .map_or(("", ""), |t| (t.1, t.4))
+}
+
 /// Where `kind` stands for `u`: on its way (the spinner), answered with
 /// doubts (`⚠`), answered (`✓`); `None` when never asked.
 fn state(app: &App, u: &Unit, kind: DiveKind) -> Option<(String, Style)> {
@@ -143,7 +150,7 @@ fn waiting(app: &App, u: &Unit, kind: DiveKind) -> String {
 /// model (the CLI's own default, or the second model with an API); the
 /// second opinion on `second_model`; the Tests search is teer's own until
 /// the agent reads it.
-fn answer_label(app: &App, u: &Unit, kind: DiveKind) -> String {
+pub(super) fn answer_label(app: &App, u: &Unit, kind: DiveKind) -> String {
     let agent = slim::model_name(app, Role::Deep);
     let tests = u.dive.results.get(&kind).and_then(|r| r.coverage.as_ref());
     match kind {
@@ -158,7 +165,7 @@ fn answer_label(app: &App, u: &Unit, kind: DiveKind) -> String {
 }
 
 /// Is `kind`'s answer on its way? The second opinion keeps its own flag.
-fn pending(u: &Unit, kind: DiveKind) -> bool {
+pub(super) fn pending(u: &Unit, kind: DiveKind) -> bool {
     match kind {
         DiveKind::Disagree => u.checks.second_pending,
         _ => u.dive_pending.contains(&kind),
@@ -490,6 +497,10 @@ fn found_only(app: &App, s: &TestSearch, w: usize) -> Vec<Line<'static>> {
             t.muted(),
         ));
     }
+    // The unit view has the agent read them on its own.
+    if app.screen != super::app::Screen::Flagged {
+        return lines;
+    }
     lines.push(Line::default());
     let key = app.keys.label(Action::V1InterpretTests);
     let what = if s.total == 0 {
@@ -590,7 +601,7 @@ fn coverage_lines(app: &App, note: &str, c: &Coverage, w: usize) -> Vec<Line<'st
 
 /// The second opinion: its risk against the description's, then each
 /// statement it disputes or agrees with, then what it says was missed.
-fn disagree_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
+pub(super) fn disagree_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
     let t = &app.theme;
     let mut lines = Vec::new();
     let Some(o) = &u.checks.second else {
@@ -663,7 +674,7 @@ const PICTURE_MIN_ROWS: usize = 4;
 
 /// What `kind`'s part of the report says: its answer, that it is on its
 /// way, or that there is none.
-fn section_body(app: &App, u: &Unit, kind: DiveKind, w: usize) -> Vec<Line<'static>> {
+pub(super) fn section_body(app: &App, u: &Unit, kind: DiveKind, w: usize) -> Vec<Line<'static>> {
     let t = &app.theme;
     let mut lines = Vec::new();
     if kind == DiveKind::Disagree {
@@ -719,7 +730,7 @@ fn section_body(app: &App, u: &Unit, kind: DiveKind, w: usize) -> Vec<Line<'stat
 
 /// Draw `u`'s Visualize picture in `area` (a tile's inside): the claim, the
 /// picture, and how to open the page. False to show the text instead.
-fn draw_picture(f: &mut Frame, app: &App, u: &Unit, area: Rect, w: usize) -> bool {
+pub(super) fn draw_picture(f: &mut Frame, app: &App, u: &Unit, area: Rect, w: usize) -> bool {
     let Some(pictures) = &app.pictures else {
         return false;
     };

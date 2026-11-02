@@ -83,7 +83,8 @@ pub enum Overlay {
         id: String,
         sel: usize,
     },
-    /// Asks once per session before a Flagged-screen question may use the web.
+    /// Asks once per session before a Flagged-screen question, or the first
+    /// question of the unit view's ask panel, may use the web.
     ConfirmWeb,
     /// Asks before accepting every pending unit of a file in the v1 list:
     /// the file and the ids that would change. (The queue acts at once.)
@@ -462,6 +463,9 @@ pub enum Target {
     Detail,
     /// A Flagged tile: a click gives it the focus, the wheel scrolls it.
     Tile(Pane),
+    /// The panel under the unit view's text: the wheel scrolls it, a click
+    /// on the ask panel types.
+    Panel,
     /// A link in the Ask view, by index into [`App::ask_links`].
     AskLink(usize),
     /// A key named on screen (`esc close`): a click presses it.
@@ -508,6 +512,8 @@ pub struct App {
 
     pub swipe: SwipeState,
     pub flagged: FlaggedState,
+    /// The unit view (see [`super::unit`]).
+    pub unit: super::unit::UnitView,
     /// The user agreed to web use for Flagged-screen questions this session.
     pub dive_web_ok: bool,
     /// A web-using request waiting for the user's answer to `ConfirmWeb`.
@@ -581,6 +587,7 @@ impl App {
             large: false,
             swipe: SwipeState::default(),
             flagged: FlaggedState::default(),
+            unit: Default::default(),
             dive_web_ok: false,
             dive_web_pending: None,
             status: String::new(),
@@ -843,6 +850,7 @@ impl App {
         }
         effects.extend(self.prepare_start());
         effects.extend(self.prepare_cards());
+        effects.extend(self.prefetch_start());
         // A review described in an earlier run that has no summary yet.
         if self.can_ask() && crate::review::intent::wants_summary(&self.review) {
             self.summary_asked = true;
@@ -1013,9 +1021,10 @@ impl App {
             }
             Screen::Swipe => format!("swipe {}", self.swipe_current().map_or("", String::as_str)),
             // Per unit; its tiles scroll on their own (`pane_scroll`).
-            Screen::Flagged | Screen::Unit => {
+            Screen::Flagged => {
                 format!("flagged {}", self.flagged_unit_id().unwrap_or_default())
             }
+            Screen::Unit => format!("unit {}", self.unit.id),
         }
     }
 
@@ -1032,6 +1041,9 @@ impl App {
     /// Scroll the detail area `by` lines, no further than the last frame
     /// allowed: on the Flagged screen, the tile in focus.
     fn scroll_detail(&mut self, by: isize) -> Vec<Effect> {
+        if self.screen == Screen::Unit {
+            return self.unit_scroll(by);
+        }
         if self.screen == Screen::Flagged {
             if let Some(u) = self.flagged_unit() {
                 if self.flagged_focus(u) == Pane::Chat {
@@ -1185,6 +1197,9 @@ impl App {
         if self.chat_typing() {
             return Some(self.chat_key(k));
         }
+        if self.unit_panel_has_keys() {
+            return Some(self.unit_panel_key(k));
+        }
         None
     }
 
@@ -1262,7 +1277,8 @@ impl App {
             Screen::Slim | Screen::Queue => a.is_decision(),
             Screen::Swipe => matches!(a, Action::DecideAccept | Action::DecideFlag),
             // `f` on a flagged unit only opens its note.
-            Screen::Flagged | Screen::Unit => a == Action::DecideAccept,
+            Screen::Flagged => a == Action::DecideAccept,
+            Screen::Unit => a.is_decision(),
         }
     }
 
@@ -1285,11 +1301,27 @@ impl App {
                 self.open_chat();
                 return Vec::new();
             }
+            Action::AskOpen if self.screen == Screen::Unit => {
+                self.open_ask_panel();
+                return Vec::new();
+            }
+            // From the queue: the unit view on the unit, asking.
+            Action::AskOpen if self.screen == Screen::Queue => {
+                let Some(id) = self.selected_id() else {
+                    return Vec::new();
+                };
+                let effects = self.open_unit(id);
+                self.open_ask_panel();
+                return effects;
+            }
             Action::AskOpen => {
                 self.open_ask();
                 return Vec::new();
             }
             Action::FindUnit => return self.open_jump(JumpKind::Find),
+            Action::GotoDefinition if self.screen == Screen::Unit => {
+                return self.unit_goto_definition();
+            }
             Action::GotoDefinition | Action::GotoCallers => {
                 let Some(of) = self.current_unit().map(|u| u.id.clone()) else {
                     return Vec::new();
@@ -1328,8 +1360,8 @@ impl App {
             }
             Action::HistoryUndo => return self.undo(),
             Action::HistoryRedo => return self.redo(),
-            Action::MoveNextHunk | Action::MovePrevHunk => {
-                self.status = "Hunk jumps come with the unit view.".into();
+            Action::MoveNextHunk | Action::MovePrevHunk if self.screen != Screen::Unit => {
+                self.status = "Hunk jumps work in the unit view.".into();
                 return Vec::new();
             }
             Action::ScrollHalfDown | Action::ScrollHalfUp => {
@@ -1366,7 +1398,8 @@ impl App {
             Screen::Queue => self.queue_action(a, count),
             Screen::Slim => self.slim_action(a, count),
             Screen::Swipe => self.swipe_action(a, count),
-            Screen::Flagged | Screen::Unit => self.flagged_action(a, count),
+            Screen::Flagged => self.flagged_action(a, count),
+            Screen::Unit => self.unit_action(a, count),
         }
     }
 
@@ -1387,12 +1420,22 @@ impl App {
         }
     }
 
-    /// A Flagged tile asked for from the list or swipe: on a flagged unit,
-    /// open the Flagged screen on it and run the tile there.
+    /// A tool asked for outside the Flagged screen: in the unit view, its
+    /// panel; from the queue, the unit view on the unit with that panel;
+    /// from the v1 list or swipe on a flagged unit, the Flagged screen on
+    /// it with the tile.
     fn tool_from_list(&mut self, a: Action) -> Vec<Effect> {
+        if self.screen == Screen::Unit {
+            return self.unit_tool(a);
+        }
         let Some(id) = self.current_unit().map(|u| u.id.clone()) else {
             return Vec::new();
         };
+        if self.screen == Screen::Queue {
+            let mut effects = self.open_unit(id);
+            effects.extend(self.unit_tool(a));
+            return effects;
+        }
         if !self.open_flagged_on(&id) {
             self.status = format!(
                 "Flag the unit ({}) to use this.",
@@ -1619,6 +1662,17 @@ impl App {
         let Some(id) = self.flagged_unit_id() else {
             return Vec::new();
         };
+        self.dive_on(&id, kind, true)
+    }
+
+    /// Ask `kind` about unit `id` unless it is answered or in flight. On
+    /// the Flagged screen (`tile`) the answer gets a tile and the focus,
+    /// and the first web-using ask of the session confirms first; the unit
+    /// view never stops to ask: the web is used once allowed (see
+    /// [`App::web_allowed`]).
+    pub(super) fn dive_on(&mut self, id: &str, kind: DiveKind, tile: bool) -> Vec<Effect> {
+        let id = id.to_string();
+        let web_ok = self.web_allowed();
         let Some(u) = self.review.unit_mut(&id) else {
             return Vec::new();
         };
@@ -1632,7 +1686,9 @@ impl App {
             // when there is a description and nothing is on its way.
             if u.checks.second.is_some() || u.checks.second_pending {
                 mark_asked(u);
-                self.focus(Pane::Answer(kind));
+                if tile {
+                    self.focus(Pane::Answer(kind));
+                }
                 return Vec::new();
             }
             if u.changes.is_empty() {
@@ -1641,11 +1697,15 @@ impl App {
             }
             mark_asked(u);
             u.checks.second_pending = true;
-            self.focus(Pane::Answer(kind));
+            if tile {
+                self.focus(Pane::Answer(kind));
+            }
             return vec![Effect::Second(vec![id])];
         }
         mark_asked(u);
-        self.focus(Pane::Answer(kind));
+        if tile {
+            self.focus(Pane::Answer(kind));
+        }
         let Some(u) = self.review.unit_mut(&id) else {
             return Vec::new();
         };
@@ -1653,6 +1713,13 @@ impl App {
             return Vec::new();
         }
         u.dive_pending.insert(kind);
+        if !tile {
+            return vec![Effect::Dive {
+                unit_id: id,
+                kind,
+                web: web_ok && uses_web(kind),
+            }];
+        }
         // Never for a pull request: its code is untrusted, and web tools could
         // carry text out of the machine. (The agent adapter enforces this too.)
         let is_pr = self.review.pr.is_some();
@@ -1676,10 +1743,17 @@ impl App {
     /// Have the agent read what the Tests search found for the flagged unit
     /// (again, if it already has).
     fn interpret_tests(&mut self) -> Vec<Effect> {
-        let kind = DiveKind::Tests;
         let Some(id) = self.flagged_unit_id() else {
             return Vec::new();
         };
+        self.interpret_tests_on(&id, true)
+    }
+
+    /// Have the agent read what the Tests search found for unit `id`; on
+    /// the Flagged screen (`tile`) its tile gets the focus.
+    pub(super) fn interpret_tests_on(&mut self, id: &str, tile: bool) -> Vec<Effect> {
+        let kind = DiveKind::Tests;
+        let id = id.to_string();
         let Some(u) = self.review.unit_mut(&id) else {
             return Vec::new();
         };
@@ -1700,12 +1774,14 @@ impl App {
             return Vec::new();
         }
         u.dive_pending.insert(kind);
-        self.focus(Pane::Answer(kind));
+        if tile {
+            self.focus(Pane::Answer(kind));
+        }
         vec![Effect::InterpretTests { unit_id: id }]
     }
 
     /// Open the picture of the unit on show, or say how to draw one.
-    fn open_visual(&mut self) -> Vec<Effect> {
+    pub(super) fn open_visual(&mut self) -> Vec<Effect> {
         let Some(u) = self.current_unit() else {
             return Vec::new();
         };
@@ -1728,6 +1804,9 @@ impl App {
 
     /// The answer to the web confirmation.
     fn answer_web(&mut self, yes: bool) -> Vec<Effect> {
+        if let Some(effects) = self.unit_answer_web(yes) {
+            return effects;
+        }
         let Some((id, kind)) = self.dive_web_pending.take() else {
             return Vec::new();
         };
@@ -2322,7 +2401,7 @@ impl App {
     // ---- Notes ------------------------------------------------------------
 
     /// Open the note editor on unit `id`, with its note.
-    fn edit_note(&mut self, id: String, back: Option<usize>) {
+    pub(super) fn edit_note(&mut self, id: String, back: Option<usize>) {
         let text = self
             .review
             .unit(&id)
@@ -2489,11 +2568,16 @@ impl App {
         }]
     }
 
-    /// Go to unit `id`: on the Flagged screen when it is flagged there and
-    /// `stay` allows, else in the list (the queue, or the v1 list from the
-    /// v1 screens), closing any overlay. `None` when the list doesn't have
-    /// it.
+    /// Go to unit `id`: in the unit view, or on the Flagged screen when it
+    /// is flagged there, when `stay` allows; else in the list (the queue, or
+    /// the v1 list from the v1 screens), closing any overlay. `None` when
+    /// the list doesn't have it.
     pub(super) fn go_to_unit(&mut self, id: &str, stay: bool) -> Option<Vec<Effect>> {
+        // In the unit view, the unit opens there.
+        if stay && self.screen == Screen::Unit && self.review.unit(id).is_some() {
+            self.overlay = Overlay::None;
+            return Some(self.open_unit(id.to_string()));
+        }
         if stay
             && self.screen == Screen::Flagged
             && let Some(sel) = self.flagged_units().iter().position(|u| u.id == id)
@@ -2516,7 +2600,7 @@ impl App {
     }
 
     /// Select the unit at `to`.
-    fn move_sel(&mut self, to: usize) -> Vec<Effect> {
+    pub(super) fn move_sel(&mut self, to: usize) -> Vec<Effect> {
         self.sel = to.min(self.order.len().saturating_sub(1));
         self.ensure_prepared()
     }
@@ -2525,7 +2609,7 @@ impl App {
     /// unit), `A`/`F` on the file's pending units at once, `V`, `l` into
     /// the unit view on any unit, `zf`, and `q` to quit (the review is
     /// saved, cursor and all).
-    fn queue_action(&mut self, a: Action, count: Option<u32>) -> Vec<Effect> {
+    pub(super) fn queue_action(&mut self, a: Action, count: Option<u32>) -> Vec<Effect> {
         let times = count.unwrap_or(1) as usize;
         match a {
             Action::MoveDown => return self.move_row(times as isize),
@@ -2677,9 +2761,13 @@ impl App {
         self.current_unit().map(|u| u.id.clone())
     }
 
-    /// The questions of the conversation on show, by index: the flagged
-    /// unit's chat on the Flagged screen, else all of them (the Ask view).
+    /// The questions of the conversation on show, by index: the unit's in
+    /// the unit view, the flagged unit's chat on the Flagged screen, else
+    /// all of them (the Ask view).
     pub fn talk(&self) -> Vec<usize> {
+        if self.overlay != Overlay::Ask && self.screen == Screen::Unit {
+            return self.chat_of(&self.unit.id);
+        }
         if self.overlay != Overlay::Ask
             && self.screen == Screen::Flagged
             && let Some(id) = self.flagged_unit_id()
@@ -2856,22 +2944,31 @@ impl App {
 
     /// Ask `text` about `unit`; nothing when it is blank.
     fn push_question(&mut self, text: &str, unit: Option<String>) -> Vec<Effect> {
+        match self.add_question(text, unit) {
+            Some(index) => self.ask_question(index),
+            None => Vec::new(),
+        }
+    }
+
+    /// Note `text` as a question about `unit`, not asked yet; its index.
+    /// `None` when it is blank.
+    pub(super) fn add_question(&mut self, text: &str, unit: Option<String>) -> Option<usize> {
         let text: String = text.chars().filter(|c| !c.is_control()).collect();
         let text = text.trim().to_string();
         if text.is_empty() {
-            return Vec::new();
+            return None;
         }
         self.review.questions.push(Question {
             text,
             unit,
             ..Default::default()
         });
-        self.ask_question(self.review.questions.len() - 1)
+        Some(self.review.questions.len() - 1)
     }
 
     /// Have the agent answer question `index` (again), unless it is on its
     /// way. An earlier answer stays until the new one comes.
-    fn ask_question(&mut self, index: usize) -> Vec<Effect> {
+    pub(super) fn ask_question(&mut self, index: usize) -> Vec<Effect> {
         let has_agent = self.has_agent;
         let Some(q) = self.review.questions.get_mut(index) else {
             return Vec::new();
@@ -2930,8 +3027,9 @@ impl App {
 
     /// Follow link `i` of [`App::ask_links`]: a unit is selected in the
     /// list (the view closes), or from a chat, among the flagged units when
-    /// it is one; code opens in the editor.
-    fn follow_ask_link(&mut self, i: usize) -> Vec<Effect> {
+    /// it is one, or from the unit view's ask panel, opens there; code opens
+    /// in the editor.
+    pub(super) fn follow_ask_link(&mut self, i: usize) -> Vec<Effect> {
         let Some((_, link)) = self.ask_links().into_iter().nth(i) else {
             return Vec::new();
         };
@@ -2995,7 +3093,7 @@ impl App {
     }
 
     /// Scroll the chat `by` lines; at the end it follows new lines.
-    fn chat_scroll(&mut self, by: isize) -> Vec<Effect> {
+    pub(super) fn chat_scroll(&mut self, by: isize) -> Vec<Effect> {
         let max = self.ask.chat_max.get();
         let to = self
             .ask
@@ -3062,7 +3160,7 @@ impl App {
 
     /// Go to the `times`-th pending unit after (or, not `forward`, before)
     /// the cursor, or as far as there are.
-    fn jump_pending(&mut self, forward: bool, times: usize) -> Vec<Effect> {
+    pub(super) fn jump_pending(&mut self, forward: bool, times: usize) -> Vec<Effect> {
         let mut at = None;
         for _ in 0..times.max(1) {
             let from = at.unwrap_or(self.sel);
@@ -3088,7 +3186,7 @@ impl App {
     /// Go to the first unit of the `times`-th file below, or (not
     /// `forward`) above, or as far as there are. No wrapping: from the last
     /// (first) file the cursor stays.
-    fn jump_file(&mut self, forward: bool, times: usize) -> Vec<Effect> {
+    pub(super) fn jump_file(&mut self, forward: bool, times: usize) -> Vec<Effect> {
         if self.sel >= self.order.len() {
             return Vec::new();
         }
@@ -3269,7 +3367,7 @@ impl App {
     }
 
     /// Where unit `id` is listed, if it is.
-    fn position_of(&self, id: &str) -> Option<usize> {
+    pub(super) fn position_of(&self, id: &str) -> Option<usize> {
         self.order
             .iter()
             .position(|&i| self.review.units[i].id == id)
@@ -3277,7 +3375,7 @@ impl App {
 
     /// Set each of `ids` to `d` and record that as one undo step; the "all
     /// done" sheet opens when this finished the review. How many changed.
-    fn decide_ids(&mut self, ids: &[String], d: Decision) -> usize {
+    pub(super) fn decide_ids(&mut self, ids: &[String], d: Decision) -> usize {
         let each: Vec<(String, Decision)> = ids.iter().map(|id| (id.clone(), d)).collect();
         self.decide_each(&each)
     }
@@ -3401,12 +3499,13 @@ impl App {
                     self.swipe.cursor = pos;
                 }
             }
-            Screen::Flagged | Screen::Unit => {
+            Screen::Flagged => {
                 if let Some(pos) = self.flagged_units().iter().position(|u| u.id == first) {
                     self.flagged.sel = pos;
                 }
                 self.after_flagged_change();
             }
+            Screen::Unit => return self.unit_show_step(&first),
         }
         Vec::new()
     }
@@ -3421,7 +3520,8 @@ impl App {
     fn current_unit(&self) -> Option<&Unit> {
         match self.screen {
             Screen::Swipe => self.swipe_current().and_then(|id| self.review.unit(id)),
-            Screen::Flagged | Screen::Unit => self.flagged_unit(),
+            Screen::Flagged => self.flagged_unit(),
+            Screen::Unit => self.review.unit(&self.unit.id),
             _ => self.selected(),
         }
     }
@@ -3430,8 +3530,9 @@ impl App {
     fn edit(&mut self) -> Vec<Effect> {
         match self.current_unit() {
             Some(u) => {
-                // A whole file opens at its first change, not at its top.
-                let first = (u.kind == UnitKind::File)
+                // A whole file opens at its first change, not at its top;
+                // in the unit view, every unit does.
+                let first = (u.kind == UnitKind::File || self.screen == Screen::Unit)
                     .then(|| super::diff::first_change(&self.review, u))
                     .flatten();
                 vec![Effect::Edit {
@@ -3697,6 +3798,13 @@ impl App {
             // it; elsewhere it moves the selection.
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                 let down = m.kind == MouseEventKind::ScrollDown;
+                let by = if down { SCROLL_STEP } else { -SCROLL_STEP };
+                if self.screen == Screen::Unit {
+                    // A link is in the ask panel.
+                    let hit = self.hit(m.column, m.row);
+                    let panel = matches!(hit, Some(Target::Panel | Target::AskLink(_)));
+                    return self.unit_wheel(panel, by);
+                }
                 // A link here is in the chat.
                 let hit = match self.hit(m.column, m.row) {
                     Some(Target::AskLink(_)) => Some(Target::Tile(Pane::Chat)),
@@ -3710,7 +3818,7 @@ impl App {
                 if self.screen == Screen::Swipe
                     || matches!(hit, Some(Target::Detail | Target::Tile(_)))
                 {
-                    return self.scroll_detail(if down { SCROLL_STEP } else { -SCROLL_STEP });
+                    return self.scroll_detail(by);
                 }
                 let a = if down {
                     Action::MoveDown
@@ -3746,6 +3854,10 @@ impl App {
                         Vec::new()
                     }
                     Some(Target::AskLink(i)) => self.follow_ask_link(i),
+                    Some(Target::Panel) => {
+                        self.unit_click_panel();
+                        Vec::new()
+                    }
                     Some(Target::Detail) | None => Vec::new(),
                 }
             }
@@ -3848,9 +3960,12 @@ impl App {
                         self.status = format!("Question ({kind:?}) failed: {error}");
                     }
                 }
+                let mut effects = Vec::new();
                 if self.review.apply_dive(&ev) {
-                    return vec![Effect::Save];
+                    effects.push(Effect::Save);
                 }
+                effects.extend(self.unit_tests_found(&ev));
+                return effects;
             }
         }
         Vec::new()
@@ -4510,7 +4625,7 @@ mod tests {
         assert_eq!(a.status, "No units are accepted for you.");
         assert!(!a.show_auto);
         press(&mut a, "]c");
-        assert_eq!(a.status, "Hunk jumps come with the unit view.");
+        assert_eq!(a.status, "Hunk jumps work in the unit view.");
         assert_eq!(decisions(&a), vec![Pend; 2]);
     }
 

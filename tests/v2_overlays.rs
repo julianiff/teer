@@ -384,7 +384,21 @@ fn the_post_sheet_toggles_inline_with_t_and_cycles_the_verdict_with_v() {
 
 #[test]
 fn letters_typed_in_the_ask_view_go_into_the_question() {
+    use teer::tui::unit::Panel;
+    // From the queue, `K` asks in the unit view's panel.
     let mut a = app(["", ""], None);
+    assert_eq!(a.screen, Screen::Queue);
+    press(&mut a, "K");
+    assert_eq!((a.screen, a.unit.panel), (Screen::Unit, Some(Panel::Ask)));
+    press(&mut a, "jkq ?");
+    assert_eq!(a.ask.draft, "jkq ?");
+    assert_eq!((a.screen, a.unit.panel), (Screen::Unit, Some(Panel::Ask)));
+    press(&mut a, "<bs><esc>");
+    assert_eq!(a.ask.draft, "jkq ");
+    assert_eq!((a.screen, a.unit.panel), (Screen::Unit, None));
+    // On the v1 list it is the Ask view.
+    let mut a = app(["", ""], None);
+    a.open_v1_list();
     press(&mut a, "K");
     assert_eq!(a.overlay, Overlay::Ask);
     press(&mut a, "jkq ?");

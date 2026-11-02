@@ -4,7 +4,8 @@
 //! change is marked so, its changed lines with `+`. The question being
 //! typed sits at the bottom. An answer also shows on the unit it belongs
 //! to ([`note_lines`]). On the Flagged screen the same conversation, kept
-//! to one unit, is its Chat tile ([`draw_chat`]).
+//! to one unit, is its Chat tile ([`draw_chat`]); in the unit view, its
+//! ask panel (see [`super::unit`]).
 
 use std::cell::Cell;
 
@@ -218,7 +219,13 @@ pub fn chat_keys(app: &App, focus: bool) -> String {
 
 /// `lead` then `text▏`: the end of the text stays in view. Muted while
 /// not `typing`.
-fn input_line(app: &App, lead: &'static str, text: &str, typing: bool, w: usize) -> Line<'static> {
+pub(super) fn input_line(
+    app: &App,
+    lead: &'static str,
+    text: &str,
+    typing: bool,
+    w: usize,
+) -> Line<'static> {
     let t = &app.theme;
     let room = w.saturating_sub(lead.width() + 1);
     let mut tail: Vec<char> = Vec::new();
@@ -446,7 +453,7 @@ fn related_line(app: &App, id: &str, why: &str, selected: bool, w: usize) -> Lin
 /// Shown code in a rounded box `w` wide: `file:start-end`, what it is, and
 /// whether this change touched the file on its top border; the lines
 /// numbered and coloured, those the change added or edited with `+`.
-fn code_box(app: &App, s: &Shown, selected: bool, w: usize) -> Vec<Line<'static>> {
+pub(super) fn code_box(app: &App, s: &Shown, selected: bool, w: usize) -> Vec<Line<'static>> {
     let t = &app.theme;
     let border = if selected {
         t.accent().add_modifier(Modifier::BOLD)

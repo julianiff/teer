@@ -570,15 +570,18 @@ fn the_selected_unit_stays_selected_through_a_rebuild() {
 
 // ---- A: accept the file ------------------------------------------------------
 
+/// On the v1 list `A` asks first; the queue's acts at once (see
+/// `tests/v2_queue.rs`, `file_actions_skip_decided_units`).
 #[test]
 fn a_asks_first_then_accepts_the_files_pending_units_in_one_undo_step() {
     for confirm in [KeyCode::Char('y'), KeyCode::Enter] {
         let mut a = app();
+        assert_eq!(a.screen, Screen::Slim, "the v1 list");
         a.sel = 15; // r2_1
         a.review.units[a.order[16]].decision = Decision::Investigate;
         let before = decisions(&a);
-        // The cursor was put on r2_1 by hand: the key saves it.
-        assert_eq!(shift_a(&mut a), vec![Effect::Save]);
+        // The cursor was put on r2_1 by hand: the key saves it, and only it.
+        assert_eq!(shift_a(&mut a), vec![Effect::SaveCursor]);
         match &a.overlay {
             Overlay::ConfirmAcceptFile { file, ids } => {
                 assert_eq!(ids.len(), 3);
@@ -664,8 +667,8 @@ fn f_lists_each_unit_in_its_own_levels_box_with_its_file_on_its_row() {
     let mut a = app();
     a.sel = 2;
     assert_eq!(symbol(&a), "c_helper");
-    // The cursor was put on c_helper by hand: the key saves it.
-    assert_eq!(v2::press(&mut a, "zf"), vec![Effect::Save]);
+    // The cursor was put on c_helper by hand: the key saves it, and only it.
+    assert_eq!(v2::press(&mut a, "zf"), vec![Effect::SaveCursor]);
     assert_eq!(
         (a.grouping, a.status.as_str()),
         (Grouping::Unit, "listed by unit")

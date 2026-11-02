@@ -16,6 +16,7 @@ use teer::review::model::{
     Change, Decision, DiveKind, DiveResult, Marker, Range, Resolution, Risk, Visual,
 };
 use teer::tui::app::{Effect, Grouping, JumpKind, Overlay, Pane, Screen};
+use teer::tui::unit::Panel;
 
 use Decision::{Accepted as A, Investigate as F, Pending as P};
 
@@ -550,7 +551,14 @@ fn q_and_colon_q_save_and_quit_from_the_list() {
 
 #[test]
 fn shift_k_opens_ask() {
+    // On the queue: the unit view, with the ask panel open.
     let mut d = Driver::new(3);
+    d.keys("K");
+    assert_eq!(d.screen(), Screen::Unit);
+    assert_eq!(d.app.unit.panel, Some(Panel::Ask));
+    // On the v1 list (`--swipe`): the Ask view.
+    let mut d = Driver::new(3);
+    d.app.screen = Screen::Slim;
     d.keys("K");
     assert_eq!(*d.overlay(), Overlay::Ask);
 }
@@ -670,7 +678,9 @@ fn leader_tools_on_a_flagged_unit_open_it_and_ask_that_tile() {
         ("<space>v", DiveKind::Visualize),
         ("<space>w", DiveKind::Recommend),
     ] {
+        // The v1 list (`--swipe`) opens the Flagged screen.
         let mut d = Driver::new(6);
+        d.app.screen = Screen::Slim;
         d.app.cfg.dive_web = false;
         flag(&mut d, &[1, 2]);
         d.select(2);
@@ -683,8 +693,30 @@ fn leader_tools_on_a_flagged_unit_open_it_and_ask_that_tile() {
 }
 
 #[test]
+fn leader_tools_on_the_queue_open_the_unit_view_with_that_panel() {
+    for (keys, kind) in [
+        ("<space>t", DiveKind::Tests),
+        ("<space>r", DiveKind::Behavior),
+        ("<space>v", DiveKind::Visualize),
+    ] {
+        // Any unit, flagged or not; old against new and the diagram need
+        // an agent.
+        let mut d = Driver::new(6);
+        d.app.has_agent = true;
+        d.app.review.agent_session = Some(teer::review::model::SessionRef::default());
+        d.app.cfg.dive_web = false;
+        d.select(2);
+        let effects = d.keys(keys);
+        assert_eq!(d.screen(), Screen::Unit, "{keys}");
+        assert_eq!(d.app.unit.panel, Some(Panel::Tool(kind)), "{keys}");
+        assert!(has_dive(&effects, "u2", kind), "{keys}: {effects:?}");
+    }
+}
+
+#[test]
 fn leader_m_on_a_flagged_unit_asks_the_second_model() {
     let mut d = Driver::of(units(3).into_iter().map(described).collect());
+    d.app.screen = Screen::Slim;
     flag(&mut d, &[0]);
     let effects = d.keys("<space>m");
     assert_eq!(d.screen(), Screen::Flagged);
@@ -694,6 +726,7 @@ fn leader_m_on_a_flagged_unit_asks_the_second_model() {
 #[test]
 fn leader_a_on_a_flagged_unit_wants_the_test_search_first() {
     let mut d = Driver::new(3);
+    d.app.screen = Screen::Slim;
     flag(&mut d, &[0]);
     assert!(d.keys("<space>a").is_empty());
     assert_eq!(d.screen(), Screen::Flagged);

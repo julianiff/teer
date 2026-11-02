@@ -16,9 +16,10 @@ use serde_json::{Value, json};
 use teer::agent::mock::MockAdapter;
 use teer::config::Config;
 use teer::keymap::Keymap;
+use teer::review::dive::DiveEvent;
 use teer::review::model::{Decision, SessionRef};
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, Screen};
+use teer::tui::app::{App, AppEvent, Screen};
 use teer::tui::ui;
 
 /// A 30-line function; changed, at line 4 and at line 26.
@@ -127,15 +128,19 @@ async fn every_code_box_with_statements_shows_only_the_code_they_cite() {
         "{out}"
     );
     assert!(!out.contains("~ Charges the order a second time."), "{out}");
-    // An answer gets a tile of its own; the code keeps its tile.
-    for u in app.review.units.iter_mut() {
-        u.dive.results.insert(
-            teer::review::model::DiveKind::Recommend,
-            teer::review::model::DiveResult {
-                text: "Looks fine.".into(),
-                ..Default::default()
-            },
-        );
+    // An answer gets a tile of its own; the code keeps its tile. (The
+    // recommendation was asked for as the review opened: it arrives.)
+    let ids: Vec<String> = app.review.units.iter().map(|u| u.id.clone()).collect();
+    for id in ids {
+        app.on_app_event(AppEvent::Dive(DiveEvent::Ready {
+            id,
+            kind: teer::review::model::DiveKind::Recommend,
+            text: "Looks fine.".into(),
+            sources: Vec::new(),
+            visual: None,
+            behavior: None,
+            coverage: None,
+        }));
     }
     let out = screen(&app);
     folded(&out, "Flagged screen with an answer");
