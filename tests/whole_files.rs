@@ -310,9 +310,11 @@ fn all_done_waits_for_whole_files_and_names_what_was_not_shown() {
     assert!(!a.all_reviewed(), "a pending whole file holds it back");
     a.sel = a.order.iter().position(|&i| i == last).unwrap();
     key(&mut a, 'a');
-    assert_eq!(a.overlay, Overlay::AllDone);
+    assert!(a.all_reviewed());
+    common::v2::press(&mut a, ":w<cr>");
+    assert!(matches!(a.overlay, Overlay::Finish { .. }));
     let t = draw(&a, 100, 30);
-    assert!(t.contains("Hurray! All changes reviewed."), "{t}");
+    assert!(t.contains(" units accepted."), "{t}");
     assert!(
         t.contains("2 files were not shown: latin1.txt, logo.png"),
         "{t}"

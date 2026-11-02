@@ -197,7 +197,7 @@ pub async fn run(l: Launch) -> Result<()> {
                     events = EventStream::new();
                 } else if let Effect::EditComment { text } = e {
                     drop(events);
-                    let for_commit = matches!(app.overlay, app::Overlay::Commit { .. });
+                    let for_commit = app.edits_commit_message();
                     let outcome = with_terminal_released(&mut terminal, || {
                         if for_commit {
                             crate::approve::edit_message_in_editor(&rt.tools.editor, &text)
@@ -237,6 +237,10 @@ pub async fn run(l: Launch) -> Result<()> {
     .await;
     restore_terminal();
     let _ = store::save(&app.review);
+    // What `:w` did (a commit, a post), once the terminal is the shell's again.
+    if let Some(line) = &app.finish.exit_line {
+        println!("{line}");
+    }
     result
 }
 

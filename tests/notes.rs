@@ -1,6 +1,6 @@
-//! Notes: `m` writes one on the unit on show anywhere, `N` lists them and
-//! takes them out of teer (clipboard, Claude Code, the PR), `teer notes`
-//! prints them.
+//! Notes: `i` writes one on the unit on show anywhere, `␣n` lists them,
+//! the `:w` sheet takes them out of teer (clipboard, Claude Code or Codex,
+//! the PR), `teer notes` prints them.
 
 mod common;
 
@@ -17,6 +17,7 @@ use teer::review::model::{
     Decision, PrInfo, Prep, Range, Review, SessionRef, Unit, UnitKind, UnitStatus,
 };
 use teer::tui::app::{App, AppEvent, Effect, Overlay, Screen};
+use teer::tui::finish::Step;
 use teer::tui::ui;
 
 const OLD: &str = "def f():\n    return 1\n\n\ndef g():\n    return 2\n";
@@ -218,7 +219,7 @@ fn the_notes_view_lists_moves_and_goes_to_a_unit() {
     let out = draw(&a, 100, 30);
     assert!(out.contains("Notes · 2 notes"), "{out}");
     assert!(out.contains("first") && out.contains("second"), "{out}");
-    assert!(out.contains("c hand to Claude Code"), "{out}");
+    assert!(out.contains(":w finish"), "{out}");
     assert!(!out.contains("post on the PR"), "{out}");
     key(&mut a, 'j');
     assert_eq!(a.overlay, Overlay::Notes { sel: 1 });
@@ -289,11 +290,30 @@ fn y_copies_every_note_as_markdown() {
     assert_eq!(a.overlay, Overlay::Notes { sel: 0 }, "the view stays open");
 }
 
+/// Flag unit `symbol`.
+fn flag(a: &mut App, symbol: &str) {
+    a.review
+        .unit_mut(&format!("a.py::{symbol}"))
+        .unwrap()
+        .decision = Decision::Investigate;
+}
+
+/// Accept unit `symbol`.
+fn accept(a: &mut App, symbol: &str) {
+    a.review
+        .unit_mut(&format!("a.py::{symbol}"))
+        .unwrap()
+        .decision = Decision::Accepted;
+}
+
 #[test]
-fn c_hands_the_notes_to_claude_code() {
+fn the_sheet_hands_the_notes_to_claude_code() {
     let mut a = app(["first", ""], None);
-    keys(&mut a, "<space>n");
-    let e = key(&mut a, 'c');
+    flag(&mut a, "f");
+    accept(&mut a, "g");
+    keys(&mut a, ":w<cr>");
+    assert_eq!(a.finish_step(), Some(Step::SendNotes));
+    let e = code(&mut a, KeyCode::Enter);
     let [
         Effect::OpenAgent {
             cli: Provider::Claude,
@@ -311,14 +331,17 @@ fn c_hands_the_notes_to_claude_code() {
     assert!(prompt.contains("> first"), "{prompt}");
     assert_eq!(a.overlay, Overlay::None);
 
-    // With the session that made the change, a fork of it, where it was started.
+    // With the session that made the change, a fork of it, where it was
+    // started. `c` in the notes view opens the sheet on it.
     a.review.agent_session = Some(SessionRef {
         agent: "claude".into(),
         id: "abc-123".into(),
         cwd: PathBuf::from("/repo/sub"),
     });
     keys(&mut a, "<space>n");
-    let e = key(&mut a, 'c');
+    key(&mut a, 'c');
+    assert_eq!(a.finish_step(), Some(Step::SendNotes));
+    let e = code(&mut a, KeyCode::Enter);
     let [Effect::OpenAgent { cwd, resume, .. }] = &e[..] else {
         panic!("{e:?}")
     };
@@ -327,16 +350,18 @@ fn c_hands_the_notes_to_claude_code() {
 }
 
 #[test]
-fn c_hands_the_notes_to_codex_without_a_claude_session_and_not_to_an_api() {
+fn the_sheet_hands_the_notes_to_codex_or_copies_them_for_an_api() {
     let mut a = app(["first", ""], None);
+    flag(&mut a, "f");
+    accept(&mut a, "g");
     a.review.agent_session = Some(SessionRef {
         agent: "claude".into(),
         id: "abc-123".into(),
         cwd: PathBuf::from("/repo/sub"),
     });
     a.cfg.provider = Some(Provider::Codex);
-    keys(&mut a, "<space>n");
-    let e = key(&mut a, 'c');
+    keys(&mut a, ":w<cr>");
+    let e = code(&mut a, KeyCode::Enter);
     let [
         Effect::OpenAgent {
             cli: Provider::Codex,
@@ -350,10 +375,17 @@ fn c_hands_the_notes_to_codex_without_a_claude_session_and_not_to_an_api() {
     };
     assert_eq!(cwd, &PathBuf::from("/repo"));
 
+    // The model API has no session to take them: they are copied, with
+    // what to do with them.
     a.cfg.provider = Some(Provider::Api);
-    keys(&mut a, "<space>n");
-    assert!(key(&mut a, 'c').is_empty());
-    assert!(a.status.contains("Claude Code or Codex"), "{}", a.status);
+    keys(&mut a, ":w<cr>");
+    assert!(draw(&a, 100, 30).contains("copy the notes for your agent"));
+    let e = code(&mut a, KeyCode::Enter);
+    let [Effect::Copy { text, what }] = &e[..] else {
+        panic!("{e:?}")
+    };
+    assert!(text.starts_with("These are my review notes"), "{text}");
+    assert!(what.contains("model API"), "{what}");
 }
 
 // ------------------------------------------------------------ pull request
@@ -361,35 +393,22 @@ fn c_hands_the_notes_to_codex_without_a_claude_session_and_not_to_an_api() {
 #[test]
 fn a_pull_request_posts_the_notes_and_never_hands_them_to_claude() {
     let mut a = app(["first", ""], Some(pr_info()));
+    flag(&mut a, "f");
+    accept(&mut a, "g");
     keys(&mut a, "<space>n");
-    assert!(draw(&a, 100, 30).contains("p post on the PR"));
-    assert!(key(&mut a, 'c').is_empty());
-    assert!(a.status.contains("untrusted"), "{}", a.status);
-    assert_eq!(a.overlay, Overlay::Notes { sel: 0 });
-
+    assert!(draw(&a, 100, 30).contains(":w finish"));
+    // `p` opens the sheet on requesting changes; nothing hands to Claude.
     key(&mut a, 'p');
-    let Overlay::PostReview { verdict, .. } = &a.overlay else {
-        panic!("{:?}", a.overlay)
-    };
-    assert_eq!(*verdict, Verdict::RequestChanges);
-    assert!(draw(&a, 100, 30).contains("Request changes on PR #7"));
-    // Not everything was reviewed: approving is not on offer.
-    key(&mut a, 'v');
-    assert!(matches!(
-        &a.overlay,
-        Overlay::PostReview {
-            verdict: Verdict::Comment,
-            ..
-        }
-    ));
-    key(&mut a, 'v');
-    assert!(matches!(
-        &a.overlay,
-        Overlay::PostReview {
-            verdict: Verdict::RequestChanges,
-            ..
-        }
-    ));
+    assert_eq!(
+        a.finish_steps(),
+        [Step::RequestChanges, Step::CommentOnly, Step::Yank]
+    );
+    assert_eq!(a.finish_step(), Some(Step::RequestChanges));
+    assert!(draw(&a, 100, 30).contains("request changes on PR #7"));
+    // Comment only, then back.
+    key(&mut a, 'j');
+    assert_eq!(a.finish_step(), Some(Step::CommentOnly));
+    key(&mut a, 'k');
     let e = code(&mut a, KeyCode::Enter);
     let [
         Effect::PostReview {
@@ -406,32 +425,30 @@ fn a_pull_request_posts_the_notes_and_never_hands_them_to_claude() {
         "{}",
         a.status
     );
-    // Done: still not approved.
-    a.on_app_event(AppEvent::PrReviewed {
+    // Done: still not approved, and teer ends with the line.
+    let e = a.on_app_event(AppEvent::PrReviewed {
         verdict: Verdict::RequestChanges,
         result: Ok("Changes requested on PR #7 on GitHub.".into()),
     });
+    assert_eq!(e, vec![Effect::Save, Effect::Quit]);
     assert!(!a.review.pr.as_ref().unwrap().is_approved());
     assert_eq!(a.status, "Changes requested on PR #7 on GitHub.");
 }
 
 #[test]
-fn approving_is_on_offer_once_everything_was_reviewed() {
+fn approving_is_on_offer_once_everything_was_accepted() {
     let mut a = app(["first", ""], Some(pr_info()));
-    for u in &mut a.review.units {
-        u.decision = Decision::Accepted;
-    }
-    keys(&mut a, "<space>n");
-    key(&mut a, 'p');
-    key(&mut a, 'v');
-    key(&mut a, 'v');
-    assert!(matches!(
-        &a.overlay,
-        Overlay::PostReview {
-            verdict: Verdict::Approve,
-            ..
-        }
-    ));
+    flag(&mut a, "f");
+    accept(&mut a, "g");
+    keys(&mut a, ":w<cr>");
+    assert!(!a.finish_steps().contains(&Step::Approve));
+    keys(&mut a, "<esc>");
+    accept(&mut a, "f");
+    keys(&mut a, ":w<cr>");
+    assert_eq!(
+        a.finish_steps(),
+        [Step::Approve, Step::ApproveWithComment, Step::Yank]
+    );
 }
 
 // --------------------------------------------------------------- teer notes

@@ -383,31 +383,24 @@ fn prompts_and_sheets_name_their_own_keys() {
     assert!(!screen.contains("(y/n)"), "{screen}");
     assert!(targets(&app).contains(&key("y")));
 
-    // A review of uncommitted changes, all reviewed: enter commits.
-    app.overlay = Overlay::AllDone;
+    // The `:w` sheet on uncommitted changes, all accepted: ⏎ commits.
+    for u in app.review.units.iter_mut() {
+        u.decision = Decision::Accepted;
+    }
+    app.overlay = Overlay::None;
+    app.open_finish();
+    assert_eq!(app.finish.draft, Some(DraftState::Template));
     let screen = text(&app, 100, 30);
     assert!(
-        screen.contains("q quit  ·  any other key to continue"),
+        screen.contains("⏎ commit · j k pick · i edit message · y copy notes · esc close"),
         "{screen}"
     );
-    assert!(screen.contains("⏎ commit these changes"), "{screen}");
     assert!(!screen.contains("reset"), "{screen}");
-    assert!(targets(&app).contains(&key("<cr>")));
-    assert!(targets(&app).contains(&key("q")));
-
-    app.overlay = Overlay::Commit {
-        message: "Charge orders in one currency".into(),
-        draft: DraftState::Template,
-        scroll: 0,
-        editing: None,
-        branch: teer::commit::Branch::Unknown,
-        others: 0,
-    };
-    let screen = text(&app, 100, 30);
-    assert!(
-        screen.contains("⏎ commit · i edit message · j k scroll · esc cancel"),
-        "{screen}"
-    );
+    let t = targets(&app);
+    assert!(t.contains(&key("<cr>")), "{t:?}");
+    assert!(t.contains(&key("i")), "{t:?}");
+    assert!(t.contains(&key("y")), "{t:?}");
+    assert!(t.contains(&key("<esc>")), "{t:?}");
 }
 
 #[test]

@@ -217,7 +217,7 @@ fn keys_named_in_an_overlay_can_be_clicked() {
             .iter()
             .all(|u| u.decision == Decision::Accepted)
     );
-    assert_eq!(a.overlay, Overlay::AllDone);
+    assert_eq!(a.overlay, Overlay::None);
 }
 
 #[test]

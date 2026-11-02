@@ -17,6 +17,7 @@ use teer::review::model::{
 };
 use teer::review::{BuildOptions, build_review};
 use teer::tui::app::{App, DraftState, Effect, JumpKind, Overlay, Screen};
+use teer::tui::finish::Step;
 
 const OLD: &str = "def f():\n    return 1\n\n\ndef g():\n    return 2\n";
 const NEW: &str = "def f():\n    return 10\n\n\ndef g():\n    return 20\n";
@@ -155,8 +156,8 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 /// A repository with one commit and `a.py` changed on top, reviewed and
-/// every unit accepted, started like the real thing: the "all reviewed"
-/// sheet is open.
+/// every unit accepted, started like the real thing, and the `:w` sheet
+/// open on its commit.
 fn done_app(dir: &Path) -> App {
     isolate_env();
     git(dir, &["init", "-q", "-b", "main"]);
@@ -170,7 +171,8 @@ fn done_app(dir: &Path) -> App {
     }
     let mut a = App::new(rv, Config::default(), Keymap::default());
     a.start(false, None, Vec::new(), None, false);
-    assert_eq!(a.overlay, Overlay::AllDone);
+    press(&mut a, ":w<cr>");
+    assert_eq!(a.finish_step(), Some(Step::Commit));
     a
 }
 
@@ -297,12 +299,9 @@ fn the_commit_sheet_edits_commits_and_closes() {
     let dir = tempfile::tempdir().unwrap();
     let dir = dir.path().canonicalize().unwrap();
     let mut a = done_app(&dir);
-    // ⏎ on the "all reviewed" sheet opens the commit sheet (no agent:
-    // the template message).
-    press(&mut a, "<cr>");
-    let Overlay::Commit { message, .. } = a.overlay.clone() else {
-        panic!("no commit sheet: {:?} {}", a.overlay, a.status)
-    };
+    // No agent: the template message.
+    let message = a.finish.message.clone();
+    assert_eq!(a.finish.draft, Some(DraftState::Template));
     // `i` edits the message in the editor (v1 `e`).
     let e = press(&mut a, "i");
     assert_eq!(
@@ -311,31 +310,20 @@ fn the_commit_sheet_edits_commits_and_closes() {
             text: message.clone()
         }]
     );
-    assert!(matches!(
-        a.overlay,
-        Overlay::Commit {
-            draft: DraftState::Edited,
-            ..
-        }
-    ));
+    assert_eq!(a.finish.draft, Some(DraftState::Edited));
     // No editor: the subject is edited on one line, where letters are text.
     a.comment_edited(EditOutcome::Unavailable("no editor".into()));
     press(&mut a, "<c-u>Fix jq");
-    assert!(
-        matches!(&a.overlay, Overlay::Commit { editing: Some(t), .. } if t == "Fix jq"),
-        "{:?}",
-        a.overlay
-    );
+    assert_eq!(a.finish.editing.as_deref(), Some("Fix jq"));
     press(&mut a, "<cr>");
-    let Overlay::Commit {
-        message, editing, ..
-    } = a.overlay.clone()
-    else {
-        panic!("the sheet closed")
-    };
-    assert_eq!(editing, None);
-    assert!(message.starts_with("Fix jq"), "{message}");
-    // `y` no longer commits; ⏎ does.
+    assert_eq!(a.finish.editing, None);
+    assert!(
+        a.finish.message.starts_with("Fix jq"),
+        "{}",
+        a.finish.message
+    );
+    assert!(matches!(a.overlay, Overlay::Finish { .. }));
+    // `y` copies the notes (none here), never commits; ⏎ does.
     assert!(press(&mut a, "y").is_empty());
     let e = press(&mut a, "<cr>");
     let [Effect::Commit { paths, message, .. }] = &e[..] else {
@@ -351,28 +339,19 @@ fn the_commit_sheet_edits_commits_and_closes() {
 // ------------------------------------------------------------- post sheet
 
 #[test]
-fn the_post_sheet_toggles_inline_with_t_and_cycles_the_verdict_with_v() {
+fn the_post_sheet_picks_the_verdict_with_j_and_k() {
     let mut a = app(["first", ""], Some(pr_info()));
-    press(&mut a, "<space>np");
-    let inline = |a: &App| match &a.overlay {
-        Overlay::PostReview { inline_on, .. } => *inline_on,
-        o => panic!("not the post sheet: {o:?}"),
-    };
-    let verdict = |a: &App| match &a.overlay {
-        Overlay::PostReview { verdict, .. } => *verdict,
-        o => panic!("not the post sheet: {o:?}"),
-    };
-    assert!(inline(&a));
-    assert_eq!(verdict(&a), Verdict::RequestChanges);
-    press(&mut a, "t");
-    assert!(!inline(&a));
-    press(&mut a, "t");
-    assert!(inline(&a));
-    // Nothing reviewed yet: no approving, two verdicts to go through.
-    press(&mut a, "v");
-    assert_eq!(verdict(&a), Verdict::Comment);
-    press(&mut a, "v");
-    assert_eq!(verdict(&a), Verdict::RequestChanges);
+    a.review.units[0].decision = Decision::Investigate;
+    let verdict = |a: &App| a.finish_step().and_then(|s| s.verdict());
+    // `:w` opens on keeping on reviewing: a unit is still pending.
+    press(&mut a, ":w<cr>");
+    assert_eq!(a.finish_step(), Some(Step::KeepReviewing));
+    press(&mut a, "j");
+    assert_eq!(verdict(&a), Some(Verdict::RequestChanges));
+    press(&mut a, "j");
+    assert_eq!(verdict(&a), Some(Verdict::Comment));
+    press(&mut a, "k");
+    assert_eq!(verdict(&a), Some(Verdict::RequestChanges));
     // `i` edits the summary in the editor.
     let e = press(&mut a, "i");
     assert!(matches!(&e[..], [Effect::EditComment { .. }]), "{e:?}");

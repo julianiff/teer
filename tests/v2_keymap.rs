@@ -767,16 +767,20 @@ fn leader_s_opens_the_settings() {
 // ---- Command line ---------------------------------------------------------------
 
 #[test]
-fn colon_w_opens_the_finish_step_that_fits() {
+fn colon_w_opens_the_finish_sheet_on_the_step_that_fits() {
+    use teer::tui::finish::Step;
     let mut d = Driver::new(3);
     d.keys(":w<cr>");
-    assert_eq!(*d.overlay(), Overlay::None);
-    assert_eq!(d.status(), "Nothing to finish yet: 3 units pending.");
+    assert_eq!(*d.overlay(), Overlay::Finish { sel: 0 });
+    assert_eq!(d.app.finish_step(), Some(Step::KeepReviewing));
+    d.keys("<esc>");
 
     d.app.review.unit_mut("u1").unwrap().dive.note = "check this".into();
+    d.keys("<space>n");
+    assert!(matches!(d.overlay(), Overlay::Notes { .. }));
     d.keys(":w<cr>");
     assert!(
-        matches!(d.overlay(), Overlay::Notes { .. }),
+        matches!(d.overlay(), Overlay::Finish { .. }),
         "{:?}",
         d.overlay()
     );
@@ -784,7 +788,7 @@ fn colon_w_opens_the_finish_step_that_fits() {
     let mut d = Driver::new(3);
     accept(&mut d, &[0, 1, 2]);
     d.keys(":w<cr>");
-    assert_eq!(*d.overlay(), Overlay::AllDone);
+    assert_eq!(d.app.finish_step(), Some(Step::Commit));
 }
 
 #[test]

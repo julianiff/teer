@@ -1144,10 +1144,9 @@ async fn k_from_the_summary_returns_to_the_last_card() {
     while app.swipe_current().is_some() {
         key(&mut app, 'a');
     }
-    // Accepting the last card opens the all-done popup; a key dismisses it.
-    assert_eq!(app.overlay, Overlay::AllDone);
-    assert!(screen_text(&app).contains("Hurray!"));
-    code(&mut app, KeyCode::Esc);
+    // Accepting the last card says how to finish, without a popup.
+    assert_eq!(app.overlay, Overlay::None);
+    assert!(app.status.contains(":w finishes"), "{}", app.status);
     assert!(screen_text(&app).contains("All changes triaged"));
     key(&mut app, 'k');
     assert_eq!(app.swipe_current(), Some(&last));

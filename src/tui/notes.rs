@@ -1,5 +1,5 @@
 //! The reviewer's notes on screen: the card under a unit's code, the editor
-//! (`i`), and the notes view (`␣n`) that takes them out of teer.
+//! (`i`), and the notes view (`␣n`) that lists them; `:w` takes them out of teer.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -173,29 +173,18 @@ pub fn draw_editor(f: &mut Frame, app: &App, id: &str, text: &str) {
     ui::click_hints(f, app, inner, &plain);
 }
 
-/// The keys of the notes view, as `(key, label)`: handing over to the agent
-/// CLI only for a local review, posting only for a pull request.
+/// The keys of the notes view, as `(key, label)`. The notes leave teer
+/// through the `:w` sheet.
 fn view_keys(app: &App) -> Vec<(String, String)> {
     let k = |a: Action, what: &str| ui::hint(app.keys.label(a), what);
-    let mut keys = vec![
+    vec![
         k(Action::ViewOpen, "go to"),
         k(Action::NoteEdit, "edit"),
         k(Action::NoteDelete, "delete"),
         k(Action::FinishYank, "copy all"),
-    ];
-    if app.review.pr.is_some() {
-        keys.push(k(Action::V1NotesPost, "post on the PR"));
-    } else {
-        match app.cfg.provider() {
-            crate::config::Provider::Claude => {
-                keys.push(k(Action::V1NotesToAgent, "hand to Claude Code"))
-            }
-            crate::config::Provider::Codex => keys.push(k(Action::V1NotesToAgent, "hand to Codex")),
-            crate::config::Provider::Api => {}
-        }
-    }
-    keys.push(k(Action::ViewClose, "close"));
-    keys
+        k(Action::FinishOpen, "finish"),
+        k(Action::ViewClose, "close"),
+    ]
 }
 
 /// The notes view: every note by file, the selected one marked, and the

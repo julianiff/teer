@@ -1,6 +1,6 @@
-//! Committing the reviewed changes from the "all reviewed" popup: when it is
-//! offered, the confirmation overlay, the message (template, agent draft,
-//! editing), exactly what gets committed, the guards, and the user's hooks.
+//! Committing the reviewed changes from the `:w` sheet: when it is offered,
+//! what the sheet shows, the message (template, agent draft, editing),
+//! exactly what gets committed, the guards, and the user's hooks.
 //! Real git in temp repositories; the agent is a mock; no network, no TTY.
 
 mod common;
@@ -23,6 +23,7 @@ use teer::review::model::{Decision, PrInfo, Review, SessionRef};
 use teer::review::{BuildOptions, build_review, store};
 use teer::tui::Runtime;
 use teer::tui::app::{App, AppEvent, DraftState, Effect, Overlay};
+use teer::tui::finish::Step;
 use teer::tui::ui;
 
 // ------------------------------------------------------------- fixtures
@@ -82,15 +83,15 @@ fn app_of(rv: Review) -> App {
     App::new(rv, Config::default(), Keymap::default())
 }
 
-/// The finished review of the fixture, started like the real thing (so the
-/// popup is open).
+/// The finished review of the fixture, started like the real thing (no
+/// sheet opens by itself).
 fn done_app(r: &FixtureRepo) -> App {
     let mut rv = review_of(r);
     assert_eq!(rv.files.len(), 3, "{:?}", rv.files);
     accept_all(&mut rv);
     let mut a = app_of(rv);
     a.start(false, None, Vec::new(), None, false);
-    assert_eq!(a.overlay, Overlay::AllDone);
+    assert_eq!(a.overlay, Overlay::None);
     a
 }
 
@@ -110,7 +111,7 @@ fn key(a: &mut App, c: char) -> Vec<Effect> {
     press(a, KeyCode::Char(c))
 }
 
-/// `⏎`: a sheet's confirm (commit on the popup and on the overlay).
+/// `⏎`: the sheet's step.
 fn enter(a: &mut App) -> Vec<Effect> {
     press(a, KeyCode::Enter)
 }
@@ -138,36 +139,29 @@ struct Parts {
     others: usize,
 }
 
+/// The commit as the open sheet holds it.
 fn parts(a: &App) -> Parts {
-    match &a.overlay {
-        Overlay::Commit {
-            message,
-            draft,
-            scroll,
-            editing,
-            branch,
-            others,
-        } => Parts {
-            message: message.clone(),
-            draft: *draft,
-            scroll: *scroll,
-            editing: editing.clone(),
-            branch: branch.clone(),
-            others: *others,
-        },
-        o => panic!("not the commit overlay: {o:?}"),
+    assert!(
+        matches!(a.overlay, Overlay::Finish { .. }),
+        "{:?}",
+        a.overlay
+    );
+    assert_eq!(a.finish_step(), Some(Step::Commit));
+    let f = &a.finish;
+    Parts {
+        message: f.message.clone(),
+        draft: f.draft.expect("a commit was offered"),
+        scroll: f.scroll,
+        editing: f.editing.clone(),
+        branch: f.branch.clone().unwrap_or(Branch::Unknown),
+        others: f.others,
     }
 }
 
-/// Open the overlay from the popup.
+/// Open the sheet (`:w`), on its commit.
 fn open(a: &mut App) -> Vec<Effect> {
-    assert_eq!(a.overlay, Overlay::AllDone);
-    let e = enter(a);
-    assert!(
-        matches!(a.overlay, Overlay::Commit { .. }),
-        "{:?}",
-        a.status
-    );
+    let e = common::v2::press(a, ":w<cr>");
+    assert_eq!(a.finish_step(), Some(Step::Commit), "{:?}", a.status);
     e
 }
 
@@ -228,17 +222,19 @@ fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
 // -------------------------------------------------- when it is offered
 
 #[test]
-fn the_popup_offers_commit_for_a_local_worktree_review() {
+fn the_sheet_offers_commit_for_a_local_worktree_review() {
     let r = fixture();
-    let a = done_app(&r);
+    let mut a = done_app(&r);
+    open(&mut a);
+    assert_eq!(a.finish_steps(), [Step::Commit, Step::Yank]);
     let t = draw(&a, 100, 30);
-    assert!(t.contains("Hurray!"), "{t}");
-    assert!(t.contains("⏎ commit these changes"), "{t}");
+    assert!(t.contains(" units accepted."), "{t}");
+    assert!(t.contains("⏎ commit"), "{t}");
     assert!(a.can_commit());
 }
 
 #[test]
-fn the_popup_does_not_offer_commit_for_prs_or_base_reviews() {
+fn the_sheet_does_not_offer_commit_for_prs_or_base_reviews() {
     let r = fixture();
     let mut rv = review_of(&r);
     accept_all(&mut rv);
@@ -250,19 +246,14 @@ fn the_popup_does_not_offer_commit_for_prs_or_base_reviews() {
         ..Default::default()
     });
     let mut a = app_of(rv);
-    a.overlay = Overlay::AllDone;
-    assert!(!draw(&a, 100, 30).contains("commit these changes"));
+    common::v2::press(&mut a, ":w<cr>");
+    assert!(!a.finish_steps().contains(&Step::Commit));
     // `⏎` is the PR's approval here (this one can't be posted: no remote),
-    // never the commit overlay.
-    enter(&mut a);
-    assert!(
-        !matches!(a.overlay, Overlay::Commit { .. }),
-        "{:?}",
-        a.overlay
-    );
+    // never a commit.
+    assert!(enter(&mut a).is_empty());
     assert!(a.status.contains("PR #1"), "{}", a.status);
 
-    // A --base review reviews commits, not the working tree.
+    // A --base review reviews commits, not the working tree: done.
     let r2 = base_repo();
     r2.write("a.py", PY_OLD).commit("one");
     r2.write("a.py", PY_NEW).commit("two");
@@ -274,94 +265,47 @@ fn the_popup_does_not_offer_commit_for_prs_or_base_reviews() {
     assert!(!rv.files.is_empty());
     accept_all(&mut rv);
     let mut b = app_of(rv);
-    b.overlay = Overlay::AllDone;
     assert!(!b.can_commit());
-    assert!(!draw(&b, 100, 30).contains("commit these changes"));
-    enter(&mut b);
-    assert_eq!(b.overlay, Overlay::None);
+    common::v2::press(&mut b, ":w<cr>");
+    assert_eq!(b.finish_steps(), [Step::Done, Step::Yank]);
+    assert!(!draw(&b, 100, 30).contains("⏎ commit"));
+    assert_eq!(enter(&mut b), vec![Effect::Save, Effect::Quit]);
+    assert_eq!(head_count(&r2), 2);
 }
 
 #[test]
-fn enter_with_something_still_flagged_commits_nothing() {
+fn with_something_flagged_committing_is_the_alternative_commit_anyway() {
     let r = fixture();
     let mut a = done_app(&r);
     a.review.units[0].decision = Decision::Investigate;
+    // The strict check refuses; the sheet's default sends the notes.
+    assert_eq!(commit::check(&a.review), Err(commit::Refusal::NotReviewed));
+    common::v2::press(&mut a, ":w<cr>");
+    assert_eq!(a.finish_step(), Some(Step::SendNotes));
+    common::v2::press(&mut a, "jj");
+    assert_eq!(a.finish_step(), Some(Step::Commit));
+    assert!(draw(&a, 100, 40).contains("commit anyway"));
+    // Chosen: only the files are checked, and they still hold.
+    let out = confirm(&mut a);
+    assert!(matches!(out, Outcome::Committed { .. }), "{out:?}");
+    assert_eq!(head_count(&r), 2);
+}
+
+#[test]
+fn a_complete_saved_review_opens_on_the_list_and_colon_w_commits() {
+    let r = fixture();
+    let mut rv = review_of(&r);
+    accept_all(&mut rv);
+    store::save(&rv).unwrap();
+    let mut fresh = review_of(&r);
+    teer::cli::restore(&mut fresh);
+    let mut a = app_of(fresh);
+    a.start(false, None, Vec::new(), None, false);
+    assert_eq!(a.overlay, Overlay::None);
+    open(&mut a);
+    assert!(draw(&a, 100, 30).contains("⏎ commit"));
     let e = enter(&mut a);
-    assert!(e.is_empty());
-    assert_eq!(a.overlay, Overlay::None);
-    assert!(a.status.contains("Not everything"), "{}", a.status);
-}
-
-#[test]
-fn a_complete_saved_review_shows_the_popup_once_at_launch() {
-    let r = fixture();
-    let mut rv = review_of(&r);
-    accept_all(&mut rv);
-    store::save(&rv).unwrap();
-    let mut fresh = review_of(&r);
-    teer::cli::restore(&mut fresh);
-    let mut a = app_of(fresh);
-    a.start(false, None, Vec::new(), None, false);
-    assert_eq!(a.overlay, Overlay::AllDone);
-    assert!(draw(&a, 100, 30).contains("⏎ commit these changes"));
-    // Dismissing it simply continues.
-    key(&mut a, 'x');
-    assert_eq!(a.overlay, Overlay::None);
-}
-
-#[test]
-fn the_launch_popup_needs_a_complete_local_review_with_files() {
-    let r = fixture();
-    // Incomplete.
-    let mut rv = review_of(&r);
-    accept_all(&mut rv);
-    rv.units[0].decision = Decision::Pending;
-    store::save(&rv).unwrap();
-    let mut fresh = review_of(&r);
-    teer::cli::restore(&mut fresh);
-    let mut a = app_of(fresh);
-    a.start(false, None, Vec::new(), None, false);
-    assert_eq!(a.overlay, Overlay::None);
-    // Flagged.
-    let mut rv = review_of(&r);
-    accept_all(&mut rv);
-    rv.units[0].decision = Decision::Investigate;
-    let mut a = app_of(rv);
-    a.start(false, None, Vec::new(), None, false);
-    assert_eq!(a.overlay, Overlay::None);
-    // A pull request.
-    let mut rv = review_of(&r);
-    accept_all(&mut rv);
-    rv.pr = Some(PrInfo {
-        host: "github.com".into(),
-        owner: "o".into(),
-        repo: "r".into(),
-        number: 1,
-        ..Default::default()
-    });
-    let mut a = app_of(rv);
-    a.start(false, None, Vec::new(), None, false);
-    assert_eq!(a.overlay, Overlay::None);
-    // Nothing to commit (clean tree).
-    let mut rv = review_of(&r);
-    accept_all(&mut rv);
-    rv.files.clear();
-    let mut a = app_of(rv);
-    a.start(false, None, Vec::new(), None, true);
-    assert_eq!(a.overlay, Overlay::None);
-    // A --base review.
-    let r2 = base_repo();
-    r2.write("a.py", PY_OLD).commit("one");
-    r2.write("a.py", PY_NEW).commit("two");
-    let opts = BuildOptions {
-        base: Some("HEAD~1".into()),
-        languages: None,
-    };
-    let mut rv = build_review(&r2.path(), &opts).unwrap();
-    accept_all(&mut rv);
-    let mut a = app_of(rv);
-    a.start(false, None, Vec::new(), None, false);
-    assert_eq!(a.overlay, Overlay::None);
+    assert!(matches!(&e[..], [Effect::Commit { .. }]), "{e:?}");
 }
 
 // ------------------------------------------------------------- overlay
@@ -379,7 +323,7 @@ fn the_overlay_lists_the_files_the_branch_and_the_other_changes() {
     assert_eq!(p.others, 3);
     assert_eq!(p.draft, DraftState::Template);
     let t = draw(&a, 100, 40);
-    assert!(t.contains("Commit 3 files on main?"), "{t}");
+    assert!(t.contains("Commits 3 files on main:"), "{t}");
     assert!(
         t.contains("~ a.py") && t.contains("+ new.py") && t.contains("− gone.py"),
         "{t}"
@@ -421,7 +365,7 @@ fn a_detached_head_says_so() {
     open(&mut a);
     assert_eq!(parts(&a).branch, Branch::Detached);
     let t = draw(&a, 100, 40);
-    assert!(t.contains("Commit 3 files on detached HEAD?"), "{t}");
+    assert!(t.contains("Commits 3 files on a detached HEAD:"), "{t}");
 }
 
 #[test]
@@ -456,8 +400,8 @@ fn esc_cancels_and_stray_keys_do_nothing() {
     let mut a = done_app(&r);
     open(&mut a);
     let before = a.overlay.clone();
-    // `i` edits the message now; `e` and `y` are stray.
-    for c in ['x', 'q', 'n', 'c', 'a', 'R', 'e', ' '] {
+    // `i` edits the message, `y` copies the notes, `q` closes; these are stray.
+    for c in ['x', 'n', 'c', 'a', 'f', 'R', 'e', ' '] {
         assert!(key(&mut a, c).is_empty(), "{c}");
         assert_eq!(a.overlay, before, "{c}");
     }
@@ -489,7 +433,7 @@ fn ctrl_c_still_quits_from_the_overlay() {
 }
 
 #[test]
-fn the_overlay_scrolls_and_stays_inside_small_screens() {
+fn the_sheet_scrolls_and_stays_inside_small_screens() {
     let r = fixture();
     let mut a = done_app(&r);
     open(&mut a);
@@ -501,25 +445,31 @@ fn the_overlay_scrolls_and_stays_inside_small_screens() {
             .join("\n")
     );
     set_message(&mut a, &long);
+    let ctrl = |a: &mut App, c: char| {
+        a.on_event(Event::Key(KeyEvent::new(
+            KeyCode::Char(c),
+            KeyModifiers::CONTROL,
+        )))
+    };
     // Draw once so the maximum scroll is known.
-    let t = draw(&a, 60, 20);
-    assert!(t.lines().count() == 20);
+    let t = draw(&a, 60, 24);
+    assert!(t.lines().count() == 24);
     assert!(t.contains("bullet number 0"), "{t}");
     assert!(!t.contains("bullet number 59"));
     for _ in 0..100 {
-        press(&mut a, KeyCode::Down);
+        ctrl(&mut a, 'd');
     }
     let down = parts(&a).scroll;
     assert!(down > 0);
-    let t = draw(&a, 60, 20);
+    let t = draw(&a, 60, 24);
     assert!(t.contains("bullet number 59"), "{t}");
     assert!(!t.contains("bullet number 0 "));
-    // The footer keys stay visible whatever the scroll.
-    assert!(t.contains("esc cancel"), "{t}");
+    // The steps and the keys stay visible whatever the scroll.
+    assert!(t.contains("commit") && t.contains("esc close"), "{t}");
     press(&mut a, KeyCode::PageUp);
     assert!(parts(&a).scroll < down);
     for _ in 0..200 {
-        press(&mut a, KeyCode::Up);
+        ctrl(&mut a, 'u');
     }
     assert_eq!(parts(&a).scroll, 0);
     press(&mut a, KeyCode::PageDown);
@@ -533,15 +483,6 @@ fn every_state_renders_at_common_and_tiny_sizes() {
     add_unrelated(&r);
     open(&mut a);
     a.review.agent_session = Some(SessionRef::default());
-    let mut states = vec![a.overlay.clone()];
-    if let Overlay::Commit { draft, .. } = &mut a.overlay {
-        *draft = DraftState::Pending;
-    }
-    states.push(a.overlay.clone());
-    if let Overlay::Commit { editing, .. } = &mut a.overlay {
-        *editing = Some("A subject being typed".into());
-    }
-    states.push(a.overlay.clone());
     let sizes = [
         (120, 40),
         (80, 24),
@@ -552,28 +493,25 @@ fn every_state_renders_at_common_and_tiny_sizes() {
         (4, 2),
         (1, 1),
     ];
-    for o in &states {
-        a.overlay = o.clone();
+    let check = |a: &App| {
         for (w, h) in sizes {
-            let t = draw(&a, w, h);
+            let t = draw(a, w, h);
             assert_eq!(t.lines().count(), h as usize);
         }
-    }
-    a.overlay = Overlay::AllDone;
-    for (w, h) in sizes {
-        draw(&a, w, h);
-    }
-    a.committed = Some("abc1234".into());
-    for (w, h) in sizes {
-        draw(&a, w, h);
-    }
-    let t = draw(&a, 80, 24);
-    assert!(t.contains("Committed abc1234."), "{t}");
+    };
+    check(&a);
+    a.finish.draft = Some(DraftState::Pending);
+    check(&a);
+    a.finish.editing = Some("A subject being typed".into());
+    check(&a);
+    a.finish.editing = None;
+    a.finish.confirm = Some(Step::Commit);
+    check(&a);
 }
 
 #[test]
-fn finish_open_can_be_rebound_and_the_popup_still_commits_on_enter() {
-    // The popup's keys are fixed (a sheet); what opens it can be rebound.
+fn finish_open_can_be_rebound_and_the_sheet_still_commits_on_enter() {
+    // ⏎ is the sheet's own key; what opens it can be rebound.
     let r = fixture();
     let mut rv = review_of(&r);
     accept_all(&mut rv);
@@ -584,16 +522,10 @@ fn finish_open_can_be_rebound_and_the_popup_still_commits_on_enter() {
     let (keys, _) = Keymap::new(&ov, 1000).unwrap();
     let mut a = App::new(rv, Config::default(), keys);
     a.start(false, None, Vec::new(), None, false);
-    assert_eq!(a.overlay, Overlay::AllDone);
-    let t = draw(&a, 100, 30);
-    assert!(t.contains("⏎ commit these changes"), "{t}");
-    // Dismissed, the rebound command opens it again.
-    key(&mut a, 'x');
-    assert_eq!(a.overlay, Overlay::None);
     common::v2::press(&mut a, ":done<cr>");
-    assert_eq!(a.overlay, Overlay::AllDone);
-    enter(&mut a);
-    assert!(matches!(a.overlay, Overlay::Commit { .. }));
+    assert_eq!(a.finish_step(), Some(Step::Commit));
+    let e = enter(&mut a);
+    assert!(matches!(&e[..], [Effect::Commit { .. }]), "{e:?}");
 }
 
 // ------------------------------------------------------------- message
@@ -609,7 +541,7 @@ fn agent_app(r: &FixtureRepo) -> App {
         Some(SessionRef::fresh("claude", r.path())),
         false,
     );
-    assert_eq!(a.overlay, Overlay::AllDone);
+    assert_eq!(a.overlay, Overlay::None);
     a
 }
 
@@ -658,7 +590,7 @@ async fn the_agent_drafts_a_better_message() {
     let p = parts(&a);
     assert_eq!(p.draft, DraftState::Pending);
     assert!(p.message.starts_with("Update a.py"));
-    assert!(draw(&a, 100, 40).contains("drafting message…"));
+    assert!(draw(&a, 100, 40).contains("drafting…"));
     for e in effects {
         rt.exec(&mut a, e);
     }
@@ -670,7 +602,7 @@ async fn the_agent_drafts_a_better_message() {
         p.message,
         "Add currency check to charging\n\n- Rejects unsupported currencies\n- Saves the payment"
     );
-    assert!(!draw(&a, 100, 40).contains("drafting message…"));
+    assert!(!draw(&a, 100, 40).contains("drafting…"));
     // The prompt: files, the earlier subject as a style example, read-only (no web).
     let prompts = mock.prompts.lock().unwrap().clone();
     assert_eq!(prompts.len(), 1);
@@ -909,7 +841,7 @@ fn without_an_editor_the_subject_is_edited_on_one_line() {
     for c in " yes".chars() {
         assert!(key(&mut a, c).is_empty());
     }
-    assert!(matches!(a.overlay, Overlay::Commit { .. }));
+    assert!(matches!(a.overlay, Overlay::Finish { .. }));
     press(&mut a, KeyCode::Backspace);
     press(&mut a, KeyCode::Enter);
     let p = parts(&a);
@@ -963,28 +895,12 @@ fn enter_commits_exactly_the_reviewed_files_with_the_given_message() {
         "staged.txt"
     );
     assert!(status_before.contains("staged.txt"));
-    // The app: status, popup variant, no repeat offer.
-    assert_eq!(
-        a.status,
-        format!("Committed {short}: Fix \"quotes\" and ünï 日本")
-    );
+    // The app: one line, and teer ends with it.
+    let line = format!("Committed {short}: Fix \"quotes\" and ünï 日本");
+    assert_eq!(a.status, line);
+    assert_eq!(a.finish.exit_line.as_deref(), Some(line.as_str()));
     assert_eq!(a.committed.as_deref(), Some(short.as_str()));
-    assert_eq!(a.overlay, Overlay::AllDone);
-    let t = draw(&a, 100, 30);
-    assert!(t.contains(&format!("Committed {short}.")), "{t}");
-    assert!(
-        t.contains("q quit") && t.contains("any other key to continue"),
-        "{t}"
-    );
-    assert!(
-        !t.contains("commit these changes") && !t.contains("Hurray"),
-        "{t}"
-    );
-    enter(&mut a);
-    assert_eq!(a.overlay, Overlay::None, "⏎ only dismisses the variant");
-    a.overlay = Overlay::AllDone;
-    let e = key(&mut a, 'q');
-    assert_eq!(e, vec![Effect::Save, Effect::Quit]);
+    assert_eq!(a.overlay, Overlay::None);
     // The offer is gone for the rest of the session...
     assert!(!a.can_commit());
     // ...until a re-run builds a new review.
@@ -1083,7 +999,6 @@ fn the_first_commit_of_a_repository_works() {
     accept_all(&mut rv);
     let mut a = app_of(rv);
     a.start(false, None, Vec::new(), None, false);
-    assert_eq!(a.overlay, Overlay::AllDone);
     r.write("unrelated.txt", "u\n");
     open(&mut a);
     assert_eq!(parts(&a).branch, Branch::Named("main".into()));
@@ -1137,8 +1052,8 @@ fn the_users_pre_commit_hook_runs_and_a_failing_one_blocks_the_commit() {
     );
     assert!(ran.exists(), "the user's hook ran");
     assert_eq!(head_count(&r), 1, "nothing was committed");
-    // The overlay stays open for a retry or an edit, with a short sanitised status.
-    assert!(matches!(a.overlay, Overlay::Commit { .. }));
+    // The sheet stays open for a retry or an edit, with a short sanitised status.
+    assert!(matches!(a.overlay, Overlay::Finish { .. }));
     assert_eq!(parts(&a).message, "Blocked by the hook");
     assert!(a.status.starts_with("Commit failed"), "{}", a.status);
     assert!(a.status.contains("lint failed: no tabs"), "{}", a.status);
@@ -1318,13 +1233,21 @@ fn nothing_to_commit_is_reported_and_stages_nothing() {
 }
 
 #[test]
-fn a_flagged_unit_blocks_the_commit_even_with_the_overlay_open() {
+fn a_unit_left_open_asks_first_and_the_strict_check_refuses_it() {
     let r = fixture();
     let mut a = done_app(&r);
-    open(&mut a);
     a.review.units[0].decision = Decision::Pending;
-    let s = refused(&mut a, &r);
-    assert!(s.contains("Not everything is accepted"), "{s}");
+    assert_eq!(commit::check(&a.review), Err(commit::Refusal::NotReviewed));
+    common::v2::press(&mut a, ":w<cr>");
+    assert_eq!(a.finish_step(), Some(Step::KeepReviewing));
+    common::v2::press(&mut a, "j");
+    assert_eq!(a.finish_step(), Some(Step::Commit));
+    // ⏎ asks; anything but yes commits nothing.
+    assert!(enter(&mut a).is_empty());
+    assert_eq!(a.finish.confirm, Some(Step::Commit));
+    assert!(press(&mut a, KeyCode::Esc).is_empty());
+    assert_eq!(head_count(&r), 1);
+    assert!(matches!(a.overlay, Overlay::Finish { .. }));
 }
 
 #[test]

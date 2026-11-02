@@ -13,10 +13,10 @@ use super::select;
 use super::swipe::{Dir, DragTracker};
 use super::theme::Theme;
 use crate::agent::SessionInfo;
-use crate::approve::{self, EditOutcome, Inline, NoteEntry, Verdict};
-use crate::commit::{self, Branch};
+use crate::approve::{Inline, Verdict};
+use crate::commit;
 use crate::config::{Config, Order, Provider};
-use crate::keymap::{Action, Edit, Keymap, Outcome, Sheet};
+use crate::keymap::{Action, Edit, Keymap, Outcome};
 use crate::review::ask::Progress;
 use crate::review::attention::{Assessment, Level, accepted_for_you, assess_all, settle};
 use crate::review::dive::{DiveEvent, uses_web};
@@ -74,7 +74,7 @@ pub enum Overlay {
         joins: Option<usize>,
     },
     /// Every note of the review (see `crate::notes`) and the selected one:
-    /// to copy, hand to Claude Code, or post on the PR.
+    /// to go to, edit, delete or copy (`:w` takes them out of teer).
     Notes {
         sel: usize,
     },
@@ -96,37 +96,6 @@ pub enum Overlay {
     ConfirmFlagFile {
         file: PathBuf,
         ids: Vec<String>,
-    },
-    /// Shown once when the last unit that needed a look gets accepted.
-    AllDone,
-    /// Asks before posting a review of the PR on GitHub: the verdict, the
-    /// summary comment and the inline comments that would be posted.
-    PostReview {
-        verdict: Verdict,
-        /// The user's notes, in list order, with their inline targets.
-        notes: Vec<NoteEntry>,
-        /// The editable first part of the summary.
-        intro: String,
-        /// Post notes as inline comments (off: all go into the summary).
-        inline_on: bool,
-        /// First visible line of the scrolling text.
-        scroll: usize,
-        /// One-line editor for `intro`, when the external editor is not available.
-        editing: Option<String>,
-    },
-    /// Asks before committing the reviewed files (plain `teer` review of
-    /// uncommitted changes): the files, the message, the keys.
-    Commit {
-        /// The message that would be committed.
-        message: String,
-        draft: DraftState,
-        /// First visible line of the scrolling text.
-        scroll: usize,
-        /// One-line editor for the subject, when the external editor is not available.
-        editing: Option<String>,
-        branch: Branch,
-        /// Changed paths in the working tree that are not part of the review.
-        others: usize,
     },
     /// The commits between base and head and the PR's description: the
     /// selected commit, and the selected one of the units it changed while
@@ -540,10 +509,6 @@ pub struct App {
     pub last_click: Option<(std::time::Instant, u16, u16)>,
     pub slim_scroll: Cell<usize>,
     pub swipe_card: Cell<Rect>,
-    /// Furthest the approval text can scroll (written while drawing).
-    pub approve_max_scroll: Cell<usize>,
-    /// Furthest the commit overlay can scroll (written while drawing).
-    pub commit_max_scroll: Cell<usize>,
     /// How far the detail area (the list preview, the swipe card, the open
     /// tab on the Flagged screen) is scrolled, in lines, and what it showed
     /// then: another unit or tab starts at the top.
@@ -557,6 +522,8 @@ pub struct App {
     pub syntax: super::syntax::Cache,
     /// The short id of the commit made from this review in this session.
     pub committed: Option<String>,
+    /// The `:w` sheet's message, summary and result (see [`super::finish`]).
+    pub finish: super::finish::FinishState,
     /// The summary of the whole change was asked for this session.
     pub summary_asked: bool,
     pub ask: AskState,
@@ -602,14 +569,13 @@ impl App {
             swipe_card: Cell::new(Rect::default()),
             approving: false,
             progress: Default::default(),
-            approve_max_scroll: Cell::new(0),
-            commit_max_scroll: Cell::new(0),
             detail_scroll: RefCell::new((String::new(), 0)),
             detail_max_scroll: Cell::new(0),
             pane_scroll: RefCell::default(),
             detail_rows: Cell::new(0),
             syntax: Default::default(),
             committed: None,
+            finish: Default::default(),
             summary_asked: false,
             ask: AskState::default(),
             cfg,
@@ -856,11 +822,6 @@ impl App {
             self.summary_asked = true;
             effects.push(Effect::Summarize);
         }
-        // The one time the popup shows on load: a finished review of
-        // uncommitted changes can be committed right away.
-        if self.can_commit() && !self.review.files.is_empty() && self.all_reviewed() {
-            self.overlay = Overlay::AllDone;
-        }
         effects
     }
 
@@ -1067,10 +1028,16 @@ impl App {
         Vec::new()
     }
 
-    /// Open the "all done" popup if `was_done` was false and it is now true.
+    /// On the v1 screens, say how to finish once the review just got done
+    /// (`was_done` was false and it is now true); the v2 screens' bottom bar
+    /// always says it.
     fn check_all_done(&mut self, was_done: bool) {
-        if !was_done && self.all_reviewed() {
-            self.overlay = Overlay::AllDone;
+        let v1 = matches!(self.screen, Screen::Slim | Screen::Swipe | Screen::Flagged);
+        if v1 && !was_done && self.all_reviewed() {
+            self.status = format!(
+                "Everything is accepted. {} finishes.",
+                self.keys.label(Action::FinishOpen)
+            );
         }
     }
 
@@ -1167,31 +1134,7 @@ impl App {
                 self.overlay = Overlay::None;
                 return Some(Vec::new());
             }
-            Overlay::AllDone => {
-                self.overlay = Overlay::None;
-                match self.keys.sheet(&k) {
-                    Some(Sheet::Quit) => return Some(vec![Effect::Save, Effect::Quit]),
-                    Some(Sheet::Confirm) if self.committed.is_none() => {
-                        if self.can_approve() {
-                            self.ask_post(Verdict::Approve);
-                        } else if self.can_commit() {
-                            return Some(self.ask_commit());
-                        }
-                    }
-                    _ => {}
-                }
-                return Some(Vec::new());
-            }
-            Overlay::Commit { .. } => return Some(self.commit_key(k)),
             Overlay::Commits { sel, unit } => return Some(self.commits_key(sel, unit, k)),
-            Overlay::PostReview {
-                verdict,
-                notes,
-                intro,
-                inline_on,
-                scroll,
-                editing,
-            } => return Some(self.post_key(verdict, notes, intro, inline_on, scroll, editing, k)),
             Overlay::None => {}
         }
         if self.chat_typing() {
@@ -1350,10 +1293,7 @@ impl App {
                 return Vec::new();
             }
             Action::ToolSettings => return vec![Effect::Settings],
-            Action::FinishOpen => {
-                self.finish();
-                return Vec::new();
-            }
+            Action::FinishOpen => return self.open_finish(),
             Action::ToggleAutoAccepted => {
                 self.toggle_auto();
                 return Vec::new();
@@ -1400,23 +1340,6 @@ impl App {
             Screen::Swipe => self.swipe_action(a, count),
             Screen::Flagged => self.flagged_action(a, count),
             Screen::Unit => self.unit_action(a, count),
-        }
-    }
-
-    /// `:w`: the all-done sheet once everything is accepted, else the notes
-    /// when there are some, else what is left.
-    fn finish(&mut self) {
-        if self.all_reviewed() {
-            self.overlay = Overlay::AllDone;
-        } else if !crate::notes::noted(&self.review).is_empty() {
-            self.open_notes();
-        } else {
-            let (_, flagged, pending) = self.decision_counts();
-            self.status = if pending == 0 && flagged > 0 {
-                format!("Nothing to finish yet: {} flagged.", units(flagged))
-            } else {
-                format!("Nothing to finish yet: {} pending.", units(pending))
-            };
         }
     }
 
@@ -1844,461 +1767,6 @@ impl App {
         vec![Effect::Save]
     }
 
-    /// Can the PR be approved from here: a `teer pr` review whose head has
-    /// not been approved yet.
-    pub fn can_approve(&self) -> bool {
-        self.review.pr.as_ref().is_some_and(|p| !p.is_approved()) && !self.approving
-    }
-
-    /// A review of the PR can be posted now: nothing is being posted.
-    pub fn can_post(&self) -> bool {
-        self.review.pr.is_some() && !self.approving
-    }
-
-    /// The verdicts the post confirmation offers, in the order `v` goes
-    /// through them: approving only once everything was reviewed.
-    pub fn verdicts(&self) -> Vec<Verdict> {
-        let mut v = Vec::new();
-        if self.can_approve() && self.all_reviewed() {
-            v.push(Verdict::Approve);
-        }
-        v.extend([Verdict::RequestChanges, Verdict::Comment]);
-        v
-    }
-
-    /// Open the confirmation for posting a review with `verdict`: confirming
-    /// the all-reviewed sheet approves, posting the notes requests changes.
-    fn ask_post(&mut self, verdict: Verdict) {
-        if !self.can_post() || (verdict == Verdict::Approve && !self.can_approve()) {
-            return;
-        }
-        let Some(pr) = self.review.pr.as_ref() else {
-            return;
-        };
-        if pr.remote.is_none() || pr.head_sha.is_none() || pr.repo_dir.is_none() {
-            self.status = format!(
-                "Can't post to PR #{}: teer doesn't know its remote or head.",
-                pr.number
-            );
-            return;
-        }
-        let notes = approve::collect_notes(&self.review, &self.order);
-        self.overlay = Overlay::PostReview {
-            verdict,
-            notes,
-            intro: approve::intro_for(&self.review),
-            inline_on: true,
-            scroll: 0,
-            editing: None,
-        };
-    }
-
-    /// Keys of the post confirmation, a sheet ([`Keymap::sheet`]): `enter`
-    /// posts, `esc` closes, `i` edits the summary, `v` cycles the verdict,
-    /// `t` turns inline comments on or off, `j`/`k` and the page keys
-    /// scroll. While the summary is edited on one line, a text input
-    /// ([`Keymap::edit`]). ctrl+c is handled before.
-    #[allow(clippy::too_many_arguments)]
-    fn post_key(
-        &mut self,
-        verdict: Verdict,
-        notes: Vec<NoteEntry>,
-        mut intro: String,
-        mut inline_on: bool,
-        mut scroll: usize,
-        editing: Option<String>,
-        k: KeyEvent,
-    ) -> Vec<Effect> {
-        let put = |app: &mut App, notes, intro, inline_on, scroll, editing| {
-            app.overlay = Overlay::PostReview {
-                verdict,
-                notes,
-                intro,
-                inline_on,
-                scroll,
-                editing,
-            };
-        };
-        if let Some(mut text) = editing {
-            match self.keys.edit(&k) {
-                Edit::Cancel => put(self, notes, intro, inline_on, scroll, None),
-                Edit::Submit => {
-                    let t = approve::clamp_text(&text.replace('\n', " "), approve::BODY_MAX_CHARS);
-                    if !t.trim().is_empty() {
-                        intro = t.trim().to_string();
-                    }
-                    put(self, notes, intro, inline_on, scroll, None);
-                }
-                e => {
-                    typed(&mut text, e, approve::BODY_MAX_CHARS);
-                    put(self, notes, intro, inline_on, scroll, Some(text));
-                }
-            }
-            return Vec::new();
-        }
-        let max = self.approve_max_scroll.get();
-        match self.keys.sheet(&k) {
-            Some(Sheet::Cancel) => {
-                self.overlay = Overlay::None;
-                return Vec::new();
-            }
-            Some(Sheet::Confirm) => {
-                self.overlay = Overlay::None;
-                let Some(pr) = self.review.pr.clone() else {
-                    return Vec::new();
-                };
-                if !self.verdicts().contains(&verdict) || !self.can_post() {
-                    return Vec::new();
-                }
-                let plan = approve::build_plan(&notes, &intro, inline_on);
-                let flat_body = approve::build_plan(&notes, &intro, false).body;
-                self.approving = true;
-                self.status = format!("{} on GitHub…", verdict.doing(pr.number));
-                return vec![Effect::PostReview {
-                    pr: Box::new(pr),
-                    verdict,
-                    body: plan.body,
-                    inline: plan.inline,
-                    flat_body,
-                }];
-            }
-            Some(Sheet::Edit) => {
-                let text = intro.clone();
-                put(self, notes, intro, inline_on, scroll, None);
-                return vec![Effect::EditComment { text }];
-            }
-            Some(Sheet::Inline) => inline_on = !inline_on,
-            Some(Sheet::Verdict) => {
-                let all = self.verdicts();
-                let at = all.iter().position(|v| *v == verdict).map_or(0, |i| i + 1);
-                self.overlay = Overlay::PostReview {
-                    verdict: all[at % all.len()],
-                    notes,
-                    intro,
-                    inline_on,
-                    scroll,
-                    editing: None,
-                };
-                return Vec::new();
-            }
-            Some(Sheet::Down) => scroll = (scroll + 1).min(max),
-            Some(Sheet::Up) => scroll = scroll.saturating_sub(1),
-            Some(Sheet::PageDown) => scroll = (scroll + 8).min(max),
-            Some(Sheet::PageUp) => scroll = scroll.saturating_sub(8),
-            Some(Sheet::Yank | Sheet::Quit) | None => {}
-        }
-        put(self, notes, intro, inline_on, scroll, None);
-        Vec::new()
-    }
-
-    // ---- Committing -------------------------------------------------------
-
-    /// Can the reviewed changes be committed from here: a plain review of
-    /// uncommitted changes (not `teer pr`, not `--base`) not yet committed.
-    pub fn can_commit(&self) -> bool {
-        self.review.pr.is_none()
-            && self.review.head == crate::git::WORKTREE
-            && self.committed.is_none()
-    }
-
-    /// Confirming the all-reviewed sheet: open the commit confirmation with a
-    /// template message, and ask the agent for a better one.
-    fn ask_commit(&mut self) -> Vec<Effect> {
-        if !self.can_commit() {
-            return Vec::new();
-        }
-        if !self.all_reviewed() {
-            self.status = "Not everything is accepted yet; nothing to commit.".into();
-            return Vec::new();
-        }
-        let paths = match commit::reviewed_paths(&self.review) {
-            Ok(p) => p,
-            Err(why) => {
-                self.status = why;
-                return Vec::new();
-            }
-        };
-        if paths.is_empty() {
-            self.status = "Nothing to commit: the review has no files.".into();
-            return Vec::new();
-        }
-        let repo = self.review.repo_root.clone();
-        let message = commit::template_message(
-            &commit::file_names(&self.review),
-            &commit::accepted_summaries(&self.review, &self.order),
-        );
-        let ask = self.can_ask();
-        self.overlay = Overlay::Commit {
-            message,
-            draft: if ask {
-                DraftState::Pending
-            } else {
-                DraftState::Template
-            },
-            scroll: 0,
-            editing: None,
-            branch: commit::current_branch(&repo),
-            others: commit::other_changed(&repo, &paths),
-        };
-        if ask {
-            vec![Effect::DraftCommitMessage(Box::new(commit::draft_input(
-                &self.review,
-                &self.order,
-            )))]
-        } else {
-            self.status = format!(
-                "No agent to draft a message; using the template. {} edits it.",
-                self.keys.label(Action::NoteEdit)
-            );
-            Vec::new()
-        }
-    }
-
-    /// Keys of the commit confirmation, a sheet ([`Keymap::sheet`]): `enter`
-    /// commits, `esc` closes, `i` edits the message, `j`/`k` and the page
-    /// keys scroll. While the subject is edited on one line, a text input
-    /// ([`Keymap::edit`]). ctrl+c is handled before.
-    fn commit_key(&mut self, k: KeyEvent) -> Vec<Effect> {
-        enum Act {
-            Stay,
-            Close,
-            Commit,
-            Edit(String),
-        }
-        let max = self.commit_max_scroll.get();
-        let edit = self.keys.edit(&k);
-        let sheet = self.keys.sheet(&k);
-        let Overlay::Commit {
-            message,
-            draft,
-            scroll,
-            editing,
-            ..
-        } = &mut self.overlay
-        else {
-            return Vec::new();
-        };
-        if let Some(text) = editing.as_mut() {
-            match edit {
-                Edit::Cancel => *editing = None,
-                Edit::Submit => {
-                    let line: String = text.chars().filter(|c| !c.is_control()).collect();
-                    let line = line.trim();
-                    if !line.is_empty() {
-                        let body = message.split_once("\n\n").map(|(_, b)| b.to_string());
-                        let new = match body {
-                            Some(b) => format!("{line}\n\n{b}"),
-                            None => line.to_string(),
-                        };
-                        *message = commit::normalize_message(&new);
-                    }
-                    *draft = DraftState::Edited;
-                    *editing = None;
-                }
-                e => {
-                    typed(text, e, commit::SUBJECT_MAX * 2);
-                }
-            }
-            return Vec::new();
-        }
-        let act = match sheet {
-            Some(Sheet::Cancel) => Act::Close,
-            Some(Sheet::Confirm) => Act::Commit,
-            Some(Sheet::Edit) => {
-                *draft = DraftState::Edited;
-                Act::Edit(message.clone())
-            }
-            Some(Sheet::Down) => {
-                *scroll = (*scroll + 1).min(max);
-                Act::Stay
-            }
-            Some(Sheet::Up) => {
-                *scroll = scroll.saturating_sub(1);
-                Act::Stay
-            }
-            Some(Sheet::PageDown) => {
-                *scroll = (*scroll + 8).min(max);
-                Act::Stay
-            }
-            Some(Sheet::PageUp) => {
-                *scroll = scroll.saturating_sub(8);
-                Act::Stay
-            }
-            Some(Sheet::Yank | Sheet::Verdict | Sheet::Inline | Sheet::Quit) | None => Act::Stay,
-        };
-        match act {
-            Act::Stay => Vec::new(),
-            Act::Close => {
-                self.overlay = Overlay::None;
-                Vec::new()
-            }
-            Act::Commit => self.commit_now(),
-            Act::Edit(text) => vec![Effect::EditComment { text }],
-        }
-    }
-
-    /// `y`: check that nothing changed since the review, then commit. A
-    /// refusal closes the overlay (the reason is in the status line) and runs
-    /// no git command that changes anything.
-    fn commit_now(&mut self) -> Vec<Effect> {
-        let Overlay::Commit { message, draft, .. } = &mut self.overlay else {
-            return Vec::new();
-        };
-        // What the user is about to commit is final: a late draft must not replace it.
-        *draft = DraftState::Edited;
-        let message = commit::normalize_message(message);
-        if !self.can_commit() {
-            self.overlay = Overlay::None;
-            return Vec::new();
-        }
-        if message.is_empty() {
-            self.status = format!(
-                "The commit message is empty. Press {} to write one.",
-                self.keys.label(Action::NoteEdit)
-            );
-            return Vec::new();
-        }
-        match commit::check(&self.review) {
-            Err(refusal) => {
-                self.overlay = Overlay::None;
-                self.status = refusal.text(&self.keys.label(Action::ReviewRerun));
-                Vec::new()
-            }
-            Ok(paths) => {
-                self.status = "Committing…".into();
-                vec![Effect::Commit {
-                    repo: self.review.repo_root.clone(),
-                    paths,
-                    message,
-                }]
-            }
-        }
-    }
-
-    /// git finished (see `Effect::Commit`).
-    pub fn commit_finished(&mut self, outcome: commit::Outcome) -> Vec<Effect> {
-        match outcome {
-            commit::Outcome::Committed { short } => {
-                let subject = match &self.overlay {
-                    Overlay::Commit { message, .. } => commit::subject_of(message).to_string(),
-                    _ => String::new(),
-                };
-                self.status = format!("Committed {short}: {subject}");
-                self.committed = Some(short);
-                // The review is stale now: the popup says so and offers quit.
-                self.overlay = Overlay::AllDone;
-            }
-            commit::Outcome::Failed { code, output } => {
-                // The overlay stays open for a retry or an edit.
-                self.status = commit::failure_status(code, &output);
-            }
-            commit::Outcome::Refused(why) => {
-                self.status = approve::tidy_output(&why);
-            }
-        }
-        Vec::new()
-    }
-
-    /// The agent's draft arrived. It never replaces text the user has touched.
-    fn commit_drafted(&mut self, r: Result<String, String>) {
-        let Overlay::Commit { message, draft, .. } = &mut self.overlay else {
-            return;
-        };
-        if *draft != DraftState::Pending {
-            return;
-        }
-        match r {
-            Ok(m) if !commit::normalize_message(&m).is_empty() => {
-                *message = commit::normalize_message(&m);
-                *draft = DraftState::Drafted;
-                self.status = format!(
-                    "Drafted a commit message. {} edits it.",
-                    self.keys.label(Action::NoteEdit)
-                );
-            }
-            Ok(_) => {
-                *draft = DraftState::Template;
-                self.status = "The agent's draft was empty; kept the template message.".into();
-            }
-            Err(why) => {
-                *draft = DraftState::Template;
-                self.status = format!(
-                    "Couldn't draft a message ({}); kept the template.",
-                    approve::tidy_output(&why)
-                );
-            }
-        }
-    }
-
-    /// The external editor finished (or could not start) for the commit message.
-    fn commit_edited(&mut self, outcome: EditOutcome) {
-        let Overlay::Commit {
-            message,
-            draft,
-            editing,
-            ..
-        } = &mut self.overlay
-        else {
-            return;
-        };
-        *draft = DraftState::Edited;
-        match outcome {
-            EditOutcome::Edited(t) => {
-                let t = commit::normalize_message(&t);
-                if !t.is_empty() {
-                    *message = t;
-                }
-            }
-            EditOutcome::Cancelled => {}
-            EditOutcome::Unavailable(why) => {
-                *editing = Some(commit::subject_of(message).to_string());
-                self.status = format!(
-                    "Couldn't start the editor ({}); editing the subject on one line.",
-                    approve::tidy_output(&why)
-                );
-            }
-        }
-    }
-
-    /// The external editor finished (or could not start) for the approval summary.
-    pub fn comment_edited(&mut self, outcome: EditOutcome) {
-        if matches!(self.overlay, Overlay::Commit { .. }) {
-            self.commit_edited(outcome);
-            return;
-        }
-        let Overlay::PostReview {
-            verdict,
-            notes,
-            intro,
-            inline_on,
-            scroll,
-            ..
-        } = self.overlay.clone()
-        else {
-            return;
-        };
-        let (intro, editing) = match outcome {
-            EditOutcome::Edited(t) if !t.trim().is_empty() => (t, None),
-            EditOutcome::Edited(_) | EditOutcome::Cancelled => (intro, None),
-            EditOutcome::Unavailable(why) => {
-                self.status = format!(
-                    "Couldn't start the editor ({}); editing on one line.",
-                    approve::tidy_output(&why)
-                );
-                let flat = intro.replace('\n', " ");
-                (intro, Some(flat))
-            }
-        };
-        self.overlay = Overlay::PostReview {
-            verdict,
-            notes,
-            intro,
-            inline_on,
-            scroll,
-            editing,
-        };
-    }
-
     /// Keys while the note line is open, a text input ([`Keymap::edit`]):
     /// every letter is text, `enter` saves, `esc` closes it and keeps the
     /// note as it was (a flag that opened it stays). Saving marks the note
@@ -2454,9 +1922,8 @@ impl App {
     /// Keys of the notes view, a panel ([`App::panel_action`]): move with
     /// `j`/`k`/`gg`/`G`, `view.open` goes to the unit, `note.edit` edits its
     /// note, `note.delete` deletes it (after asking); `finish.yank` copies
-    /// every note, `v1.notes_to_agent` hands them to Claude Code,
-    /// `v1.notes_post` posts them on the PR; `view.back`, `view.close` or
-    /// `tool.notes` closes.
+    /// every note; `finish.open`, `v1.notes_to_agent` and `v1.notes_post`
+    /// open the `:w` sheet; `view.back`, `view.close` or `tool.notes` closes.
     fn notes_key(&mut self, sel: usize, k: KeyEvent) -> Vec<Effect> {
         let ids: Vec<String> = crate::notes::noted(&self.review)
             .iter()
@@ -2493,28 +1960,14 @@ impl App {
                 return Vec::new();
             }
             Action::FinishYank => {
-                let what = match ids.len() {
-                    1 => "1 note as Markdown".to_string(),
-                    n => format!("{n} notes as Markdown"),
-                };
                 self.overlay = Overlay::Notes { sel };
-                return vec![Effect::Copy {
-                    text: crate::notes::markdown(&self.review),
-                    what,
-                }];
+                return self.yank_notes();
             }
-            Action::V1NotesToAgent => {
-                self.overlay = Overlay::Notes { sel };
-                return self.notes_to_agent();
-            }
+            // The ways out of teer are the `:w` sheet's.
+            Action::FinishOpen => return self.open_finish(),
+            Action::V1NotesToAgent => return self.open_finish_on(super::finish::Step::SendNotes),
             Action::V1NotesPost => {
-                self.overlay = Overlay::Notes { sel };
-                if self.review.pr.is_none() {
-                    self.status = "Posting is for a pull request (teer pr).".into();
-                } else if self.can_post() {
-                    self.ask_post(Verdict::RequestChanges);
-                }
-                return Vec::new();
+                return self.open_finish_on(super::finish::Step::RequestChanges);
             }
             Action::HelpOpen => {
                 self.overlay = Overlay::Help;
@@ -2528,44 +1981,6 @@ impl App {
         }
         self.overlay = Overlay::Notes { sel };
         Vec::new()
-    }
-
-    /// Hand the notes to the agent CLI in the repository, as the first
-    /// message of a session: a fork of the review's Claude Code session when
-    /// there is one. Not for a pull request: its code is untrusted, and the
-    /// session could change files and run commands. Not with a model API,
-    /// which has no session to hand over to.
-    fn notes_to_agent(&mut self) -> Vec<Effect> {
-        if self.review.pr.is_some() {
-            self.status = format!(
-                "Not for a pull request: its code is untrusted. {} copies the notes, {} posts them on the PR.",
-                self.keys.label(Action::FinishYank),
-                self.keys.label(Action::V1NotesPost)
-            );
-            return Vec::new();
-        }
-        let cli = self.cfg.provider();
-        if cli.program().is_none() {
-            self.status = format!(
-                "Handing over needs Claude Code or Codex (teer setup). {} copies the notes.",
-                self.keys.label(Action::FinishYank)
-            );
-            return Vec::new();
-        }
-        let prompt = crate::notes::agent_prompt(&self.review);
-        // Only Claude Code has sessions to fork.
-        let session = (self.review.agent_session.as_ref())
-            .filter(|s| !s.is_fresh() && cli == Provider::Claude);
-        // Claude Code finds a session by the directory it was started in.
-        let cwd = session.map_or(self.review.repo_root.clone(), |s| s.cwd.clone());
-        let resume = session.map(|s| s.id.clone());
-        self.overlay = Overlay::None;
-        vec![Effect::OpenAgent {
-            cli,
-            cwd,
-            prompt,
-            resume,
-        }]
     }
 
     /// Go to unit `id`: in the unit view, or on the Flagged screen when it
@@ -3834,7 +3249,6 @@ impl App {
                         (Some(Target::Note(i)), Overlay::Notes { .. }) => {
                             self.overlay = Overlay::Notes { sel: i };
                         }
-                        (_, Overlay::AllDone) => self.overlay = Overlay::None,
                         _ => {}
                     }
                     return Vec::new();
@@ -3878,21 +3292,7 @@ impl App {
             AppEvent::Answer { index, result } => return self.answered(index, result),
             AppEvent::Asking { index, progress } => self.asking(index, progress),
             AppEvent::CommitDrafted(r) => self.commit_drafted(r),
-            AppEvent::PrReviewed { verdict, result } => {
-                self.approving = false;
-                match result {
-                    Ok(msg) => {
-                        if verdict == Verdict::Approve
-                            && let Some(p) = self.review.pr.as_mut()
-                        {
-                            p.approved_head = p.head_sha.clone();
-                        }
-                        self.status = msg;
-                        return vec![Effect::Save];
-                    }
-                    Err(msg) => self.status = msg,
-                }
-            }
+            AppEvent::PrReviewed { verdict, result } => return self.posted(verdict, result),
             AppEvent::Prep(p) => {
                 self.review.apply(p);
                 self.rebuild_order();
@@ -3926,6 +3326,7 @@ impl App {
                 self.review = new;
                 self.syntax.clear();
                 self.committed = None;
+                self.finish = Default::default();
                 self.summary_asked = false;
                 self.order.clear();
                 self.sel = 0;
@@ -4565,23 +3966,29 @@ mod tests {
     }
 
     #[test]
-    fn w_finishes_in_three_ways() {
-        // Something left and no notes: say what is left.
+    fn w_opens_the_finish_sheet_whatever_is_left() {
+        // Something left: the sheet, on keeping on reviewing.
         let mut a = app(3);
         a.review.units[0].decision = Acc;
         press(&mut a, ":w<cr>");
-        assert_eq!(a.status, "Nothing to finish yet: 2 units pending.");
-        assert_eq!(a.overlay, Overlay::None);
-        // Notes: the notes view.
+        assert_eq!(a.overlay, Overlay::Finish { sel: 0 });
+        assert_eq!(
+            a.finish_step(),
+            Some(crate::tui::finish::Step::KeepReviewing)
+        );
+        // From the notes view too.
+        press(&mut a, "<esc>");
         a.review.units[1].dive.note = "why?".into();
-        press(&mut a, ":w<cr>");
+        press(&mut a, "<space>n");
         assert!(matches!(a.overlay, Overlay::Notes { .. }));
-        // Everything accepted: the all-done sheet.
+        press(&mut a, ":w<cr>");
+        assert!(matches!(a.overlay, Overlay::Finish { .. }));
+        // Everything accepted: the same sheet; a branch is done.
         let mut a = app(2);
         a.review.units[0].decision = Acc;
         a.review.units[1].decision = Acc;
         press(&mut a, ":w<cr>");
-        assert_eq!(a.overlay, Overlay::AllDone);
+        assert_eq!(a.finish_step(), Some(crate::tui::finish::Step::Done));
     }
 
     #[test]
