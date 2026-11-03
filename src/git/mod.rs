@@ -47,6 +47,10 @@ pub struct DiffSpec {
     pub head: String,
     /// Commit HEAD points at.
     pub head_commit: String,
+    /// The new side is the working tree, untracked files included: for
+    /// [`WORKTREE`], and for a branch with `tree` (its commits and what
+    /// isn't committed yet). Else `head`'s commit.
+    pub tree: bool,
 }
 
 /// `-c` settings every git run by teer gets. The code under review (a PR's
@@ -124,15 +128,18 @@ pub fn head_commit(repo: &Path) -> Option<String> {
 }
 
 /// Resolve what to compare. Without a base, the working tree (including
-/// untracked files) is compared against HEAD. With a base, HEAD is compared
-/// against the merge base of `base` and HEAD, like a pull request would be.
-pub fn resolve(repo: &Path, base: Option<&str>) -> Result<DiffSpec> {
+/// untracked files) is compared against HEAD. With a base, the branch is
+/// compared against the merge base of `base` and HEAD: with `tree`, the
+/// working tree (its commits and what isn't committed yet, untracked files
+/// included), else HEAD alone, like a pull request would be.
+pub fn resolve(repo: &Path, base: Option<&str>, tree: bool) -> Result<DiffSpec> {
     let head_commit = head_commit(repo);
     match base {
         None => Ok(DiffSpec {
             base: head_commit.clone().unwrap_or_else(|| EMPTY_TREE.into()),
             head: WORKTREE.into(),
             head_commit: head_commit.unwrap_or_else(|| EMPTY_TREE.into()),
+            tree: true,
         }),
         Some(b) => {
             let head = head_commit.context("--base needs at least one commit on HEAD")?;
@@ -144,9 +151,169 @@ pub fn resolve(repo: &Path, base: Option<&str>) -> Result<DiffSpec> {
                 base: merge_base,
                 head: head.clone(),
                 head_commit: head,
+                tree,
             })
         }
     }
+}
+
+/// What plain `teer` reviews ([`detect`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// Staged, unstaged or untracked changes: the working tree against HEAD.
+    Worktree,
+    /// The commits on `head` since its merge base with `base`, and what
+    /// isn't committed on top of them. `head` is the branch, or HEAD's
+    /// short id when it is detached; `base` is a ref as the user writes it
+    /// (`main`, `origin/main`).
+    Branch { head: String, base: String },
+    /// A clean tree on the default branch, or a detached HEAD the base
+    /// already has: nothing to review. `on` is the branch or the short id.
+    Nothing { on: String },
+}
+
+impl Target {
+    /// The base to build the review with: none for the working tree.
+    pub fn base(&self) -> Option<&str> {
+        match self {
+            Target::Branch { base, .. } => Some(base),
+            Target::Worktree | Target::Nothing { .. } => None,
+        }
+    }
+}
+
+/// Work out what plain `teer` reviews in `repo`, in this order:
+/// uncommitted changes (staged, unstaged or untracked); else, off the
+/// default branch, the branch since its merge base with its base; else
+/// nothing. `base` (`--base`) always reviews the branch against it, its
+/// uncommitted changes included. Otherwise the base is the one `pr_base`
+/// finds (the base of the branch's pull request, as a ref of this clone;
+/// asked only on a branch that isn't the default one), else
+/// [`default_base`]. A detached HEAD is reviewed only when the base
+/// doesn't have it yet.
+pub fn detect(
+    repo: &Path,
+    base: Option<&str>,
+    pr_base: impl FnOnce() -> Option<String>,
+) -> Result<Target> {
+    let branch = current_branch(repo);
+    if let Some(b) = base {
+        let head = match &branch {
+            Some(name) => name.clone(),
+            None => short_head(repo)?,
+        };
+        return Ok(Target::Branch {
+            head,
+            base: b.to_string(),
+        });
+    }
+    if is_dirty(repo)? {
+        return Ok(Target::Worktree);
+    }
+    let Some(head) = head_commit(repo) else {
+        // No commit yet and nothing written.
+        return Ok(Target::Nothing {
+            on: branch.unwrap_or_else(|| "HEAD".into()),
+        });
+    };
+    let default = default_base(repo);
+    if let (Some(b), Some((_, name))) = (&branch, &default)
+        && b == name
+    {
+        return Ok(Target::Nothing { on: b.clone() });
+    }
+    let found = branch.as_ref().and_then(|_| pr_base());
+    let Some(base) = found.or(default.map(|(r, _)| r)) else {
+        let on = match &branch {
+            Some(b) => b.clone(),
+            None => short_head(repo)?,
+        };
+        bail!(
+            "can't tell what {on} is based on: no origin/HEAD, main or master. \
+Name the base with --base <ref>"
+        );
+    };
+    match branch {
+        Some(head) => Ok(Target::Branch { head, base }),
+        None => {
+            let on = short_head(repo)?;
+            if contains(repo, &base, &head) {
+                Ok(Target::Nothing { on })
+            } else {
+                Ok(Target::Branch { head: on, base })
+            }
+        }
+    }
+}
+
+/// The working tree has staged, unstaged or untracked (not ignored) changes.
+pub fn is_dirty(repo: &Path) -> Result<bool> {
+    let out = git(
+        repo,
+        &["status", "--porcelain", "-z", "--untracked-files=normal"],
+    )?;
+    Ok(!out.is_empty())
+}
+
+/// The branch HEAD is on, or `None` when it is detached.
+pub fn current_branch(repo: &Path) -> Option<String> {
+    git_str(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// HEAD's short commit id.
+fn short_head(repo: &Path) -> Result<String> {
+    git_str(repo, &["rev-parse", "--short", "HEAD"])
+}
+
+/// The commit `name` points at, or `None` when it names none.
+pub fn commit_of(repo: &Path, name: &str) -> Option<String> {
+    if name.is_empty() || name.starts_with('-') {
+        return None;
+    }
+    git_str(
+        repo,
+        &["rev-parse", "--verify", "-q", &format!("{name}^{{commit}}")],
+    )
+    .ok()
+    .filter(|s| !s.is_empty())
+}
+
+/// `base` has `commit` already (it is `base` or one of its ancestors).
+fn contains(repo: &Path, base: &str, commit: &str) -> bool {
+    let Some(base) = commit_of(repo, base) else {
+        return false;
+    };
+    command(repo)
+        .args(["merge-base", "--is-ancestor", commit, &base])
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// The default branch, as the ref to compare against and the branch's
+/// name: `origin/HEAD` (`("origin/main", "main")`), else a local `main` or
+/// `master`, whichever exists.
+pub fn default_base(repo: &Path) -> Option<(String, String)> {
+    let origin = git_str(
+        repo,
+        &[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
+    )
+    .ok()
+    .filter(|r| commit_of(repo, r).is_some());
+    if let Some(r) = origin {
+        let name = r.strip_prefix("origin/").unwrap_or(&r).to_string();
+        return Some((r, name));
+    }
+    ["main", "master"]
+        .into_iter()
+        .find(|b| commit_of(repo, &format!("refs/heads/{b}")).is_some())
+        .map(|b| (b.to_string(), b.to_string()))
 }
 
 fn show(repo: &Path, rev: &str, path: &Path) -> Result<String, &'static str> {
@@ -181,7 +348,7 @@ pub fn changes(repo: &Path, spec: &DiffSpec) -> Result<(Vec<ChangedFile>, Vec<Sk
         "--no-ext-diff",
     ];
     let range;
-    if spec.head == WORKTREE {
+    if spec.tree {
         args.push(&spec.base);
     } else {
         range = format!("{}..{}", spec.base, spec.head);
@@ -190,7 +357,7 @@ pub fn changes(repo: &Path, spec: &DiffSpec) -> Result<(Vec<ChangedFile>, Vec<Sk
     let raw = git(repo, &args)?;
     let mut entries = parse_name_status(&raw);
 
-    if spec.head == WORKTREE {
+    if spec.tree {
         let untracked = git(repo, &["ls-files", "--others", "--exclude-standard", "-z"])?;
         for p in untracked.split(|b| *b == 0).filter(|p| !p.is_empty()) {
             entries.push((
@@ -211,9 +378,7 @@ pub fn changes(repo: &Path, spec: &DiffSpec) -> Result<(Vec<ChangedFile>, Vec<Sk
         };
         let new_content = match status {
             FileStatus::Deleted => None,
-            _ if spec.head == WORKTREE => {
-                Some(read_text_file_why(repo, &path, MAX_WORKTREE_FILE_BYTES))
-            }
+            _ if spec.tree => Some(read_text_file_why(repo, &path, MAX_WORKTREE_FILE_BYTES)),
             _ => Some(show(repo, &spec.head, &path)),
         };
         // Skip binary or unreadable files: both sides must be text if present.

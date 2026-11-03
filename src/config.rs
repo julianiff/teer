@@ -5,33 +5,39 @@
 //! concurrency = 4           # agent requests in flight
 //! languages = ["rust", "python", "typescript", "javascript", "php"]
 //! large_review = 150        # above this many units, prepare lazily per file
-//! dive_web = true           # a Flagged-screen question may search the web (asks once per session)
+//! dive_web = true           # a question in the unit view may search the web (asks once per session)
 //! images = true             # draw Visualize pictures in the terminal when it can show images
 //! provider = "claude"       # claude | codex | api; `teer setup` picks it (asked on first start)
 //! prepare_model = "haiku"   # fast model that describes units; "default" = the CLI's own
 //! prepare_effort = "low"    # low | medium | high | xhigh | max | default
 //! order = "story"           # inside a file, story: units that call each other together, caller first | line
-//! second_opinion = true     # a second model checks each description; disagreements are warnings
+//! auto_accept = "no_behavior_change"  # accept units with no behavior change for you (za shows them) | none
+//! second_opinion = true     # a second model checks each description; disagreements are reasons to look
 //! second_model = "sonnet"   # model of that check, also of the Flagged questions with an API
 //! second_effort = "low"     # low | medium | high | xhigh | max | default
 //! behavior_timeout = 120    # seconds one Behavior probe run may take (each side)
+//! timeoutlen = 1000         # milliseconds a key prefix (g, ], [, z, space) waits for the next key
 //!
 //! [api]                     # provider = "api" only
 //! format = "anthropic"      # anthropic (Messages API) | openai (chat completions: OpenAI, OpenRouter, Ollama, ...)
 //! base_url = ""             # empty: https://api.anthropic.com or https://api.openai.com/v1
 //! key_env = "ANTHROPIC_API_KEY"  # the environment variable holding the key; empty for none
 //!
-//! [keys]
-//! accept = "l"
-//! investigate = "i"
+//! [fix_loop]                # after the notes were copied (`y`, or for the model API)
+//! quiet_seconds = 5         # re-run once the files changed and then stayed the same this long
+//!
+//! [keys]                    # action id = key or keys, in Neovim notation (see `crate::keymap`)
+//! "decide.accept" = "a"
+//! "move.down" = ["j", "<down>"]
 //! ```
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
+
+use crate::keymap::{KeySpec, Keymap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -52,6 +58,18 @@ pub enum Order {
     Story,
     /// Line by line.
     Line,
+}
+
+/// Which units teer accepts for the reviewer before the review opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoAccept {
+    /// None: every unit waits for the reviewer.
+    None,
+    /// Units with no behavior change (formatting, comments, renames) that no
+    /// second model disputes.
+    #[default]
+    NoBehaviorChange,
 }
 
 /// What prepares the reviews: a coding agent's headless mode, or a model
@@ -148,6 +166,34 @@ impl ApiConfig {
     }
 }
 
+/// `[fix_loop]`: how teer waits for the changes to notes it copied out
+/// (`y` on the `:w` sheet, or for the model API), watching the working tree.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct FixLoop {
+    /// Seconds the files must stay the same, after they changed, before
+    /// teer re-runs the review on its own. Fractions work.
+    pub quiet_seconds: f64,
+}
+
+impl Default for FixLoop {
+    fn default() -> Self {
+        FixLoop { quiet_seconds: 5.0 }
+    }
+}
+
+impl FixLoop {
+    /// `quiet_seconds` as a duration; a negative or unreadable one is none.
+    pub fn quiet(&self) -> std::time::Duration {
+        let s = self.quiet_seconds;
+        std::time::Duration::from_secs_f64(if s.is_finite() {
+            s.clamp(0.0, 86_400.0)
+        } else {
+            0.0
+        })
+    }
+}
+
 /// What a model is used for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -167,7 +213,7 @@ pub struct Config {
     pub concurrency: usize,
     pub languages: Option<Vec<String>>,
     pub large_review: usize,
-    /// Whether Flagged-screen questions that can use web search may do so.
+    /// Whether the unit view's questions that can use web search may do so.
     pub dive_web: bool,
     /// Draw Visualize pictures inside the terminal when it supports images
     /// (asked once at start-up); false keeps the text list.
@@ -183,6 +229,8 @@ pub struct Config {
     /// The effort for describing units; `default` leaves the provider's own.
     pub prepare_effort: Option<String>,
     pub order: Order,
+    /// Which units are accepted for the reviewer (`za` shows them in the list).
+    pub auto_accept: AutoAccept,
     /// After describing units, a second model checks each description; where
     /// it disagrees the unit gets a warning and at least "Worth a look".
     pub second_opinion: bool,
@@ -196,7 +244,12 @@ pub struct Config {
     /// The command `e` opens a unit with, and commit messages and review
     /// text are edited in: `{file}` and `{line}` are filled in.
     pub editor: String,
-    pub keys: HashMap<String, String>,
+    /// Milliseconds a key prefix waits for the next key (Neovim's name).
+    pub timeoutlen: u64,
+    /// Waiting for the changes to copied notes.
+    pub fix_loop: FixLoop,
+    /// Action id to its keys (see [`crate::keymap`]).
+    pub keys: HashMap<String, KeySpec>,
 }
 
 impl Default for Config {
@@ -213,11 +266,14 @@ impl Default for Config {
             prepare_model: None,
             prepare_effort: None,
             order: Order::Story,
+            auto_accept: AutoAccept::NoBehaviorChange,
             second_opinion: true,
             second_model: None,
             second_effort: None,
             behavior_timeout: 120,
             editor: crate::editor::DEFAULT.into(),
+            timeoutlen: 1000,
+            fix_loop: FixLoop::default(),
             keys: HashMap::new(),
         }
     }
@@ -248,8 +304,9 @@ impl Config {
         crate::editor::Editor::parse(&self.editor)
     }
 
-    pub fn keymap(&self) -> Result<KeyMap> {
-        KeyMap::with_overrides(&self.keys)
+    /// The keymap with `[keys]` applied, and warnings for the user.
+    pub fn keymap(&self) -> Result<(Keymap, Vec<String>)> {
+        Keymap::new(&self.keys, self.timeoutlen)
     }
 
     /// The provider: the configured one, else Claude Code, which was the
@@ -385,263 +442,25 @@ fn model_flags(
     Ok(crate::agent::PrepareModel { model, effort })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Action {
-    Quit,
-    Down,
-    Up,
-    /// Scroll the detail area down: the list preview, the swipe card, the
-    /// open tab on the Flagged screen.
-    PreviewDown,
-    /// Scroll the detail area up.
-    PreviewUp,
-    Top,
-    Bottom,
-    Open,
-    Swipe,
-    Rerun,
-    Reset,
-    Edit,
-    Accept,
-    Investigate,
-    /// Opens the Flagged screen (all units marked investigate). Config name
-    /// `flagged`.
-    Flagged,
-    DiveRecommend,
-    DiveVisualize,
-    /// Run the unit before and after the change (Flagged screen only).
-    DiveBehavior,
-    /// Show (or ask for) the second opinion on the unit (Flagged screen only).
-    DiveDisagree,
-    /// The tests that reach the unit, found by teer's own search (Flagged screen only).
-    DiveTests,
-    /// The agent reads the tests the search found: which cover the unit, and
-    /// dangerous cases none does (Flagged screen only).
-    InterpretTests,
-    /// Open the selected unit's Visualize page in the browser (Flagged screen only).
-    OpenVisual,
-    ResolveOk,
-    ResolveFix,
-    /// Write the note on the unit on show (any screen).
-    EditNote,
-    /// Open the notes: every unit's note, to copy, hand to Claude Code, or
-    /// post on the pull request.
-    Notes,
-    /// Re-ask the open Flagged-screen tab (Flagged screen only).
-    DiveRerun,
-    PrevTile,
-    NextTile,
-    /// The Flagged tile in focus fills the screen, or no longer does.
-    Zoom,
-    Undo,
-    Back,
-    Help,
-    NextPending,
-    PrevPending,
-    /// Previous card (swipe only); decisions are left alone.
-    PrevCard,
-    /// The next file in the list, the next group in the PR picker (no
-    /// wrapping).
-    NextGroup,
-    /// The file above in the list, the group above in the PR picker.
-    PrevGroup,
-    /// Accept every pending unit in the selected file, after a confirmation
-    /// (list only).
-    AcceptFile,
-    /// List the units in their files, or each in its own level's box (list
-    /// only).
-    Grouping,
-    /// Approve the pull request on GitHub (only in the "all reviewed" popup
-    /// of a `teer pr` review).
-    ApprovePr,
-    /// Commit the reviewed changes (only in the "all reviewed" popup of a
-    /// review of uncommitted changes).
-    Commit,
-    /// Show the commits between base and head and the PR's description (list only).
-    Commits,
-    /// Opens the Ask view: questions about the code, answered by the agent.
-    Ask,
-}
-
-impl Action {
-    const ALL: &[(Action, &'static str, &'static str)] = &[
-        (Action::Quit, "quit", "q"),
-        (Action::Down, "down", "j"),
-        (Action::Up, "up", "k"),
-        // PageDown and PageUp scroll a page (see App::on_key).
-        (Action::PreviewDown, "preview_down", "J"),
-        (Action::PreviewUp, "preview_up", "K"),
-        (Action::Top, "top", "g"),
-        (Action::Bottom, "bottom", "G"),
-        (Action::Open, "open", "enter"),
-        (Action::Swipe, "swipe", "s"),
-        (Action::Rerun, "rerun", "r"),
-        (Action::Reset, "reset", "R"),
-        (Action::Edit, "edit", "e"),
-        (Action::Accept, "accept", "l"),
-        // `h` and Left also investigate in the list, Left in swipe (see
-        // App::action_for); `i` is the configurable key.
-        (Action::Investigate, "investigate", "i"),
-        (Action::Flagged, "flagged", "d"),
-        (Action::DiveRecommend, "dive_recommend", "n"),
-        (Action::DiveVisualize, "dive_visualize", "v"),
-        (Action::DiveBehavior, "dive_behavior", "t"),
-        (Action::DiveDisagree, "dive_disagree", "x"),
-        // `c` commits only inside the all-done popup, which needs nothing flagged.
-        (Action::DiveTests, "dive_tests", "c"),
-        // `a` approves only inside the all-done popup, which needs nothing flagged.
-        (Action::InterpretTests, "interpret_tests", "a"),
-        (Action::OpenVisual, "open_visual", "b"),
-        (Action::ResolveOk, "resolve_ok", "o"),
-        (Action::ResolveFix, "resolve_fix", "f"),
-        (Action::EditNote, "edit_note", "m"),
-        (Action::Notes, "notes", "N"),
-        (Action::DiveRerun, "dive_rerun", "r"),
-        (Action::PrevTile, "prev_tile", "left"),
-        (Action::NextTile, "next_tile", "right"),
-        (Action::Zoom, "zoom", "z"),
-        (Action::Undo, "undo", "u"),
-        (Action::Back, "back", "esc"),
-        (Action::Help, "help", "?"),
-        // List triage. `l`/`i` accept/investigate in the list as in swipe.
-        (Action::NextPending, "next_pending", "]"),
-        (Action::PrevPending, "prev_pending", "["),
-        // Swipe only: go back one card without changing its decision.
-        (Action::PrevCard, "prev_card", "h"),
-        (Action::NextGroup, "next_group", "ctrl+d"),
-        (Action::PrevGroup, "prev_group", "ctrl+u"),
-        (Action::AcceptFile, "accept_file", "A"),
-        // `f` resolves "needs fix" only on the Flagged screen.
-        (Action::Grouping, "grouping", "f"),
-        (Action::ApprovePr, "approve_pr", "a"),
-        (Action::Commit, "commit", "c"),
-        (Action::Commits, "commits", "C"),
-        (Action::Ask, "ask", "/"),
-    ];
-}
-
-/// Parse "j", "G", "enter", "tab", "esc", "ctrl+c", "left", "space".
-pub fn parse_key(s: &str) -> Option<KeyEvent> {
-    let (mods, key) = match s.rsplit_once('+') {
-        Some((m, k)) if !k.is_empty() => (m, k),
-        _ => ("", s),
-    };
-    let mut modifiers = KeyModifiers::NONE;
-    for m in mods.split('+').filter(|m| !m.is_empty()) {
-        match m.to_ascii_lowercase().as_str() {
-            "ctrl" => modifiers |= KeyModifiers::CONTROL,
-            "alt" => modifiers |= KeyModifiers::ALT,
-            "shift" => modifiers |= KeyModifiers::SHIFT,
-            _ => return None,
-        }
-    }
-    let code = match key.to_ascii_lowercase().as_str() {
-        "enter" | "return" => KeyCode::Enter,
-        "tab" => KeyCode::Tab,
-        "esc" | "escape" => KeyCode::Esc,
-        "space" => KeyCode::Char(' '),
-        "left" => KeyCode::Left,
-        "right" => KeyCode::Right,
-        "up" => KeyCode::Up,
-        "down" => KeyCode::Down,
-        "backspace" => KeyCode::Backspace,
-        _ if key.chars().count() == 1 => KeyCode::Char(key.chars().next()?),
-        _ => return None,
-    };
-    Some(KeyEvent::new(code, modifiers))
-}
-
-#[derive(Debug, Clone)]
-pub struct KeyMap {
-    bindings: HashMap<Action, KeyEvent>,
-}
-
-impl KeyMap {
-    pub fn with_overrides(overrides: &HashMap<String, String>) -> Result<KeyMap> {
-        let mut bindings = HashMap::new();
-        for (action, name, default) in Action::ALL {
-            let key = overrides.get(*name).map(String::as_str).unwrap_or(default);
-            let ev = parse_key(key)
-                .with_context(|| format!("unknown key '{key}' for '{name}' in config"))?;
-            bindings.insert(*action, ev);
-        }
-        for name in overrides.keys() {
-            if !Action::ALL.iter().any(|(_, n, _)| n == name) {
-                anyhow::bail!("unknown action '{name}' in [keys]");
-            }
-        }
-        Ok(KeyMap { bindings })
-    }
-
-    pub fn is(&self, action: Action, ev: &KeyEvent) -> bool {
-        let Some(b) = self.bindings.get(&action) else {
-            return false;
-        };
-        // Shifted letters arrive as uppercase chars, sometimes with SHIFT set.
-        let norm = |m: KeyModifiers| m - KeyModifiers::SHIFT;
-        b.code == ev.code && norm(b.modifiers) == norm(ev.modifiers)
-    }
-
-    pub fn label(&self, action: Action) -> String {
-        let Some(b) = self.bindings.get(&action) else {
-            return String::new();
-        };
-        let key = match b.code {
-            KeyCode::Enter => "⏎".to_string(),
-            KeyCode::Tab => "tab".into(),
-            KeyCode::Esc => "esc".into(),
-            KeyCode::Char(' ') => "space".into(),
-            KeyCode::Char(c) => c.to_string(),
-            KeyCode::Left => "←".into(),
-            KeyCode::Right => "→".into(),
-            KeyCode::Up => "↑".into(),
-            KeyCode::Down => "↓".into(),
-            other => format!("{other:?}"),
-        };
-        if b.modifiers.contains(KeyModifiers::CONTROL) {
-            format!("^{key}")
-        } else {
-            key
-        }
-    }
-}
-
-impl Default for KeyMap {
-    fn default() -> Self {
-        KeyMap::with_overrides(&HashMap::new()).expect("default keys parse")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn parses_config_and_keys() {
-        let c: Config =
-            toml::from_str("theme = \"mono\"\nconcurrency = 2\n[keys]\naccept = \"ctrl+a\"\n")
-                .unwrap();
+        let c: Config = toml::from_str(
+            "theme = \"mono\"\nconcurrency = 2\ntimeoutlen = 500\n[keys]\n\"decide.accept\" = \"<c-a>\"\n\"move.down\" = [\"j\", \"<c-n>\"]\nreject = \"y\"\n",
+        )
+        .unwrap();
         assert_eq!(c.theme, Theme::Mono);
-        let km = c.keymap().unwrap();
-        assert!(km.is(
-            Action::Accept,
-            &KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)
-        ));
-        assert!(km.is(
-            Action::Bottom,
-            &KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT)
-        ));
-    }
-
-    #[test]
-    fn default_keys_and_unknown_actions() {
-        let key = |c| KeyEvent::from(KeyCode::Char(c));
-        let km = KeyMap::default();
-        assert!(km.is(Action::Investigate, &key('i')));
-        assert!(km.is(Action::Flagged, &key('d')));
-        assert!(km.is(Action::Up, &key('k')));
-        let c: Config = toml::from_str("[keys]\nreject = \"y\"\n").unwrap();
-        assert!(c.keymap().is_err());
+        assert_eq!(c.timeoutlen, 500);
+        let (km, warnings) = c.keymap().unwrap();
+        assert_eq!(km.label(crate::keymap::Action::DecideAccept), "^a");
+        assert_eq!(km.labels(crate::keymap::Action::MoveDown), "j/^n");
+        assert_eq!(
+            warnings,
+            vec!["[keys]: unknown action 'reject', ignored".to_string()]
+        );
     }
 
     #[test]
@@ -733,6 +552,18 @@ mod tests {
     }
 
     #[test]
+    fn auto_accept_defaults_to_no_behavior_change_and_can_be_off() {
+        assert_eq!(Config::default().auto_accept, AutoAccept::NoBehaviorChange);
+        let c: Config = toml::from_str("theme = \"dark\"\n").unwrap();
+        assert_eq!(c.auto_accept, AutoAccept::NoBehaviorChange);
+        let c: Config = toml::from_str("auto_accept = \"none\"\n").unwrap();
+        assert_eq!(c.auto_accept, AutoAccept::None);
+        let c: Config = toml::from_str("auto_accept = \"no_behavior_change\"\n").unwrap();
+        assert_eq!(c.auto_accept, AutoAccept::NoBehaviorChange);
+        assert!(toml::from_str::<Config>("auto_accept = \"all\"\n").is_err());
+    }
+
+    #[test]
     fn images_default_on_and_can_be_disabled() {
         assert!(Config::default().images);
         let c: Config = toml::from_str("images = false\n").unwrap();
@@ -746,19 +577,6 @@ mod tests {
         assert!(!c.dive_web);
         let c: Config = toml::from_str("theme = \"dark\"\n").unwrap();
         assert!(c.dive_web);
-    }
-
-    #[test]
-    fn dive_keys_have_defaults() {
-        let key = |c| KeyEvent::from(KeyCode::Char(c));
-        let km = KeyMap::default();
-        assert!(km.is(Action::DiveRerun, &key('r')));
-        assert!(km.is(Action::ResolveOk, &key('o')));
-        assert!(km.is(Action::ResolveFix, &key('f')));
-        assert!(km.is(Action::EditNote, &key('m')));
-        assert!(km.is(Action::NextTile, &KeyEvent::from(KeyCode::Right)));
-        assert!(km.is(Action::DiveVisualize, &key('v')));
-        assert!(km.is(Action::OpenVisual, &key('b')));
     }
 
     #[test]
@@ -777,18 +595,14 @@ mod tests {
     }
 
     #[test]
-    fn preview_scroll_keys_default_to_capital_j_and_k() {
-        let km = KeyMap::default();
-        let shifted = KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT);
-        assert!(km.is(Action::PreviewDown, &shifted));
-        assert!(km.is(Action::PreviewUp, &KeyEvent::from(KeyCode::Char('K'))));
-        assert!(!km.is(Action::PreviewDown, &KeyEvent::from(KeyCode::Char('j'))));
-        assert_eq!(km.label(Action::PreviewDown), "J");
-    }
-
-    #[test]
-    fn rejects_unknown_actions() {
-        let c: Config = toml::from_str("[keys]\nfly = \"x\"\n").unwrap();
-        assert!(c.keymap().is_err());
+    fn the_fix_loop_waits_five_quiet_seconds_unless_set() {
+        use std::time::Duration;
+        assert_eq!(Config::default().fix_loop.quiet(), Duration::from_secs(5));
+        let c: Config = toml::from_str("[fix_loop]\nquiet_seconds = 2\n").unwrap();
+        assert_eq!(c.fix_loop.quiet(), Duration::from_secs(2));
+        let c: Config = toml::from_str("[fix_loop]\nquiet_seconds = 0.25\n").unwrap();
+        assert_eq!(c.fix_loop.quiet(), Duration::from_millis(250));
+        let c: Config = toml::from_str("[fix_loop]\nquiet_seconds = -3\n").unwrap();
+        assert_eq!(c.fix_loop.quiet(), Duration::ZERO);
     }
 }

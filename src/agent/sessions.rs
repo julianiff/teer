@@ -263,6 +263,153 @@ pub fn list_sessions(
     Ok(out)
 }
 
+/// How long ago a session may have edited the changes and still count as
+/// the one that wrote them.
+pub const WROTE_WITHIN: Duration = Duration::from_secs(24 * 60 * 60);
+/// How much of each transcript's end is read for its edits: the newest
+/// edits are at the end, and transcripts grow to hundreds of megabytes.
+const TAIL_BYTES: u64 = 4 * 1024 * 1024;
+/// The most transcripts read, newest first.
+const MAX_TRANSCRIPTS: usize = 20;
+/// The Claude Code tools that write a file, and the input naming it.
+const WRITE_TOOLS: [(&str, &str); 4] = [
+    ("Edit", "file_path"),
+    ("MultiEdit", "file_path"),
+    ("Write", "file_path"),
+    ("NotebookEdit", "notebook_path"),
+];
+
+/// The Claude Code session that most likely wrote the changes: the newest
+/// one started in `repo` (or below it) whose Edit, MultiEdit, Write or
+/// NotebookEdit calls touched one of `changed` (paths relative to `repo`)
+/// within [`WROTE_WITHIN`] before `now`. Only the last [`TAIL_BYTES`] of
+/// each of the [`MAX_TRANSCRIPTS`] newest transcripts are read.
+pub fn wrote_changes(
+    root: &Path,
+    repo: &Path,
+    changed: &[PathBuf],
+    now: SystemTime,
+) -> Option<SessionInfo> {
+    if changed.is_empty() {
+        return None;
+    }
+    let since = now
+        .checked_sub(WROTE_WITHIN)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let prefix = encode_project_dir(repo);
+    let mut transcripts: Vec<(SystemTime, PathBuf)> = std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .filter(|d| {
+            let name = d.file_name().to_string_lossy().to_string();
+            name == prefix || name.starts_with(&format!("{prefix}-"))
+        })
+        .filter_map(|d| std::fs::read_dir(d.path()).ok())
+        .flat_map(|files| files.flatten())
+        .filter(|f| f.path().extension().and_then(|e| e.to_str()) == Some("jsonl"))
+        .filter_map(|f| {
+            let modified = f.metadata().and_then(|m| m.modified()).ok()?;
+            (modified >= since).then(|| (modified, f.path()))
+        })
+        .collect();
+    transcripts.sort_by_key(|(m, _)| std::cmp::Reverse(*m));
+    let since = chrono::DateTime::<chrono::Utc>::from(since);
+    transcripts
+        .into_iter()
+        .take(MAX_TRANSCRIPTS)
+        .find_map(|(modified, path)| {
+            let mut file = std::fs::File::open(&path).ok()?;
+            let tail = read_tail(&mut file, TAIL_BYTES).ok()?;
+            if !touched(&tail, repo, changed, since) {
+                return None;
+            }
+            // Where it was started, which a resume must run from, is at its start.
+            let file = std::fs::File::open(&path).ok()?;
+            let meta = parse_session(file.take(HEAD_BYTES));
+            let cwd = meta.cwd.filter(|c| c.starts_with(repo))?;
+            Some(SessionInfo {
+                agent: "claude".into(),
+                id: path.file_stem()?.to_string_lossy().to_string(),
+                cwd,
+                title: meta.title.or(meta.ai_title).unwrap_or_default(),
+                open: now
+                    .duration_since(modified)
+                    .map(|d| d < RECENT)
+                    .unwrap_or(true),
+                last_activity: chrono::DateTime::<chrono::Local>::from(modified),
+            })
+        })
+}
+
+/// The last `max` bytes of `file`, from the first whole line in them.
+fn read_tail(file: &mut std::fs::File, max: u64) -> std::io::Result<String> {
+    use std::io::{Seek, SeekFrom};
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(max);
+    file.seek(SeekFrom::Start(start))?;
+    let mut buf = Vec::new();
+    file.take(max).read_to_end(&mut buf)?;
+    if start > 0 {
+        // The first line is cut: drop it.
+        let cut = buf
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(buf.len(), |i| i + 1);
+        buf.drain(..cut);
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// A transcript's lines `jsonl` hold a call of one of [`WRITE_TOOLS`] made
+/// in `repo` after `since` on one of `changed` (relative to `repo`).
+fn touched(
+    jsonl: &str,
+    repo: &Path,
+    changed: &[PathBuf],
+    since: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    jsonl
+        .lines()
+        // Cheap before parsing: most lines are no edit.
+        .filter(|l| l.contains("\"tool_use\""))
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("assistant"))
+        .filter(|v| {
+            // A line without a time is judged by its file's.
+            v.get("timestamp")
+                .and_then(|t| t.as_str())
+                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                .is_none_or(|t| t >= since)
+        })
+        .any(|v| {
+            let cwd = v.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from);
+            let Some(blocks) = v
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())
+            else {
+                return false;
+            };
+            blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+                .filter_map(|b| {
+                    let name = b.get("name")?.as_str()?;
+                    let (_, key) = WRITE_TOOLS.iter().find(|(tool, _)| *tool == name)?;
+                    b.get("input")?.get(*key)?.as_str()
+                })
+                .any(|p| {
+                    let p = Path::new(p);
+                    let full = match &cwd {
+                        Some(cwd) if p.is_relative() => cwd.join(p),
+                        _ => p.to_path_buf(),
+                    };
+                    full.strip_prefix(repo)
+                        .is_ok_and(|rel| changed.iter().any(|c| c == rel))
+                })
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,5 +490,187 @@ mod tests {
         };
         let sessions = list_sessions(root.path(), repo, &running, far_future).unwrap();
         assert!(sessions[0].open);
+    }
+
+    /// A transcript line: the agent calling `tool` on `path`, from `cwd`, at `at`.
+    fn edit(tool: &str, path: &str, cwd: &str, at: chrono::DateTime<chrono::Utc>) -> String {
+        let key = if tool == "NotebookEdit" {
+            "notebook_path"
+        } else {
+            "file_path"
+        };
+        serde_json::json!({
+            "type": "assistant", "cwd": cwd, "timestamp": at.to_rfc3339(),
+            "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "editing"},
+                {"type": "tool_use", "id": "t", "name": tool, "input": {key: path}}
+            ]}
+        })
+        .to_string()
+    }
+
+    /// Write session `id` of `repo` under `root`: its first prompt, then `lines`,
+    /// last changed at `modified`.
+    fn transcript(root: &Path, repo: &Path, id: &str, lines: &[String], modified: SystemTime) {
+        let dir = root.join(encode_project_dir(repo));
+        std::fs::create_dir_all(&dir).unwrap();
+        let start = serde_json::json!({
+            "type": "user", "cwd": repo, "message": {"content": format!("work on {id}")}
+        });
+        let body = std::iter::once(start.to_string())
+            .chain(lines.iter().cloned())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let path = dir.join(format!("{id}.jsonl"));
+        std::fs::write(&path, body + "\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+    }
+
+    #[test]
+    fn the_newest_session_that_edited_a_changed_file_wrote_the_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = Path::new("/work/shop");
+        let now = SystemTime::now();
+        let ago = |mins: u64| now - Duration::from_secs(mins * 60);
+        let utc = |t: SystemTime| chrono::DateTime::<chrono::Utc>::from(t);
+        let changed = [PathBuf::from("src/pay.rs"), PathBuf::from("nb.ipynb")];
+        let at = utc(ago(30));
+        transcript(
+            root.path(),
+            repo,
+            "older",
+            &[edit("Edit", "/work/shop/src/pay.rs", "/work/shop", at)],
+            ago(30),
+        );
+        // Newer, but it only read files and edited one that didn't change.
+        transcript(
+            root.path(),
+            repo,
+            "reader",
+            &[
+                edit("Read", "/work/shop/src/pay.rs", "/work/shop", utc(ago(5))),
+                edit("Write", "/work/shop/README.md", "/work/shop", utc(ago(5))),
+            ],
+            ago(5),
+        );
+        let found = wrote_changes(root.path(), repo, &changed, now).unwrap();
+        assert_eq!(found.id, "older");
+        assert_eq!(found.cwd, PathBuf::from("/work/shop"));
+        assert_eq!(found.title, "work on older");
+
+        // A newer one wins; a relative path counts from the line's cwd.
+        transcript(
+            root.path(),
+            repo,
+            "newer",
+            &[edit("MultiEdit", "pay.rs", "/work/shop/src", utc(ago(10)))],
+            ago(10),
+        );
+        assert_eq!(
+            wrote_changes(root.path(), repo, &changed, now).unwrap().id,
+            "newer"
+        );
+        transcript(
+            root.path(),
+            repo,
+            "notebook",
+            &[edit(
+                "NotebookEdit",
+                "/work/shop/nb.ipynb",
+                "/work/shop",
+                utc(ago(1)),
+            )],
+            ago(1),
+        );
+        assert_eq!(
+            wrote_changes(root.path(), repo, &changed, now).unwrap().id,
+            "notebook"
+        );
+
+        // Nothing it touched changed: no session.
+        assert!(wrote_changes(root.path(), repo, &[PathBuf::from("other.rs")], now).is_none());
+        assert!(wrote_changes(root.path(), repo, &[], now).is_none());
+    }
+
+    #[test]
+    fn sessions_older_than_a_day_or_of_another_repo_dont_count() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = Path::new("/work/shop");
+        let changed = [PathBuf::from("a.py")];
+        let now = SystemTime::now();
+        let day = Duration::from_secs(24 * 3600);
+        let utc = chrono::DateTime::<chrono::Utc>::from;
+        // Changed within the day, but the edit itself is two days old.
+        transcript(
+            root.path(),
+            repo,
+            "stale-edit",
+            &[edit(
+                "Edit",
+                "/work/shop/a.py",
+                "/work/shop",
+                utc(now - 2 * day),
+            )],
+            now - Duration::from_secs(60),
+        );
+        // Not changed within the day at all.
+        transcript(
+            root.path(),
+            repo,
+            "stale-file",
+            &[edit(
+                "Edit",
+                "/work/shop/a.py",
+                "/work/shop",
+                utc(now - 2 * day),
+            )],
+            now - 2 * day,
+        );
+        // Another repository whose folder name shares the prefix.
+        let other = Path::new("/work/shop-api");
+        transcript(
+            root.path(),
+            other,
+            "other",
+            &[edit(
+                "Edit",
+                "/work/shop-api/a.py",
+                "/work/shop-api",
+                utc(now),
+            )],
+            now,
+        );
+        assert!(wrote_changes(root.path(), repo, &changed, now).is_none());
+    }
+
+    #[test]
+    fn only_the_end_of_a_transcript_is_read() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = Path::new("/work/shop");
+        let now = SystemTime::now();
+        let at = chrono::DateTime::<chrono::Utc>::from(now);
+        let filler = serde_json::json!({"type": "user", "message": {"content": "x".repeat(1000)}})
+            .to_string();
+        let mut lines = vec![edit("Edit", "/work/shop/a.py", "/work/shop", at)];
+        lines.extend(std::iter::repeat_n(
+            filler,
+            (TAIL_BYTES / 1000 + 10) as usize,
+        ));
+        transcript(root.path(), repo, "long", &lines, now);
+        // The edit sits before the last TAIL_BYTES: it isn't seen.
+        assert!(wrote_changes(root.path(), repo, &[PathBuf::from("a.py")], now).is_none());
+        lines.push(edit("Write", "/work/shop/b.py", "/work/shop", at));
+        transcript(root.path(), repo, "long", &lines, now);
+        assert_eq!(
+            wrote_changes(root.path(), repo, &[PathBuf::from("b.py")], now)
+                .unwrap()
+                .id,
+            "long"
+        );
     }
 }

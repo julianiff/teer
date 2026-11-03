@@ -1,4 +1,4 @@
-//! The commits view (`C` in the list): the PR's title and description, the
+//! The commits view (`␣c`): the PR's title and description, the
 //! commits between base and head with their type and tickets, and for the
 //! selected commit its message and the units it changed.
 
@@ -10,7 +10,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
-use crate::config::Action;
+use super::ui::{hint, hint_line};
+use crate::keymap::Action;
 use crate::review::intent::{self, Tag};
 use crate::review::model::{Commit, Decision, UnitStatus};
 use crate::util::{sanitize, truncate, wrap};
@@ -252,21 +253,20 @@ pub fn draw_commits(f: &mut Frame, app: &App, sel: usize, unit: Option<usize>) {
     let h = inner.height as usize;
 
     let k = |a: Action| app.keys.label(a);
-    let keys = if unit.is_some() {
-        format!(
-            "{} {} move · ⏎ go to the unit · esc back",
-            k(Action::Down),
-            k(Action::Up)
-        )
-    } else if app.commit_units(sel).is_empty() {
-        format!("{} {} move · esc close", k(Action::Down), k(Action::Up))
+    let mut keys = vec![hint(
+        format!("{} {}", k(Action::MoveDown), k(Action::MoveUp)),
+        "move",
+    )];
+    if unit.is_some() {
+        keys.push(hint(k(Action::ViewOpen), "go to the unit"));
+        keys.push(hint(k(Action::ViewBack), "back"));
     } else {
-        format!(
-            "{} {} move · ⏎ its units · esc close",
-            k(Action::Down),
-            k(Action::Up)
-        )
-    };
+        if !app.commit_units(sel).is_empty() {
+            keys.push(hint(k(Action::ViewOpen), "its units"));
+        }
+        keys.push(hint(k(Action::ViewClose), "close"));
+    }
+    let (_, keys) = hint_line(app, &keys);
     let rest = h.saturating_sub(1);
 
     let intro_h = if commits.is_empty() {

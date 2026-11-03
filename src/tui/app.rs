@@ -3,47 +3,51 @@
 //! without a terminal or an agent.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
+use std::time::Instant;
 
-use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+use crossterm::event::{Event, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
 use super::select;
-use super::swipe::{Dir, DragTracker};
 use super::theme::Theme;
 use crate::agent::SessionInfo;
-use crate::approve::{self, EditOutcome, Inline, NoteEntry, Verdict};
-use crate::commit::{self, Branch};
-use crate::config::{Action, Config, KeyMap, Order, Provider};
+use crate::approve::{Inline, Verdict};
+use crate::commit;
+use crate::config::{Config, Order, Provider};
+use crate::keymap::{Action, Edit, Keymap, Outcome};
 use crate::review::ask::Progress;
-use crate::review::attention::{Assessment, Level, assess};
+use crate::review::attention::{Assessment, Level, accepted_for_you, assess_all, settle};
 use crate::review::dive::{DiveEvent, uses_web};
+use crate::review::history::{Change, Note, NoteChange, Step};
 use crate::review::model::{
-    Answer, Decision, DiveKind, PrInfo, Prep, Question, Resolution, Review, SessionRef, Unit,
-    UnitKind, UnitStatus,
+    AcceptedBy, Answer, Decision, DiveKind, PrInfo, Prep, Question, Review, SessionRef, Unit,
+    UnitKind,
 };
 use crate::review::prepare::PrepareEvent;
 use crate::review::story;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
-    Slim,
-    Swipe,
-    /// Every unit marked investigate, with the agent questions.
+    /// The queue (Phase 4): what teer opens on.
+    Queue,
+    /// One unit, any unit, with its answers (Phase 5).
+    Unit,
+    /// The flagged units one after another (`<space>f`, see
+    /// [`super::flagged_list`]).
     Flagged,
 }
 
-/// What the list's level boxes hold (`f` switches).
+/// What the queue's level boxes hold (`toggle.by_file` switches).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Grouping {
     /// Files, each in the box of the most attention one of its units
     /// needs, its units under its name.
-    #[default]
     File,
-    /// Units, each in the box of its own level, its file named on its row.
+    /// Units, each in the box of its own level, its file named on its row:
+    /// the queue's order (level, then file, callers before callees).
+    #[default]
     Unit,
 }
 
@@ -61,7 +65,7 @@ pub enum Overlay {
         back: Option<usize>,
     },
     /// Every note of the review (see `crate::notes`) and the selected one:
-    /// to copy, hand to Claude Code, or post on the PR.
+    /// to go to, edit, delete or copy (`:w` takes them out of teer).
     Notes {
         sel: usize,
     },
@@ -70,45 +74,9 @@ pub enum Overlay {
         id: String,
         sel: usize,
     },
-    /// Asks once per session before a Flagged-screen question may use the web.
+    /// Asks once per session before the first question of the unit view's
+    /// ask panel may use the web.
     ConfirmWeb,
-    /// Asks before accepting every pending unit of a file in the list: the
-    /// file and the ids that would change.
-    ConfirmAcceptFile {
-        file: PathBuf,
-        ids: Vec<String>,
-    },
-    /// Shown once when the last unit that needed a look gets accepted.
-    AllDone,
-    /// Asks before posting a review of the PR on GitHub: the verdict, the
-    /// summary comment and the inline comments that would be posted.
-    PostReview {
-        verdict: Verdict,
-        /// The user's notes, in list order, with their inline targets.
-        notes: Vec<NoteEntry>,
-        /// The editable first part of the summary.
-        intro: String,
-        /// Post notes as inline comments (off: all go into the summary).
-        inline_on: bool,
-        /// First visible line of the scrolling text.
-        scroll: usize,
-        /// One-line editor for `intro`, when the external editor is not available.
-        editing: Option<String>,
-    },
-    /// Asks before committing the reviewed files (plain `teer` review of
-    /// uncommitted changes): the files, the message, the keys.
-    Commit {
-        /// The message that would be committed.
-        message: String,
-        draft: DraftState,
-        /// First visible line of the scrolling text.
-        scroll: usize,
-        /// One-line editor for the subject, when the external editor is not available.
-        editing: Option<String>,
-        branch: Branch,
-        /// Changed paths in the working tree that are not part of the review.
-        others: usize,
-    },
     /// The commits between base and head and the PR's description: the
     /// selected commit, and the selected one of the units it changed while
     /// the cursor is in that list.
@@ -116,33 +84,48 @@ pub enum Overlay {
         sel: usize,
         unit: Option<usize>,
     },
-    /// The Ask view: questions about the code and their answers (see
-    /// [`AskState`]).
-    Ask,
+    /// The `:w` sheet (Phase 6, see [`super::finish`]): one default next
+    /// step for the decisions made, its alternatives, the notes.
+    Finish {
+        sel: usize,
+    },
+    /// Units to jump to (see [`super::jump`]): found by file or name as
+    /// `query` is typed (`/`), or what the unit calls (`gd`) or what calls
+    /// it (`gr`); `sel` indexes [`App::jump_items`].
+    Jump {
+        kind: JumpKind,
+        query: String,
+        sel: usize,
+    },
 }
 
-/// The Ask view: the question being typed, the link in focus while the keys
-/// move between links instead, the questions on their way, and the scroll.
-/// The chat of a flagged unit (the Chat tile) keeps its own question and
-/// scroll.
+/// What a jump list lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JumpKind {
+    /// Every listed unit whose file or name matches the query.
+    Find,
+    /// What unit `of` calls, in this review.
+    Definition { of: String },
+    /// What calls unit `of`, in this review.
+    Callers { of: String },
+}
+
+/// The unit view's ask panel: the question being typed, the link in focus
+/// while the keys move between links instead, the questions on their way,
+/// and the scroll.
 #[derive(Debug, Default)]
 pub struct AskState {
-    pub input: String,
     /// Index into [`App::ask_links`]; `None` while typing.
     pub link: Option<usize>,
     /// Questions, by index, the agent is answering.
     pub pending: BTreeSet<usize>,
     /// What came of those so far, by index.
     pub live: BTreeMap<usize, LiveAnswer>,
-    /// First line shown; `None` follows the end of the conversation.
-    pub scroll: Cell<Option<usize>>,
-    /// The last line that can be first, as last drawn.
-    pub max_scroll: Cell<usize>,
-    /// The question being typed in the chat.
+    /// The question being typed.
     pub draft: String,
-    /// The chat's first line shown; `None` follows its end.
+    /// The conversation's first line shown; `None` follows its end.
     pub chat_scroll: Cell<Option<usize>>,
-    /// The chat's last line that can be first, as last drawn.
+    /// The conversation's last line that can be first, as last drawn.
     pub chat_max: Cell<usize>,
 }
 
@@ -155,10 +138,10 @@ pub struct LiveAnswer {
     pub text: String,
 }
 
-/// Where a link in the Ask view goes.
+/// Where a link in an answer goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AskLink {
-    /// A unit of this change, in the list.
+    /// A unit of this change, in the unit view.
     Unit(String),
     /// Shown code, in the editor.
     Code { file: PathBuf, line: u32 },
@@ -167,22 +150,16 @@ pub enum AskLink {
 /// Longest question, in characters.
 pub const QUESTION_MAX: usize = 500;
 
-/// Edit `text` with key `k` as a line being typed: a character goes in
-/// while it is shorter than `max`, backspace takes the last off, `ctrl+u`
-/// clears it. False for any other key.
-fn typed(text: &mut String, k: &KeyEvent, max: usize) -> bool {
-    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-    match k.code {
-        KeyCode::Backspace => {
+/// Edit `text` with `e`, a key of a line being typed ([`Keymap::edit`]): a
+/// character goes in while it is shorter than `max`, backspace takes the
+/// last off, [`Edit::ClearLine`] clears it. False for any other key.
+pub(super) fn typed(text: &mut String, e: Edit, max: usize) -> bool {
+    match e {
+        Edit::Backspace => {
             text.pop();
         }
-        KeyCode::Char('u') if ctrl => text.clear(),
-        KeyCode::Char(c)
-            if !c.is_control()
-                && !k
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-        {
+        Edit::ClearLine => text.clear(),
+        Edit::Char(c) => {
             if text.chars().count() < max {
                 text.push(c);
             }
@@ -208,39 +185,63 @@ pub enum DraftState {
 /// Longest note, in characters.
 pub const NOTE_MAX: usize = 1000;
 
-/// Cards swipe asks about ahead of the one on show, in a large review.
-pub const SWIPE_AHEAD: usize = 8;
+/// "1 unit", "3 units".
+fn units(n: usize) -> String {
+    if n == 1 {
+        "1 unit".into()
+    } else {
+        format!("{n} units")
+    }
+}
+
+/// What deciding `n` units at once says: "Accepted 3 units."
+fn decided_status(d: Decision, n: usize) -> String {
+    let verb = match d {
+        Decision::Investigate => "Flagged",
+        _ => "Accepted",
+    };
+    format!("{verb} {}.", units(n))
+}
+
+/// "5 s", "0.5 s".
+fn seconds(d: std::time::Duration) -> String {
+    let s = d.as_secs_f64();
+    if s.fract() == 0.0 {
+        format!("{} s", d.as_secs())
+    } else {
+        format!("{s:.1} s")
+    }
+}
+
+/// What the queue still does while it waits for the changes to copied
+/// notes: it is read-only, so it moves and scrolls, shows the help and its
+/// other views, and re-runs (`q` stops waiting).
+fn waiting_allows(a: Action) -> bool {
+    let id = a.id();
+    id.starts_with("move.")
+        || id.starts_with("scroll.")
+        || matches!(
+            a,
+            Action::HelpOpen
+                | Action::ReviewRerun
+                | Action::ReviewReset
+                | Action::ToggleAutoAccepted
+                | Action::ToggleByFile
+        )
+}
+
+/// Whether note change `n` of `step` put a note away: the step accepted its
+/// unit and the note went (see [`App::decide_each`]). Notes typed on a note
+/// line only ever join a flag's step.
+fn archives(step: &Step, n: &NoteChange) -> bool {
+    n.after == Note::default()
+        && step.changes.iter().any(|c| {
+            c.id == n.id && c.after == Decision::Accepted && c.before != Decision::Accepted
+        })
+}
 
 /// Lines the scroll keys and the mouse wheel move the detail area by.
 pub const SCROLL_STEP: isize = 3;
-
-/// The questions, in menu order.
-pub const DIVE_KINDS: [DiveKind; 5] = [
-    DiveKind::Recommend,
-    DiveKind::Visualize,
-    DiveKind::Tests,
-    DiveKind::Behavior,
-    DiveKind::Disagree,
-];
-
-/// The questions with a tile on the Flagged screen, in the order they were
-/// asked. An answer from before that order was kept follows, in menu order;
-/// the second opinion, which also runs on its own, only once asked for.
-pub fn tile_kinds(u: &Unit) -> Vec<DiveKind> {
-    let mut kinds: Vec<DiveKind> = Vec::new();
-    for k in &u.dive.asked {
-        if !kinds.contains(k) {
-            kinds.push(*k);
-        }
-    }
-    for k in DIVE_KINDS {
-        let there = u.dive.results.contains_key(&k) || u.dive_pending.contains(&k);
-        if k != DiveKind::Disagree && there && !kinds.contains(&k) {
-            kinds.push(k);
-        }
-    }
-    kinds
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
@@ -252,8 +253,11 @@ pub enum Effect {
         line: u32,
     },
     Save,
+    /// Save only `Review.cursor` (see `store::save_cursor`).
+    SaveCursor,
     Quit,
-    /// Ask the agent a question about a flagged unit.
+    /// Ask the agent a question about a unit: its recommendation, or a
+    /// tool's answer.
     // Named for the question (`DiveKind`), not the screen that asks it.
     Dive {
         unit_id: String,
@@ -262,12 +266,10 @@ pub enum Effect {
         web: bool,
     },
     /// Have the agent read the tests teer's search found for a unit: which
-    /// cover it and what dangerous cases none does (the Tests tile).
+    /// cover it and what dangerous cases none does (the Tests panel).
     InterpretTests {
         unit_id: String,
     },
-    /// Ask the second model about these units again (the Disagreement tab).
-    Second(Vec<String>),
     /// Open the unit's Visualize page in the browser (written again from the
     /// saved picture if the file is gone).
     OpenVisual {
@@ -321,11 +323,14 @@ pub enum Effect {
     Ask {
         index: usize,
     },
+    /// Suspend the review, run the settings screen (`teer setup`) and load
+    /// the config and keys again (`<space>s`).
+    Settings,
 }
 
 #[derive(Debug)]
 pub enum AppEvent {
-    /// An agent answer to a Flagged-screen question (see `DiveKind`).
+    /// An agent answer to a question about a unit (see `DiveKind`).
     Dive(DiveEvent),
     Prep(PrepareEvent),
     Rerun(Result<Box<Review>, String>),
@@ -348,54 +353,46 @@ pub enum AppEvent {
         index: usize,
         progress: Progress,
     },
+    /// The working tree as teer looked at it at `at`, while waiting for the
+    /// changes to copied notes (see [`App::watch_due`]), or why it couldn't.
+    Tree {
+        seen: Result<crate::watch::Snapshot, String>,
+        at: Instant,
+    },
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Undo {
-    /// Each unit touched by one step and the decision it had before, in the
-    /// order they were changed. Most steps hold one; a group accept holds all.
-    pub entries: Vec<(String, Decision)>,
+/// Who changed the code since the notes went out, as the status line says
+/// it after the re-run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangedBy {
+    /// The agent CLI the notes were handed to: its exit is the signal.
+    Agent(Provider),
+    /// Whoever got them from the clipboard (`y` on the sheet, or the model
+    /// API's copy): the files going quiet is the signal.
+    Copied,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct SwipeState {
-    /// The cards of this session, in list order.
-    pub cards: Vec<String>,
-    /// The card on show; `cards.len()` means the summary.
-    pub cursor: usize,
-    pub history: Vec<Undo>,
-    pub drag: DragTracker,
+impl ChangedBy {
+    /// "by Claude Code", "since the notes were copied".
+    fn words(self) -> String {
+        match self {
+            ChangedBy::Agent(p) => format!("by {}", p.title()),
+            ChangedBy::Copied => "since the notes were copied".into(),
+        }
+    }
 }
 
-/// Flagged screen state: the selected flagged unit, the tile in focus,
-/// whether the tile in focus fills the screen, and whether keys go into the
-/// chat's question (the Chat tile in focus).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct FlaggedState {
-    pub sel: usize,
-    pub pane: Pane,
-    pub zoom: bool,
-    pub typing: bool,
-}
-
-/// A tile of the Flagged screen.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Pane {
-    /// The code change, with the statements in it.
-    #[default]
-    Code,
-    /// One question's answer.
-    Answer(DiveKind),
-    /// The conversation about the unit: the questions asked about it in
-    /// the reviewer's words, the answers, and a line to ask the next.
-    Chat,
-    /// The questions not asked yet, to bring more light into it.
-    More,
-}
-
-/// Where the scroll of unit `id`'s tile `pane` is kept.
-pub fn pane_key(id: &str, pane: Pane) -> String {
-    format!("{id} {pane:?}")
+/// Waiting for the changes to notes that were copied out of teer: the
+/// queue stays on show and takes no decisions, and teer looks at the
+/// working tree until it has changed and settled (see [`crate::watch`]).
+#[derive(Debug, Clone)]
+pub struct Waiting {
+    /// How many notes (and flagged units without one) went out.
+    pub notes: usize,
+    /// Whether the tree changed and has been quiet for long enough.
+    pub quiet: crate::watch::Quiet,
+    /// When to look at the tree next; `None` while a look is on its way.
+    pub next: Option<Instant>,
 }
 
 /// Clickable regions registered while drawing.
@@ -403,27 +400,36 @@ pub fn pane_key(id: &str, pane: Pane) -> String {
 pub enum Target {
     Action(Action),
     Unit(usize),
-    /// The detail area next to a list (the list preview, the Flagged unit):
-    /// the wheel scrolls it, a click does nothing.
+    /// The detail area (the queue's preview, the unit view's text): the
+    /// wheel scrolls it, a click does nothing.
     Detail,
-    /// A Flagged tile: a click gives it the focus, the wheel scrolls it.
-    Tile(Pane),
-    /// A link in the Ask view, by index into [`App::ask_links`].
+    /// A tile beside the unit view's text: the wheel scrolls it, a click
+    /// gives it the focus (on the ask tile, typing).
+    Panel(super::unit::Panel),
+    /// A link in the ask panel, by index into [`App::ask_links`].
     AskLink(usize),
     /// A key named on screen (`esc close`): a click presses it.
     Key(KeyEvent),
     /// A note in the notes view, by its place there: a click selects it.
     Note(usize),
+    /// A unit's box in the flagged list, by its place there: a click gives
+    /// it the focus.
+    Flagged(usize),
+    /// The question on the unit view's Tests tile: a click has the agent
+    /// read the tests teer found.
+    ReadTests,
 }
 
 pub struct App {
     pub review: Review,
     pub cfg: Config,
-    pub keys: KeyMap,
+    pub keys: Keymap,
     pub theme: Theme,
     pub screen: Screen,
-    pub return_to: Vec<Screen>,
     pub overlay: Overlay,
+    /// The panel the help (`?`) was opened over: what it lists the keys of,
+    /// and what comes back when it closes.
+    pub help_over: Option<Overlay>,
 
     pub has_agent: bool,
     pub agent_note: Option<String>,
@@ -433,9 +439,18 @@ pub struct App {
     /// attention one of their units needs (then by path), inside a file most
     /// attention first, then by story (see `review::story`) or, with
     /// `order = "line"`, by line. Listed by unit, units by their own level
-    /// first, then the same.
+    /// first, then the same. Units accepted for you are left out unless
+    /// `show_auto`.
     pub order: Vec<usize>,
     pub grouping: Grouping,
+    /// The units accepted for you are listed (`za`).
+    pub show_auto: bool,
+    /// Visual mode (`V`): the unit the selection started on, by id; it
+    /// runs from where that unit is listed now to `sel` (see
+    /// [`App::visual_rows`]), however a re-listing moved it.
+    pub visual: Option<String>,
+    /// The last decision action and its count, for `.`.
+    pub last_decision: Option<(Action, Option<u32>)>,
     /// How far each unit is indented under the units it is read beneath in
     /// its file and level, by index into `review.units` (0 in line order).
     pub depth: Vec<usize>,
@@ -444,12 +459,12 @@ pub struct App {
     pub sel: usize,
     pub large: bool,
 
-    pub swipe: SwipeState,
-    pub flagged: FlaggedState,
-    /// The user agreed to web use for Flagged-screen questions this session.
+    /// The unit view (see [`super::unit`]).
+    pub unit: super::unit::UnitView,
+    /// The flagged list's state (see [`super::flagged_list`]).
+    pub flagged: super::flagged_list::FlaggedView,
+    /// The user agreed to web use for questions this session.
     pub dive_web_ok: bool,
-    /// A web-using request waiting for the user's answer to `ConfirmWeb`.
-    pub dive_web_pending: Option<(String, DiveKind)>,
     pub status: String,
     pub tick: u64,
     /// Draws Visualize pictures when the terminal can show images (set by
@@ -470,54 +485,60 @@ pub struct App {
     pub selection: Option<super::select::Selection>,
     /// When and where the last click was, to tell a double click.
     pub last_click: Option<(std::time::Instant, u16, u16)>,
+    /// The queue's first row shown, as last drawn.
     pub slim_scroll: Cell<usize>,
-    pub swipe_card: Cell<Rect>,
-    /// Furthest the approval text can scroll (written while drawing).
-    pub approve_max_scroll: Cell<usize>,
-    /// Furthest the commit overlay can scroll (written while drawing).
-    pub commit_max_scroll: Cell<usize>,
-    /// How far the detail area (the list preview, the swipe card, the open
-    /// tab on the Flagged screen) is scrolled, in lines, and what it showed
-    /// then: another unit or tab starts at the top.
+    /// How far the detail area (the queue's preview, the unit view's text)
+    /// is scrolled, in lines, and what it showed then: another unit starts
+    /// at the top.
     pub detail_scroll: RefCell<(String, usize)>,
     /// Furthest the detail area can scroll, and its rows (written while drawing).
     pub detail_max_scroll: Cell<usize>,
     pub detail_rows: Cell<usize>,
-    /// How far each Flagged tile is scrolled, by [`pane_key`].
-    pub pane_scroll: RefCell<HashMap<String, usize>>,
     /// Syntax colours of the files drawn so far (see [`super::syntax`]).
     pub syntax: super::syntax::Cache,
     /// The short id of the commit made from this review in this session.
     pub committed: Option<String>,
+    /// The `:w` sheet's message, summary and result (see [`super::finish`]).
+    pub finish: super::finish::FinishState,
     /// The summary of the whole change was asked for this session.
     pub summary_asked: bool,
     pub ask: AskState,
+    /// Waiting for the changes to copied notes (Phase 7's waiting screen).
+    pub waiting: Option<Waiting>,
+    /// Who the notes that went out last are with, until the re-run that
+    /// brings their changes says so.
+    pub fix_by: Option<ChangedBy>,
+    /// The units the last re-run found changed or new, by id: listed at the
+    /// top of their level until the next one.
+    pub changed: HashSet<String>,
 }
 
 impl App {
-    pub fn new(review: Review, cfg: Config, keys: KeyMap) -> App {
+    pub fn new(review: Review, cfg: Config, keys: Keymap) -> App {
         let theme = Theme::new(cfg.theme);
         let mut app = App {
             review,
             keys,
             theme,
-            screen: Screen::Slim,
-            return_to: Vec::new(),
+            screen: Screen::Queue,
             overlay: Overlay::None,
+            help_over: None,
             has_agent: false,
             agent_note: None,
             sessions: Vec::new(),
             order: Vec::new(),
-            grouping: Grouping::File,
+            grouping: Grouping::default(),
+            show_auto: false,
+            visual: None,
+            last_decision: None,
             depth: Vec::new(),
             levels: Vec::new(),
             sel: 0,
             // Set by `rebuild_order`, as the rest of the order.
             large: false,
-            swipe: SwipeState::default(),
-            flagged: FlaggedState::default(),
+            unit: Default::default(),
+            flagged: Default::default(),
             dive_web_ok: false,
-            dive_web_pending: None,
             status: String::new(),
             tick: 0,
             pictures: None,
@@ -527,45 +548,75 @@ impl App {
             selection: None,
             last_click: None,
             slim_scroll: Cell::new(0),
-            swipe_card: Cell::new(Rect::default()),
             approving: false,
             progress: Default::default(),
-            approve_max_scroll: Cell::new(0),
-            commit_max_scroll: Cell::new(0),
             detail_scroll: RefCell::new((String::new(), 0)),
             detail_max_scroll: Cell::new(0),
-            pane_scroll: RefCell::default(),
             detail_rows: Cell::new(0),
             syntax: Default::default(),
             committed: None,
+            finish: Default::default(),
             summary_asked: false,
             ask: AskState::default(),
+            waiting: None,
+            fix_by: None,
+            changed: HashSet::new(),
             cfg,
         };
         app.rebuild_order();
+        app.sel = app.resume_at();
+        app.review.cursor = app.selected_id();
         app
     }
 
-    /// List units file by file: files by the most attention one of their
-    /// units needs, then by path; inside a file most attention first, then
-    /// by story (callers right before what they call) or line. Listed by
-    /// unit, each unit goes by its own level instead of its file's. Units
-    /// without a behavior change aren't listed as units. The selection stays
+    /// Where the review starts: on the unit it was left on
+    /// (`Review.cursor`) while it is listed, else on the first pending unit
+    /// that needs a close look, else the top.
+    fn resume_at(&self) -> usize {
+        let left_on = self.review.cursor.as_deref();
+        left_on
+            .and_then(|id| self.position_of(id))
+            .or_else(|| {
+                (0..self.order.len()).find(|&p| {
+                    self.pending_at(p) && self.levels[self.order[p]].level == Level::Attention
+                })
+            })
+            .unwrap_or(0)
+    }
+
+    /// Assess every unit again, then [`App::reorder`]. The selection stays
     /// on the same unit as levels change.
     pub fn rebuild_order(&mut self) {
+        self.levels = assess_all(&self.review);
+        self.large = self.review.units.len() > self.cfg.large_review;
+        self.reorder();
+    }
+
+    /// The level unit `i` (index into `review.units`) is listed under (see
+    /// [`Level::shown`]): units accepted for you in the box of their own.
+    pub fn shown_level(&self, i: usize) -> Level {
+        self.levels[i]
+            .level
+            .shown(self.review.units[i].auto_accepted())
+    }
+
+    /// Settle what the levels decide (reasons, units accepted for you: see
+    /// [`settle`]) and list the units file by file: files by the most
+    /// attention one of their units needs, then by path; inside a file most
+    /// attention first, then by story (callers right before what they call)
+    /// or line. Listed by unit, each unit goes by its own level instead of
+    /// its file's: level, then path, then story. Units accepted for you are
+    /// listed last, and only with `show_auto`. Units the last re-run changed
+    /// ([`App::changed`]) lead their box (listed by file, their files do,
+    /// and they lead their file). The selection stays on the same unit.
+    fn reorder(&mut self) {
         let keep = self.selected().map(|u| u.id.clone());
-        self.levels = self
-            .review
-            .units
-            .iter()
-            .map(|u| assess(&self.review, u))
-            .collect();
+        settle(&mut self.review, &self.levels, self.cfg.auto_accept);
         let units = &self.review.units;
-        let level = |i: usize| self.levels[i].level;
+        let level = |i: usize| self.shown_level(i);
         let listed: Vec<usize> = (0..units.len())
-            .filter(|&i| level(i) != Level::Same)
+            .filter(|&i| self.show_auto || !units[i].auto_accepted())
             .collect();
-        self.large = units.len() > self.cfg.large_review;
         let mut most: HashMap<&PathBuf, Level> = HashMap::new();
         for &i in &listed {
             let m = most.entry(&units[i].file).or_insert(Level::Same);
@@ -585,13 +636,29 @@ impl App {
                 level(i)
             }
         };
+        let fresh = |i: usize| self.changed.contains(&units[i].id);
+        let fresh_files: HashSet<&PathBuf> = listed
+            .iter()
+            .filter(|&&i| fresh(i))
+            .map(|&i| &units[i].file)
+            .collect();
+        // What goes to the top of a box: a changed unit, or its file.
+        let leads = |i: usize| {
+            if by_file {
+                fresh_files.contains(&units[i].file)
+            } else {
+                fresh(i)
+            }
+        };
         let mut order = listed;
         order.sort_by(|&a, &b| {
             let (fa, fb) = (&units[a].file, &units[b].file);
             (boxed(b) as u8)
                 .cmp(&(boxed(a) as u8))
+                .then_with(|| leads(b).cmp(&leads(a)))
                 .then_with(|| fa.cmp(fb))
                 .then_with(|| (level(b) as u8).cmp(&(level(a) as u8)))
+                .then_with(|| fresh(b).cmp(&fresh(a)))
                 .then_with(|| match (placed.get(&a), placed.get(&b)) {
                     (Some(x), Some(y)) => x.rank.cmp(&y.rank),
                     _ => units[a].display_line().cmp(&units[b].display_line()),
@@ -614,6 +681,12 @@ impl App {
             self.sel = pos;
         }
         self.sel = self.sel.min(self.order.len().saturating_sub(1));
+        // The selection runs from its unit: no longer listed, it ends.
+        if let Some(id) = &self.visual
+            && self.position_of(id).is_none()
+        {
+            self.visual = None;
+        }
     }
 
     // ---- Files -------------------------------------------------------------
@@ -625,7 +698,7 @@ impl App {
     /// Does a new file start at `pos`? Listed by unit, a file starts again
     /// in each level's box it has units in.
     pub fn starts_file(&self, pos: usize) -> bool {
-        let level = |p: usize| self.levels[self.order[p]].level;
+        let level = |p: usize| self.shown_level(self.order[p]);
         pos == 0
             || self.file_at(pos - 1) != self.file_at(pos)
             || (self.grouping == Grouping::Unit && level(pos - 1) != level(pos))
@@ -648,7 +721,7 @@ impl App {
     /// file is listed in (listed by unit, the level of the box's units).
     pub fn file_level(&self, pos: usize) -> Level {
         self.file_range(pos)
-            .map(|p| self.levels[self.order[p]].level)
+            .map(|p| self.shown_level(self.order[p]))
             .max()
             .unwrap_or(Level::Routine)
     }
@@ -662,6 +735,23 @@ impl App {
         self.grouping = to;
         self.rebuild_order();
         self.status = format!("listed by {word}");
+    }
+
+    /// `za`: list the units accepted for you, or hide them again; the
+    /// cursor stays on its unit while it is listed.
+    fn toggle_auto(&mut self) {
+        let n = self.auto_accepted();
+        if n == 0 && !self.show_auto {
+            self.status = "No units are accepted for you.".into();
+            return;
+        }
+        self.show_auto = !self.show_auto;
+        self.reorder();
+        self.status = if self.show_auto {
+            format!("Showing {} accepted for you.", units(n))
+        } else {
+            format!("Hiding {} accepted for you.", units(n))
+        };
     }
 
     /// Move `step` units up or down the list.
@@ -690,37 +780,27 @@ impl App {
 
     // ---- Startup ---------------------------------------------------------
 
-    /// Start on the review. `session` is the agent to ask: a fresh headless
-    /// run, or the session given with `--session`. `note` explains why there
-    /// is no agent, if there isn't one.
+    /// Start on the review, in the queue. `session` is the agent to ask: a
+    /// fresh headless run, or the session given with `--session`. `note`
+    /// explains why there is no agent, if there isn't one.
     pub fn start(
         &mut self,
         has_agent: bool,
         note: Option<String>,
         sessions: Vec<SessionInfo>,
         session: Option<SessionRef>,
-        swipe: bool,
     ) -> Vec<Effect> {
         self.has_agent = has_agent;
         self.sessions = sessions;
         self.agent_note = note;
         let mut effects = Vec::new();
         self.review.set_session(session.filter(|_| self.has_agent));
-        self.screen = Screen::Slim;
-        if swipe {
-            self.enter_swipe();
-        }
+        self.screen = Screen::Queue;
         effects.extend(self.prepare_start());
-        effects.extend(self.prepare_cards());
         // A review described in an earlier run that has no summary yet.
         if self.can_ask() && crate::review::intent::wants_summary(&self.review) {
             self.summary_asked = true;
             effects.push(Effect::Summarize);
-        }
-        // The one time the popup shows on load: a finished review of
-        // uncommitted changes can be committed right away.
-        if self.can_commit() && !self.review.files.is_empty() && self.all_reviewed() {
-            self.overlay = Overlay::AllDone;
         }
         effects
     }
@@ -770,34 +850,8 @@ impl App {
         effects
     }
 
-    /// Swipe in a large review: ask about the card on show and the next
-    /// [`SWIPE_AHEAD`] that nobody asked about yet, so each is described by
-    /// the time it comes up. (The list asks per file as the cursor moves.)
-    fn prepare_cards(&mut self) -> Vec<Effect> {
-        if !self.large || self.screen != Screen::Swipe {
-            return Vec::new();
-        }
-        let ids: Vec<String> = self
-            .swipe
-            .cards
-            .iter()
-            .skip(self.swipe.cursor)
-            .take(SWIPE_AHEAD + 1)
-            .filter(|id| {
-                self.review
-                    .unit(id)
-                    .is_some_and(|u| u.prep == Prep::NotRequested)
-            })
-            .cloned()
-            .collect();
-        if ids.is_empty() {
-            return Vec::new();
-        }
-        self.prepare_effect(Some(ids))
-    }
-
     /// Large reviews prepare a file's units when the user gets to them.
-    fn ensure_prepared(&mut self) -> Vec<Effect> {
+    pub(super) fn ensure_prepared(&mut self) -> Vec<Effect> {
         if !self.large {
             return Vec::new();
         }
@@ -841,20 +895,10 @@ impl App {
         (done, asked.len())
     }
 
-    /// Units flagged for a closer look, in display order.
-    pub fn flagged_units(&self) -> Vec<&Unit> {
-        self.review.flagged()
-    }
-
-    /// (accepted, flagged, pending), counting only units with a behavior change.
+    /// (accepted, flagged, pending); units accepted for you count as accepted.
     pub fn decision_counts(&self) -> (usize, usize, usize) {
         let mut c = (0, 0, 0);
-        for u in self
-            .review
-            .units
-            .iter()
-            .filter(|u| u.status != UnitStatus::NoBehaviorChange)
-        {
+        for u in &self.review.units {
             match u.decision {
                 Decision::Accepted => c.0 += 1,
                 Decision::Investigate => c.1 += 1,
@@ -864,19 +908,29 @@ impl App {
         c
     }
 
-    /// Every unit with a behavior change is accepted (and there is one).
+    /// How many units teer accepted for you.
+    pub fn auto_accepted(&self) -> usize {
+        self.review
+            .units
+            .iter()
+            .filter(|u| u.auto_accepted())
+            .count()
+    }
+
+    /// Every unit is accepted, by you or for you (and there is one).
     pub fn all_reviewed(&self) -> bool {
         let (accepted, flagged, pending) = self.decision_counts();
         accepted > 0 && flagged == 0 && pending == 0
     }
 
-    /// What the detail area shows: the screen, the unit, the tab.
+    /// What the detail area shows: the screen and the unit.
     fn detail_key(&self) -> String {
         match self.screen {
-            Screen::Slim => format!("list {}", self.selected().map_or("", |u| u.id.as_str())),
-            Screen::Swipe => format!("swipe {}", self.swipe_current().map_or("", String::as_str)),
-            // Per unit; its tiles scroll on their own (`pane_scroll`).
-            Screen::Flagged => format!("flagged {}", self.flagged_unit_id().unwrap_or_default()),
+            Screen::Queue => {
+                format!("list {}", self.selected().map_or("", |u| u.id.as_str()))
+            }
+            Screen::Unit => format!("unit {}", self.unit.id),
+            Screen::Flagged => "flagged".into(),
         }
     }
 
@@ -891,22 +945,12 @@ impl App {
     }
 
     /// Scroll the detail area `by` lines, no further than the last frame
-    /// allowed: on the Flagged screen, the tile in focus.
+    /// allowed: in the unit view, its text or the panel open under it.
     fn scroll_detail(&mut self, by: isize) -> Vec<Effect> {
-        if self.screen == Screen::Flagged {
-            if let Some(u) = self.flagged_unit() {
-                if self.flagged_focus(u) == Pane::Chat {
-                    return self.chat_scroll(by);
-                }
-                let key = pane_key(&u.id, self.flagged_focus(u));
-                let mut m = self.pane_scroll.borrow_mut();
-                let at = m.get(&key).copied().unwrap_or(0);
-                let to = at
-                    .saturating_add_signed(by)
-                    .min(self.detail_max_scroll.get());
-                m.insert(key, to);
-            }
-            return Vec::new();
+        match self.screen {
+            Screen::Unit => return self.unit_scroll(by),
+            Screen::Flagged => return self.flagged_scroll(by),
+            Screen::Queue => {}
         }
         let to = self
             .detail_offset()
@@ -914,13 +958,6 @@ impl App {
             .min(self.detail_max_scroll.get());
         self.detail_scroll.borrow_mut().1 = to;
         Vec::new()
-    }
-
-    /// Open the "all done" popup if `was_done` was false and it is now true.
-    fn check_all_done(&mut self, was_done: bool) {
-        if !was_done && self.all_reviewed() {
-            self.overlay = Overlay::AllDone;
-        }
     }
 
     // ---- Input -----------------------------------------------------------
@@ -934,20 +971,49 @@ impl App {
     }
 
     pub fn on_key(&mut self, k: KeyEvent) -> Vec<Effect> {
-        if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
+        if self.keys.is_interrupt(&k) {
             return vec![Effect::Save, Effect::Quit];
         }
         // A status message answers the last action; the next key dismisses it.
         // Actions that report something set it again after this.
         self.status.clear();
         self.selection = None;
+        let effects = match self.overlay_key(k) {
+            Some(effects) => effects,
+            None => self.normal_key(k),
+        };
+        // While waiting, the status line says so unless a key said more.
+        if self.waiting.is_some() && self.status.is_empty() {
+            self.status = self.waiting_line();
+        }
+        self.save_cursor(effects)
+    }
+
+    /// Keep the unit under the cursor in the review (`Review.cursor`) and
+    /// save it when it moved, so `q` and a crash both resume on it. A full
+    /// save writes it too.
+    fn save_cursor(&mut self, mut effects: Vec<Effect>) -> Vec<Effect> {
+        let at = self.selected_id();
+        if self.review.cursor != at {
+            self.review.cursor = at;
+            if !effects.contains(&Effect::Save) {
+                effects.push(Effect::SaveCursor);
+            }
+        }
+        effects
+    }
+
+    /// Keys of the overlay on show, or of the unit view's ask panel: its
+    /// text input, prompt or sheet. `None` passes the key on to the screen.
+    fn overlay_key(&mut self, k: KeyEvent) -> Option<Vec<Effect>> {
         match self.overlay.clone() {
-            Overlay::Ask => return self.ask_key(k),
-            Overlay::Note { id, text, back } => return self.note_key(id, text, back, k),
-            Overlay::Notes { sel } => return self.notes_key(sel, k),
+            Overlay::Jump { .. } => return Some(self.jump_key(k)),
+            Overlay::Finish { .. } => return Some(self.finish_key(k)),
+            Overlay::Note { .. } => return Some(self.note_key(k)),
+            Overlay::Notes { sel } => return Some(self.notes_key(sel, k)),
             Overlay::ConfirmDeleteNote { id, sel } => {
                 self.overlay = Overlay::Notes { sel };
-                if matches!(k.code, KeyCode::Enter | KeyCode::Char('y' | 'Y'))
+                if self.keys.confirm(&k)
                     && let Some(u) = self.review.unit_mut(&id)
                 {
                     u.dive.note.clear();
@@ -956,479 +1022,264 @@ impl App {
                         self.overlay = Overlay::None;
                     }
                     self.status = "Note deleted.".into();
-                    return vec![Effect::Save];
+                    return Some(vec![Effect::Save]);
                 }
-                return Vec::new();
+                return Some(Vec::new());
             }
             Overlay::ConfirmWeb => {
                 self.overlay = Overlay::None;
-                return self
-                    .answer_web(matches!(k.code, KeyCode::Enter | KeyCode::Char('y' | 'Y')));
+                let yes = self.keys.confirm(&k);
+                return Some(self.unit_answer_web(yes).unwrap_or_default());
             }
             Overlay::ConfirmReset => {
                 self.overlay = Overlay::None;
-                if matches!(k.code, KeyCode::Enter | KeyCode::Char('y' | 'Y')) {
-                    return self.reset();
+                if self.keys.confirm(&k) {
+                    return Some(self.reset_and_rerun());
                 }
-                return Vec::new();
-            }
-            Overlay::ConfirmAcceptFile { ids, .. } => {
-                self.overlay = Overlay::None;
-                if matches!(k.code, KeyCode::Enter | KeyCode::Char('y' | 'Y')) {
-                    return self.accept_file(ids);
-                }
-                return Vec::new();
+                return Some(Vec::new());
             }
             Overlay::Help => {
-                self.overlay = Overlay::None;
-                return Vec::new();
+                self.overlay = self.help_over.take().unwrap_or(Overlay::None);
+                return Some(Vec::new());
             }
-            Overlay::AllDone => {
-                self.overlay = Overlay::None;
-                if self.keys.is(Action::Quit, &k) {
-                    return vec![Effect::Save, Effect::Quit];
-                }
-                if self.committed.is_some() {
-                    return Vec::new();
-                }
-                if self.keys.is(Action::Reset, &k) {
-                    self.overlay = Overlay::ConfirmReset;
-                } else if self.keys.is(Action::ApprovePr, &k) {
-                    self.ask_post(Verdict::Approve);
-                } else if self.keys.is(Action::Commit, &k) {
-                    return self.ask_commit();
-                }
-                return Vec::new();
-            }
-            Overlay::Commit { .. } => return self.commit_key(k),
-            Overlay::Commits { sel, unit } => return self.commits_key(sel, unit, k),
-            Overlay::PostReview {
-                verdict,
-                notes,
-                intro,
-                inline_on,
-                scroll,
-                editing,
-            } => return self.post_key(verdict, notes, intro, inline_on, scroll, editing, k),
+            Overlay::Commits { sel, unit } => return Some(self.commits_key(sel, unit, k)),
             Overlay::None => {}
         }
-        if self.chat_typing() {
-            return self.chat_key(k);
-        }
-        // PageDown and PageUp scroll the detail area a page at a time.
-        let page = self.detail_rows.get().saturating_sub(2).max(1) as isize;
-        match k.code {
-            KeyCode::PageDown => return self.scroll_detail(page),
-            KeyCode::PageUp => return self.scroll_detail(-page),
-            _ => {}
-        }
-        let action = self.action_for(&k);
-        match action {
-            Some(a) => self.on_action(a),
-            None => Vec::new(),
-        }
-    }
-
-    /// Map a key to an action for the current screen. Arrow keys always work.
-    /// In the list `h` and Left also investigate; in swipe only Left does
-    /// (`h` goes back a card).
-    fn action_for(&self, k: &KeyEvent) -> Option<Action> {
-        if self.screen == Screen::Flagged {
-            return self.flagged_action_for(k);
-        }
-        let in_swipe = self.screen == Screen::Swipe;
-        match k.code {
-            KeyCode::Down => return Some(Action::Down),
-            KeyCode::Up => return Some(Action::Up),
-            KeyCode::Right if in_swipe => return Some(Action::Accept),
-            KeyCode::Left => return Some(Action::Investigate),
-            KeyCode::Home => return Some(Action::Top),
-            KeyCode::End => return Some(Action::Bottom),
-            _ => {}
-        }
-        if self.screen == Screen::Slim {
-            const LIST: &[Action] = &[
-                Action::Down,
-                Action::Up,
-                Action::Accept,
-                Action::Investigate,
-                Action::Undo,
-                Action::NextPending,
-                Action::PrevPending,
-                Action::NextGroup,
-                Action::PrevGroup,
-                Action::AcceptFile,
-                Action::Grouping,
-                Action::Commits,
-            ];
-            if let Some(a) = LIST.iter().copied().find(|a| self.keys.is(*a, k)) {
-                return Some(a);
-            }
-        }
-        let candidates: &[Action] = if in_swipe {
-            &[
-                Action::Accept,
-                Action::Investigate,
-                Action::Undo,
-                Action::PrevCard,
-            ]
-        } else {
-            &[Action::Down, Action::Up]
-        };
-        for a in candidates {
-            if self.keys.is(*a, k) {
-                return Some(*a);
-            }
-        }
-        const REST: &[Action] = &[
-            Action::Quit,
-            Action::Top,
-            Action::Bottom,
-            Action::Edit,
-            Action::Swipe,
-            Action::Rerun,
-            Action::Reset,
-            Action::Back,
-            Action::Help,
-            Action::Flagged,
-            Action::PreviewDown,
-            Action::PreviewUp,
-            Action::Ask,
-            Action::EditNote,
-            Action::Notes,
-        ];
-        if let Some(a) = REST.iter().copied().find(|a| self.keys.is(*a, k)) {
-            return Some(a);
-        }
-        // Muscle memory: `h` investigates unless it was rebound.
-        if self.screen == Screen::Slim && k.code == KeyCode::Char('h') && k.modifiers.is_empty() {
-            return Some(Action::Investigate);
+        if self.unit_panel_has_keys() {
+            return Some(self.unit_panel_key(k));
         }
         None
     }
 
-    /// Keys of the Flagged screen. Plain letters never reach the global actions
-    /// here, so `r` re-asks the tab instead of re-running the review.
-    fn flagged_action_for(&self, k: &KeyEvent) -> Option<Action> {
-        match k.code {
-            KeyCode::Down => return Some(Action::Down),
-            KeyCode::Up => return Some(Action::Up),
-            KeyCode::Tab => return Some(Action::NextTile),
-            KeyCode::BackTab => return Some(Action::PrevTile),
-            KeyCode::Home => return Some(Action::Top),
-            KeyCode::End => return Some(Action::Bottom),
-            KeyCode::Enter if self.flagged.pane == Pane::Chat => return Some(Action::Ask),
-            _ => {}
+    /// Normal mode: the keymap turns keys into actions for the screen.
+    fn normal_key(&mut self, k: KeyEvent) -> Vec<Effect> {
+        match self.keys.feed(&k, std::time::Instant::now()) {
+            Outcome::Run { action, count } => self.run_action(action, count),
+            Outcome::Error(e) => {
+                self.status = e;
+                Vec::new()
+            }
+            Outcome::None | Outcome::Pending | Outcome::Command => Vec::new(),
         }
-        const FLAGGED: &[Action] = &[
-            Action::Down,
-            Action::Up,
-            Action::PrevTile,
-            Action::NextTile,
-            Action::DiveRecommend,
-            Action::DiveVisualize,
-            Action::DiveBehavior,
-            Action::DiveDisagree,
-            Action::DiveTests,
-            Action::InterpretTests,
-            Action::OpenVisual,
-            Action::ResolveOk,
-            Action::ResolveFix,
-            Action::EditNote,
-            Action::DiveRerun,
-            Action::Zoom,
-            Action::Quit,
-            Action::Top,
-            Action::Bottom,
-            Action::Edit,
-            Action::Reset,
-            Action::Back,
-            Action::Help,
-            Action::PreviewDown,
-            Action::PreviewUp,
-            Action::Ask,
-            Action::Notes,
-        ];
-        FLAGGED.iter().copied().find(|a| self.keys.is(*a, k))
     }
 
-    pub fn on_action(&mut self, a: Action) -> Vec<Effect> {
-        // Actions that work everywhere.
-        match a {
-            Action::Help => {
-                self.overlay = Overlay::Help;
+    /// The action `k` completes in a panel that moves through a list (the
+    /// notes, the commits, the ask panel's links, the `gd`/`gr` list), if
+    /// any. Sequences and the command line work as in normal mode; counts
+    /// are dropped, and an unknown command is reported.
+    pub(super) fn panel_action(&mut self, k: &KeyEvent) -> Option<Action> {
+        match self.keys.feed(k, std::time::Instant::now()) {
+            Outcome::Run { action, .. } => Some(action),
+            Outcome::Error(e) => {
+                self.status = e;
+                None
+            }
+            Outcome::None | Outcome::Pending | Outcome::Command => None,
+        }
+    }
+
+    /// Run `a` with the count typed before it, if any. In visual mode moves
+    /// extend the selection, a decision applies to all of it, and anything
+    /// else leaves visual mode first. Decisions are remembered for `.`.
+    pub fn run_action(&mut self, a: Action, count: Option<u32>) -> Vec<Effect> {
+        let effects = self.action(a, count);
+        self.save_cursor(effects)
+    }
+
+    /// [`App::run_action`], before the cursor is saved.
+    fn action(&mut self, a: Action, count: Option<u32>) -> Vec<Effect> {
+        if self.waiting.is_some() {
+            if a == Action::ViewClose {
+                self.stop_waiting();
                 return Vec::new();
             }
-            Action::Reset => {
+            if !waiting_allows(a) {
+                return Vec::new();
+            }
+        }
+        if self.visual.is_some() {
+            match a {
+                _ if a.id().starts_with("move.") => {}
+                Action::DecideAccept | Action::DecideFlag => return self.decide_visual(a),
+                // `V` again leaves it, as in Neovim.
+                Action::ViewBack | Action::VisualStart => {
+                    self.visual = None;
+                    return Vec::new();
+                }
+                _ => self.visual = None,
+            }
+        }
+        if a == Action::HistoryRepeat {
+            let Some((last, last_count)) = self.last_decision else {
+                self.status = "Nothing to repeat yet.".into();
+                return Vec::new();
+            };
+            // A count typed before `.` replaces the one it had.
+            return self.run_action(last, count.or(last_count));
+        }
+        if a.is_decision() {
+            self.last_decision = Some((a, count));
+        }
+        self.act(a, count)
+    }
+
+    /// The help (`?`) for the screen, or for the panel open on it.
+    pub fn open_help(&mut self) {
+        let over = std::mem::replace(&mut self.overlay, Overlay::Help);
+        self.help_over = (over != Overlay::None).then_some(over);
+    }
+
+    /// Run `a` once, without a count.
+    pub fn on_action(&mut self, a: Action) -> Vec<Effect> {
+        self.run_action(a, None)
+    }
+
+    /// Actions that work the same on every screen, then the screen's own.
+    fn act(&mut self, a: Action, count: Option<u32>) -> Vec<Effect> {
+        match a {
+            Action::HelpOpen => {
+                self.open_help();
+                return Vec::new();
+            }
+            Action::ReviewReset => {
                 self.overlay = Overlay::ConfirmReset;
                 return Vec::new();
             }
-            Action::Ask if self.screen == Screen::Flagged => {
-                self.open_chat();
+            Action::ReviewRerun => return self.rerun_now(),
+            Action::AskOpen if self.screen == Screen::Unit => {
+                self.open_ask_panel();
                 return Vec::new();
             }
-            Action::Ask => {
-                self.open_ask();
+            // From the queue or the flagged list: the unit view on the
+            // unit, asking.
+            Action::AskOpen => {
+                let Some(id) = self.current_unit().map(|u| u.id.clone()) else {
+                    return Vec::new();
+                };
+                let effects = self.open_unit(id);
+                self.open_ask_panel();
+                return effects;
+            }
+            Action::FindUnit => return self.open_jump(JumpKind::Find),
+            Action::GotoDefinition if self.screen == Screen::Unit => {
+                return self.unit_goto_definition();
+            }
+            Action::GotoDefinition | Action::GotoCallers => {
+                let Some(of) = self.current_unit().map(|u| u.id.clone()) else {
+                    return Vec::new();
+                };
+                return self.open_jump(if a == Action::GotoDefinition {
+                    JumpKind::Definition { of }
+                } else {
+                    JumpKind::Callers { of }
+                });
+            }
+            Action::GotoEditor => return self.edit(),
+            Action::GotoBrowser => return self.open_visual(),
+            // On the ask tile, `i` types the question.
+            Action::NoteEdit if self.unit_ask_focused() => {
+                self.open_ask_panel();
                 return Vec::new();
             }
-            Action::Edit => return self.edit(),
-            Action::EditNote => {
+            Action::NoteEdit => {
                 match self.current_unit().map(|u| u.id.clone()) {
                     Some(id) => self.edit_note(id, None),
                     None => self.status = "Select a unit to write a note on it.".into(),
                 }
                 return Vec::new();
             }
-            Action::Notes => {
+            Action::ToolNotes => {
                 self.open_notes();
                 return Vec::new();
             }
-            Action::PreviewDown => return self.scroll_detail(SCROLL_STEP),
-            Action::PreviewUp => return self.scroll_detail(-SCROLL_STEP),
-            Action::Rerun => {
-                self.status = "Re-running the review…".into();
-                return vec![Effect::Rerun];
+            Action::ToolFlagged => return self.open_flagged(),
+            Action::ToolHistory => {
+                self.open_commits();
+                return Vec::new();
+            }
+            Action::ToolSettings => return vec![Effect::Settings],
+            Action::FinishOpen => return self.open_finish(),
+            Action::ToggleAutoAccepted => {
+                self.toggle_auto();
+                return Vec::new();
+            }
+            Action::HistoryUndo => return self.undo(),
+            Action::HistoryRedo => return self.redo(),
+            Action::MoveNextHunk | Action::MovePrevHunk if self.screen == Screen::Queue => {
+                self.status = "Hunk jumps work in the unit view.".into();
+                return Vec::new();
+            }
+            Action::ScrollHalfDown | Action::ScrollHalfUp => {
+                let half = (self.detail_rows.get() / 2).max(1) as isize;
+                let by = if a == Action::ScrollHalfDown {
+                    half
+                } else {
+                    -half
+                };
+                return self.scroll_detail(by);
+            }
+            Action::ScrollPageDown | Action::ScrollPageUp => {
+                let page = self.detail_rows.get().saturating_sub(2).max(1) as isize;
+                let by = if a == Action::ScrollPageDown {
+                    page
+                } else {
+                    -page
+                };
+                return self.scroll_detail(by);
+            }
+            Action::ToolAdvice
+            | Action::ToolTests
+            | Action::ToolRunOldNew
+            | Action::ToolDiagram => {
+                return self.open_tool(a);
             }
             _ => {}
         }
         match self.screen {
-            Screen::Slim => self.slim_action(a),
-            Screen::Swipe => self.swipe_action(a),
-            Screen::Flagged => self.flagged_action(a),
+            Screen::Queue => self.queue_action(a, count),
+            Screen::Unit => self.unit_action(a, count),
+            Screen::Flagged => self.flagged_action(a, count),
         }
     }
 
-    // ---- Flagged screen ---------------------------------------------------
-
-    /// Open the Flagged screen on the first flagged unit, remembering where we
-    /// came from. With nothing flagged, stay put and say so.
-    fn start_flagged(&mut self) {
-        if self.screen == Screen::Flagged {
-            return;
+    /// A tool (`<space>a` `<space>t` `<space>r` `<space>v`): in the unit
+    /// view, its panel; from the queue, the unit view on the unit with that
+    /// panel.
+    fn open_tool(&mut self, a: Action) -> Vec<Effect> {
+        if self.screen == Screen::Unit {
+            return self.unit_tool(a);
         }
-        if self.flagged_units().is_empty() {
-            self.status = "Nothing flagged yet. Investigate a unit first.".into();
-            return;
-        }
-        self.return_to.push(self.screen);
-        self.screen = Screen::Flagged;
-        self.flagged.sel = 0;
-        self.flagged_focus_last();
-    }
-
-    /// Id of the flagged unit the Flagged screen is on.
-    pub fn flagged_unit_id(&self) -> Option<String> {
-        let flagged = self.flagged_units();
-        flagged
-            .get(self.flagged.sel.min(flagged.len().saturating_sub(1)))
-            .map(|u| u.id.clone())
-    }
-
-    /// The flagged unit the Flagged screen is on.
-    pub fn flagged_unit(&self) -> Option<&Unit> {
-        let id = self.flagged_unit_id()?;
-        self.review.unit(&id)
-    }
-
-    /// The Flagged tiles of `u`, in order: the code change (when it shows),
-    /// each answer in the order it was asked for, the chat once something
-    /// was asked in it (or while it has the focus), and the tile to ask more.
-    pub fn flagged_panes(&self, u: &Unit) -> Vec<Pane> {
-        let mut panes = Vec::new();
-        if super::diff::shows(self, u) {
-            panes.push(Pane::Code);
-        }
-        panes.extend(tile_kinds(u).into_iter().map(Pane::Answer));
-        if self.flagged.pane == Pane::Chat || !self.chat_of(&u.id).is_empty() {
-            panes.push(Pane::Chat);
-        }
-        panes.push(Pane::More);
-        panes
-    }
-
-    /// The tile in focus: the one chosen, or the first when it is gone.
-    pub fn flagged_focus(&self, u: &Unit) -> Pane {
-        let panes = self.flagged_panes(u);
-        if panes.contains(&self.flagged.pane) {
-            self.flagged.pane
-        } else {
-            panes[0]
-        }
-    }
-
-    /// Give `pane` the focus; typing in the chat stops.
-    fn focus(&mut self, pane: Pane) {
-        self.flagged.pane = pane;
-        self.flagged.typing = false;
-    }
-
-    /// Give the next (or previous) tile the focus.
-    fn flagged_tile_step(&mut self, forward: bool) {
-        let Some(u) = self.flagged_unit() else {
-            return;
-        };
-        let panes = self.flagged_panes(u);
-        let n = panes.len();
-        let i = panes
-            .iter()
-            .position(|p| *p == self.flagged_focus(u))
-            .unwrap_or(0);
-        let next = if forward {
-            (i + 1) % n
-        } else {
-            (i + n - 1) % n
-        };
-        self.focus(panes[next]);
-    }
-
-    /// Another unit: the focus on its latest answer, else on its code.
-    fn flagged_focus_last(&mut self) {
-        self.flagged.zoom = false;
-        self.ask.chat_scroll.set(None);
-        if let Some(u) = self.flagged_unit() {
-            let panes = self.flagged_panes(u);
-            let last = panes
-                .iter()
-                .rev()
-                .find(|p| matches!(p, Pane::Answer(_)))
-                .unwrap_or(&panes[0]);
-            self.focus(*last);
-        }
-    }
-
-    fn flagged_action(&mut self, a: Action) -> Vec<Effect> {
-        let n = self.flagged_units().len();
-        match a {
-            Action::Down | Action::Up | Action::Top | Action::Bottom => {
-                self.flagged.sel = match a {
-                    Action::Down => (self.flagged.sel + 1).min(n.saturating_sub(1)),
-                    Action::Up => self.flagged.sel.saturating_sub(1),
-                    Action::Top => 0,
-                    _ => n.saturating_sub(1),
-                };
-                self.flagged_focus_last();
-            }
-            Action::NextTile => self.flagged_tile_step(true),
-            Action::PrevTile => self.flagged_tile_step(false),
-            Action::Zoom => self.flagged.zoom = !self.flagged.zoom,
-            Action::DiveRecommend => return self.request_dive(DiveKind::Recommend),
-            Action::DiveVisualize => return self.request_dive(DiveKind::Visualize),
-            Action::DiveBehavior => return self.request_dive(DiveKind::Behavior),
-            Action::DiveDisagree => return self.request_dive(DiveKind::Disagree),
-            Action::DiveTests => return self.request_dive(DiveKind::Tests),
-            Action::InterpretTests => return self.interpret_tests(),
-            Action::OpenVisual => return self.open_visual(),
-            Action::DiveRerun => {
-                let Some(id) = self.flagged_unit_id() else {
-                    return Vec::new();
-                };
-                // Again only the answer in focus.
-                let focus = self.flagged_unit().map(|u| self.flagged_focus(u));
-                if focus == Some(Pane::Chat) {
-                    return self.ask_chat_again();
-                }
-                let Some(Pane::Answer(kind)) = focus else {
-                    self.status = format!(
-                        "Give an answer the focus ({} {}) to ask it again.",
-                        self.keys.label(Action::PrevTile),
-                        self.keys.label(Action::NextTile)
-                    );
-                    return Vec::new();
-                };
-                self.pane_scroll
-                    .borrow_mut()
-                    .remove(&pane_key(&id, Pane::Answer(kind)));
-                if let Some(u) = self.review.unit_mut(&id) {
-                    if u.dive_pending.contains(&kind) || u.checks.second_pending {
-                        return Vec::new();
-                    }
-                    if kind == DiveKind::Disagree {
-                        u.checks.second = None;
-                        u.checks.second_failed = None;
-                    }
-                    u.dive.results.remove(&kind);
-                }
-                return self.request_dive(kind);
-            }
-            Action::ResolveOk => return self.resolve(Resolution::Ok),
-            Action::ResolveFix => return self.resolve(Resolution::NeedsFix),
-            Action::Back if self.flagged.zoom => self.flagged.zoom = false,
-            Action::Back => self.back(),
-            Action::Quit => return vec![Effect::Save, Effect::Quit],
-            _ => {}
-        }
-        Vec::new()
-    }
-
-    /// Give `kind` a tile and the focus, asking for it unless it is
-    /// answered or in flight. The first web-using ask of the session
-    /// confirms first.
-    fn request_dive(&mut self, kind: DiveKind) -> Vec<Effect> {
-        let Some(id) = self.flagged_unit_id() else {
+        let Some(id) = self.current_unit().map(|u| u.id.clone()) else {
             return Vec::new();
         };
-        let Some(u) = self.review.unit_mut(&id) else {
-            return Vec::new();
-        };
-        let mark_asked = |u: &mut Unit| {
-            if !u.dive.asked.contains(&kind) {
-                u.dive.asked.push(kind);
-            }
-        };
-        if kind == DiveKind::Disagree {
-            // The second opinion runs after the description; ask now only
-            // when there is a description and nothing is on its way.
-            if u.checks.second.is_some() || u.checks.second_pending {
-                mark_asked(u);
-                self.focus(Pane::Answer(kind));
-                return Vec::new();
-            }
-            if u.changes.is_empty() {
-                self.status = "Nothing to check yet: the unit has no description.".into();
-                return Vec::new();
-            }
-            mark_asked(u);
-            u.checks.second_pending = true;
-            self.focus(Pane::Answer(kind));
-            return vec![Effect::Second(vec![id])];
-        }
-        mark_asked(u);
-        self.focus(Pane::Answer(kind));
-        let Some(u) = self.review.unit_mut(&id) else {
+        let mut effects = self.open_unit(id);
+        effects.extend(self.unit_tool(a));
+        effects
+    }
+
+    /// Ask `kind` about unit `id` unless it is answered or in flight. The
+    /// unit view never stops to ask: the web is used once allowed (see
+    /// [`App::web_allowed`]).
+    pub(super) fn dive_on(&mut self, id: &str, kind: DiveKind) -> Vec<Effect> {
+        let web_ok = self.web_allowed();
+        let Some(u) = self.review.unit_mut(id) else {
             return Vec::new();
         };
         if u.dive.results.contains_key(&kind) || u.dive_pending.contains(&kind) {
             return Vec::new();
         }
         u.dive_pending.insert(kind);
-        // Never for a pull request: its code is untrusted, and web tools could
-        // carry text out of the machine. (The agent adapter enforces this too.)
-        let is_pr = self.review.pr.is_some();
-        if is_pr && self.cfg.dive_web && uses_web(kind) {
-            self.status =
-                "Web search is disabled for PR reviews; answering from the code alone.".into();
-        }
-        let web = self.cfg.dive_web && !is_pr;
-        if web && uses_web(kind) && !self.dive_web_ok {
-            self.dive_web_pending = Some((id, kind));
-            self.overlay = Overlay::ConfirmWeb;
-            return Vec::new();
-        }
         vec![Effect::Dive {
-            unit_id: id,
+            unit_id: id.to_string(),
             kind,
-            web,
+            web: web_ok && uses_web(kind),
         }]
     }
 
-    /// Have the agent read what the Tests search found for the flagged unit
-    /// (again, if it already has).
-    fn interpret_tests(&mut self) -> Vec<Effect> {
+    /// Have the agent read what the Tests search found for unit `id`.
+    pub(super) fn interpret_tests_on(&mut self, id: &str) -> Vec<Effect> {
         let kind = DiveKind::Tests;
-        let Some(id) = self.flagged_unit_id() else {
-            return Vec::new();
-        };
-        let Some(u) = self.review.unit_mut(&id) else {
+        let Some(u) = self.review.unit_mut(id) else {
             return Vec::new();
         };
         let searched = u
@@ -1440,7 +1291,7 @@ impl App {
         if !searched {
             self.status = format!(
                 "Nothing found yet: {} searches the tests first.",
-                self.keys.label(Action::DiveTests)
+                self.keys.label(Action::ToolTests)
             );
             return Vec::new();
         }
@@ -1448,13 +1299,14 @@ impl App {
             return Vec::new();
         }
         u.dive_pending.insert(kind);
-        self.focus(Pane::Answer(kind));
-        vec![Effect::InterpretTests { unit_id: id }]
+        vec![Effect::InterpretTests {
+            unit_id: id.to_string(),
+        }]
     }
 
-    /// Open the selected unit's picture, or say how to draw one.
-    fn open_visual(&mut self) -> Vec<Effect> {
-        let Some(u) = self.flagged_unit() else {
+    /// Open the picture of the unit on show, or say how to draw one.
+    pub(super) fn open_visual(&mut self) -> Vec<Effect> {
+        let Some(u) = self.current_unit() else {
             return Vec::new();
         };
         let drawn = u
@@ -1465,7 +1317,7 @@ impl App {
         if !drawn {
             self.status = format!(
                 "No picture yet: press {} to draw one.",
-                self.keys.label(Action::DiveVisualize)
+                self.keys.label(Action::ToolDiagram)
             );
             return Vec::new();
         }
@@ -1474,545 +1326,63 @@ impl App {
         }]
     }
 
-    /// The answer to the web confirmation.
-    fn answer_web(&mut self, yes: bool) -> Vec<Effect> {
-        let Some((id, kind)) = self.dive_web_pending.take() else {
+    /// Keys while the note line is open, a text input ([`Keymap::edit`]):
+    /// every letter is text, `enter` saves, `esc` closes it and keeps the
+    /// note as it was. Saving marks the note as written on the code as it
+    /// is now; an empty note is no note.
+    fn note_key(&mut self, k: KeyEvent) -> Vec<Effect> {
+        let Overlay::Note { id, mut text, back } = self.overlay.clone() else {
             return Vec::new();
         };
-        if yes {
-            self.dive_web_ok = true;
-            return vec![Effect::Dive {
-                unit_id: id,
-                kind,
-                web: true,
-            }];
-        }
-        if let Some(u) = self.review.unit_mut(&id) {
-            u.dive_pending.remove(&kind);
-            if !u.dive.results.contains_key(&kind) {
-                u.dive.asked.retain(|k| *k != kind);
-            }
-        }
-        self.status = "Web search not allowed; question not asked.".into();
-        Vec::new()
-    }
-
-    /// Set the selected unit's resolution; pressing the same one clears it.
-    fn resolve(&mut self, r: Resolution) -> Vec<Effect> {
-        let Some(id) = self.flagged_unit_id() else {
-            return Vec::new();
-        };
-        let Some(u) = self.review.unit_mut(&id) else {
-            return Vec::new();
-        };
-        u.dive.resolution = if u.dive.resolution == Some(r) {
-            None
-        } else {
-            Some(r)
-        };
-        vec![Effect::Save]
-    }
-
-    /// Can the PR be approved from here: a `teer pr` review whose head has
-    /// not been approved yet.
-    pub fn can_approve(&self) -> bool {
-        self.review.pr.as_ref().is_some_and(|p| !p.is_approved()) && !self.approving
-    }
-
-    /// A review of the PR can be posted now: nothing is being posted.
-    pub fn can_post(&self) -> bool {
-        self.review.pr.is_some() && !self.approving
-    }
-
-    /// The verdicts the post confirmation offers, in the order `v` goes
-    /// through them: approving only once everything was reviewed.
-    pub fn verdicts(&self) -> Vec<Verdict> {
-        let mut v = Vec::new();
-        if self.can_approve() && self.all_reviewed() {
-            v.push(Verdict::Approve);
-        }
-        v.extend([Verdict::RequestChanges, Verdict::Comment]);
-        v
-    }
-
-    /// Open the confirmation for posting a review with `verdict`: `a` in the
-    /// all-reviewed popup approves, `p` in the notes requests changes.
-    fn ask_post(&mut self, verdict: Verdict) {
-        if !self.can_post() || (verdict == Verdict::Approve && !self.can_approve()) {
-            return;
-        }
-        let Some(pr) = self.review.pr.as_ref() else {
-            return;
-        };
-        if pr.remote.is_none() || pr.head_sha.is_none() || pr.repo_dir.is_none() {
-            self.status = format!(
-                "Can't post to PR #{}: teer doesn't know its remote or head.",
-                pr.number
-            );
-            return;
-        }
-        let notes = approve::collect_notes(&self.review, &self.order);
-        self.overlay = Overlay::PostReview {
-            verdict,
-            notes,
-            intro: approve::intro_for(&self.review),
-            inline_on: true,
-            scroll: 0,
-            editing: None,
-        };
-    }
-
-    /// Keys while the post confirmation is open. Only the keys below do
-    /// anything; ctrl+c is handled before.
-    #[allow(clippy::too_many_arguments)]
-    fn post_key(
-        &mut self,
-        verdict: Verdict,
-        notes: Vec<NoteEntry>,
-        mut intro: String,
-        mut inline_on: bool,
-        mut scroll: usize,
-        editing: Option<String>,
-        k: KeyEvent,
-    ) -> Vec<Effect> {
-        let put = |app: &mut App, notes, intro, inline_on, scroll, editing| {
-            app.overlay = Overlay::PostReview {
-                verdict,
-                notes,
-                intro,
-                inline_on,
-                scroll,
-                editing,
-            };
-        };
-        if let Some(mut text) = editing {
-            match k.code {
-                KeyCode::Esc => put(self, notes, intro, inline_on, scroll, None),
-                KeyCode::Enter => {
-                    let t = approve::clamp_text(&text.replace('\n', " "), approve::BODY_MAX_CHARS);
-                    if !t.trim().is_empty() {
-                        intro = t.trim().to_string();
-                    }
-                    put(self, notes, intro, inline_on, scroll, None);
-                }
-                KeyCode::Backspace => {
-                    text.pop();
-                    put(self, notes, intro, inline_on, scroll, Some(text));
-                }
-                KeyCode::Char(c)
-                    if !c.is_control()
-                        && !k
-                            .modifiers
-                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    if text.chars().count() < approve::BODY_MAX_CHARS {
-                        text.push(c);
-                    }
-                    put(self, notes, intro, inline_on, scroll, Some(text));
-                }
-                _ => put(self, notes, intro, inline_on, scroll, Some(text)),
-            }
-            return Vec::new();
-        }
-        let max = self.approve_max_scroll.get();
-        match k.code {
-            KeyCode::Esc => {
-                self.overlay = Overlay::None;
-                return Vec::new();
-            }
-            KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
-                self.overlay = Overlay::None;
-                let Some(pr) = self.review.pr.clone() else {
-                    return Vec::new();
-                };
-                if !self.verdicts().contains(&verdict) || !self.can_post() {
-                    return Vec::new();
-                }
-                let plan = approve::build_plan(&notes, &intro, inline_on);
-                let flat_body = approve::build_plan(&notes, &intro, false).body;
-                self.approving = true;
-                self.status = format!("{} on GitHub…", verdict.doing(pr.number));
-                return vec![Effect::PostReview {
-                    pr: Box::new(pr),
-                    verdict,
-                    body: plan.body,
-                    inline: plan.inline,
-                    flat_body,
-                }];
-            }
-            KeyCode::Char('e' | 'E') => {
-                let text = intro.clone();
-                put(self, notes, intro, inline_on, scroll, None);
-                return vec![Effect::EditComment { text }];
-            }
-            KeyCode::Char('i' | 'I') => inline_on = !inline_on,
-            KeyCode::Char('v' | 'V') => {
-                let all = self.verdicts();
-                let at = all.iter().position(|v| *v == verdict).map_or(0, |i| i + 1);
-                self.overlay = Overlay::PostReview {
-                    verdict: all[at % all.len()],
-                    notes,
-                    intro,
-                    inline_on,
-                    scroll,
-                    editing: None,
-                };
-                return Vec::new();
-            }
-            KeyCode::Down => scroll = (scroll + 1).min(max),
-            KeyCode::Up => scroll = scroll.saturating_sub(1),
-            KeyCode::PageDown => scroll = (scroll + 8).min(max),
-            KeyCode::PageUp => scroll = scroll.saturating_sub(8),
-            _ => {}
-        }
-        put(self, notes, intro, inline_on, scroll, None);
-        Vec::new()
-    }
-
-    // ---- Committing -------------------------------------------------------
-
-    /// Can the reviewed changes be committed from here: a plain review of
-    /// uncommitted changes (not `teer pr`, not `--base`) not yet committed.
-    pub fn can_commit(&self) -> bool {
-        self.review.pr.is_none()
-            && self.review.head == crate::git::WORKTREE
-            && self.committed.is_none()
-    }
-
-    /// `c` in the all-reviewed popup: open the commit confirmation with a
-    /// template message, and ask the agent for a better one.
-    fn ask_commit(&mut self) -> Vec<Effect> {
-        if !self.can_commit() {
-            return Vec::new();
-        }
-        if !self.all_reviewed() {
-            self.status = "Not everything is accepted yet; nothing to commit.".into();
-            return Vec::new();
-        }
-        let paths = match commit::reviewed_paths(&self.review) {
-            Ok(p) => p,
-            Err(why) => {
-                self.status = why;
-                return Vec::new();
-            }
-        };
-        if paths.is_empty() {
-            self.status = "Nothing to commit: the review has no files.".into();
-            return Vec::new();
-        }
-        let repo = self.review.repo_root.clone();
-        let message = commit::template_message(
-            &commit::file_names(&self.review),
-            &commit::accepted_summaries(&self.review, &self.order),
-        );
-        let ask = self.can_ask();
-        self.overlay = Overlay::Commit {
-            message,
-            draft: if ask {
-                DraftState::Pending
-            } else {
-                DraftState::Template
-            },
-            scroll: 0,
-            editing: None,
-            branch: commit::current_branch(&repo),
-            others: commit::other_changed(&repo, &paths),
-        };
-        if ask {
-            vec![Effect::DraftCommitMessage(Box::new(commit::draft_input(
-                &self.review,
-                &self.order,
-            )))]
-        } else {
-            self.status = "No agent to draft a message; using the template. e edits it.".into();
-            Vec::new()
-        }
-    }
-
-    /// Keys while the commit confirmation is open. Only the keys below do
-    /// anything; ctrl+c is handled before.
-    fn commit_key(&mut self, k: KeyEvent) -> Vec<Effect> {
-        enum Act {
-            Stay,
-            Close,
-            Commit,
-            Edit(String),
-        }
-        let max = self.commit_max_scroll.get();
-        let Overlay::Commit {
-            message,
-            draft,
-            scroll,
-            editing,
-            ..
-        } = &mut self.overlay
-        else {
-            return Vec::new();
-        };
-        if let Some(text) = editing.as_mut() {
-            match k.code {
-                KeyCode::Esc => *editing = None,
-                KeyCode::Enter => {
-                    let line: String = text.chars().filter(|c| !c.is_control()).collect();
-                    let line = line.trim();
-                    if !line.is_empty() {
-                        let body = message.split_once("\n\n").map(|(_, b)| b.to_string());
-                        let new = match body {
-                            Some(b) => format!("{line}\n\n{b}"),
-                            None => line.to_string(),
-                        };
-                        *message = commit::normalize_message(&new);
-                    }
-                    *draft = DraftState::Edited;
-                    *editing = None;
-                }
-                KeyCode::Backspace => {
-                    text.pop();
-                }
-                KeyCode::Char(c)
-                    if !c.is_control()
-                        && !k
-                            .modifiers
-                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                        && text.chars().count() < commit::SUBJECT_MAX * 2 =>
-                {
-                    text.push(c);
-                }
-                _ => {}
-            }
-            return Vec::new();
-        }
-        let act = match k.code {
-            KeyCode::Esc => Act::Close,
-            KeyCode::Enter | KeyCode::Char('y' | 'Y') => Act::Commit,
-            KeyCode::Char('e' | 'E') => {
-                *draft = DraftState::Edited;
-                Act::Edit(message.clone())
-            }
-            KeyCode::Down => {
-                *scroll = (*scroll + 1).min(max);
-                Act::Stay
-            }
-            KeyCode::Up => {
-                *scroll = scroll.saturating_sub(1);
-                Act::Stay
-            }
-            KeyCode::PageDown => {
-                *scroll = (*scroll + 8).min(max);
-                Act::Stay
-            }
-            KeyCode::PageUp => {
-                *scroll = scroll.saturating_sub(8);
-                Act::Stay
-            }
-            _ => Act::Stay,
-        };
-        match act {
-            Act::Stay => Vec::new(),
-            Act::Close => {
-                self.overlay = Overlay::None;
-                Vec::new()
-            }
-            Act::Commit => self.commit_now(),
-            Act::Edit(text) => vec![Effect::EditComment { text }],
-        }
-    }
-
-    /// `y`: check that nothing changed since the review, then commit. A
-    /// refusal closes the overlay (the reason is in the status line) and runs
-    /// no git command that changes anything.
-    fn commit_now(&mut self) -> Vec<Effect> {
-        let Overlay::Commit { message, draft, .. } = &mut self.overlay else {
-            return Vec::new();
-        };
-        // What the user is about to commit is final: a late draft must not replace it.
-        *draft = DraftState::Edited;
-        let message = commit::normalize_message(message);
-        if !self.can_commit() {
-            self.overlay = Overlay::None;
-            return Vec::new();
-        }
-        if message.is_empty() {
-            self.status = "The commit message is empty. Press e to write one.".into();
-            return Vec::new();
-        }
-        match commit::check(&self.review) {
-            Err(refusal) => {
-                self.overlay = Overlay::None;
-                self.status = refusal.text(&self.keys.label(Action::Rerun));
-                Vec::new()
-            }
-            Ok(paths) => {
-                self.status = "Committing…".into();
-                vec![Effect::Commit {
-                    repo: self.review.repo_root.clone(),
-                    paths,
-                    message,
-                }]
-            }
-        }
-    }
-
-    /// git finished (see `Effect::Commit`).
-    pub fn commit_finished(&mut self, outcome: commit::Outcome) -> Vec<Effect> {
-        match outcome {
-            commit::Outcome::Committed { short } => {
-                let subject = match &self.overlay {
-                    Overlay::Commit { message, .. } => commit::subject_of(message).to_string(),
-                    _ => String::new(),
-                };
-                self.status = format!("Committed {short}: {subject}");
-                self.committed = Some(short);
-                // The review is stale now: the popup says so and offers quit.
-                self.overlay = Overlay::AllDone;
-            }
-            commit::Outcome::Failed { code, output } => {
-                // The overlay stays open for a retry or an edit.
-                self.status = commit::failure_status(code, &output);
-            }
-            commit::Outcome::Refused(why) => {
-                self.status = approve::tidy_output(&why);
-            }
-        }
-        Vec::new()
-    }
-
-    /// The agent's draft arrived. It never replaces text the user has touched.
-    fn commit_drafted(&mut self, r: Result<String, String>) {
-        let Overlay::Commit { message, draft, .. } = &mut self.overlay else {
-            return;
-        };
-        if *draft != DraftState::Pending {
-            return;
-        }
-        match r {
-            Ok(m) if !commit::normalize_message(&m).is_empty() => {
-                *message = commit::normalize_message(&m);
-                *draft = DraftState::Drafted;
-                self.status = "Drafted a commit message. e edits it.".into();
-            }
-            Ok(_) => {
-                *draft = DraftState::Template;
-                self.status = "The agent's draft was empty; kept the template message.".into();
-            }
-            Err(why) => {
-                *draft = DraftState::Template;
-                self.status = format!(
-                    "Couldn't draft a message ({}); kept the template.",
-                    approve::tidy_output(&why)
-                );
-            }
-        }
-    }
-
-    /// The external editor finished (or could not start) for the commit message.
-    fn commit_edited(&mut self, outcome: EditOutcome) {
-        let Overlay::Commit {
-            message,
-            draft,
-            editing,
-            ..
-        } = &mut self.overlay
-        else {
-            return;
-        };
-        *draft = DraftState::Edited;
-        match outcome {
-            EditOutcome::Edited(t) => {
-                let t = commit::normalize_message(&t);
-                if !t.is_empty() {
-                    *message = t;
-                }
-            }
-            EditOutcome::Cancelled => {}
-            EditOutcome::Unavailable(why) => {
-                *editing = Some(commit::subject_of(message).to_string());
-                self.status = format!(
-                    "Couldn't start the editor ({}); editing the subject on one line.",
-                    approve::tidy_output(&why)
-                );
-            }
-        }
-    }
-
-    /// The external editor finished (or could not start) for the approval summary.
-    pub fn comment_edited(&mut self, outcome: EditOutcome) {
-        if matches!(self.overlay, Overlay::Commit { .. }) {
-            self.commit_edited(outcome);
-            return;
-        }
-        let Overlay::PostReview {
-            verdict,
-            notes,
-            intro,
-            inline_on,
-            scroll,
-            ..
-        } = self.overlay.clone()
-        else {
-            return;
-        };
-        let (intro, editing) = match outcome {
-            EditOutcome::Edited(t) if !t.trim().is_empty() => (t, None),
-            EditOutcome::Edited(_) | EditOutcome::Cancelled => (intro, None),
-            EditOutcome::Unavailable(why) => {
-                self.status = format!(
-                    "Couldn't start the editor ({}); editing on one line.",
-                    approve::tidy_output(&why)
-                );
-                let flat = intro.replace('\n', " ");
-                (intro, Some(flat))
-            }
-        };
-        self.overlay = Overlay::PostReview {
-            verdict,
-            notes,
-            intro,
-            inline_on,
-            scroll,
-            editing,
-        };
-    }
-
-    /// Keys while the note editor is open: raw text, Backspace, Enter, Esc.
-    /// Saving marks the note as written on the code as it is now; an empty
-    /// note is no note.
-    fn note_key(
-        &mut self,
-        id: String,
-        mut text: String,
-        back: Option<usize>,
-        k: KeyEvent,
-    ) -> Vec<Effect> {
         let after = back.map_or(Overlay::None, |sel| Overlay::Notes { sel });
-        match k.code {
-            KeyCode::Esc => self.overlay = after,
-            KeyCode::Enter => {
+        match self.keys.edit(&k) {
+            Edit::Cancel => self.overlay = after,
+            Edit::Submit => {
                 self.overlay = after;
                 let note: String = text.chars().filter(|c| !c.is_control()).collect();
                 let note: String = note.trim().chars().take(NOTE_MAX).collect();
-                if let Some(u) = self.review.unit_mut(&id) {
-                    u.dive.note_on = (!note.is_empty()).then(|| u.fingerprint.clone());
-                    u.dive.note = note;
-                    if crate::notes::noted(&self.review).is_empty() {
-                        self.overlay = Overlay::None;
-                    }
-                    return vec![Effect::Save];
+                if !self.write_note(&id, &note) {
+                    return Vec::new();
                 }
+                if crate::notes::noted(&self.review).is_empty() {
+                    self.overlay = Overlay::None;
+                }
+                return vec![Effect::Save];
             }
-            _ => {
-                if typed(&mut text, &k, NOTE_MAX) {
-                    self.overlay = Overlay::Note { id, text, back };
+            e => {
+                if typed(&mut text, e, NOTE_MAX)
+                    && let Overlay::Note { text: line, .. } = &mut self.overlay
+                {
+                    *line = text;
                 }
             }
         }
         Vec::new()
+    }
+
+    /// Put `text` as the note on unit `id`, written on its code as it is
+    /// now. Whether the unit is there.
+    fn write_note(&mut self, id: &str, text: &str) -> bool {
+        let Some(u) = self.review.unit_mut(id) else {
+            return false;
+        };
+        u.dive.note_on = (!text.is_empty()).then(|| u.fingerprint.clone());
+        u.dive.note = text.to_string();
+        true
+    }
+
+    /// Set the note on unit `id` back to `note` (undo, redo).
+    fn put_note(&mut self, id: &str, note: &Note) {
+        if let Some(u) = self.review.unit_mut(id) {
+            u.dive.note = note.text.clone();
+            u.dive.note_on = note.on.clone();
+        }
     }
 
     // ---- Notes ------------------------------------------------------------
 
     /// Open the note editor on unit `id`, with its note.
-    fn edit_note(&mut self, id: String, back: Option<usize>) {
+    pub(super) fn edit_note(&mut self, id: String, back: Option<usize>) {
         let text = self
             .review
             .unit(&id)
@@ -2027,7 +1397,7 @@ impl App {
         if noted.is_empty() {
             self.status = format!(
                 "No notes yet: {} writes one on the unit on show.",
-                self.keys.label(Action::EditNote)
+                self.keys.label(Action::NoteEdit)
             );
             return;
         }
@@ -2039,10 +1409,11 @@ impl App {
         self.overlay = Overlay::Notes { sel };
     }
 
-    /// Keys of the notes view: move with j/k, `enter` goes to the unit, the
-    /// note key edits its note, `d` deletes it; `y` copies every note, `c`
-    /// hands them to Claude Code, `p` posts them on the PR; `esc` (or `q`,
-    /// the notes key) closes.
+    /// Keys of the notes view, a panel ([`App::panel_action`]): move with
+    /// `j`/`k`/`gg`/`G`, `view.open` goes to the unit, `note.edit` edits its
+    /// note, `note.delete` deletes it (after asking); `finish.yank` copies
+    /// every note; `finish.open`, `v1.notes_to_agent` and `v1.notes_post`
+    /// open the `:w` sheet; `view.back`, `view.close` or `tool.notes` closes.
     fn notes_key(&mut self, sel: usize, k: KeyEvent) -> Vec<Effect> {
         let ids: Vec<String> = crate::notes::noted(&self.review)
             .iter()
@@ -2054,146 +1425,100 @@ impl App {
         }
         let last = ids.len() - 1;
         let mut sel = sel.min(last);
-        let is = |a: Action| self.keys.is(a, &k);
-        if k.code == KeyCode::Down || is(Action::Down) {
-            sel = (sel + 1).min(last);
-        } else if k.code == KeyCode::Up || is(Action::Up) {
-            sel = sel.saturating_sub(1);
-        } else if k.code == KeyCode::Home || is(Action::Top) {
-            sel = 0;
-        } else if k.code == KeyCode::End || is(Action::Bottom) {
-            sel = last;
-        } else if k.code == KeyCode::Enter {
-            self.overlay = Overlay::None;
-            return self.go_to_unit(&ids[sel], true).unwrap_or_default();
-        } else if is(Action::EditNote) {
-            self.edit_note(ids[sel].clone(), Some(sel));
+        let Some(a) = self.panel_action(&k) else {
+            self.overlay = Overlay::Notes { sel };
             return Vec::new();
-        } else if k.code == KeyCode::Char('d') {
-            self.overlay = Overlay::ConfirmDeleteNote {
-                id: ids[sel].clone(),
-                sel,
-            };
-            return Vec::new();
-        } else if k.code == KeyCode::Char('y') {
-            let what = match ids.len() {
-                1 => "1 note as Markdown".to_string(),
-                n => format!("{n} notes as Markdown"),
-            };
-            self.overlay = Overlay::Notes { sel };
-            return vec![Effect::Copy {
-                text: crate::notes::markdown(&self.review),
-                what,
-            }];
-        } else if k.code == KeyCode::Char('c') {
-            self.overlay = Overlay::Notes { sel };
-            return self.notes_to_agent();
-        } else if k.code == KeyCode::Char('p') {
-            self.overlay = Overlay::Notes { sel };
-            if self.review.pr.is_none() {
-                self.status = "Posting is for a pull request (teer pr).".into();
-            } else if self.can_post() {
-                self.ask_post(Verdict::RequestChanges);
+        };
+        match a {
+            Action::MoveDown => sel = (sel + 1).min(last),
+            Action::MoveUp => sel = sel.saturating_sub(1),
+            Action::MoveFirst => sel = 0,
+            Action::MoveLast => sel = last,
+            Action::ViewOpen => {
+                self.overlay = Overlay::None;
+                return self.go_to_unit(&ids[sel]).unwrap_or_default();
             }
-            return Vec::new();
-        } else if k.code == KeyCode::Esc
-            || is(Action::Back)
-            || is(Action::Quit)
-            || is(Action::Notes)
-        {
-            self.overlay = Overlay::None;
-            return Vec::new();
+            Action::NoteEdit => {
+                self.edit_note(ids[sel].clone(), Some(sel));
+                return Vec::new();
+            }
+            Action::NoteDelete => {
+                self.overlay = Overlay::ConfirmDeleteNote {
+                    id: ids[sel].clone(),
+                    sel,
+                };
+                return Vec::new();
+            }
+            Action::FinishYank => {
+                self.overlay = Overlay::Notes { sel };
+                return self.yank_notes();
+            }
+            // The ways out of teer are the `:w` sheet's.
+            Action::FinishOpen => return self.open_finish(),
+            Action::HelpOpen => {
+                self.open_help();
+                return Vec::new();
+            }
+            Action::ViewBack | Action::ViewClose | Action::ToolNotes => {
+                self.overlay = Overlay::None;
+                return Vec::new();
+            }
+            _ => {}
         }
         self.overlay = Overlay::Notes { sel };
         Vec::new()
     }
 
-    /// Hand the notes to the agent CLI in the repository, as the first
-    /// message of a session: a fork of the review's Claude Code session when
-    /// there is one. Not for a pull request: its code is untrusted, and the
-    /// session could change files and run commands. Not with a model API,
-    /// which has no session to hand over to.
-    fn notes_to_agent(&mut self) -> Vec<Effect> {
-        if self.review.pr.is_some() {
-            self.status =
-                "Not for a pull request: its code is untrusted. y copies the notes, p posts them on the PR."
-                    .into();
-            return Vec::new();
+    /// Go to unit `id`, closing any overlay: in the unit view or the
+    /// flagged list, it opens in the unit view; in the queue, the cursor
+    /// goes to it. `None` when the queue doesn't list it.
+    pub(super) fn go_to_unit(&mut self, id: &str) -> Option<Vec<Effect>> {
+        if self.screen != Screen::Queue && self.review.unit(id).is_some() {
+            self.overlay = Overlay::None;
+            return Some(self.open_unit(id.to_string()));
         }
-        let cli = self.cfg.provider();
-        if cli.program().is_none() {
-            self.status =
-                "Handing over needs Claude Code or Codex (teer setup). y copies the notes.".into();
-            return Vec::new();
-        }
-        let prompt = crate::notes::agent_prompt(&self.review);
-        // Only Claude Code has sessions to fork.
-        let session = (self.review.agent_session.as_ref())
-            .filter(|s| !s.is_fresh() && cli == Provider::Claude);
-        // Claude Code finds a session by the directory it was started in.
-        let cwd = session.map_or(self.review.repo_root.clone(), |s| s.cwd.clone());
-        let resume = session.map(|s| s.id.clone());
+        let pos = self.position_of(id)?;
         self.overlay = Overlay::None;
-        vec![Effect::OpenAgent {
-            cli,
-            cwd,
-            prompt,
-            resume,
-        }]
-    }
-
-    /// Go to unit `id`: on the Flagged screen when it is flagged there and
-    /// `stay` allows, else in the list, closing any overlay. `None` when the
-    /// list doesn't have it.
-    fn go_to_unit(&mut self, id: &str, stay: bool) -> Option<Vec<Effect>> {
-        if stay
-            && self.screen == Screen::Flagged
-            && let Some(sel) = self.flagged_units().iter().position(|u| u.id == id)
-        {
-            self.flagged.sel = sel;
-            self.flagged_focus_last();
-            return Some(Vec::new());
-        }
-        let pos = self
-            .order
-            .iter()
-            .position(|&u| self.review.units[u].id == id)?;
-        self.overlay = Overlay::None;
-        if self.screen != Screen::Slim {
-            self.return_to.clear();
-            self.screen = Screen::Slim;
-        }
         Some(self.move_sel(pos))
     }
 
     /// Select the unit at `to`.
-    fn move_sel(&mut self, to: usize) -> Vec<Effect> {
+    pub(super) fn move_sel(&mut self, to: usize) -> Vec<Effect> {
         self.sel = to.min(self.order.len().saturating_sub(1));
         self.ensure_prepared()
     }
 
-    fn slim_action(&mut self, a: Action) -> Vec<Effect> {
+    /// The queue's actions: moves, `a`/`f` (then on to the next pending
+    /// unit), `A`/`F` on the file's pending units at once, `V`, `l` into
+    /// the unit view on any unit, `zf`, and `q` to quit (the review is
+    /// saved, cursor and all).
+    pub(super) fn queue_action(&mut self, a: Action, count: Option<u32>) -> Vec<Effect> {
+        let times = count.unwrap_or(1) as usize;
         match a {
-            Action::Down => return self.move_row(1),
-            Action::Up => return self.move_row(-1),
-            Action::Top => return self.move_row(isize::MIN / 2),
-            Action::Bottom => return self.move_row(isize::MAX / 2),
-            Action::Swipe => {
-                self.enter_swipe();
-                return self.prepare_cards();
+            Action::MoveDown => return self.move_row(times as isize),
+            Action::MoveUp => return self.move_row(-(times as isize)),
+            // `3gg`, `3G`: the third row, as Neovim's line numbers.
+            Action::MoveFirst | Action::MoveLast if count.is_some() => {
+                return self.move_sel(times.saturating_sub(1));
             }
-            Action::Accept => return self.decide(Decision::Accepted),
-            Action::Investigate => return self.decide(Decision::Investigate),
-            Action::Flagged => self.start_flagged(),
-            Action::Undo => return self.undo(),
-            Action::NextPending => return self.jump_pending(true),
-            Action::PrevPending => return self.jump_pending(false),
-            Action::NextGroup => return self.jump_file(true),
-            Action::PrevGroup => return self.jump_file(false),
-            Action::AcceptFile => self.ask_accept_file(),
-            Action::Grouping => self.switch_grouping(),
-            Action::Commits => self.open_commits(),
-            Action::Quit => return vec![Effect::Save, Effect::Quit],
+            Action::MoveFirst => return self.move_row(isize::MIN / 2),
+            Action::MoveLast => return self.move_row(isize::MAX / 2),
+            Action::DecideAccept => return self.decide_n(Decision::Accepted, count),
+            Action::DecideFlag => return self.decide_n(Decision::Investigate, count),
+            Action::DecideAcceptFile => return self.decide_file_now(Decision::Accepted),
+            Action::DecideFlagFile => return self.decide_file_now(Decision::Investigate),
+            Action::VisualStart => self.visual = self.selected_id(),
+            Action::ViewOpen => {
+                if let Some(id) = self.selected_id() {
+                    return self.open_unit(id);
+                }
+            }
+            Action::MoveNextPending => return self.jump_pending(true, times),
+            Action::MovePrevPending => return self.jump_pending(false, times),
+            Action::MoveNextFile => return self.jump_file(true, times),
+            Action::MovePrevFile => return self.jump_file(false, times),
+            Action::ToggleByFile => self.switch_grouping(),
+            Action::ViewClose => return vec![Effect::Save, Effect::Quit],
             _ => {}
         }
         Vec::new()
@@ -2225,83 +1550,51 @@ impl App {
             .collect()
     }
 
-    /// Keys of the commits view: move through the commits, `enter` (or
-    /// `tab`, `→`) into the units the selected one changed, `enter` on one
-    /// goes to it in the list; `esc` (or `←`, `tab`) back, `esc` again or
-    /// `q` closes.
+    /// Keys of the commits view, a panel ([`App::panel_action`]): move
+    /// through the commits, `view.open` into the units the selected one
+    /// changed, `view.open` on one goes to it; `view.back` back out,
+    /// `view.back` again, `view.close` or `tool.history` closes.
     fn commits_key(&mut self, mut sel: usize, mut unit: Option<usize>, k: KeyEvent) -> Vec<Effect> {
+        let Some(a) = self.panel_action(&k) else {
+            return Vec::new();
+        };
+        if matches!(a, Action::ViewClose | Action::ToolHistory) {
+            self.overlay = Overlay::None;
+            return Vec::new();
+        }
         let n = self.review.intent.commits.len();
         let units = self.commit_units(sel);
-        let is = |a: Action| self.keys.is(a, &k);
-        let down = k.code == KeyCode::Down || is(Action::Down);
-        let up = k.code == KeyCode::Up || is(Action::Up);
-        let close = is(Action::Quit) || is(Action::Commits);
-        match unit {
-            None => {
-                if down {
-                    sel = (sel + 1).min(n.saturating_sub(1));
-                } else if up {
-                    sel = sel.saturating_sub(1);
-                } else if k.code == KeyCode::Home || is(Action::Top) {
-                    sel = 0;
-                } else if k.code == KeyCode::End || is(Action::Bottom) {
-                    sel = n.saturating_sub(1);
-                } else if matches!(k.code, KeyCode::Enter | KeyCode::Tab | KeyCode::Right) {
-                    unit = (!units.is_empty()).then_some(0);
-                } else if close || k.code == KeyCode::Esc || is(Action::Back) {
+        match (unit, a) {
+            (None, Action::MoveDown) => sel = (sel + 1).min(n.saturating_sub(1)),
+            (None, Action::MoveUp) => sel = sel.saturating_sub(1),
+            (None, Action::MoveFirst) => sel = 0,
+            (None, Action::MoveLast) => sel = n.saturating_sub(1),
+            (None, Action::ViewOpen) => {
+                unit = (!units.is_empty()).then_some(0);
+            }
+            (None, Action::ViewBack) => {
+                self.overlay = Overlay::None;
+                return Vec::new();
+            }
+            (Some(i), Action::MoveDown) => unit = Some((i + 1).min(units.len().saturating_sub(1))),
+            (Some(i), Action::MoveUp) => unit = Some(i.saturating_sub(1)),
+            (Some(_), Action::MoveFirst) => unit = Some(0),
+            (Some(_), Action::MoveLast) => unit = Some(units.len().saturating_sub(1)),
+            (Some(i), Action::ViewOpen) => {
+                if let Some(&pos) = units.get(i) {
+                    let id = self.review.units[self.order[pos]].id.clone();
                     self.overlay = Overlay::None;
-                    return Vec::new();
+                    return self.go_to_unit(&id).unwrap_or_default();
                 }
             }
-            Some(i) => {
-                if down {
-                    unit = Some((i + 1).min(units.len().saturating_sub(1)));
-                } else if up {
-                    unit = Some(i.saturating_sub(1));
-                } else if k.code == KeyCode::Enter {
-                    if let Some(&pos) = units.get(i) {
-                        self.overlay = Overlay::None;
-                        return self.move_sel(pos);
-                    }
-                } else if matches!(k.code, KeyCode::Esc | KeyCode::Left | KeyCode::Tab)
-                    || is(Action::Back)
-                {
-                    unit = None;
-                } else if close {
-                    self.overlay = Overlay::None;
-                    return Vec::new();
-                }
-            }
+            (Some(_), Action::ViewBack) => unit = None,
+            _ => {}
         }
         self.overlay = Overlay::Commits { sel, unit };
         Vec::new()
     }
 
     // ---- Ask --------------------------------------------------------------
-
-    /// Open the Ask view, typing, at the end of the conversation.
-    fn open_ask(&mut self) {
-        self.overlay = Overlay::Ask;
-        self.ask.link = None;
-        self.ask.scroll.set(None);
-    }
-
-    /// The unit "this" means in a question: the one on show.
-    fn ask_context(&self) -> Option<String> {
-        self.current_unit().map(|u| u.id.clone())
-    }
-
-    /// The questions of the conversation on show, by index: the flagged
-    /// unit's chat on the Flagged screen, else all of them (the Ask view).
-    pub fn talk(&self) -> Vec<usize> {
-        if self.overlay != Overlay::Ask
-            && self.screen == Screen::Flagged
-            && let Some(id) = self.flagged_unit_id()
-        {
-            return self.chat_of(&id);
-        }
-        (0..self.review.questions.len()).collect()
-    }
 
     /// The questions about unit `id`, by index, oldest first: its chat.
     pub fn chat_of(&self, id: &str) -> Vec<usize> {
@@ -2312,12 +1605,12 @@ impl App {
             .collect()
     }
 
-    /// The links of the conversation on show ([`App::talk`]) in the order
-    /// they are drawn, with the question each belongs to: per answer, the
-    /// related units that are in the list, then the code it shows.
+    /// The links of the unit view's conversation in the order they are
+    /// drawn, with the question each belongs to: per answer, the related
+    /// units that are in the list, then the code it shows.
     pub fn ask_links(&self) -> Vec<(usize, AskLink)> {
         let mut out = Vec::new();
-        for n in self.talk() {
+        for n in self.chat_of(&self.unit.id) {
             // An answer being written takes the old one's place.
             if self.live_text(n).is_some() {
                 continue;
@@ -2363,112 +1656,25 @@ impl App {
             .collect()
     }
 
-    /// Keys of the Ask view. Typing: letters go into the question, `enter`
-    /// asks it, `ctrl+r` asks the last question again, `ctrl+u` clears,
-    /// `tab` moves to the links, `esc` closes. On the links: `↑ ↓ j k` move,
-    /// `enter` follows (a unit: to it in the list; code: the editor),
-    /// `tab` `esc` `/` go back to typing. `↑ ↓` (typing) and PageUp PageDown
-    /// scroll.
-    fn ask_key(&mut self, k: KeyEvent) -> Vec<Effect> {
-        const PAGE: isize = 10;
-        match k.code {
-            KeyCode::PageDown => return self.ask_scroll(PAGE),
-            KeyCode::PageUp => return self.ask_scroll(-PAGE),
-            _ => {}
-        }
-        if let Some(i) = self.ask.link {
-            let n = self.ask_links().len();
-            match k.code {
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.ask.link = Some((i + 1).min(n.saturating_sub(1)));
-                }
-                KeyCode::Up | KeyCode::Char('k') => self.ask.link = Some(i.saturating_sub(1)),
-                KeyCode::Enter => return self.follow_ask_link(i),
-                KeyCode::Esc | KeyCode::Tab | KeyCode::Char('/') => self.ask.link = None,
-                _ => {}
-            }
-            return Vec::new();
-        }
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        match k.code {
-            KeyCode::Esc => self.overlay = Overlay::None,
-            KeyCode::Enter => return self.send_question(),
-            KeyCode::Tab => {
-                // The newest answer's first link.
-                let links = self.ask_links();
-                let newest = links.last().map(|(q, _)| *q);
-                self.ask.link = links.iter().position(|(q, _)| Some(*q) == newest);
-            }
-            KeyCode::Down => return self.ask_scroll(SCROLL_STEP),
-            KeyCode::Up => return self.ask_scroll(-SCROLL_STEP),
-            KeyCode::Char('r') if ctrl => {
-                return match self.review.questions.len() {
-                    0 => Vec::new(),
-                    n => self.ask_question(n - 1),
-                };
-            }
-            _ => {
-                typed(&mut self.ask.input, &k, QUESTION_MAX);
-            }
-        }
-        Vec::new()
-    }
-
-    fn ask_mouse(&mut self, m: MouseEvent) -> Vec<Effect> {
-        match m.kind {
-            MouseEventKind::ScrollDown => self.ask_scroll(SCROLL_STEP),
-            MouseEventKind::ScrollUp => self.ask_scroll(-SCROLL_STEP),
-            MouseEventKind::Up(MouseButton::Left) => match self.hit(m.column, m.row) {
-                Some(Target::AskLink(i)) => {
-                    self.ask.link = Some(i);
-                    self.follow_ask_link(i)
-                }
-                Some(Target::Key(k)) => self.on_key(k),
-                _ => Vec::new(),
-            },
-            _ => Vec::new(),
-        }
-    }
-
-    /// Scroll the Ask view `by` lines; at the end it follows new lines.
-    fn ask_scroll(&mut self, by: isize) -> Vec<Effect> {
-        let max = self.ask.max_scroll.get();
-        let to = self
-            .ask
-            .scroll
-            .get()
-            .unwrap_or(max)
-            .saturating_add_signed(by)
-            .min(max);
-        self.ask.scroll.set((to < max).then_some(to));
-        Vec::new()
-    }
-
-    /// Ask what was typed, about the unit on show.
-    fn send_question(&mut self) -> Vec<Effect> {
-        let text = std::mem::take(&mut self.ask.input);
-        self.ask.scroll.set(None);
-        self.push_question(&text, self.ask_context())
-    }
-
-    /// Ask `text` about `unit`; nothing when it is blank.
-    fn push_question(&mut self, text: &str, unit: Option<String>) -> Vec<Effect> {
+    /// Note `text` as a question about `unit`, not asked yet; its index.
+    /// `None` when it is blank.
+    pub(super) fn add_question(&mut self, text: &str, unit: Option<String>) -> Option<usize> {
         let text: String = text.chars().filter(|c| !c.is_control()).collect();
         let text = text.trim().to_string();
         if text.is_empty() {
-            return Vec::new();
+            return None;
         }
         self.review.questions.push(Question {
             text,
             unit,
             ..Default::default()
         });
-        self.ask_question(self.review.questions.len() - 1)
+        Some(self.review.questions.len() - 1)
     }
 
     /// Have the agent answer question `index` (again), unless it is on its
     /// way. An earlier answer stays until the new one comes.
-    fn ask_question(&mut self, index: usize) -> Vec<Effect> {
+    pub(super) fn ask_question(&mut self, index: usize) -> Vec<Effect> {
         let has_agent = self.has_agent;
         let Some(q) = self.review.questions.get_mut(index) else {
             return Vec::new();
@@ -2525,74 +1731,21 @@ impl App {
         vec![Effect::Save]
     }
 
-    /// Follow link `i` of [`App::ask_links`]: a unit is selected in the
-    /// list (the view closes), or from a chat, among the flagged units when
-    /// it is one; code opens in the editor.
-    fn follow_ask_link(&mut self, i: usize) -> Vec<Effect> {
+    /// Follow link `i` of [`App::ask_links`]: a unit opens in the unit
+    /// view, code in the editor.
+    pub(super) fn follow_ask_link(&mut self, i: usize) -> Vec<Effect> {
         let Some((_, link)) = self.ask_links().into_iter().nth(i) else {
             return Vec::new();
         };
         match link {
             AskLink::Code { file, line } => vec![Effect::Edit { file, line }],
-            AskLink::Unit(id) => {
-                // From the chat on the Flagged screen, stay there.
-                let stay = self.overlay != Overlay::Ask;
-                let Some(effects) = self.go_to_unit(&id, stay) else {
-                    return Vec::new();
-                };
-                if self.screen == Screen::Slim {
-                    self.ask.link = None;
-                }
-                effects
-            }
+            AskLink::Unit(id) => self.go_to_unit(&id).unwrap_or_default(),
         }
     }
 
-    // ---- Chat (a flagged unit's conversation) --------------------------------
-
-    /// Whether keys go into the chat's question.
-    fn chat_typing(&self) -> bool {
-        self.screen == Screen::Flagged
-            && self.flagged.typing
-            && self.flagged_unit().map(|u| self.flagged_focus(u)) == Some(Pane::Chat)
-    }
-
-    /// Give the flagged unit's chat the focus, typing, at its end.
-    fn open_chat(&mut self) {
-        if self.flagged_unit().is_none() {
-            return;
-        }
-        self.focus(Pane::Chat);
-        self.flagged.typing = true;
-        self.ask.chat_scroll.set(None);
-    }
-
-    /// Keys while typing in the chat: letters go into the question, `enter`
-    /// asks it, `ctrl+r` asks the chat's last question again, `ctrl+u`
-    /// clears, `↑ ↓` PageUp PageDown scroll, `esc` stops typing (the keys of
-    /// the screen work again), `tab` `shift+tab` move to another tile.
-    fn chat_key(&mut self, k: KeyEvent) -> Vec<Effect> {
-        let page = self.detail_rows.get().saturating_sub(2).max(1) as isize;
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        match k.code {
-            KeyCode::Esc => self.flagged.typing = false,
-            KeyCode::Tab => self.flagged_tile_step(true),
-            KeyCode::BackTab => self.flagged_tile_step(false),
-            KeyCode::Enter => return self.send_chat(),
-            KeyCode::Down => return self.chat_scroll(SCROLL_STEP),
-            KeyCode::Up => return self.chat_scroll(-SCROLL_STEP),
-            KeyCode::PageDown => return self.chat_scroll(page),
-            KeyCode::PageUp => return self.chat_scroll(-page),
-            KeyCode::Char('r') if ctrl => return self.ask_chat_again(),
-            _ => {
-                typed(&mut self.ask.draft, &k, QUESTION_MAX);
-            }
-        }
-        Vec::new()
-    }
-
-    /// Scroll the chat `by` lines; at the end it follows new lines.
-    fn chat_scroll(&mut self, by: isize) -> Vec<Effect> {
+    /// Scroll the ask panel's conversation `by` lines; at the end it
+    /// follows new lines.
+    pub(super) fn chat_scroll(&mut self, by: isize) -> Vec<Effect> {
         let max = self.ask.chat_max.get();
         let to = self
             .ask
@@ -2603,27 +1756,6 @@ impl App {
             .min(max);
         self.ask.chat_scroll.set((to < max).then_some(to));
         Vec::new()
-    }
-
-    /// Ask what was typed in the chat, about the flagged unit.
-    fn send_chat(&mut self) -> Vec<Effect> {
-        let Some(id) = self.flagged_unit_id() else {
-            return Vec::new();
-        };
-        let text = std::mem::take(&mut self.ask.draft);
-        self.ask.chat_scroll.set(None);
-        self.push_question(&text, Some(id))
-    }
-
-    /// Ask the chat's last question again.
-    fn ask_chat_again(&mut self) -> Vec<Effect> {
-        let last = self
-            .flagged_unit_id()
-            .and_then(|id| self.chat_of(&id).last().copied());
-        match last {
-            Some(n) => self.ask_question(n),
-            None => Vec::new(),
-        }
     }
 
     // ---- Triage in the list ---------------------------------------------
@@ -2644,13 +1776,36 @@ impl App {
         self.review.units[self.order[pos]].decision == Decision::Pending
     }
 
-    fn jump_pending(&mut self, forward: bool) -> Vec<Effect> {
-        let to = if forward {
-            self.next_pending_pos(self.sel)
-        } else {
-            self.prev_pending_pos(self.sel)
-        };
-        match to {
+    /// After a decision: on to the next pending unit after `from` in list
+    /// order, else the first pending one from the top; with nothing pending,
+    /// the cursor stays where it is (the bottom bar says so).
+    fn advance(&mut self, from: usize) -> Vec<Effect> {
+        let next = self
+            .next_pending_pos(from)
+            .or_else(|| (0..from.min(self.order.len())).find(|&p| self.pending_at(p)));
+        if let Some(p) = next {
+            self.sel = p;
+        }
+        self.ensure_prepared()
+    }
+
+    /// Go to the `times`-th pending unit after (or, not `forward`, before)
+    /// the cursor, or as far as there are.
+    pub(super) fn jump_pending(&mut self, forward: bool, times: usize) -> Vec<Effect> {
+        let mut at = None;
+        for _ in 0..times.max(1) {
+            let from = at.unwrap_or(self.sel);
+            let next = if forward {
+                self.next_pending_pos(from)
+            } else {
+                self.prev_pending_pos(from)
+            };
+            match next {
+                Some(p) => at = Some(p),
+                None => break,
+            }
+        }
+        match at {
             Some(p) => self.move_sel(p),
             None => {
                 self.status = "No more pending units that way.".into();
@@ -2659,20 +1814,28 @@ impl App {
         }
     }
 
-    /// Go to the first unit of the next file, or (not `forward`) of the one
-    /// above. No wrapping: from the last (first) file the cursor stays.
-    fn jump_file(&mut self, forward: bool) -> Vec<Effect> {
+    /// Go to the first unit of the `times`-th file below, or (not
+    /// `forward`) above, or as far as there are. No wrapping: from the last
+    /// (first) file the cursor stays.
+    pub(super) fn jump_file(&mut self, forward: bool, times: usize) -> Vec<Effect> {
         if self.sel >= self.order.len() {
             return Vec::new();
         }
-        let range = self.file_range(self.sel);
-        let to = if forward {
-            Some(range.end).filter(|&p| p < self.order.len())
-        } else {
-            range.start.checked_sub(1)
-        };
-        match to {
-            Some(p) => self.move_sel(self.file_start(p)),
+        let mut at = None;
+        for _ in 0..times.max(1) {
+            let range = self.file_range(at.unwrap_or(self.sel));
+            let next = if forward {
+                Some(range.end).filter(|&p| p < self.order.len())
+            } else {
+                range.start.checked_sub(1).map(|p| self.file_start(p))
+            };
+            match next {
+                Some(p) => at = Some(p),
+                None => break,
+            }
+        }
+        match at {
+            Some(p) => self.move_sel(p),
             None => {
                 self.status = if forward { "last file" } else { "first file" }.into();
                 Vec::new()
@@ -2680,91 +1843,255 @@ impl App {
         }
     }
 
-    /// Ask to accept every pending unit in the file the cursor is in.
-    /// Flagged and already accepted units are left alone; with nothing
-    /// pending there is nothing to confirm.
-    fn ask_accept_file(&mut self) {
+    /// `A`, `F` in the queue: decide the pending units of the file under the
+    /// cursor at once, as one undo step, and move on to the next pending
+    /// unit. Decided units are left alone. Listed by level, the file is its
+    /// units in the cursor's box.
+    fn decide_file_now(&mut self, d: Decision) -> Vec<Effect> {
         if self.sel >= self.order.len() {
-            return;
+            return Vec::new();
         }
-        let ids: Vec<String> = self
-            .file_range(self.sel)
+        let range = self.file_range(self.sel);
+        let ids: Vec<String> = (range.clone())
             .map(|p| &self.review.units[self.order[p]])
             .filter(|u| u.decision == Decision::Pending)
             .map(|u| u.id.clone())
             .collect();
         if ids.is_empty() {
-            self.status = "nothing pending in this file".into();
-            return;
-        }
-        let file = self.file_at(self.sel).clone();
-        self.overlay = Overlay::ConfirmAcceptFile { file, ids };
-    }
-
-    /// Accept the confirmed units as one undo step. The selection stays.
-    fn accept_file(&mut self, ids: Vec<String>) -> Vec<Effect> {
-        let was_done = self.all_reviewed();
-        let mut entries = Vec::new();
-        for id in ids {
-            if let Some(u) = self.review.unit_mut(&id)
-                && u.decision == Decision::Pending
-            {
-                entries.push((id, std::mem::replace(&mut u.decision, Decision::Accepted)));
-            }
-        }
-        if entries.is_empty() {
+            self.status = "Nothing pending in this file.".into();
             return Vec::new();
         }
-        self.status = format!("Accepted {} units.", entries.len());
-        self.swipe.history.push(Undo { entries });
-        self.check_all_done(was_done);
-        vec![Effect::Save]
-    }
-
-    /// Apply `d` to the selected unit and move on to the next pending one.
-    /// Recorded in the shared undo history.
-    pub fn decide(&mut self, d: Decision) -> Vec<Effect> {
-        let Some(id) = self.selected_id() else {
-            return Vec::new();
-        };
-        self.apply_decision(id, d);
-        if let Some(p) = self.next_pending_pos(self.sel) {
-            self.sel = p;
-        }
+        let n = self.decide_ids(&ids, d);
+        self.status = decided_status(d, n);
+        // Deciding moves no row: pending units are never the hidden ones.
         let mut effects = vec![Effect::Save];
-        effects.extend(self.ensure_prepared());
+        effects.extend(self.advance(range.end - 1));
         effects
     }
 
-    /// Set one unit's decision and record it for undo.
-    fn apply_decision(&mut self, id: String, d: Decision) {
-        let was_done = self.all_reviewed();
-        self.set_decision(id, d);
-        self.check_all_done(was_done);
+    /// Apply `d` to the selected unit and move on to the next pending one,
+    /// as one undo step.
+    pub fn decide(&mut self, d: Decision) -> Vec<Effect> {
+        self.decide_n(d, None)
     }
 
-    fn set_decision(&mut self, id: String, d: Decision) {
-        let Some(u) = self.review.unit_mut(&id) else {
-            return;
+    /// Apply `d` to the selected unit and, with a count, the next
+    /// `count - 1` pending ones, as one undo step; then move on to the next
+    /// pending unit (see [`App::advance`]). A flag is only a mark: `i`
+    /// writes a note.
+    fn decide_n(&mut self, d: Decision, count: Option<u32>) -> Vec<Effect> {
+        let Some(id) = self.selected_id() else {
+            return Vec::new();
         };
-        let prev = std::mem::replace(&mut u.decision, d);
-        self.swipe.history.push(Undo {
-            entries: vec![(id, prev)],
-        });
+        let mut ids = vec![id.clone()];
+        let mut at = self.sel;
+        for _ in 1..count.unwrap_or(1) {
+            let Some(p) = self.next_pending_pos(at) else {
+                break;
+            };
+            ids.push(self.review.units[self.order[p]].id.clone());
+            at = p;
+        }
+        let n = self.decide_ids(&ids, d);
+        if count.is_some() {
+            self.status = decided_status(d, n);
+        }
+        let mut effects = vec![Effect::Save];
+        effects.extend(self.advance(self.sel));
+        effects
     }
 
-    fn back(&mut self) {
-        self.screen = self.return_to.pop().unwrap_or(Screen::Slim);
+    /// `a` or `f` in visual mode: decide every unit of the selection as one
+    /// undo step, leave visual mode and move on to the next pending unit
+    /// after it.
+    /// `.` repeats it on as many units.
+    fn decide_visual(&mut self, a: Action) -> Vec<Effect> {
+        let rows = self.visual_rows();
+        self.visual = None;
+        let Some(rows) = rows else {
+            return Vec::new();
+        };
+        let hi = *rows.end();
+        let ids: Vec<String> = rows
+            .map(|p| self.review.units[self.order[p]].id.clone())
+            .collect();
+        let d = if a == Action::DecideFlag {
+            Decision::Investigate
+        } else {
+            Decision::Accepted
+        };
+        self.last_decision = Some((a, Some(ids.len() as u32)));
+        let n = self.decide_ids(&ids, d);
+        self.status = decided_status(d, n);
+        // A unit that was accepted for you may have moved: go by its id.
+        let hi = ids.last().and_then(|id| self.position_of(id)).unwrap_or(hi);
+        self.sel = hi;
+        let mut effects = vec![Effect::Save];
+        effects.extend(self.advance(hi));
+        effects
+    }
+
+    /// The rows of the visual selection: from where the unit it started on
+    /// is listed now to the cursor. `None` outside visual mode.
+    pub fn visual_rows(&self) -> Option<std::ops::RangeInclusive<usize>> {
+        let anchor = self.position_of(self.visual.as_deref()?)?;
+        let sel = self.sel.min(self.order.len().checked_sub(1)?);
+        Some(anchor.min(sel)..=anchor.max(sel))
+    }
+
+    /// Where unit `id` is listed, if it is.
+    pub(super) fn position_of(&self, id: &str) -> Option<usize> {
+        self.order
+            .iter()
+            .position(|&i| self.review.units[i].id == id)
+    }
+
+    /// Set each of `ids` to `d` and record that as one undo step. Accepting
+    /// a unit whose note was written on code that changed since puts the
+    /// note away (Phase 7). How many changed.
+    pub(super) fn decide_ids(&mut self, ids: &[String], d: Decision) -> usize {
+        let each: Vec<(String, Decision)> = ids.iter().map(|id| (id.clone(), d)).collect();
+        self.decide_each(&each, d == Decision::Accepted)
+    }
+
+    /// Set each unit to its decision as one undo step, and list the units
+    /// again (who accepted them; see [`settle`]). With `archive`, a unit
+    /// this accepts puts away its note when the code changed since it was
+    /// written ([`Unit::archive_note`]); the step holds that, so `u` brings
+    /// the note back. How many changed.
+    fn decide_each(&mut self, each: &[(String, Decision)], archive: bool) -> usize {
+        let mut changes = Vec::new();
+        let mut notes = Vec::new();
+        for (id, d) in each {
+            if let Some(u) = self.review.unit_mut(id) {
+                let before = std::mem::replace(&mut u.decision, *d);
+                let accepts = *d == Decision::Accepted && before != Decision::Accepted;
+                if archive && accepts && u.note_is_stale() {
+                    let note = Note {
+                        text: u.dive.note.clone(),
+                        on: u.dive.note_on.clone(),
+                    };
+                    u.archive_note();
+                    notes.push(NoteChange {
+                        id: id.clone(),
+                        before: note,
+                        after: Note::default(),
+                    });
+                }
+                changes.push(Change {
+                    id: id.clone(),
+                    before,
+                    after: *d,
+                });
+            }
+        }
+        let n = changes.iter().filter(|c| c.before != c.after).count();
+        self.review.history.record(Step { changes, notes });
+        self.reorder();
+        n
+    }
+
+    /// `u`: put back what the last step changed (the decisions and the
+    /// notes its note line wrote), and go to its first unit. On a unit
+    /// accepted for you (listed with `za`), take that back instead: it is
+    /// pending again, as a step of its own.
+    pub fn undo(&mut self) -> Vec<Effect> {
+        if self.screen == Screen::Queue
+            && let Some(id) = self
+                .selected()
+                .filter(|u| u.auto_accepted())
+                .map(|u| u.id.clone())
+        {
+            self.decide_ids(std::slice::from_ref(&id), Decision::Pending);
+            let name = self
+                .review
+                .unit(&id)
+                .map(super::slim::row_name)
+                .unwrap_or_default();
+            self.status = format!("{name} is pending again, no longer accepted for you.");
+            return vec![Effect::Save];
+        }
+        let Some(step) = self.review.history.undo() else {
+            self.status = "Nothing to undo.".into();
+            return Vec::new();
+        };
+        for n in step.notes.iter().rev() {
+            if archives(&step, n) {
+                if let Some(u) = self.review.unit_mut(&n.id) {
+                    u.unarchive_note(&n.before.text, n.before.on.as_deref());
+                }
+            } else {
+                self.put_note(&n.id, &n.before);
+            }
+        }
+        for c in step.changes.iter().rev() {
+            if let Some(u) = self.review.unit_mut(&c.id) {
+                u.decision = c.before;
+            }
+        }
+        self.reorder();
+        let mut effects = vec![Effect::Save];
+        effects.extend(self.show_step(&step));
+        effects
+    }
+
+    /// `ctrl+r`: make the last undone step again, notes and all, and go to
+    /// its first unit.
+    pub fn redo(&mut self) -> Vec<Effect> {
+        let Some(step) = self.review.history.redo() else {
+            self.status = "Nothing to redo.".into();
+            return Vec::new();
+        };
+        for c in &step.changes {
+            if let Some(u) = self.review.unit_mut(&c.id) {
+                u.decision = c.after;
+            }
+        }
+        for n in &step.notes {
+            if archives(&step, n) {
+                if let Some(u) = self.review.unit_mut(&n.id) {
+                    u.archive_note();
+                }
+            } else {
+                self.put_note(&n.id, &n.after);
+            }
+        }
+        self.reorder();
+        let mut effects = vec![Effect::Save];
+        effects.extend(self.show_step(&step));
+        effects
+    }
+
+    /// Put the cursor of the screen on show on the first unit `step` changed.
+    fn show_step(&mut self, step: &Step) -> Vec<Effect> {
+        let first = (step.changes.first().map(|c| &c.id))
+            .or(step.notes.first().map(|n| &n.id))
+            .cloned();
+        let Some(first) = first else {
+            return Vec::new();
+        };
+        match self.screen {
+            Screen::Queue => match self.position_of(&first) {
+                Some(pos) => self.move_sel(pos),
+                None => Vec::new(),
+            },
+            Screen::Unit => self.unit_show_step(&first),
+            Screen::Flagged => self.flagged_show_step(&first),
+        }
     }
 
     // ---- Editor and reset ------------------------------------------------
 
     /// The unit the current screen is about.
-    fn current_unit(&self) -> Option<&Unit> {
+    pub(super) fn current_unit(&self) -> Option<&Unit> {
         match self.screen {
-            Screen::Swipe => self.swipe_current().and_then(|id| self.review.unit(id)),
-            Screen::Flagged => self.flagged_unit(),
-            _ => self.selected(),
+            Screen::Queue => self.selected(),
+            Screen::Unit => self.review.unit(&self.unit.id),
+            Screen::Flagged => {
+                let ids = self.flagged_ids();
+                ids.get(self.flagged_index(&ids))
+                    .and_then(|id| self.review.unit(id))
+            }
         }
     }
 
@@ -2772,8 +2099,9 @@ impl App {
     fn edit(&mut self) -> Vec<Effect> {
         match self.current_unit() {
             Some(u) => {
-                // A whole file opens at its first change, not at its top.
-                let first = (u.kind == UnitKind::File)
+                // A whole file opens at its first change, not at its top;
+                // in the unit view, every unit does.
+                let first = (u.kind == UnitKind::File || self.screen == Screen::Unit)
                     .then(|| super::diff::first_change(&self.review, u))
                     .flatten();
                 vec![Effect::Edit {
@@ -2785,142 +2113,194 @@ impl App {
         }
     }
 
-    /// Forget every decision, as if nothing had been looked at.
+    /// Forget every decision, as if nothing had been looked at: units with
+    /// no behavior change are accepted for you again, the rest pending. One
+    /// undo step, so `u` brings them back.
     fn reset(&mut self) -> Vec<Effect> {
-        for u in &mut self.review.units {
-            u.decision = Decision::Pending;
+        let auto = self.cfg.auto_accept;
+        let mut each = Vec::new();
+        for (u, a) in self.review.units.iter_mut().zip(&self.levels) {
+            let d = if accepted_for_you(a.level, auto) {
+                u.accepted_by = Some(AcceptedBy::Auto);
+                Decision::Accepted
+            } else {
+                Decision::Pending
+            };
+            each.push((u.id.clone(), d));
         }
-        if self.screen == Screen::Swipe {
-            self.swipe = self.fresh_swipe();
-        } else {
-            self.swipe = SwipeState::default();
-        }
+        self.visual = None;
+        self.decide_each(&each, false);
         self.status = "Reset: nothing is marked as looked at.".into();
         vec![Effect::Save]
     }
 
-    // ---- Swipe -----------------------------------------------------------
-
-    /// The cards on entering swipe: units with a behavior change that are
-    /// flagged or not yet looked at (accepted ones are left out), most
-    /// attention first, then in list order.
-    fn swipe_cards(&self) -> Vec<String> {
-        let mut cards: Vec<usize> = self
-            .order
-            .iter()
-            .copied()
-            .filter(|&i| self.review.units[i].status != UnitStatus::NoBehaviorChange)
-            .filter(|&i| self.review.units[i].decision != Decision::Accepted)
-            .collect();
-        cards.sort_by_key(|&i| std::cmp::Reverse(self.levels[i].level));
-        cards
-            .into_iter()
-            .map(|i| self.review.units[i].id.clone())
-            .collect()
+    /// How many decisions `:e!` resets: one per unit, pending ones and
+    /// those accepted for you too.
+    pub fn reset_count(&self) -> usize {
+        self.review.units.len()
     }
 
-    /// Cards with the cursor on the first one (the summary when empty).
-    /// Cards are never removed during a session, so `h` can return to one
-    /// just accepted.
-    fn fresh_swipe(&self) -> SwipeState {
-        let cards = self.swipe_cards();
-        SwipeState {
-            cards,
-            cursor: 0,
-            history: Vec::new(),
-            drag: DragTracker::default(),
-        }
-    }
-
-    /// The card on show, `None` on the summary.
-    pub fn swipe_current(&self) -> Option<&String> {
-        self.swipe.cards.get(self.swipe.cursor)
-    }
-
-    pub fn enter_swipe(&mut self) {
-        self.swipe = self.fresh_swipe();
-        if self.screen != Screen::Swipe {
-            if self.screen == Screen::Slim {
-                self.return_to.clear();
-            }
-            self.return_to.push(Screen::Slim);
-        }
-        self.screen = Screen::Swipe;
-    }
-
-    pub fn swipe_dir(&mut self, dir: Dir) -> Vec<Effect> {
-        let d = match dir {
-            Dir::Right => Decision::Accepted,
-            Dir::Left => Decision::Investigate,
-        };
-        let Some(id) = self.swipe_current().cloned() else {
-            return Vec::new();
-        };
-        self.apply_decision(id, d);
-        self.swipe.cursor += 1;
-        let mut effects = vec![Effect::Save];
-        effects.extend(self.prepare_cards());
+    /// `:e!`, confirmed: forget every decision ([`App::reset`], one undo
+    /// step), then re-run the review now; the units accepted for you are
+    /// weighed again on the new code.
+    fn reset_and_rerun(&mut self) -> Vec<Effect> {
+        let mut effects = self.reset();
+        effects.extend(self.rerun_now());
+        self.status = "Reset every decision. Re-running the review…".into();
         effects
     }
 
-    pub fn undo(&mut self) -> Vec<Effect> {
-        let Some(step) = self.swipe.history.pop() else {
-            self.status = "Nothing to undo.".into();
-            return Vec::new();
+    // ---- Fix loop (Phase 7) ----------------------------------------------
+
+    /// `:e`: re-run the review now, decisions kept; on a pull request, on
+    /// the head it has now, fetched again. Waiting for copied notes ends.
+    fn rerun_now(&mut self) -> Vec<Effect> {
+        self.waiting = None;
+        self.status = match &self.review.pr {
+            Some(pr) => format!("Fetching PR #{} and re-running the review…", pr.number),
+            None => "Re-running the review…".into(),
         };
-        for (id, prev) in &step.entries {
-            if let Some(unit) = self.review.unit_mut(id) {
-                unit.decision = *prev;
-            }
-        }
-        let Some((first, _)) = step.entries.first() else {
-            return vec![Effect::Save];
-        };
-        if self.screen == Screen::Swipe
-            && let Some(pos) = self.swipe.cards.iter().position(|id| id == first)
-        {
-            self.swipe.cursor = pos;
-        }
-        let mut effects = vec![Effect::Save];
-        if self.screen == Screen::Slim
-            && let Some(pos) = self
-                .order
-                .iter()
-                .position(|&i| self.review.units[i].id == *first)
-        {
-            effects.extend(self.move_sel(pos));
-        }
+        vec![Effect::Rerun]
+    }
+
+    /// The notes went to the agent CLI `cli` (see [`Effect::OpenAgent`])
+    /// and it exited: that is the signal its changes are in, so the review
+    /// re-runs now, without a key.
+    pub fn agent_returned(&mut self, cli: Provider) -> Vec<Effect> {
+        self.fix_by = Some(ChangedBy::Agent(cli));
+        let effects = self.rerun_now();
+        self.status = format!("Back from {}. Re-running the review…", cli.title());
         effects
     }
 
-    /// Back one card, decisions untouched. From the summary: the last card.
-    fn prev_card(&mut self) {
-        if self.swipe.cursor == 0 {
-            self.status = "Already at the first card.".into();
+    /// `notes` notes were copied for an agent teer doesn't run: wait for
+    /// their changes on the queue, read-only, until the files have changed
+    /// and settled (see [`App::watch_due`]), or `q`.
+    pub fn start_waiting(&mut self, notes: usize) {
+        self.overlay = Overlay::None;
+        self.visual = None;
+        self.screen = Screen::Queue;
+        self.fix_by = Some(ChangedBy::Copied);
+        self.waiting = Some(Waiting {
+            notes,
+            quiet: crate::watch::Quiet::new(self.cfg.fix_loop.quiet()),
+            next: Some(Instant::now()),
+        });
+        self.status = self.waiting_line();
+    }
+
+    /// `q` while waiting: the queue as before; `:e` re-runs later.
+    fn stop_waiting(&mut self) {
+        self.waiting = None;
+        self.status = format!(
+            "Stopped waiting. {} re-runs the review once the changes are in.",
+            self.keys.label(Action::ReviewRerun)
+        );
+    }
+
+    /// What the status line says while waiting.
+    pub fn waiting_line(&self) -> String {
+        let Some(w) = &self.waiting else {
+            return String::new();
+        };
+        let q = self.keys.label(Action::ViewClose);
+        if w.quiet.changing() {
+            return format!(
+                "Files are changing… the review re-runs once they're quiet for {} ({q} to stop waiting)",
+                seconds(w.quiet.period())
+            );
+        }
+        let notes = if w.notes == 1 {
+            "the note".to_string()
         } else {
-            self.swipe.cursor -= 1;
-        }
+            format!("the {} notes", w.notes)
+        };
+        format!("Waiting for the changes to {notes}… ({q} to stop waiting)")
     }
 
-    fn swipe_action(&mut self, a: Action) -> Vec<Effect> {
-        match a {
-            Action::Accept => self.swipe_dir(Dir::Right),
-            Action::Investigate => self.swipe_dir(Dir::Left),
-            Action::Flagged => {
-                self.start_flagged();
-                Vec::new()
-            }
-            Action::Undo => self.undo(),
-            Action::PrevCard => {
-                self.prev_card();
-                Vec::new()
-            }
-            Action::Back | Action::Quit | Action::Swipe => {
-                self.back();
-                Vec::new()
-            }
-            _ => Vec::new(),
+    /// While waiting, whether to look at the working tree at `now`: the
+    /// repository to look at. The look is then on its way, and what it saw
+    /// comes back as [`AppEvent::Tree`]. The runtime asks on every tick.
+    pub fn watch_due(&mut self, now: Instant) -> Option<PathBuf> {
+        let w = self.waiting.as_mut()?;
+        if w.next.is_none_or(|t| now < t) {
+            return None;
         }
+        w.next = None;
+        Some(self.review.repo_root.clone())
+    }
+
+    /// The tree as a look saw it at `at`: once it changed and then stayed
+    /// the same for `fix_loop.quiet_seconds`, waiting ends and the review
+    /// re-runs. Else the next look is due a little later.
+    fn tree_seen(
+        &mut self,
+        seen: Result<crate::watch::Snapshot, String>,
+        at: Instant,
+    ) -> Vec<Effect> {
+        let Some(w) = self.waiting.as_mut() else {
+            return Vec::new();
+        };
+        w.next = Some(at + crate::watch::every(w.quiet.period()));
+        match seen {
+            Ok(s) => {
+                let was = w.quiet.changing();
+                if w.quiet.see(s, at) {
+                    self.waiting = None;
+                    self.status = "The files are quiet. Re-running the review…".into();
+                    return vec![Effect::Rerun];
+                }
+                if !was && w.quiet.changing() {
+                    self.status = self.waiting_line();
+                }
+            }
+            Err(e) => self.status = format!("Couldn't look at the files: {e}"),
+        }
+        Vec::new()
+    }
+
+    /// A re-run's review is in. Decisions carry over by unit and code
+    /// (`store::merge_previous`); the units it changed or added lead their
+    /// level, the cursor goes to the first of them, and the status says how
+    /// many changed and by whom.
+    fn reran(&mut self, mut new: Review) -> Vec<Effect> {
+        crate::review::store::merge_previous(&mut new, &self.review);
+        new.agent_session = self.review.agent_session.clone();
+        let changed = crate::review::store::changed_units(&new, &self.review);
+        // Positions in the old order mean nothing in the new review:
+        // remember ids, drop the positions, restore by id.
+        let keep = self.selected().map(|u| u.id.clone());
+        self.review = new;
+        self.syntax.clear();
+        self.committed = None;
+        self.finish = Default::default();
+        self.summary_asked = false;
+        self.order.clear();
+        self.sel = 0;
+        self.visual = None;
+        self.waiting = None;
+        self.changed = changed.into_iter().collect();
+        self.rebuild_order();
+        // Units accepted for you are no news.
+        self.changed
+            .retain(|id| self.review.unit(id).is_some_and(|u| !u.auto_accepted()));
+        let first_changed = (0..self.order.len())
+            .find(|&p| self.changed.contains(&self.review.units[self.order[p]].id));
+        if let Some(pos) = first_changed.or_else(|| keep.and_then(|id| self.position_of(&id))) {
+            self.sel = pos;
+        }
+        self.screen = Screen::Queue;
+        let by = self
+            .fix_by
+            .take()
+            .map_or("since the last run".to_string(), ChangedBy::words);
+        self.status = match self.changed.len() {
+            0 => format!("Nothing changed {by}."),
+            n => format!("{} changed {by}.", units(n)),
+        };
+        let mut effects = vec![Effect::Save];
+        effects.extend(self.prepare_start());
+        effects
     }
 
     // ---- Mouse -----------------------------------------------------------
@@ -2986,6 +2366,12 @@ impl App {
     }
 
     pub fn on_mouse(&mut self, m: MouseEvent) -> Vec<Effect> {
+        let effects = self.mouse(m);
+        self.save_cursor(effects)
+    }
+
+    /// [`App::on_mouse`], before the cursor is saved.
+    fn mouse(&mut self, m: MouseEvent) -> Vec<Effect> {
         // The button going down starts a selection, a drag extends it, and
         // the release copies it; a release where it went down is a click.
         match m.kind {
@@ -3002,23 +2388,6 @@ impl App {
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => self.selection = None,
             _ => {}
         }
-        if self.screen == Screen::Swipe
-            && self.overlay == Overlay::None
-            && self.swipe_current().is_some()
-        {
-            let card = self.swipe_card.get();
-            let sideways = self.swipe.drag.sideways();
-            if let Some(dir) = self.swipe.drag.on_mouse(m, card) {
-                self.selection = None;
-                return self.swipe_dir(dir);
-            }
-            // A swipe that didn't reach the threshold moved the card, and
-            // isn't a selection or a click.
-            if sideways && matches!(m.kind, MouseEventKind::Up(_)) {
-                self.selection = None;
-                return Vec::new();
-            }
-        }
         if m.kind == MouseEventKind::Up(MouseButton::Left) {
             match self.selection.take() {
                 Some(s) if s.moved() && !s.copied => return self.copy_selection(s),
@@ -3027,36 +2396,46 @@ impl App {
             // A double click copies the word, except on what a click does something with.
             let button = matches!(
                 self.hit(m.column, m.row),
-                Some(Target::Action(_) | Target::Key(_) | Target::AskLink(_) | Target::Note(_))
+                Some(
+                    Target::Action(_)
+                        | Target::Key(_)
+                        | Target::AskLink(_)
+                        | Target::Note(_)
+                        | Target::ReadTests
+                )
             );
             if self.double_click(m.column, m.row) && !button {
                 return self.copy_word(m.column, m.row);
             }
         }
-        if self.overlay == Overlay::Ask {
-            return self.ask_mouse(m);
-        }
         match m.kind {
-            // Over the detail area, and anywhere in swipe, the wheel scrolls
-            // it; elsewhere it moves the selection.
+            // Over the detail area the wheel scrolls it; elsewhere it moves
+            // the selection.
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                 let down = m.kind == MouseEventKind::ScrollDown;
-                // A link here is in the chat.
-                let hit = match self.hit(m.column, m.row) {
-                    Some(Target::AskLink(_)) => Some(Target::Tile(Pane::Chat)),
-                    hit => hit,
+                let by = if down { SCROLL_STEP } else { -SCROLL_STEP };
+                let hit = self.hit(m.column, m.row);
+                if self.screen == Screen::Unit {
+                    // A link is in the ask tile.
+                    let over = match hit {
+                        Some(Target::Panel(p)) => Some(p),
+                        Some(Target::AskLink(_)) => Some(super::unit::Panel::Ask),
+                        _ => None,
+                    };
+                    return self.unit_wheel(over, by);
+                }
+                if self.screen == Screen::Flagged {
+                    return self.flagged_scroll(by);
+                }
+                if hit == Some(Target::Detail) {
+                    return self.scroll_detail(by);
+                }
+                let a = if down {
+                    Action::MoveDown
+                } else {
+                    Action::MoveUp
                 };
-                if let Some(Target::Tile(pane)) = hit
-                    && pane != self.flagged.pane
-                {
-                    self.focus(pane);
-                }
-                if self.screen == Screen::Swipe
-                    || matches!(hit, Some(Target::Detail | Target::Tile(_)))
-                {
-                    return self.scroll_detail(if down { SCROLL_STEP } else { -SCROLL_STEP });
-                }
-                self.on_action(if down { Action::Down } else { Action::Up })
+                self.run_action(a, None)
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 if self.overlay != Overlay::None {
@@ -3065,7 +2444,6 @@ impl App {
                         (Some(Target::Note(i)), Overlay::Notes { .. }) => {
                             self.overlay = Overlay::Notes { sel: i };
                         }
-                        (_, Overlay::AllDone) => self.overlay = Overlay::None,
                         _ => {}
                     }
                     return Vec::new();
@@ -3073,18 +2451,22 @@ impl App {
                 match self.hit(m.column, m.row) {
                     Some(Target::Key(k)) => self.on_key(k),
                     Some(Target::Note(_)) => Vec::new(),
-                    Some(Target::Action(a)) => self.on_action(a),
+                    Some(Target::Action(a)) => self.run_action(a, None),
                     Some(Target::Unit(pos)) => self.move_sel(pos),
-                    // A click on the chat types in it.
-                    Some(Target::Tile(Pane::Chat)) => {
-                        self.open_chat();
-                        Vec::new()
-                    }
-                    Some(Target::Tile(pane)) => {
-                        self.focus(pane);
-                        Vec::new()
-                    }
                     Some(Target::AskLink(i)) => self.follow_ask_link(i),
+                    Some(Target::Flagged(i)) => {
+                        self.flagged_click(i);
+                        Vec::new()
+                    }
+                    Some(Target::ReadTests) => self.read_tests(),
+                    Some(Target::Panel(p)) => {
+                        self.unit_click_tile(Some(p));
+                        Vec::new()
+                    }
+                    Some(Target::Detail) if self.screen == Screen::Unit => {
+                        self.unit_click_tile(None);
+                        Vec::new()
+                    }
                     Some(Target::Detail) | None => Vec::new(),
                 }
             }
@@ -3095,25 +2477,17 @@ impl App {
     // ---- Background events ----------------------------------------------
 
     pub fn on_app_event(&mut self, ev: AppEvent) -> Vec<Effect> {
+        let effects = self.app_event(ev);
+        self.save_cursor(effects)
+    }
+
+    /// [`App::on_app_event`], before the cursor is saved.
+    fn app_event(&mut self, ev: AppEvent) -> Vec<Effect> {
         match ev {
             AppEvent::Answer { index, result } => return self.answered(index, result),
             AppEvent::Asking { index, progress } => self.asking(index, progress),
             AppEvent::CommitDrafted(r) => self.commit_drafted(r),
-            AppEvent::PrReviewed { verdict, result } => {
-                self.approving = false;
-                match result {
-                    Ok(msg) => {
-                        if verdict == Verdict::Approve
-                            && let Some(p) = self.review.pr.as_mut()
-                        {
-                            p.approved_head = p.head_sha.clone();
-                        }
-                        self.status = msg;
-                        return vec![Effect::Save];
-                    }
-                    Err(msg) => self.status = msg,
-                }
-            }
+            AppEvent::PrReviewed { verdict, result } => return self.posted(verdict, result),
             AppEvent::Prep(p) => {
                 self.review.apply(p);
                 self.rebuild_order();
@@ -3137,37 +2511,13 @@ impl App {
                 }
                 Err(e) => crate::log::write(&format!("summing up the change failed: {e}")),
             },
-            AppEvent::Rerun(Ok(new)) => {
-                let mut new = *new;
-                crate::review::store::merge_previous(&mut new, &self.review);
-                new.agent_session = self.review.agent_session.clone();
-                // Positions in the old order mean nothing in the new review:
-                // remember ids, drop the positions, restore by id.
-                let keep = self.selected().map(|u| u.id.clone());
-                self.review = new;
-                self.syntax.clear();
-                self.committed = None;
-                self.summary_asked = false;
-                self.order.clear();
-                self.sel = 0;
-                self.rebuild_order();
-                let pos_of = |app: &App, id: &str| {
-                    app.order
-                        .iter()
-                        .position(|&i| app.review.units.get(i).is_some_and(|u| u.id == id))
-                };
-                if let Some(pos) = keep.and_then(|id| pos_of(self, &id)) {
-                    self.sel = pos;
-                }
-                self.screen = Screen::Slim;
-                self.return_to.clear();
-                self.status = format!("Review updated: {} units.", self.review.units.len());
-                let mut effects = vec![Effect::Save];
-                effects.extend(self.prepare_start());
-                return effects;
-            }
+            AppEvent::Rerun(Ok(new)) => return self.reran(*new),
             AppEvent::Rerun(Err(e)) => self.status = format!("Re-run failed: {e}"),
+            AppEvent::Tree { seen, at } => return self.tree_seen(seen, at),
             AppEvent::Dive(ev) => {
+                // About code a re-run changed since it was asked: dropped
+                // without a word (see `Review::apply_dive`).
+                let current = self.review.is_current(&ev);
                 match &ev {
                     DiveEvent::Progress { id, kind, text } => {
                         self.progress.insert((id.clone(), *kind), text.clone());
@@ -3175,14 +2525,22 @@ impl App {
                     DiveEvent::Ready { id, kind, .. } => {
                         self.progress.remove(&(id.clone(), *kind));
                     }
-                    DiveEvent::Failed { id, kind, error } => {
+                    DiveEvent::Failed {
+                        id, kind, error, ..
+                    } => {
                         self.progress.remove(&(id.clone(), *kind));
-                        self.status = format!("Question ({kind:?}) failed: {error}");
+                        if current {
+                            self.status = format!("Question ({kind:?}) failed: {error}");
+                        }
                     }
+                }
+                if !current {
+                    return Vec::new();
                 }
                 if self.review.apply_dive(&ev) {
                     return vec![Effect::Save];
                 }
+                return Vec::new();
             }
         }
         Vec::new()
@@ -3192,7 +2550,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review::model::UnitKind;
+    use crate::review::model::{UnitKind, UnitStatus};
+    use crossterm::event::KeyModifiers;
 
     fn app(n: usize) -> App {
         let units = (0..n)
@@ -3214,6 +2573,8 @@ mod tests {
                 summary: None,
                 nbc_reason: None,
                 dive: Default::default(),
+                accepted_by: None,
+                reasons: Vec::new(),
                 dive_pending: Default::default(),
                 checks: Default::default(),
             })
@@ -3233,14 +2594,31 @@ mod tests {
             skipped: Vec::new(),
             graph: Default::default(),
             questions: Vec::new(),
+            version: 0,
+            history: Default::default(),
+            branch: None,
+            cursor: None,
         };
-        let mut a = App::new(review, Config::default(), KeyMap::default());
+        let mut a = App::new(review, Config::default(), Keymap::default());
         a.sel = 0;
         a
     }
 
     fn dec(a: &App, i: usize) -> Decision {
         a.review.units[i].decision
+    }
+
+    /// Type `keys` (Neovim notation) as the terminal would send them.
+    fn press(a: &mut App, keys: &str) -> Vec<Effect> {
+        crate::keymap::parse_keys(keys)
+            .unwrap()
+            .into_iter()
+            .flat_map(|k| a.on_key(k.event()))
+            .collect()
+    }
+
+    fn decisions(a: &App) -> Vec<Decision> {
+        a.review.units.iter().map(|u| u.decision).collect()
     }
 
     #[test]
@@ -3254,7 +2632,6 @@ mod tests {
     }
 
     fn click(a: &mut App, pos: usize, modifiers: KeyModifiers) {
-        a.screen = Screen::Slim;
         *a.targets.borrow_mut() = vec![(Rect::new(0, pos as u16, 10, 1), Target::Unit(pos))];
         a.on_mouse(MouseEvent {
             kind: MouseEventKind::Up(MouseButton::Left),
@@ -3269,7 +2646,7 @@ mod tests {
         let mut a = app(5);
         click(&mut a, 2, KeyModifiers::NONE);
         assert_eq!(a.sel, 2);
-        assert_eq!(a.screen, Screen::Slim);
+        assert_eq!(a.screen, Screen::Queue);
         // Modifiers change nothing: there is no multi-select.
         click(&mut a, 4, KeyModifiers::CONTROL);
         assert_eq!(a.sel, 4);
@@ -3291,11 +2668,11 @@ mod tests {
         assert_eq!(a.next_pending_pos(0), Some(3));
         assert_eq!(a.prev_pending_pos(3), Some(0));
         assert_eq!(a.prev_pending_pos(0), None);
-        a.on_action(Action::NextGroup);
+        a.on_action(Action::MoveNextFile);
         assert_eq!(a.sel, 3);
-        a.on_action(Action::NextGroup);
+        a.on_action(Action::MoveNextFile);
         assert_eq!(a.sel, 6);
-        a.on_action(Action::PrevGroup);
+        a.on_action(Action::MovePrevFile);
         assert_eq!(a.sel, 3);
     }
 
@@ -3322,99 +2699,30 @@ mod tests {
     }
 
     #[test]
-    fn k_is_plain_up_and_investigate_has_three_keys() {
-        let key = |c| KeyEvent::from(KeyCode::Char(c));
+    fn the_queue_opens_by_level_and_l_opens_any_unit() {
         let mut a = app(3);
-        for screen in [Screen::Slim, Screen::Swipe] {
-            a.screen = screen;
-            if screen != Screen::Swipe {
-                assert_eq!(a.action_for(&key('k')), Some(Action::Up), "{screen:?}");
-            }
-            assert_eq!(a.action_for(&key('d')), Some(Action::Flagged), "{screen:?}");
-        }
-        a.screen = Screen::Swipe;
-        assert_eq!(a.action_for(&key('h')), Some(Action::PrevCard));
-        for screen in [Screen::Slim, Screen::Swipe] {
-            a.screen = screen;
-            assert_eq!(a.action_for(&key('i')), Some(Action::Investigate));
-            if screen == Screen::Slim {
-                assert_eq!(a.action_for(&key('h')), Some(Action::Investigate));
-            }
-            assert_eq!(
-                a.action_for(&KeyEvent::from(KeyCode::Left)),
-                Some(Action::Investigate)
-            );
-        }
-        // `h` follows a rebinding instead of shadowing it.
-        a.screen = Screen::Slim;
-        let ov = [("reset".to_string(), "h".to_string())]
-            .into_iter()
-            .collect();
-        a.keys = KeyMap::with_overrides(&ov).unwrap();
-        assert_eq!(a.action_for(&key('h')), Some(Action::Reset));
-    }
-
-    #[test]
-    fn swipe_has_two_directions() {
-        let mut a = app(4);
-        a.enter_swipe();
-        assert_eq!(a.swipe.cards.len(), 4);
-        a.swipe_dir(Dir::Right);
-        a.swipe_dir(Dir::Left);
-        assert_eq!(
-            (dec(&a, 0), dec(&a, 1)),
-            (Decision::Accepted, Decision::Investigate)
-        );
-        assert_eq!(a.swipe.cursor, 2);
-        assert_eq!(a.decision_counts(), (1, 1, 2));
-        // Up is plain navigation, never a decision.
-        a.on_key(KeyEvent::from(KeyCode::Up));
-        assert_eq!(a.swipe.cursor, 2);
-        assert_eq!(dec(&a, 2), Decision::Pending);
-        // Keys: l accepts, i and Left investigate, undo restores the card.
-        a.on_key(KeyEvent::from(KeyCode::Char('l')));
-        a.on_key(KeyEvent::from(KeyCode::Left));
-        assert_eq!(
-            (dec(&a, 2), dec(&a, 3)),
-            (Decision::Accepted, Decision::Investigate)
-        );
-        assert!(a.swipe_current().is_none());
-        a.undo();
-        assert_eq!(a.swipe_current().map(String::as_str), Some("u3"));
-        // Re-entering drops the accepted cards and starts on the first one.
-        a.enter_swipe();
-        assert_eq!(a.swipe.cards, vec!["u1".to_string(), "u3".to_string()]);
-        assert_eq!(a.swipe_current().map(String::as_str), Some("u1"));
-        assert_eq!(a.flagged_units().len(), 1);
-    }
-
-    #[test]
-    fn d_with_nothing_flagged_stays_put() {
-        let mut a = app(2);
-        a.on_key(KeyEvent::from(KeyCode::Char('d')));
-        assert_eq!(a.screen, Screen::Slim);
-        assert!(a.status.contains("Nothing flagged"));
+        assert_eq!((a.screen, a.grouping), (Screen::Queue, Grouping::Unit));
+        // `s` was the v1 list's way into swipe.
+        press(&mut a, "s");
+        assert_eq!(a.screen, Screen::Queue);
+        press(&mut a, "j<cr>");
+        assert_eq!(a.screen, Screen::Unit, "a pending unit opens too");
+        assert_eq!(a.sel, 1);
+        let mut a = app(3);
+        a.start(false, None, Vec::new(), None);
+        assert_eq!(a.screen, Screen::Queue);
     }
 
     #[test]
     fn the_next_key_dismisses_a_stale_status_message() {
         let mut a = app(2);
-        a.on_key(KeyEvent::from(KeyCode::Char('d')));
-        assert!(a.status.contains("Nothing flagged"));
-        a.on_key(KeyEvent::from(KeyCode::Char('j')));
+        press(&mut a, "za");
+        assert!(a.status.contains("No units are accepted for you"));
+        press(&mut a, "j");
         assert!(a.status.is_empty(), "status was {:?}", a.status);
         // An action that reports something still shows its message.
-        a.on_key(KeyEvent::from(KeyCode::Char('d')));
-        assert!(a.status.contains("Nothing flagged"));
-    }
-
-    #[test]
-    fn swipe_starts_on_the_first_card_and_flagged_ones_are_shown_again() {
-        let mut a = app(3);
-        a.review.units[0].decision = Decision::Investigate;
-        a.enter_swipe();
-        assert_eq!(a.swipe.cards.len(), 3);
-        assert_eq!(a.swipe.cursor, 0);
+        press(&mut a, "za");
+        assert!(a.status.contains("No units are accepted for you"));
     }
 
     /// A large review with an agent and nothing asked yet: `n` units, three
@@ -3439,56 +2747,6 @@ mod tests {
         a
     }
 
-    fn asked(effects: &[Effect]) -> Vec<String> {
-        let mut ids: Vec<String> = effects
-            .iter()
-            .filter_map(|e| match e {
-                Effect::Prepare(ids) => Some(ids.clone()),
-                _ => None,
-            })
-            .flatten()
-            .collect();
-        ids.sort();
-        ids
-    }
-
-    #[test]
-    fn swipe_asks_ahead_for_the_cards_nobody_asked_about() {
-        let mut a = large(40);
-        let effects = a.on_action(Action::Swipe);
-        assert_eq!(a.screen, Screen::Swipe);
-        let mut window = a.swipe.cards[..=SWIPE_AHEAD].to_vec();
-        window.sort();
-        assert_eq!(
-            asked(&effects),
-            window,
-            "the card on show and the next ones"
-        );
-        for id in &window {
-            assert_eq!(a.review.unit(id).unwrap().prep, Prep::Pending);
-        }
-        // Each step asks for the one card that came into the window.
-        let effects = a.swipe_dir(Dir::Right);
-        assert_eq!(asked(&effects), [a.swipe.cards[SWIPE_AHEAD + 1].clone()]);
-        // Nothing is asked twice: back a card and forward again.
-        a.prev_card();
-        assert!(asked(&a.swipe_dir(Dir::Right)).is_empty());
-        // Near the end the window just gets shorter.
-        a.swipe.cursor = a.swipe.cards.len() - 1;
-        assert!(asked(&a.swipe_dir(Dir::Right)).len() <= 1);
-    }
-
-    #[test]
-    fn swipe_in_a_small_review_or_without_an_agent_asks_nothing_more() {
-        let mut small = large(10);
-        small.large = false;
-        assert!(asked(&small.on_action(Action::Swipe)).is_empty());
-        let mut no_agent = large(40);
-        no_agent.has_agent = false;
-        assert!(asked(&no_agent.on_action(Action::Swipe)).is_empty());
-        assert!(asked(&no_agent.swipe_dir(Dir::Right)).is_empty());
-    }
-
     #[test]
     fn deciding_prepares_the_row_it_advances_to() {
         let mut a = large(40);
@@ -3502,7 +2760,7 @@ mod tests {
     }
 
     #[test]
-    fn slim_undo_selects_the_undone_unit() {
+    fn undo_selects_the_undone_unit() {
         let mut a = app(6);
         a.sel = 1;
         a.decide(Decision::Accepted);
@@ -3513,5 +2771,534 @@ mod tests {
         assert_eq!(a.sel, 3);
         assert_eq!(dec(&a, 3), Decision::Pending);
         assert_eq!(dec(&a, 1), Decision::Accepted);
+    }
+
+    use Decision::{Accepted as Acc, Investigate as Flag, Pending as Pend};
+
+    #[test]
+    fn counts_move_that_many_rows() {
+        let mut a = app(7);
+        press(&mut a, "5j");
+        assert_eq!(a.sel, 5);
+        press(&mut a, "2k");
+        assert_eq!(a.sel, 3);
+        press(&mut a, "20j");
+        assert_eq!(a.sel, 6, "as far as the list goes");
+        // `3gg` and `3G` go to the third row, as in Neovim.
+        press(&mut a, "3gg");
+        assert_eq!(a.sel, 2);
+        press(&mut a, "G");
+        assert_eq!(a.sel, 6);
+        press(&mut a, "1G");
+        assert_eq!(a.sel, 0);
+        assert_eq!(decisions(&a), vec![Pend; 7], "moves decide nothing");
+    }
+
+    #[test]
+    fn a_count_jumps_that_many_pending_units_or_files() {
+        let mut a = app(9);
+        a.review.units[1].decision = Acc;
+        a.review.units[3].decision = Flag;
+        // Pending after u0: u2, u4, u5.
+        press(&mut a, "2n");
+        assert_eq!(a.sel, 4);
+        press(&mut a, "N");
+        assert_eq!(a.sel, 2);
+        press(&mut a, "9n");
+        assert_eq!(a.sel, 8, "as far as there are");
+        press(&mut a, "gg2]f");
+        assert_eq!(a.sel, 6, "two files on: f2.rs");
+        press(&mut a, "2[f");
+        assert_eq!(a.sel, 0);
+    }
+
+    #[test]
+    fn a_count_decides_that_many_pending_units_as_one_step() {
+        let mut a = app(6);
+        a.review.units[1].decision = Acc;
+        let effects = press(&mut a, "3a");
+        assert!(effects.contains(&Effect::Save));
+        // u0 and the next two pending ones: u2, u3 (u1 was decided).
+        assert_eq!(decisions(&a), vec![Acc, Acc, Acc, Acc, Pend, Pend]);
+        assert_eq!(a.sel, 4, "on to the next pending unit");
+        assert_eq!(a.status, "Accepted 3 units.");
+        assert_eq!(a.review.history.undo.len(), 1);
+        assert_eq!(a.review.history.undo[0].changes.len(), 3);
+        press(&mut a, "u");
+        assert_eq!(decisions(&a), vec![Pend, Acc, Pend, Pend, Pend, Pend]);
+        assert_eq!(a.sel, 0, "undo goes to the step's first unit");
+        // A flag with a count opens no note line.
+        press(&mut a, "2f");
+        assert_eq!(decisions(&a), vec![Flag, Acc, Flag, Pend, Pend, Pend]);
+        assert_eq!(a.overlay, Overlay::None);
+    }
+
+    #[test]
+    fn f_flags_and_moves_on_asking_for_no_note() {
+        let mut a = app(3);
+        let effects = press(&mut a, "f");
+        assert!(effects.contains(&Effect::Save));
+        assert_eq!(dec(&a, 0), Flag);
+        assert_eq!(a.sel, 1);
+        assert_eq!(a.overlay, Overlay::None);
+        assert_eq!(a.review.history.undo.len(), 1);
+    }
+
+    #[test]
+    fn visual_mode_decides_the_selection_as_one_step() {
+        let mut a = app(6);
+        press(&mut a, "Vjj");
+        assert_eq!(a.visual.as_deref(), Some("u0"));
+        assert_eq!(a.visual_rows(), Some(0..=2));
+        assert_eq!(a.sel, 2);
+        assert_eq!(decisions(&a), vec![Pend; 6], "moving only selects");
+        press(&mut a, "a");
+        assert_eq!(a.visual, None, "deciding leaves visual mode");
+        assert_eq!(decisions(&a), vec![Acc, Acc, Acc, Pend, Pend, Pend]);
+        assert_eq!(a.sel, 3);
+        assert_eq!(a.review.history.undo.len(), 1);
+        // Upwards works too.
+        press(&mut a, "jjVkf");
+        assert_eq!(decisions(&a), vec![Acc, Acc, Acc, Pend, Flag, Flag]);
+        assert_eq!(a.overlay, Overlay::None);
+        assert_eq!(a.last_decision, Some((Action::DecideFlag, Some(2))));
+        // esc leaves it, deciding nothing.
+        press(&mut a, "ggVj<esc>");
+        assert_eq!(a.visual, None);
+        assert_eq!(a.review.history.undo.len(), 2);
+        // Any other action leaves it first, then runs.
+        press(&mut a, "V?");
+        assert_eq!(a.visual, None);
+        assert_eq!(a.overlay, Overlay::Help);
+    }
+
+    #[test]
+    fn dot_repeats_the_last_decision_with_its_count_or_a_new_one() {
+        let mut a = app(10);
+        press(&mut a, ".");
+        assert_eq!(a.status, "Nothing to repeat yet.");
+        press(&mut a, "a.");
+        assert_eq!(&decisions(&a)[..3], &[Acc, Acc, Pend]);
+        assert_eq!(a.sel, 2);
+        // The count goes with it...
+        press(&mut a, "2a.");
+        assert_eq!(&decisions(&a)[..7], &[Acc, Acc, Acc, Acc, Acc, Acc, Pend]);
+        // ...unless a new one is typed, which it keeps.
+        press(&mut a, "3.");
+        assert_eq!(&decisions(&a)[..9], &[Acc; 9]);
+        assert_eq!(a.last_decision, Some((Action::DecideAccept, Some(3))));
+        // Each one is a step of its own.
+        assert_eq!(a.review.history.undo.len(), 5);
+        // After visual mode it decides as many units.
+        let mut a = app(6);
+        press(&mut a, "Vja.");
+        assert_eq!(decisions(&a), vec![Acc, Acc, Acc, Acc, Pend, Pend]);
+    }
+
+    #[test]
+    fn dot_after_a_file_decision_decides_the_file_under_the_cursor() {
+        let mut a = app(9);
+        press(&mut a, "A");
+        assert_eq!(&decisions(&a)[..6], &[Acc, Acc, Acc, Pend, Pend, Pend]);
+        assert_eq!(a.sel, 3, "on to the next file's first pending unit");
+        press(&mut a, ".");
+        assert_eq!(decisions(&a), [vec![Acc; 6], vec![Pend; 3]].concat());
+        assert_eq!(a.sel, 6);
+    }
+
+    #[test]
+    fn undo_and_redo_go_through_the_reviews_history() {
+        let mut a = app(4);
+        press(&mut a, "a");
+        press(&mut a, "f<esc>");
+        assert_eq!(decisions(&a), vec![Acc, Flag, Pend, Pend]);
+        assert_eq!(a.review.history.undo.len(), 2);
+        let effects = press(&mut a, "u");
+        assert!(effects.contains(&Effect::Save));
+        assert_eq!(decisions(&a), vec![Acc, Pend, Pend, Pend]);
+        assert_eq!(a.sel, 1);
+        press(&mut a, "u");
+        assert_eq!(decisions(&a), vec![Pend; 4]);
+        assert_eq!(a.sel, 0);
+        press(&mut a, "u");
+        assert_eq!(a.status, "Nothing to undo.");
+        let effects = press(&mut a, "<c-r>");
+        assert!(effects.contains(&Effect::Save));
+        assert_eq!(decisions(&a), vec![Acc, Pend, Pend, Pend]);
+        assert_eq!(a.sel, 0);
+        assert_eq!(
+            (a.review.history.undo.len(), a.review.history.redo.len()),
+            (1, 1)
+        );
+        // The steps are part of the review, so saving and loading keeps them.
+        let json = serde_json::to_string(&a.review).unwrap();
+        let loaded: Review = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.history, a.review.history);
+        // A new decision forgets what was undone.
+        press(&mut a, "ja");
+        press(&mut a, "<c-r>");
+        assert_eq!(a.status, "Nothing to redo.");
+    }
+
+    #[test]
+    fn reset_is_one_step_that_undo_takes_back() {
+        let mut a = app(4);
+        press(&mut a, "aaf<esc>");
+        press(&mut a, ":e!<cr>");
+        assert_eq!(a.overlay, Overlay::ConfirmReset);
+        press(&mut a, "y");
+        assert_eq!(decisions(&a), vec![Pend; 4]);
+        press(&mut a, "u");
+        assert_eq!(decisions(&a), vec![Acc, Acc, Flag, Pend]);
+    }
+
+    #[test]
+    fn upper_f_flags_the_files_pending_units() {
+        let mut a = app(6);
+        a.review.units[1].decision = Acc;
+        let effects = press(&mut a, "F");
+        assert!(effects.contains(&Effect::Save));
+        assert_eq!(decisions(&a), vec![Flag, Acc, Flag, Pend, Pend, Pend]);
+        assert_eq!(a.status, "Flagged 2 units.");
+        assert_eq!(a.overlay, Overlay::None);
+        assert_eq!(a.sel, 3, "on to the next pending unit");
+        assert_eq!(a.review.history.undo.len(), 1);
+        press(&mut a, "u");
+        assert_eq!(decisions(&a), vec![Pend, Acc, Pend, Pend, Pend, Pend]);
+        // Nothing pending: nothing to flag.
+        a.review.units[0].decision = Acc;
+        a.review.units[2].decision = Acc;
+        press(&mut a, "ggF");
+        assert_eq!(a.overlay, Overlay::None);
+        assert_eq!(a.status, "Nothing pending in this file.");
+    }
+
+    #[test]
+    fn w_opens_the_finish_sheet_whatever_is_left() {
+        // Something left: the sheet, on keeping on reviewing.
+        let mut a = app(3);
+        a.review.units[0].decision = Acc;
+        press(&mut a, ":w<cr>");
+        assert_eq!(a.overlay, Overlay::Finish { sel: 0 });
+        assert_eq!(
+            a.finish_step(),
+            Some(crate::tui::finish::Step::KeepReviewing)
+        );
+        // From the notes view too.
+        press(&mut a, "<esc>");
+        a.review.units[1].dive.note = "why?".into();
+        press(&mut a, "<space>n");
+        assert!(matches!(a.overlay, Overlay::Notes { .. }));
+        press(&mut a, ":w<cr>");
+        assert!(matches!(a.overlay, Overlay::Finish { .. }));
+        // Everything accepted: the same sheet; a branch is done.
+        let mut a = app(2);
+        a.review.units[0].decision = Acc;
+        a.review.units[1].decision = Acc;
+        press(&mut a, ":w<cr>");
+        assert_eq!(a.finish_step(), Some(crate::tui::finish::Step::Done));
+    }
+
+    #[test]
+    fn q_quits_the_queue_but_leaves_the_unit_view() {
+        let mut a = app(2);
+        assert_eq!(press(&mut a, "q"), vec![Effect::Save, Effect::Quit]);
+        press(&mut a, "l");
+        assert_eq!(a.screen, Screen::Unit);
+        let effects = press(&mut a, "q");
+        assert!(!effects.contains(&Effect::Quit));
+        assert_eq!(a.screen, Screen::Queue);
+    }
+
+    #[test]
+    fn za_and_hunk_jumps_say_what_comes_later() {
+        let mut a = app(2);
+        press(&mut a, "za");
+        assert_eq!(a.status, "No units are accepted for you.");
+        assert!(!a.show_auto);
+        press(&mut a, "]c");
+        assert_eq!(a.status, "Hunk jumps work in the unit view.");
+        assert_eq!(decisions(&a), vec![Pend; 2]);
+    }
+
+    #[test]
+    fn a_tool_key_opens_the_unit_view_with_its_panel_on_any_unit() {
+        let mut a = app(2);
+        let effects = press(&mut a, "<space>t");
+        assert_eq!(a.screen, Screen::Unit);
+        assert_eq!(
+            a.unit.panel,
+            Some(super::super::unit::Panel::Tool(DiveKind::Tests))
+        );
+        assert!(effects.contains(&Effect::Dive {
+            unit_id: "u0".into(),
+            kind: DiveKind::Tests,
+            web: false,
+        }));
+    }
+
+    #[test]
+    fn half_page_scrolls_go_by_half_the_detail_area() {
+        let mut a = app(2);
+        a.detail_rows.set(20);
+        a.detail_max_scroll.set(100);
+        press(&mut a, "<c-d>");
+        assert_eq!(a.detail_offset(), 10);
+        press(&mut a, "<c-d><c-u><c-u>");
+        assert_eq!(a.detail_offset(), 0);
+    }
+
+    #[test]
+    fn find_and_goto_open_the_jump_list() {
+        let mut a = app(2);
+        press(&mut a, "/");
+        assert!(matches!(
+            &a.overlay,
+            Overlay::Jump {
+                kind: JumpKind::Find,
+                ..
+            }
+        ));
+        a.overlay = Overlay::None;
+        // Nothing here calls anything: the empty list doesn't open, the
+        // status says why (lists with entries: see `super::jump`).
+        press(&mut a, "gd");
+        assert_eq!(a.overlay, Overlay::None);
+        assert!(a.status.contains("calls nothing"), "{}", a.status);
+        press(&mut a, "jgr");
+        assert_eq!(a.overlay, Overlay::None);
+        assert!(a.status.contains("calls s1"), "{}", a.status);
+        assert_eq!(press(&mut a, "<space>s"), vec![Effect::Settings]);
+    }
+
+    #[test]
+    fn an_unknown_command_changes_nothing_and_says_so() {
+        let mut a = app(3);
+        press(&mut a, "ja");
+        let before = (decisions(&a), a.sel, a.screen, a.overlay.clone());
+        let effects = press(&mut a, ":foo<cr>");
+        assert!(effects.is_empty());
+        assert_eq!(a.status, "Not a command: :foo");
+        assert_eq!((decisions(&a), a.sel, a.screen, a.overlay.clone()), before);
+    }
+
+    #[test]
+    fn a_click_on_a_key_runs_its_action() {
+        let mut a = app(3);
+        *a.targets.borrow_mut() =
+            vec![(Rect::new(0, 0, 5, 1), Target::Action(Action::DecideAccept))];
+        a.on_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 1,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(dec(&a, 0), Acc);
+        assert_eq!(a.review.history.undo.len(), 1);
+    }
+
+    // ---- Fix loop (Phase 7) ------------------------------------------------
+
+    /// What a re-run builds after the code of units `ids` changed: their
+    /// fingerprints differ, and they come undecided, without a note.
+    fn rebuilt(a: &App, ids: &[usize]) -> Box<Review> {
+        let mut r = a.review.clone();
+        r.history = Default::default();
+        for u in &mut r.units {
+            u.decision = Pend;
+            u.accepted_by = None;
+            u.dive = Default::default();
+        }
+        for &i in ids {
+            r.units[i].fingerprint = "new".into();
+        }
+        Box::new(r)
+    }
+
+    fn listed_ids(a: &App) -> Vec<String> {
+        a.order
+            .iter()
+            .map(|&i| a.review.units[i].id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn back_from_the_agent_the_review_reruns_and_lands_on_what_changed() {
+        let mut a = app(6);
+        press(&mut a, "aaaa");
+        a.review.units[1].dive.note = "rename it".into();
+        a.review.units[1].dive.note_on = Some(String::new());
+        assert_eq!(a.agent_returned(Provider::Claude), vec![Effect::Rerun]);
+        assert_eq!(a.status, "Back from Claude Code. Re-running the review…");
+        let new = rebuilt(&a, &[1, 4]);
+        let effects = a.on_app_event(AppEvent::Rerun(Ok(new)));
+        assert!(effects.contains(&Effect::Save), "{effects:?}");
+        assert_eq!(a.status, "2 units changed by Claude Code.");
+        // The changed units lead their level, the cursor on the first.
+        assert_eq!(&listed_ids(&a)[..2], ["u1", "u4"]);
+        assert_eq!(a.selected_id().as_deref(), Some("u1"));
+        // Changed: pending, the note kept and marked. The rest keep theirs.
+        assert_eq!(decisions(&a), vec![Acc, Pend, Acc, Acc, Pend, Pend]);
+        assert_eq!(a.review.units[1].dive.note, "rename it");
+        assert!(a.review.units[1].note_is_stale());
+        // The next re-run, with no notes out, changes nothing.
+        let same = Box::new(a.review.clone());
+        a.on_app_event(AppEvent::Rerun(Ok(same)));
+        assert_eq!(a.status, "Nothing changed since the last run.");
+        assert!(a.changed.is_empty());
+    }
+
+    #[test]
+    fn copied_notes_wait_read_only_until_the_files_settle() {
+        use crate::watch::Snapshot;
+        use std::time::Duration;
+        let mut a = app(4);
+        a.cfg.fix_loop.quiet_seconds = 2.0;
+        press(&mut a, "fx<cr>");
+        a.start_waiting(1);
+        assert_eq!(
+            a.status,
+            "Waiting for the changes to the note… (q to stop waiting)"
+        );
+        // Read-only: no decision, no note line; moves still move.
+        let before = decisions(&a);
+        press(&mut a, "afiAV");
+        assert_eq!(decisions(&a), before);
+        assert_eq!((a.overlay.clone(), a.visual.clone()), (Overlay::None, None));
+        let sel = a.sel;
+        press(&mut a, "j");
+        assert_eq!(a.sel, sel + 1);
+        assert!(
+            a.status.starts_with("Waiting for the changes"),
+            "{}",
+            a.status
+        );
+
+        // The first look is the baseline; one look at a time.
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        let seen = |snap: &str, at| AppEvent::Tree {
+            seen: Ok(Snapshot(snap.into())),
+            at,
+        };
+        assert_eq!(a.watch_due(t0), Some(a.review.repo_root.clone()));
+        assert_eq!(a.watch_due(t0), None);
+        assert!(a.on_app_event(seen("a", t0)).is_empty());
+        assert_eq!(a.watch_due(t0), None, "the next look comes later");
+        // A change, then two seconds the same.
+        assert!(a.watch_due(t0 + s(1)).is_some());
+        assert!(a.on_app_event(seen("b", t0 + s(1))).is_empty());
+        assert!(a.status.starts_with("Files are changing…"), "{}", a.status);
+        assert!(a.status.contains("quiet for 2 s"), "{}", a.status);
+        assert!(a.watch_due(t0 + s(2)).is_some());
+        assert!(a.on_app_event(seen("b", t0 + s(2))).is_empty());
+        assert!(a.watch_due(t0 + s(3)).is_some());
+        assert_eq!(a.on_app_event(seen("b", t0 + s(3))), vec![Effect::Rerun]);
+        assert!(a.waiting.is_none());
+        assert_eq!(a.watch_due(t0 + s(4)), None);
+        let new = rebuilt(&a, &[0]);
+        a.on_app_event(AppEvent::Rerun(Ok(new)));
+        assert_eq!(a.status, "1 unit changed since the notes were copied.");
+    }
+
+    #[test]
+    fn q_stops_waiting_and_colon_e_reruns_instead() {
+        let mut a = app(3);
+        a.start_waiting(2);
+        assert!(a.status.contains("the 2 notes"), "{}", a.status);
+        let e = press(&mut a, "q");
+        assert!(!e.contains(&Effect::Quit), "{e:?}");
+        assert!(a.waiting.is_none());
+        assert_eq!(
+            a.status,
+            "Stopped waiting. :e re-runs the review once the changes are in."
+        );
+        // A look that was on its way changes nothing now.
+        let late = AppEvent::Tree {
+            seen: Ok(crate::watch::Snapshot("x".into())),
+            at: Instant::now(),
+        };
+        assert!(a.on_app_event(late).is_empty());
+        // `q` again quits, as in the queue.
+        assert!(press(&mut a, "q").contains(&Effect::Quit));
+
+        let mut b = app(3);
+        b.start_waiting(1);
+        assert_eq!(press(&mut b, ":e<cr>"), vec![Effect::Rerun]);
+        assert!(b.waiting.is_none());
+        // Still the notes' changes.
+        b.on_app_event(AppEvent::Rerun(Ok(rebuilt(&b, &[2]))));
+        assert_eq!(b.status, "1 unit changed since the notes were copied.");
+    }
+
+    #[test]
+    fn a_puts_away_a_note_on_changed_code_and_u_brings_it_back() {
+        use crate::review::model::ArchivedNote;
+        let mut a = app(4);
+        let stale = |a: &mut App, i: usize, note: &str| {
+            a.review.units[i].dive.note = note.into();
+            a.review.units[i].dive.note_on = Some("old".into());
+        };
+        stale(&mut a, 0, "check the limit");
+        a.sel = 0;
+        press(&mut a, "a");
+        let archived = vec![ArchivedNote {
+            text: "check the limit".into(),
+            on: Some("old".into()),
+        }];
+        let u = &a.review.units[0];
+        assert_eq!((u.decision, u.dive.note.as_str()), (Acc, ""));
+        assert_eq!(u.dive.archived, archived);
+        assert!(crate::notes::listed(&a.review).is_empty());
+        press(&mut a, "u");
+        let u = &a.review.units[0];
+        assert_eq!(
+            (u.decision, u.dive.note.as_str()),
+            (Pend, "check the limit")
+        );
+        assert!(u.dive.archived.is_empty() && u.note_is_stale());
+        press(&mut a, "<c-r>");
+        assert_eq!(a.review.units[0].dive.archived, archived);
+
+        // A note on code that didn't change stays when its unit is accepted.
+        a.review.units[1].dive.note = "fine".into();
+        a.review.units[1].dive.note_on = Some(String::new());
+        a.sel = a.position_of("u1").unwrap();
+        press(&mut a, "a");
+        assert_eq!(a.review.units[1].dive.note, "fine");
+
+        // `i` edits it without deciding; the edit is on the code as it is.
+        stale(&mut a, 2, "old note");
+        a.sel = a.position_of("u2").unwrap();
+        press(&mut a, "i<c-u>new note<cr>");
+        let u = &a.review.units[2];
+        assert_eq!((u.decision, u.dive.note.as_str()), (Pend, "new note"));
+        assert!(!u.note_is_stale());
+
+        // `f` flags it and leaves the note as it is, stale.
+        stale(&mut a, 3, "still wrong");
+        a.sel = a.position_of("u3").unwrap();
+        press(&mut a, "f");
+        assert_eq!(a.overlay, Overlay::None);
+        let u = &a.review.units[3];
+        assert_eq!((u.decision, u.dive.note.as_str()), (Flag, "still wrong"));
+        assert!(u.note_is_stale());
+    }
+
+    #[test]
+    fn colon_e_bang_resets_every_decision_then_reruns() {
+        let mut a = app(4);
+        press(&mut a, "aaf<esc>");
+        press(&mut a, ":e!<cr>");
+        assert_eq!(a.overlay, Overlay::ConfirmReset);
+        assert_eq!(a.reset_count(), 4);
+        assert_eq!(press(&mut a, "y"), vec![Effect::Save, Effect::Rerun]);
+        assert_eq!(decisions(&a), vec![Pend; 4]);
+        // No is no: nothing reset, nothing re-run.
+        a.sel = 0;
+        press(&mut a, "a");
+        press(&mut a, ":e!<cr>");
+        assert!(press(&mut a, "n").is_empty());
+        assert_eq!(dec(&a, 0), Acc);
     }
 }

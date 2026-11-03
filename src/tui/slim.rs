@@ -1,27 +1,20 @@
-//! The review list, file by file, in a box per level: needs a close look,
-//! worth a look, routine. A file sits in the box of the most attention one
-//! of its units needs. Each file's name is a label nobody selects (with how
-//! many of its units are decided on the right); its units, the functions
-//! and other parts it changed, sit under it, most attention first, each
+//! The queue's boxes, one per level: needs a close look, worth a look,
+//! routine. Listed by unit ([`Grouping::Unit`], the default), each unit
+//! sits in its own level's box, its file named on its row (see
+//! [`super::queue::row`]). Listed by file (`zf`, [`Grouping::File`]), a
+//! file sits in the box of the most attention one of its units needs, its
+//! name a label nobody selects (with how many of its units are decided on
+//! the right), its units under it, most attention first. Each unit is
 //! behind its level's icon: `▲` needs a close look, `◆` worth a look, `●`
 //! routine. The cursor only ever moves over units. Units with no behavior
-//! change follow in their file, muted with why (`○`), and nobody selects
-//! them. Two muted boxes close the list: files with nothing but such units,
-//! and changed files teer can't show. Each box is a rounded box with a
-//! titled top edge, drawn by hand as plain lines so scrolling and click
-//! mapping stay line based. A row holds the unit's name; the reasons,
-//! summary and code change live in the preview pane. Accepted rows are
-//! dimmed, removed names struck through, flagged names in the flagged
-//! style.
+//! change are accepted for you and not listed; a line under the boxes says
+//! how many, and `za` lists them, behind `○`, in an "Accepted for you" box.
+//! A muted box closes the list: changed files teer can't show. Each box is
+//! a rounded box with a titled top edge, drawn by hand as plain lines so
+//! scrolling and click mapping stay line based.
 //!
-//! Listed by unit (`f`, [`Grouping::Unit`]), each unit sits in its own
-//! level's box instead, with no file names as labels: a muted column on the
-//! right of each row names its file, by as much of its path as tells it
-//! from the other listed files (`mod.rs`, `review/mod.rs`). Units with no
-//! behavior change then all go in the muted box, under their files.
-
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+//! Also the pieces other screens draw units with: names, places, levels'
+//! styles, statements and the models that wrote them.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -29,6 +22,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::app::{App, Grouping};
 use crate::config::Role;
+use crate::keymap::Action;
 use crate::review::attention::Level;
 use crate::review::model::{Decision, LineRef, Prep, Side, Unit, UnitKind, UnitStatus};
 use crate::units::extract::MODULE_SYMBOL;
@@ -305,7 +299,7 @@ pub fn fit_path(path: &str, w: usize) -> String {
 }
 
 /// The style of a level's icon in a row: the routine ones step back.
-fn icon_style(app: &App, level: Level) -> Style {
+pub(super) fn icon_style(app: &App, level: Level) -> Style {
     match level {
         Level::Same | Level::Routine => app.theme.muted(),
         _ => level_style(app, level),
@@ -313,7 +307,7 @@ fn icon_style(app: &App, level: Level) -> Style {
 }
 
 /// `path` in `w` cells, its folders muted and the file name in `style`.
-fn path_spans(app: &App, path: &str, w: usize, style: Style) -> Vec<Span<'static>> {
+pub(super) fn path_spans(app: &App, path: &str, w: usize, style: Style) -> Vec<Span<'static>> {
     let fitted = fit_path(path, w);
     let (dir, name) = match fitted.rfind('/') {
         Some(i) => fitted.split_at(i + 1),
@@ -386,47 +380,19 @@ fn muted_row(app: &App, lead: &str, name: &str, why: &str, width: usize) -> Line
     line
 }
 
-/// Units of `file` with no behavior change, in line order.
-fn same_in<'a>(app: &'a App, file: &std::path::Path) -> Vec<&'a Unit> {
-    let mut same: Vec<&Unit> = app
-        .review
-        .units
-        .iter()
-        .enumerate()
-        .filter(|(i, u)| u.file == file && app.level_of(*i).level == Level::Same)
-        .map(|(_, u)| u)
-        .collect();
-    same.sort_by_key(|u| u.display_line());
-    same
-}
-
-/// Why a unit has no behavior change.
-fn same_reason(u: &Unit) -> String {
-    u.nbc_reason
-        .clone()
-        .unwrap_or_else(|| "no behavior change".into())
-}
-
-/// Files in the muted box, by path: files with no unit to decide (every
-/// unit has no behavior change), or listed by unit, every file with a unit
-/// that has none.
-fn quiet_files(app: &App) -> Vec<&std::path::Path> {
-    let by_file = app.grouping == Grouping::File;
-    let mut files: Vec<&std::path::Path> = Vec::new();
-    for (i, u) in app.review.units.iter().enumerate() {
-        if app.level_of(i).level == Level::Same
-            && (!by_file
-                || !app
-                    .order
-                    .iter()
-                    .any(|&o| app.review.units[o].file == u.file))
-            && !files.contains(&u.file.as_path())
-        {
-            files.push(&u.file);
-        }
+/// The line that closes the list when units were accepted for you: how
+/// many, and the key that shows or hides them. `None` when there are none.
+pub fn auto_line(app: &App) -> Option<String> {
+    let n = app.auto_accepted();
+    if n == 0 {
+        return None;
     }
-    files.sort();
-    files
+    let does = if app.show_auto { "hides" } else { "shows" };
+    let key = app.keys.label(Action::ToggleAutoAccepted);
+    Some(format!(
+        "{} accepted for you, {key} {does} them",
+        plural(n, "unit")
+    ))
 }
 
 /// Widest count a file name can show (`⠋ ⚑ done/total`), for sizing the
@@ -460,37 +426,29 @@ fn column_widths(width: usize, widest: usize) -> (usize, usize) {
 /// Widest list [`fit_width`] looks at.
 const FIT_MAX: usize = 512;
 
-/// Narrowest list in which every file shows its whole path and count, every
-/// unit its whole name and every level's box its whole title (why a unit
-/// has no behavior change, and the muted boxes' titles, are cut as needed).
+/// Narrowest queue in which every file shows its whole path and count, every
+/// unit its whole row (as wide as [`super::queue::rows_width`] says), every
+/// level's box its whole title and the line about units accepted for you
+/// fits on one line (the muted box's title is cut as needed).
 pub fn fit_width(app: &App) -> usize {
     let widest = widest_count(app);
     let path = |p: &std::path::Path| sanitize(&p.display().to_string()).width();
     let by_file = app.grouping == Grouping::File;
-    let short = short_paths(app);
-    let shown = widest_shown(app, &short);
     // A file's path, beside its count; any other row's whole width.
     let mut file = 0;
-    let mut row = 0;
+    let mut row = super::queue::rows_width(app);
     for (pos, &i) in app.order.iter().enumerate() {
-        let u = &app.review.units[i];
-        row = row.max(UNIT_LEAD + indent(app, i).width() + row_name(u).width());
         if by_file && app.starts_file(pos) {
-            file = file.max(path(&u.file));
-        }
-    }
-    if shown > 0 {
-        row += 2 + shown;
-    }
-    for (i, u) in app.review.units.iter().enumerate() {
-        if app.level_of(i).level == Level::Same {
-            row = row
-                .max(UNIT_LEAD + row_name(u).width())
-                .max(3 + path(&u.file));
+            file = file.max(path(&app.review.units[i].file));
         }
     }
     for f in &app.review.skipped {
         row = row.max(3 + path(&f.path));
+    }
+    // The line under the boxes takes the borders' cells too: a blank, the
+    // glyph and a blank, then its text.
+    if let Some(text) = auto_line(app) {
+        row = row.max((1 + 2 + text.width()).saturating_sub(3));
     }
     // A title, its spaces, the corners and a few dashes.
     let title = boxes_of(app)
@@ -502,11 +460,7 @@ pub fn fit_width(app: &App) -> usize {
     (4..FIT_MAX)
         .find(|&width| {
             let (n, c) = column_widths(width - 3, widest);
-            n >= file
-                && c >= widest
-                && width - 3 >= row
-                && file_column(width - 3, shown) == shown
-                && width >= title
+            n >= file && c >= widest && width - 3 >= row && width >= title
         })
         .unwrap_or(FIT_MAX)
 }
@@ -535,63 +489,15 @@ fn box_title(app: &App, level: Level, files: &[usize]) -> String {
             plural(units, "unit")
         }
     };
-    format!("{} · {n}", level.title())
+    format!("{} · {n}", box_name(level))
 }
 
-/// Each listed file's shortest end of its path that no other listed
-/// file's path ends with: `mod.rs`, or `review/mod.rs` when `agent/mod.rs`
-/// is listed too. Empty when listed by file, where files have labels.
-fn short_paths(app: &App) -> HashMap<&Path, String> {
-    if app.grouping == Grouping::File {
-        return HashMap::new();
-    }
-    let mut files: Vec<&Path> = app
-        .order
-        .iter()
-        .map(|&i| app.review.units[i].file.as_path())
-        .collect();
-    files.sort();
-    files.dedup();
-    files
-        .iter()
-        .map(|&f| {
-            let parts: Vec<_> = f.components().collect();
-            let tail = |n: usize| parts[parts.len() - n..].iter().collect::<PathBuf>();
-            let n = (1..parts.len())
-                .find(|&n| {
-                    let t = tail(n);
-                    files.iter().all(|&o| o == f || !o.ends_with(&t))
-                })
-                .unwrap_or(parts.len());
-            (f, sanitize(&tail(n).display().to_string()))
-        })
-        .collect()
-}
-
-/// What the file column of `u`'s row says: its file's short path, nothing
-/// for a whole file already named so.
-fn shown_file<'a>(u: &Unit, short: &'a HashMap<&Path, String>) -> &'a str {
-    match short.get(u.file.as_path()) {
-        Some(s) if !(u.kind == UnitKind::File && *s == row_name(u)) => s,
-        _ => "",
-    }
-}
-
-/// Widest file column text of the listed units; 0 listed by file.
-fn widest_shown(app: &App, short: &HashMap<&Path, String>) -> usize {
-    app.order
-        .iter()
-        .map(|&i| shown_file(&app.review.units[i], short).width())
-        .max()
-        .unwrap_or(0)
-}
-
-/// Cells of the file column in rows of `inner` cells: the `widest` text in
-/// it, cut so names keep 10 cells; none when under 4 would be left.
-fn file_column(inner: usize, widest: usize) -> usize {
-    match widest.min(inner.saturating_sub(UNIT_LEAD + 10 + 2)) {
-        w if w >= 4 => w,
-        _ => 0,
+/// What a level's box is called. Only units accepted for you are listed at
+/// [`Level::Same`] (see [`App::shown_level`]).
+fn box_name(level: Level) -> &'static str {
+    match level {
+        Level::Same => "Accepted for you",
+        _ => level.title(),
     }
 }
 
@@ -622,11 +528,11 @@ fn bottom_edge(app: &App, width: usize) -> Line<'static> {
 }
 
 /// Cells before a unit's name: the gutter, two blanks, its icon and a blank.
-const UNIT_LEAD: usize = 5;
+pub(super) const UNIT_LEAD: usize = 5;
 
 /// What unit `ui`'s name is indented by in a story: `↳ ` under the unit
 /// that calls it, two more cells per level down to the third.
-fn indent(app: &App, ui: usize) -> String {
+pub(super) fn indent(app: &App, ui: usize) -> String {
     match app.depth.get(ui).copied().unwrap_or(0) {
         0 => String::new(),
         depth => format!("{}↳ ", "  ".repeat(depth.min(3) - 1)),
@@ -643,71 +549,10 @@ pub fn file_name(path: &std::path::Path) -> String {
 /// files inside them.
 pub const PADDING_MIN_ROWS: usize = 14;
 
-/// The rows with blank lines between boxes and files.
-pub fn build(app: &App, width: u16) -> Rows {
-    build_with(app, width, true)
-}
-
-/// The unit row at `pos`, `width` cells: the name takes what the icon and
-/// indent leave, the count column of file names included. Listed by unit,
-/// `file` names its file in a muted column of `file_w` cells on the right.
-fn unit_row(app: &App, pos: usize, width: usize, file: &str, file_w: usize) -> Line<'static> {
-    let t = &app.theme;
-    let ui = app.order[pos];
-    let u = &app.review.units[ui];
-    let selected = pos == app.sel;
-    let name_style = if u.decision == Decision::Accepted {
-        t.accepted_row()
-    } else if u.decision == Decision::Investigate {
-        t.flagged_row()
-    } else if selected {
-        t.accent()
-    } else {
-        Style::new()
-    };
-    let name_style = if selected {
-        name_style.add_modifier(Modifier::BOLD)
-    } else {
-        name_style
-    };
-    let name_style = if u.status == UnitStatus::Removed {
-        name_style.add_modifier(Modifier::CROSSED_OUT)
-    } else {
-        name_style
-    };
-    let level = app.level_of(ui).level;
-    let icon = if u.decision == Decision::Accepted {
-        t.accepted_row()
-    } else {
-        icon_style(app, level)
-    };
-    let indent = indent(app, ui);
-    // A pencil at the end says the reviewer wrote a note on it.
-    let noted = !u.dive.note.trim().is_empty();
-    let mark = if noted { 2 } else { 0 };
-    let column = if file_w > 0 { 2 + file_w } else { 0 };
-    let name_w = width.saturating_sub(UNIT_LEAD + indent.width() + mark + column);
-    let mut spans = vec![
-        if selected {
-            Span::styled("▌", t.accent())
-        } else {
-            Span::raw(" ")
-        },
-        Span::raw("  "),
-        Span::styled(format!("{} ", level.icon()), icon),
-        Span::styled(indent, t.muted()),
-        // The file and lines are in the preview; the row is just the name.
-        Span::styled(truncate_pad(&row_name(u), name_w), name_style),
-    ];
-    if noted {
-        spans.push(Span::styled(" ✎", t.accent()));
-    }
-    if file_w > 0 {
-        let fitted = truncate_pad(&fit_path(file, file_w), file_w);
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(fitted, t.muted()));
-    }
-    Line::from(spans)
+/// Is the unit at `pos` inside the visual selection, which runs from its
+/// anchor to the cursor?
+pub fn in_visual(app: &App, pos: usize) -> bool {
+    app.visual_rows().is_some_and(|rows| rows.contains(&pos))
 }
 
 /// Rows being built: the lines so far, and how a content line of `inner`
@@ -778,17 +623,11 @@ impl Builder<'_> {
         }
         self.last = Some(self.rows.lines.len());
     }
-
-    /// The muted rows of `file`'s units with no behavior change.
-    fn same_rows(&mut self, file: &std::path::Path) {
-        for u in same_in(self.app, file) {
-            let line = muted_row(self.app, "○ ", &row_name(u), &same_reason(u), self.inner);
-            self.row(line.spans, None);
-        }
-    }
 }
 
-pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
+/// The queue's rows (see [`super::queue::row`]), `width` cells wide, with
+/// blank lines between boxes and files when `padded`.
+pub fn build_queue(app: &App, width: u16, padded: bool) -> Rows {
     let t = &app.theme;
     let width = width as usize;
     // Below 4 cells there is no room for a box: bare rows.
@@ -813,8 +652,8 @@ pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
     };
     let by_file = app.grouping == Grouping::File;
     let (name_w, count_w) = column_widths(inner, widest_count(app));
-    let short = short_paths(app);
-    let file_w = file_column(inner, widest_shown(app, &short));
+    // Listed by unit, a row names its file in front of its name.
+    let path_w = super::queue::path_column(app, inner);
     for (level, files) in boxes_of(app) {
         let title = b.open_box(&box_title(app, level, &files), level_style(app, level));
         for &start in &files {
@@ -830,8 +669,8 @@ pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
             }
             for pos in app.file_range(start) {
                 let line = b.rows.lines.len();
-                let file = shown_file(&app.review.units[app.order[pos]], &short);
-                b.row(unit_row(app, pos, inner, file, file_w).spans, Some(pos));
+                let row = super::queue::row(app, pos, inner, path_w);
+                b.row(row.spans, Some(pos));
                 b.rows.spans[pos] = (line, line + 1);
                 // With no file name above it, a unit is its own head.
                 b.rows.heads[pos] = if by_file { head } else { line };
@@ -839,26 +678,9 @@ pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
                 b.rows.ends[pos] = line + 1;
                 b.last_unit = Some(pos);
             }
-            if by_file {
-                b.same_rows(app.file_at(start));
-            }
         }
     }
-    // Two muted boxes nobody selects: files with nothing to decide, then
-    // changed files teer can't show.
-    let quiet = quiet_files(app);
-    if !quiet.is_empty() {
-        let title = format!("{} · {}", Level::Same.title(), plural(quiet.len(), "file"));
-        b.open_box(&title, level_style(app, Level::Same));
-        for file in quiet {
-            b.file_gap(false);
-            let mut spans = vec![Span::raw("   ")];
-            let path = file.display().to_string();
-            spans.extend(path_spans(app, &path, inner.saturating_sub(3), t.muted()));
-            b.row(spans, None);
-            b.same_rows(file);
-        }
-    }
+    // A muted box nobody selects: changed files teer can't show.
     let skipped = &app.review.skipped;
     if !skipped.is_empty() {
         let title = format!("Not shown · {}", plural(skipped.len(), "file"));
@@ -870,6 +692,19 @@ pub fn build_with(app: &App, width: u16, padded: bool) -> Rows {
         }
     }
     b.close_box();
+    // How many units were accepted for you, under the boxes, wrapped
+    // rather than cut: it names the key.
+    if let Some(text) = auto_line(app) {
+        if b.padded && !b.rows.lines.is_empty() {
+            b.rows.push(Line::raw(" ".repeat(width)), None);
+        }
+        // It leads with the glyph of a unit accepted for you.
+        let text = format!("{} {text}", Level::Same.icon());
+        for l in wrap(&text, width.saturating_sub(1)) {
+            let l = truncate_pad(&format!(" {l}"), width);
+            b.rows.push(Line::styled(l, t.muted()), None);
+        }
+    }
     // A blank line under the last box, so the list visibly ends.
     if b.padded && !b.rows.lines.is_empty() {
         b.rows.push(Line::raw(" ".repeat(width)), None);
@@ -889,7 +724,8 @@ fn plural(n: usize, word: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, KeyMap};
+    use crate::config::Config;
+    use crate::keymap::Keymap;
     use crate::review::model::{Range, Review};
     use std::path::PathBuf;
 
@@ -912,6 +748,8 @@ mod tests {
             summary: Some("Does something fairly involved with a long description text".into()),
             nbc_reason: None,
             dive: Default::default(),
+            accepted_by: None,
+            reasons: Vec::new(),
             dive_pending: Default::default(),
             checks: Default::default(),
         }
@@ -938,8 +776,21 @@ mod tests {
             skipped: Vec::new(),
             graph: Default::default(),
             questions: Vec::new(),
+            version: 0,
+            history: Default::default(),
+            branch: None,
+            cursor: None,
         };
-        App::new(review, Config::default(), KeyMap::default())
+        let mut app = App::new(review, Config::default(), Keymap::default());
+        // Listed by file (`zf`): each file's name above its units.
+        app.grouping = Grouping::File;
+        app.rebuild_order();
+        app
+    }
+
+    /// The queue's rows with blank lines between boxes and files.
+    fn build(app: &App, width: u16) -> Rows {
+        build_queue(app, width, true)
     }
 
     fn text_of(l: &Line) -> String {
@@ -1099,26 +950,6 @@ mod tests {
     }
 
     #[test]
-    fn rows_are_just_the_icon_and_the_name() {
-        let app = app();
-        for width in [60u16, 80, 120] {
-            let rows = build(&app, width);
-            for pos in 0..app.order.len() {
-                let t = text_of(&rows.lines[rows.spans[pos].0]);
-                assert!(t.starts_with('│') && t.ends_with('│'), "{t:?}");
-                let t: String = t.chars().skip(2).collect();
-                assert!(t.starts_with("  ◆ a_rather_long"), "{t:?}");
-                // Where the unit is, the preview says.
-                assert!(!t.contains(":10-20"), "{t:?}");
-                assert!(!t.contains("Does something"), "{t:?}");
-                for g in ["✓", "⚑", "+", "~", "−"] {
-                    assert!(!t.contains(g), "{g} in {t:?}");
-                }
-            }
-        }
-    }
-
-    #[test]
     fn each_unit_sits_under_its_files_name_in_its_levels_box() {
         let rows = build(&app(), 80);
         let title = text_of(&rows.lines[0]);
@@ -1241,6 +1072,38 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::CROSSED_OUT)
         );
+    }
+
+    #[test]
+    fn visual_rows_run_from_the_anchor_to_the_cursor() {
+        use crate::config::Theme;
+        for theme in [Theme::Dark, Theme::Mono] {
+            let mut app = themed_app(theme);
+            assert_eq!(app.order.len(), 3);
+            let marked = |app: &App, pos: usize| {
+                let s = cell_style(app, pos, NAME_X, 120);
+                if theme == Theme::Mono {
+                    s.add_modifier.contains(Modifier::REVERSED)
+                } else {
+                    s.bg.is_some() && s.bg == app.theme.visual().bg
+                }
+            };
+            let gutter = |app: &App, pos: usize| {
+                let rows = build(app, 120);
+                rows.lines[rows.spans[pos].0].spans[1].content.to_string()
+            };
+            for (anchor, sel) in [(0, 1), (1, 0)] {
+                app.visual = Some(app.review.units[app.order[anchor]].id.clone());
+                app.sel = sel;
+                assert!(marked(&app, 0) && marked(&app, 1), "{theme:?}");
+                assert!(!marked(&app, 2), "{theme:?}");
+                assert_eq!(gutter(&app, 0), "▌");
+                assert_eq!(gutter(&app, 1), "▌");
+                assert_eq!(gutter(&app, 2), " ");
+            }
+            app.visual = None;
+            assert!((0..3).all(|pos| !marked(&app, pos)), "{theme:?}");
+        }
     }
 
     #[test]

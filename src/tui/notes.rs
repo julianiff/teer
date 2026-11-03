@@ -1,5 +1,5 @@
 //! The reviewer's notes on screen: the card under a unit's code, the editor
-//! (`m`), and the notes view (`N`) that takes them out of teer.
+//! (`i`), and the notes view (`␣n`) that lists them; `:w` takes them out of teer.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -10,7 +10,8 @@ use unicode_width::UnicodeWidthStr;
 
 use super::app::{App, Target};
 use super::diff;
-use crate::config::Action;
+use super::ui::{self, fixed};
+use crate::keymap::Action;
 use crate::review::model::Unit;
 use crate::util::{sanitize, truncate, truncate_pad, wrap};
 
@@ -55,11 +56,14 @@ pub fn card(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
         }
     }
     out.extend(body.into_iter().map(|l| line(l, t.text())));
+    // On changed code the note stays until acted on (Phase 7): `a` puts it
+    // away with the code accepted, `i` writes it again on this code.
     if u.note_is_stale() {
         out.push(line(
             format!(
-                "the code changed since · {} confirms",
-                app.keys.label(Action::EditNote)
+                "the code changed since this note · {} accepts · {} edits",
+                app.keys.label(Action::DecideAccept),
+                app.keys.label(Action::NoteEdit)
             ),
             t.muted(),
         ));
@@ -146,12 +150,15 @@ pub fn draw_editor(f: &mut Frame, app: &App, id: &str, text: &str) {
         })
         .collect();
     rows.push(Line::default());
-    rows.push(Line::from(vec![
-        Span::styled("enter", t.accent()),
-        Span::raw(" save · "),
-        Span::styled("esc", t.accent()),
-        Span::raw(" cancel · an empty note is deleted"),
-    ]));
+    let (mut keys, plain) = ui::hint_line(
+        app,
+        &[
+            ui::hint(fixed::ENTER, "save"),
+            ui::hint(fixed::ESC, "cancel"),
+        ],
+    );
+    keys.spans.push(Span::raw(" · an empty note is deleted"));
+    rows.push(keys);
     let h = rows.len() as u16 + 4;
     let r = Rect::new(
         area.x + (area.width - w) / 2,
@@ -165,30 +172,22 @@ pub fn draw_editor(f: &mut Frame, app: &App, id: &str, text: &str) {
     let inner = block.inner(r);
     f.render_widget(block, r);
     f.render_widget(Paragraph::new(rows), inner);
-    super::ui::text_area(app, inner, 0);
-    super::ui::click_hints(f, app, inner, "enter save · esc cancel");
+    ui::text_area(app, inner, 0);
+    ui::click_hints(f, app, inner, &plain);
 }
 
-/// The keys of the notes view, as `(key, label)`: handing over to the agent
-/// CLI only for a local review, posting only for a pull request.
-fn view_keys(app: &App) -> Vec<(String, &'static str)> {
-    let mut keys = vec![
-        ("enter".to_string(), "go to"),
-        (app.keys.label(Action::EditNote), "edit"),
-        ("d".into(), "delete"),
-        ("y".into(), "copy all"),
-    ];
-    if app.review.pr.is_some() {
-        keys.push(("p".into(), "post on the PR"));
-    } else {
-        match app.cfg.provider() {
-            crate::config::Provider::Claude => keys.push(("c".into(), "hand to Claude Code")),
-            crate::config::Provider::Codex => keys.push(("c".into(), "hand to Codex")),
-            crate::config::Provider::Api => {}
-        }
-    }
-    keys.push(("esc".into(), "close"));
-    keys
+/// The keys of the notes view, as `(key, label)`. The notes leave teer
+/// through the `:w` sheet.
+fn view_keys(app: &App) -> Vec<(String, String)> {
+    let k = |a: Action, what: &str| ui::hint(app.keys.label(a), what);
+    vec![
+        k(Action::ViewOpen, "go to"),
+        k(Action::NoteEdit, "edit"),
+        k(Action::NoteDelete, "delete"),
+        k(Action::FinishYank, "copy all"),
+        k(Action::FinishOpen, "finish"),
+        k(Action::ViewClose, "close"),
+    ]
 }
 
 /// The notes view: every note by file, the selected one marked, and the
@@ -278,16 +277,7 @@ pub fn draw_view(f: &mut Frame, app: &App, sel: usize) {
         places.push((start, lines.len()));
     }
 
-    let keys = view_keys(app);
-    let mut spans = Vec::new();
-    for (i, (k, l)) in keys.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(" · ", t.muted()));
-        }
-        spans.push(Span::styled(k.clone(), t.accent()));
-        spans.push(Span::raw(format!(" {l}")));
-    }
-    let foot = Line::from(spans);
+    let (foot, hints) = ui::hint_line(app, &view_keys(app));
     let [body, _, keys_row] = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(1),
@@ -304,7 +294,7 @@ pub fn draw_view(f: &mut Frame, app: &App, sel: usize) {
     let shown: Vec<Line> = lines.into_iter().skip(top).take(rows).collect();
     f.render_widget(Paragraph::new(shown), body);
     f.render_widget(Paragraph::new(foot), keys_row);
-    super::ui::text_area(app, inner, 0);
+    ui::text_area(app, inner, 0);
     // A click on a note selects it.
     for (i, (start, end)) in places.into_iter().enumerate() {
         for line in start.max(top)..end.min(top + rows) {
@@ -313,6 +303,5 @@ pub fn draw_view(f: &mut Frame, app: &App, sel: usize) {
             app.targets.borrow_mut().push((at, Target::Note(i)));
         }
     }
-    let hints: Vec<String> = keys.iter().map(|(k, l)| format!("{k} {l}")).collect();
-    super::ui::click_hints(f, app, keys_row, &hints.join(" · "));
+    ui::click_hints(f, app, keys_row, &hints);
 }

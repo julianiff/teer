@@ -1,0 +1,991 @@
+//! The queue listed by file (`zf`) is a box per level, each holding the
+//! files whose most critical unit has that level: the file's name as a
+//! label, its units under it, most critical first. The cursor only ever
+//! moves over units. `]f` `[f` jump file to file, `A` accepts a file's
+//! pending units (one undo step), and a large review asks the agent about a
+//! file when the cursor gets to it. `zf` lists each unit in its own level's
+//! box instead, its file named on its row.
+
+use crate::common;
+
+use common::v2;
+
+use std::path::PathBuf;
+
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use teer::config::Config;
+use teer::keymap::{Action, Keymap};
+use teer::review::model::{Decision, Prep, Range, Review, SessionRef, Unit, UnitKind, UnitStatus};
+use teer::tui::app::{App, Effect, Grouping, Overlay, Screen, Target};
+use teer::tui::{slim, ui};
+
+#[derive(Clone, Copy)]
+enum Kind {
+    /// Removed while still called: needs a close look.
+    Close,
+    /// Not described: worth a look.
+    Look,
+    Routine,
+    /// Formatting only: no behavior change.
+    Same,
+}
+
+fn unit(id: &str, file: &str, line: u32, kind: Kind) -> Unit {
+    let mut u = Unit {
+        id: format!("{file}::{id}"),
+        file: PathBuf::from(file),
+        symbol: id.into(),
+        kind: UnitKind::Function,
+        status: UnitStatus::Changed,
+        old_range: None,
+        new_range: Some(Range::new(line, line + 5)),
+        renamed_from: None,
+        fingerprint: String::new(),
+        changes: Vec::new(),
+        prep: Prep::Skipped,
+        callers: Vec::new(),
+        callees: Vec::new(),
+        decision: Decision::Pending,
+        summary: Some("summary".into()),
+        nbc_reason: None,
+        dive: Default::default(),
+        accepted_by: None,
+        reasons: Vec::new(),
+        dive_pending: Default::default(),
+        checks: Default::default(),
+    };
+    match kind {
+        Kind::Close => {
+            u.status = UnitStatus::Removed;
+            u.callers = vec!["somebody".into()];
+        }
+        Kind::Look => u.prep = Prep::Unavailable,
+        Kind::Routine => {}
+        Kind::Same => {
+            u.status = UnitStatus::NoBehaviorChange;
+            u.nbc_reason = Some("formatting only".into());
+        }
+    }
+    u
+}
+
+/// Two close looks in `src/c.rs`, a routine unit above them and a
+/// formatting change after them; three worth-a-look units in two files; 20
+/// routine units in five files of four; and `src/q.rs` with only a
+/// formatting change.
+/// Positions: `src/c.rs` 0-2 (close_a, close_b, c_helper), `src/l0.rs` 3-4,
+/// `src/l1.rs` 5, `src/r0.rs` 6-9, `src/r1.rs` 10-13, ... `src/r4.rs` 22-25.
+fn units() -> Vec<Unit> {
+    let mut v = vec![
+        unit("c_helper", "src/c.rs", 5, Kind::Routine),
+        unit("close_a", "src/c.rs", 10, Kind::Close),
+        unit("close_b", "src/c.rs", 30, Kind::Close),
+        unit("tidy", "src/c.rs", 50, Kind::Same),
+        unit("look_a", "src/l0.rs", 10, Kind::Look),
+        unit("look_b", "src/l0.rs", 30, Kind::Look),
+        unit("look_c", "src/l1.rs", 10, Kind::Look),
+        unit("quiet", "src/q.rs", 10, Kind::Same),
+    ];
+    for f in 0..5 {
+        for k in 0..4 {
+            v.push(unit(
+                &format!("r{f}_{k}"),
+                &format!("src/r{f}.rs"),
+                10 + 20 * k,
+                Kind::Routine,
+            ));
+        }
+    }
+    v
+}
+
+fn app_with(units: Vec<Unit>, cfg: Config) -> App {
+    app_keys(units, cfg, Keymap::default())
+}
+
+fn app_keys(units: Vec<Unit>, cfg: Config, keys: Keymap) -> App {
+    common::isolate_env();
+    let mut paths: Vec<PathBuf> = units.iter().map(|u| u.file.clone()).collect();
+    paths.dedup();
+    let files = paths
+        .into_iter()
+        .map(|path| teer::git::ChangedFile {
+            path,
+            old_path: None,
+            status: teer::git::FileStatus::Modified,
+            old_content: None,
+            new_content: None,
+        })
+        .collect();
+    let review = Review {
+        id: "t".into(),
+        repo_root: PathBuf::from("/r"),
+        base: "b".into(),
+        head: "h".into(),
+        head_commit: "h".into(),
+        agent_session: None,
+        pr: None,
+        intent: Default::default(),
+        created_at: chrono::Utc::now(),
+        files,
+        units,
+        skipped: vec![teer::git::SkippedFile {
+            path: PathBuf::from("assets/logo.png"),
+            status: teer::git::FileStatus::Added,
+            why: "binary".into(),
+        }],
+        graph: Default::default(),
+        questions: Vec::new(),
+        version: 0,
+        history: Default::default(),
+        branch: None,
+        cursor: None,
+    };
+    // The queue listed by file (`zf`).
+    let mut app = App::new(review, cfg, keys);
+    app.grouping = Grouping::File;
+    app.rebuild_order();
+    app
+}
+
+fn app() -> App {
+    app_with(units(), Config::default())
+}
+
+fn render(app: &App, w: u16, h: u16) -> Terminal<TestBackend> {
+    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+    t.draw(|f| ui::draw(f, app)).unwrap();
+    t
+}
+
+/// The screen as lines of plain text.
+fn lines(app: &App, w: u16, h: u16) -> Vec<String> {
+    let t = render(app, w, h);
+    let buf = t.backend().buffer();
+    (0..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect()
+        })
+        .collect()
+}
+
+fn text(app: &App, w: u16, h: u16) -> String {
+    lines(app, w, h).join("\n")
+}
+
+fn press(a: &mut App, code: KeyCode, mods: KeyModifiers) -> Vec<Effect> {
+    a.on_event(Event::Key(KeyEvent::new(code, mods)))
+}
+
+fn key(a: &mut App, c: char) -> Vec<Effect> {
+    press(a, KeyCode::Char(c), KeyModifiers::NONE)
+}
+
+fn code(a: &mut App, c: KeyCode) -> Vec<Effect> {
+    press(a, c, KeyModifiers::NONE)
+}
+
+fn ctrl(a: &mut App, c: char) -> Vec<Effect> {
+    press(a, KeyCode::Char(c), KeyModifiers::CONTROL)
+}
+
+fn shift_a(a: &mut App) -> Vec<Effect> {
+    press(a, KeyCode::Char('A'), KeyModifiers::SHIFT)
+}
+
+fn symbol(a: &App) -> &str {
+    &a.selected().unwrap().symbol
+}
+
+fn decisions(a: &App) -> Vec<Decision> {
+    a.review.units.iter().map(|u| u.decision).collect()
+}
+
+fn accepted(a: &App) -> Vec<&str> {
+    a.review
+        .units
+        .iter()
+        .filter(|u| u.decision == Decision::Accepted)
+        .map(|u| u.symbol.as_str())
+        .collect()
+}
+
+fn prepared(effects: &[Effect]) -> Vec<String> {
+    effects
+        .iter()
+        .flat_map(|e| match e {
+            Effect::Prepare(ids) => ids.clone(),
+            _ => vec![],
+        })
+        .collect()
+}
+
+/// Plain text of a built row.
+fn row_text(l: &ratatui::text::Line) -> String {
+    l.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+// ---- Rows -----------------------------------------------------------------
+
+#[test]
+fn each_file_sits_in_the_box_of_its_most_critical_unit_with_its_units_under_its_name() {
+    let a = app();
+    let s = lines(&a, 120, 60);
+    let at = |t: &str| {
+        s.iter()
+            .position(|l| l.contains(t))
+            .unwrap_or_else(|| panic!("no {t}\n{}", s.join("\n")))
+    };
+    // The boxes in attention order, each file in the box of its most
+    // critical unit, files by path inside a box; units with no behavior
+    // change are accepted for you, a line under the boxes says so.
+    let order = [
+        "╭─ Needs a close look · 1 file ",
+        "│ src/c.rs",
+        "╭─ Worth a look · 2 files ",
+        "│ src/l0.rs",
+        "│ src/l1.rs",
+        "╭─ Routine · 5 files ",
+        "│ src/r0.rs",
+        "│ src/r4.rs",
+        "╭─ Not shown · 1 file ",
+        "│   assets/logo.png",
+        " 2 units accepted for you, za shows them",
+    ];
+    for pair in order.windows(2) {
+        assert!(at(pair[0]) < at(pair[1]), "{pair:?}");
+    }
+    assert!(
+        !s.iter()
+            .any(|l| l.contains("tidy") || l.contains("src/q.rs"))
+    );
+    // The file's name is a label with its count; no open or closed marker.
+    let label = &s[at("│ src/c.rs")];
+    assert!(
+        label.starts_with("│ src/c.rs") && label.contains("0/3 │"),
+        "{label}"
+    );
+    assert!(!s.iter().any(|l| l.contains('▾') || l.contains('▸')));
+    // Units right under it, most critical first, behind their icons.
+    assert_eq!(at("▲ close_a"), at("│ src/c.rs") + 1);
+    assert_eq!(at("▲ close_b"), at("│ src/c.rs") + 2);
+    assert_eq!(at("● c_helper"), at("│ src/c.rs") + 3);
+    assert_eq!(at("◆ look_a"), at("│ src/l0.rs") + 1);
+    assert_eq!(at("● r0_0"), at("│ src/r0.rs") + 1);
+    // Units are indented under the file's name.
+    let col = |l: &str, c: char| l.chars().position(|x| x == c).unwrap();
+    assert_eq!(col(&s[at("▲ close_a")], '▲'), col(label, 's') + 2);
+    insta::assert_snapshot!("files", render(&a, 120, 60).backend());
+    // `za` lists them: last in their file, or in a box of their own.
+    let mut a = a;
+    v2::press(&mut a, "za");
+    let s = lines(&a, 120, 80);
+    let at = |t: &str| {
+        s.iter()
+            .position(|l| l.contains(t))
+            .unwrap_or_else(|| panic!("no {t}\n{}", s.join("\n")))
+    };
+    assert_eq!(at("○ tidy"), at("│ src/c.rs") + 4);
+    assert!(at("│ src/r4.rs") < at("╭─ Accepted for you · 1 file "));
+    assert_eq!(at("○ quiet"), at("│ src/q.rs") + 1);
+    assert!(at("○ quiet") < at("╭─ Not shown · 1 file "));
+    assert!(at(" 2 units accepted for you, za hides them") > at("assets/logo.png"));
+}
+
+#[test]
+fn only_units_are_selectable() {
+    let a = app();
+    let rows = slim::build_queue(&a, 80, true);
+    let owned: Vec<String> = (0..rows.lines.len())
+        .filter(|&y| rows.owner[y].is_some())
+        .map(|y| row_text(&rows.lines[y]))
+        .collect();
+    assert_eq!(owned.len(), a.order.len());
+    for (pos, &(s, e)) in rows.spans.iter().enumerate() {
+        assert_eq!(e - s, 1);
+        assert_eq!(rows.owner[s], Some(pos));
+        assert!(rows.heads[pos] < s && rows.titles[pos] < rows.heads[pos]);
+        assert_eq!(rows.owner[rows.heads[pos]], None);
+        assert!(row_text(&rows.lines[rows.titles[pos]]).starts_with('╭'));
+    }
+    let mut a = a;
+    v2::press(&mut a, "za");
+    let rows = slim::build_queue(&a, 80, true);
+    let owner = |t: &str| {
+        let y = rows
+            .lines
+            .iter()
+            .position(|l| row_text(l).contains(t))
+            .unwrap_or_else(|| panic!("no {t}"));
+        rows.owner[y]
+    };
+    for t in [
+        "src/c.rs",
+        "src/q.rs",
+        "assets/logo.png",
+        "units accepted for you",
+    ] {
+        assert_eq!(owner(t), None, "{t}");
+    }
+    // Listed with `za`, units accepted for you are units like any other.
+    for t in ["○ tidy", "○ quiet"] {
+        assert!(owner(t).is_some(), "{t}");
+    }
+    let logo = rows
+        .lines
+        .iter()
+        .find(|l| row_text(l).contains("assets/logo.png"))
+        .unwrap();
+    assert!(row_text(logo).contains("binary"));
+    // Nothing to decide at all: the list says what was accepted for you
+    // and what isn't shown.
+    let units: Vec<Unit> = units()
+        .into_iter()
+        .filter(|u| u.status == UnitStatus::NoBehaviorChange)
+        .collect();
+    let b = app_with(units, Config::default());
+    let s = text(&b, 80, 20);
+    assert!(
+        s.contains("2 units accepted for you, za shows them") && s.contains("assets/logo.png"),
+        "{s}"
+    );
+}
+
+#[test]
+fn every_row_fits_its_width_and_nothing_is_cut_at_the_fitted_width() {
+    let a = app();
+    for w in [0u16, 1, 3, 4, 10, 30, 60, 80, 120] {
+        for l in &slim::build_queue(&a, w, true).lines {
+            assert!(l.width() <= w as usize, "{w}: {l:?}");
+        }
+    }
+    for w in [30u16, 60, 80, 120] {
+        for l in &slim::build_queue(&a, w, true).lines {
+            assert_eq!(l.width(), w as usize, "{w}: {l:?}");
+        }
+    }
+    let w = slim::fit_width(&a) as u16;
+    let s: Vec<String> = slim::build_queue(&a, w, true)
+        .lines
+        .iter()
+        .map(row_text)
+        .collect();
+    for u in a.order.iter().map(|&i| &a.review.units[i]) {
+        assert!(
+            s.iter().any(|l| l.contains(&u.symbol)),
+            "{} at {w}",
+            u.symbol
+        );
+    }
+    assert!(
+        s.iter()
+            .any(|l| l.contains("src/r4.rs") && l.contains("0/4"))
+    );
+    assert!(s.iter().any(|l| l.contains("Needs a close look · 1 file")));
+}
+
+#[test]
+fn blank_lines_separate_boxes_and_files_when_the_list_has_room() {
+    let a = app();
+    let rows = slim::build_queue(&a, 80, true);
+    let text: Vec<String> = rows.lines.iter().map(row_text).collect();
+    let at = |t: &str| text.iter().position(|l| l.contains(t)).unwrap();
+    // Between boxes: a bare blank line.
+    let worth = at("Worth a look");
+    assert!(text[worth - 1].trim().is_empty());
+    assert!(text[worth - 2].starts_with('╰'));
+    // Between files in a box: a blank line inside it.
+    let l1 = at("src/l1.rs");
+    assert_eq!(text[l1 - 1].trim_matches(|c| c == '│' || c == ' '), "");
+    assert!(text[l1 - 1].starts_with('│'));
+    for y in (0..text.len()).filter(|&y| text[y].trim_matches(|c| c == '│' || c == ' ').is_empty())
+    {
+        assert_eq!(rows.owner[y], None);
+    }
+    // Without padding: none of them.
+    let flat: Vec<String> = slim::build_queue(&a, 80, false)
+        .lines
+        .iter()
+        .map(row_text)
+        .collect();
+    let l1 = flat.iter().position(|l| l.contains("src/l1.rs")).unwrap();
+    assert!(flat[l1 - 1].contains("look_b"), "{}", flat.join("\n"));
+    let worth = flat
+        .iter()
+        .position(|l| l.contains("Worth a look"))
+        .unwrap();
+    assert!(flat[worth - 1].starts_with('╰'));
+    // A short list drops them.
+    let s = lines(&a, 80, 20);
+    let c = s.iter().position(|l| l.contains("Worth a look")).unwrap();
+    assert!(s[c - 1].starts_with('╰'), "{}", s.join("\n"));
+}
+
+#[test]
+fn clicks_select_units_and_do_nothing_anywhere_else_in_the_list() {
+    for w in [60u16, 80, 120] {
+        let mut a = app();
+        let s = lines(&a, w, 60);
+        let units: Vec<(u16, usize)> = a
+            .targets
+            .borrow()
+            .iter()
+            .filter_map(|(r, t)| match t {
+                Target::Unit(p) => Some((r.y, *p)),
+                _ => None,
+            })
+            .collect();
+        let click = |a: &mut App, y: u16| {
+            a.on_event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: 4,
+                row: y,
+                modifiers: KeyModifiers::NONE,
+            }));
+        };
+        let list_w = slim::fit_width(&a).min(w as usize);
+        for (y, l) in s.iter().enumerate().take(40).skip(1) {
+            let row: String = l.chars().take(list_w).collect();
+            if units.iter().any(|&(uy, _)| uy == y as u16) || row.contains("──") && y > 38 {
+                continue;
+            }
+            let before = a.sel;
+            click(&mut a, y as u16);
+            assert_eq!(a.sel, before, "{w}: click on line {y}: {row}");
+        }
+        for &(y, pos) in units.iter().rev() {
+            click(&mut a, y);
+            assert_eq!(a.sel, pos, "{w}: line {y}");
+        }
+    }
+}
+
+// ---- Moving -----------------------------------------------------------------
+
+#[test]
+fn j_and_k_move_over_units_only_and_esc_and_tab_do_nothing() {
+    let mut a = app();
+    assert_eq!(a.sel, 0);
+    assert_eq!(symbol(&a), "close_a");
+    key(&mut a, 'j');
+    key(&mut a, 'j');
+    assert_eq!(symbol(&a), "c_helper");
+    // Past a file's name and a box edge, straight to the next unit.
+    key(&mut a, 'j');
+    assert_eq!(symbol(&a), "look_a");
+    key(&mut a, 'k');
+    assert_eq!(symbol(&a), "c_helper");
+    key(&mut a, 'G');
+    assert_eq!(symbol(&a), "r4_3");
+    key(&mut a, 'j');
+    assert_eq!(symbol(&a), "r4_3");
+    v2::press(&mut a, "gg");
+    assert_eq!(a.sel, 0);
+    key(&mut a, 'k');
+    assert_eq!(a.sel, 0);
+    for k in [KeyCode::Esc, KeyCode::Tab] {
+        let before = text(&a, 120, 30);
+        assert!(code(&mut a, k).is_empty());
+        assert_eq!(text(&a, 120, 30), before, "{k:?}");
+    }
+    // Enter opens any unit in the unit view; `h` comes back to its row.
+    code(&mut a, KeyCode::Enter);
+    assert_eq!((a.screen, a.sel), (Screen::Unit, 0));
+    key(&mut a, 'h');
+    assert_eq!((a.screen, a.sel), (Screen::Queue, 0));
+    // Deciding moves on to the next pending unit, across files.
+    a.sel = 2;
+    key(&mut a, 'a');
+    assert_eq!(symbol(&a), "look_a");
+}
+
+#[test]
+fn bracket_f_goes_to_the_first_unit_of_the_next_or_previous_file() {
+    let mut a = app();
+    v2::press(&mut a, "]f");
+    assert_eq!(symbol(&a), "look_a");
+    a.sel = 4;
+    v2::press(&mut a, "]f");
+    assert_eq!(symbol(&a), "look_c");
+    // From the middle of a file: the file above, not the start of this one.
+    a.sel = 8;
+    v2::press(&mut a, "[f");
+    assert_eq!(symbol(&a), "look_c");
+    a.sel = 1;
+    v2::press(&mut a, "[f");
+    assert_eq!(a.sel, 1);
+    assert_eq!(a.status, "first file");
+    key(&mut a, 'j');
+    assert!(a.status.is_empty());
+    a.sel = 23;
+    v2::press(&mut a, "]f");
+    assert_eq!(a.sel, 23);
+    assert_eq!(a.status, "last file");
+    // The actions do the same.
+    a.sel = 0;
+    a.on_action(Action::MoveNextFile);
+    assert_eq!(symbol(&a), "look_a");
+    a.on_action(Action::MovePrevFile);
+    assert_eq!(symbol(&a), "close_a");
+}
+
+#[test]
+fn bracket_f_jumps_files_and_ctrl_d_and_d_do_not() {
+    let mut a = app();
+    v2::press(&mut a, "]f");
+    assert_eq!((a.screen, symbol(&a)), (Screen::Queue, "look_a"));
+    // ctrl+d scrolls now: no file jump.
+    let mut c = app();
+    ctrl(&mut c, 'd');
+    assert_eq!((c.screen, c.sel), (Screen::Queue, 0));
+    // `d` is the notes view's alone.
+    key(&mut c, 'd');
+    assert_eq!((c.screen, c.sel), (Screen::Queue, 0));
+}
+
+#[test]
+fn the_selected_unit_stays_selected_through_a_rebuild() {
+    let mut a = app();
+    a.sel = 7;
+    let id = a.selected().unwrap().id.clone();
+    a.review.units.swap(0, 10);
+    a.rebuild_order();
+    assert_eq!(a.selected().unwrap().id, id);
+}
+
+// ---- A: accept the file ------------------------------------------------------
+
+#[test]
+fn both_keys_can_be_rebound_in_the_config() {
+    let cfg: Config =
+        toml::from_str("[keys]\n\"move.next_file\" = \"n\"\n\"decide.accept_file\" = \"<c-a>\"\n")
+            .unwrap();
+    let (keys, _) = cfg.keymap().unwrap();
+    let mut a = app_keys(units(), cfg, keys);
+    v2::press(&mut a, "]f");
+    assert_eq!(a.sel, 0);
+    key(&mut a, 'n');
+    assert_eq!(symbol(&a), "look_a");
+    let before = decisions(&a);
+    shift_a(&mut a);
+    assert_eq!(decisions(&a), before, "A is unbound");
+    // The file's pending units, at once, as one undo step.
+    ctrl(&mut a, 'a');
+    assert_eq!(
+        accepted(&a),
+        ["tidy", "look_a", "look_b", "quiet"],
+        "and the 2 accepted for you"
+    );
+    assert_eq!(a.review.history.undo.len(), 1);
+}
+
+// ---- f: listed by unit ---------------------------------------------------------
+
+#[test]
+fn zf_lists_each_unit_in_its_own_levels_box_with_its_file_on_its_row() {
+    let mut a = app();
+    a.sel = 2;
+    assert_eq!(symbol(&a), "c_helper");
+    // The cursor was put on c_helper by hand: the key saves it, and only it.
+    assert_eq!(v2::press(&mut a, "zf"), vec![Effect::SaveCursor]);
+    assert_eq!(
+        (a.grouping, a.status.as_str()),
+        (Grouping::Unit, "listed by unit")
+    );
+    // The cursor stays on its unit, now in the routine box.
+    assert_eq!((a.sel, symbol(&a)), (5, "c_helper"));
+    let rows: Vec<String> = slim::build_queue(&a, 60, true)
+        .lines
+        .iter()
+        .map(row_text)
+        .collect();
+    let at = |t: &str| {
+        rows.iter()
+            .position(|l| l.contains(t))
+            .unwrap_or_else(|| panic!("no {t}\n{}", rows.join("\n")))
+    };
+    let order = [
+        "╭─ Needs a close look · 2 units ",
+        " close_a ",
+        "╭─ Worth a look · 3 units ",
+        " look_a ",
+        " look_c ",
+        "╭─ Routine · 21 units ",
+        " c_helper ",
+        " r0_0 ",
+        " r4_3 ",
+        "╭─ Not shown · 1 file ",
+        " 2 units accepted for you, za shows them",
+    ];
+    for pair in order.windows(2) {
+        assert!(at(pair[0]) < at(pair[1]), "{pair:?}");
+    }
+    // No file names as labels, no gaps: a box's units follow each other.
+    assert!(
+        !rows.iter().any(|l| l.starts_with("│ src/")),
+        "{}",
+        rows.join("\n")
+    );
+    assert_eq!(at(" close_b "), at(" close_a ") + 1);
+    assert_eq!(at(" look_c "), at(" look_a ") + 2);
+    assert_eq!(at(" r0_0 "), at(" c_helper ") + 1);
+    // Each row names its file in a column in front of its name.
+    for (name, path) in [
+        ("close_a", "src/c.rs"),
+        ("look_c", "src/l1.rs"),
+        ("r4_3", "src/r4.rs"),
+    ] {
+        let row = &rows[at(&format!(" {name} "))];
+        let file = row.find(path).unwrap_or_else(|| panic!("{row}"));
+        assert!(file < row.find(name).unwrap(), "{row}");
+    }
+    insta::assert_snapshot!("units", render(&a, 120, 60).backend());
+    // With `za`, the units accepted for you close the list in their box.
+    v2::press(&mut a, "za");
+    let rows: Vec<String> = slim::build_queue(&a, 60, true)
+        .lines
+        .iter()
+        .map(row_text)
+        .collect();
+    let at = |t: &str| {
+        rows.iter()
+            .position(|l| l.contains(t))
+            .unwrap_or_else(|| panic!("no {t}\n{}", rows.join("\n")))
+    };
+    assert!(at(" r4_3 ") < at("╭─ Accepted for you · 2 units "));
+    assert_eq!(at(" tidy ") + 1, at(" quiet "));
+    assert!(at(" quiet ") < at("╭─ Not shown · 1 file "));
+    v2::press(&mut a, "za");
+    // `zf` again: by file, the cursor still on its unit.
+    v2::press(&mut a, "zf");
+    assert_eq!(
+        (a.grouping, a.status.as_str()),
+        (Grouping::File, "listed by file")
+    );
+    assert_eq!((a.sel, symbol(&a)), (2, "c_helper"));
+    assert!(text(&a, 120, 60).contains("╭─ Needs a close look · 1 file "));
+}
+
+#[test]
+fn listed_by_unit_every_row_fits_and_nothing_is_cut_at_the_fitted_width() {
+    let mut a = app();
+    v2::press(&mut a, "zf");
+    for w in 0u16..=120 {
+        for l in &slim::build_queue(&a, w, true).lines {
+            assert!(l.width() <= w as usize, "{w}: {l:?}");
+            if w >= 30 {
+                assert_eq!(l.width(), w as usize, "{w}: {l:?}");
+            }
+        }
+    }
+    let w = slim::fit_width(&a) as u16;
+    let rows = slim::build_queue(&a, w, true);
+    let s: Vec<String> = rows.lines.iter().map(row_text).collect();
+    for (pos, &i) in a.order.iter().enumerate() {
+        let u = &a.review.units[i];
+        let path = u.file.display().to_string();
+        let line = &s[rows.spans[pos].0];
+        assert!(
+            line.contains(&format!(" {} ", u.symbol)) && line.contains(&format!(" {path} ")),
+            "{w}: {line}"
+        );
+    }
+    assert!(s.iter().any(|l| l.contains("Routine · 21 units")));
+    // Narrow: the path column goes before the names get short.
+    let rows = slim::build_queue(&a, 20, true);
+    for &(s, _) in &rows.spans {
+        let line = row_text(&rows.lines[s]);
+        assert!(!line.contains(".rs"), "{line}");
+    }
+}
+
+#[test]
+fn listed_by_unit_bracket_f_and_a_go_by_the_files_units_in_the_box() {
+    // `src/a.rs` ends the worth-a-look box and starts the routine one.
+    let units = vec![
+        unit("a_look", "src/a.rs", 10, Kind::Look),
+        unit("a_routine", "src/a.rs", 30, Kind::Routine),
+        unit("a_more", "src/a.rs", 50, Kind::Routine),
+        unit("b_routine", "src/b.rs", 10, Kind::Routine),
+    ];
+    let mut a = app_with(units, Config::default());
+    v2::press(&mut a, "zf");
+    let s = text(&a, 100, 30);
+    assert!(s.contains("╭─ Worth a look · 1 unit "), "{s}");
+    assert!(s.contains("╭─ Routine · 3 units "), "{s}");
+    assert_eq!(symbol(&a), "a_look");
+    assert!(a.starts_file(1));
+    v2::press(&mut a, "]f");
+    assert_eq!(symbol(&a), "a_routine");
+    v2::press(&mut a, "]f");
+    assert_eq!(symbol(&a), "b_routine");
+    v2::press(&mut a, "[f");
+    assert_eq!(symbol(&a), "a_routine");
+    v2::press(&mut a, "[f");
+    assert_eq!(symbol(&a), "a_look");
+    // `A` takes the file's pending units in this box only, at once.
+    a.sel = 2;
+    shift_a(&mut a);
+    assert_eq!(a.overlay, Overlay::None);
+    assert_eq!(a.status, "Accepted 2 units.");
+    assert_eq!(accepted(&a), ["a_routine", "a_more"]);
+}
+
+#[test]
+fn zf_is_the_queues_alone_and_can_be_rebound() {
+    let mut a = app();
+    key(&mut a, 'l');
+    v2::press(&mut a, "zf");
+    assert_eq!((a.screen, a.grouping), (Screen::Unit, Grouping::File));
+    let cfg: Config = toml::from_str("[keys]\n\"toggle.by_file\" = \"w\"\n").unwrap();
+    let (keys, _) = cfg.keymap().unwrap();
+    let mut c = app_keys(units(), cfg, keys);
+    v2::press(&mut c, "zf");
+    assert_eq!(c.grouping, Grouping::File);
+    key(&mut c, 'w');
+    assert_eq!(c.grouping, Grouping::Unit);
+}
+
+// ---- Help, paths -------------------------------------------------------------
+
+#[test]
+fn the_keys_are_in_the_help_overlay_and_the_legend_shows_when_it_fits() {
+    for (w, h) in [(60u16, 20u16), (80, 24), (100, 40), (120, 50)] {
+        let mut a = app();
+        a.overlay = Overlay::Help;
+        let out = text(&a, w, h);
+        assert!(
+            out.contains("]f [f  next / previous file"),
+            "{w}x{h}\n{out}"
+        );
+        assert!(out.contains("A F  accept / flag the f"), "{w}x{h}\n{out}");
+        assert!(
+            !out.contains("sidebar") && !out.contains("open / close"),
+            "{w}x{h}\n{out}"
+        );
+    }
+    // With room: the grouping switch, and the legend under the keys.
+    let mut a = app();
+    a.overlay = Overlay::Help;
+    let out = text(&a, 100, 40);
+    assert!(out.contains("zf  list by file or by level"), "{out}");
+    // A bigger terminal never loses the legend: the keys take another
+    // column rather than the legend's room.
+    for (w, h) in [(100u16, 40u16), (120, 50), (160, 50)] {
+        let out = text(&a, w, h);
+        assert!(
+            out.contains("legend")
+                && out.contains("▲ close look")
+                && out.contains("○ accepted for you"),
+            "{w}x{h}\n{out}"
+        );
+        assert!(!out.contains("needs fix"), "{w}x{h}\n{out}");
+    }
+    // The help lists the keys of the screen it is opened on: the unit
+    // view's own in the unit view.
+    let mut f = app();
+    key(&mut f, 'l');
+    assert_eq!(f.screen, Screen::Unit);
+    f.overlay = Overlay::Help;
+    let out = text(&f, 100, 40);
+    assert!(out.contains("keys · unit"), "{out}");
+    assert!(!out.contains("resolved: ok"), "{out}");
+    assert!(out.contains("zoom the tile in focus"), "{out}");
+    // The footer has no file button.
+    a.overlay = Overlay::None;
+    let out = text(&a, 120, 30);
+    let footer = out.lines().last().unwrap();
+    assert!(!footer.contains("file"), "{footer}");
+}
+
+#[test]
+fn a_long_path_is_cut_at_the_front_so_the_file_name_stays() {
+    let dir = "application/module/MediaDistribution/Contract/Data";
+    let units: Vec<Unit> = (0..4)
+        .map(|k| {
+            unit(
+                &format!("r{k}"),
+                &format!("{dir}/Membership0Data.php"),
+                10 + 20 * k,
+                Kind::Routine,
+            )
+        })
+        .collect();
+    let a = app_with(units, Config::default());
+    let s = text(&a, 60, 34);
+    let label = s.lines().find(|l| l.contains("Data.php")).unwrap();
+    assert!(
+        label.contains("│ …") && label.contains("/Membership0Data.php"),
+        "{label}"
+    );
+}
+
+// ---- Large reviews, order, sizes -------------------------------------------------
+
+#[test]
+fn a_large_review_asks_about_a_file_when_the_cursor_gets_to_it() {
+    let mut units = units();
+    for u in &mut units {
+        u.prep = Prep::NotRequested;
+    }
+    let cfg = Config {
+        large_review: 3,
+        ..Config::default()
+    };
+    let mut a = app_with(units, cfg);
+    let effects = a.start(true, None, Vec::new(), Some(SessionRef::default()));
+    // The close looks and the rest of the selected unit's file.
+    let mut first = prepared(&effects);
+    first.sort();
+    assert_eq!(
+        first,
+        [
+            "src/c.rs::c_helper",
+            "src/c.rs::close_a",
+            "src/c.rs::close_b"
+        ]
+    );
+    // Moving inside the file asks nothing more; into the next one asks
+    // about that file.
+    assert!(prepared(&key(&mut a, 'j')).is_empty());
+    assert!(prepared(&key(&mut a, 'j')).is_empty());
+    let mut ids = prepared(&key(&mut a, 'j'));
+    ids.sort();
+    assert_eq!(ids, ["src/l0.rs::look_a", "src/l0.rs::look_b"]);
+}
+
+#[test]
+fn listed_by_unit_the_most_attention_comes_first_whatever_its_file() {
+    let mut units = units();
+    // A close look in a routine file.
+    units[11].status = UnitStatus::Removed;
+    units[11].callers = vec!["somebody".into()];
+    let mut a = app_with(units, Config::default());
+    v2::press(&mut a, "zf");
+    let first: Vec<&str> = a.order[..3]
+        .iter()
+        .map(|&i| a.review.units[i].symbol.as_str())
+        .collect();
+    assert_eq!(first, ["close_a", "close_b", "r0_3"]);
+}
+
+/// A thousand units in a hundred files: no move panics, and the selected
+/// unit is always on screen exactly once.
+#[test]
+fn a_thousand_units_in_a_hundred_files() {
+    let units: Vec<Unit> = (0..1000)
+        .map(|i| {
+            unit(
+                &format!("u{i:04}"),
+                &format!("src/f{:02}.rs", i / 10),
+                10 + (i % 10) as u32 * 10,
+                if i % 7 == 0 {
+                    Kind::Look
+                } else {
+                    Kind::Routine
+                },
+            )
+        })
+        .collect();
+    let mut a = app_with(units, Config::default());
+    let steps: &[&dyn Fn(&mut App)] = &[
+        &|a| {
+            key(a, 'j');
+        },
+        &|a| {
+            key(a, 'a');
+        },
+        &|a| {
+            v2::press(a, "]f");
+        },
+        &|a| {
+            key(a, 'G');
+        },
+        &|a| {
+            key(a, 'k');
+        },
+        &|a| {
+            v2::press(a, "[f");
+        },
+        &|a| {
+            v2::press(a, "gg");
+        },
+        &|a| {
+            key(a, 'u');
+        },
+    ];
+    for (n, step) in steps.iter().cycle().take(60).enumerate() {
+        step(&mut a);
+        let name = symbol(&a).to_string();
+        for (w, h) in [(80u16, 24u16), (40, 8), (120, 40)] {
+            let s = text(&a, w, h);
+            let marked: Vec<&str> = s.lines().filter(|l| l.contains('▌')).collect();
+            assert_eq!(marked.len(), 1, "step {n} at {w}x{h}\n{s}");
+            if w >= 80 {
+                assert!(marked[0].contains(&name), "step {n} at {w}x{h}\n{s}");
+            }
+        }
+    }
+    render(&a, 3, 3);
+    render(&a, 0, 0);
+}
+
+#[test]
+fn the_selection_stays_visible_with_its_box_title_or_file_name_when_they_fit() {
+    for (w, h, by_unit) in [
+        (60u16, 24u16, false),
+        (80, 24, false),
+        (120, 30, false),
+        (80, 40, false),
+        (60, 24, true),
+        (120, 30, true),
+    ] {
+        let mut a = app();
+        if by_unit {
+            v2::press(&mut a, "zf");
+        }
+        for _ in 0..a.order.len() {
+            let s = lines(&a, w, h);
+            let name = symbol(&a).to_string();
+            let marked: Vec<&String> = s.iter().filter(|l| l.contains('▌')).collect();
+            assert_eq!(marked.len(), 1, "{w}x{h} {}\n{}", a.sel, s.join("\n"));
+            assert!(marked[0].contains(&name), "{w}x{h} {name}");
+            // Stepping into a file shows its name.
+            if !by_unit && a.starts_file(a.sel) {
+                let path = a.selected().unwrap().file.display().to_string();
+                assert!(s.iter().any(|l| l.contains(&path)), "{w}x{h} {path}");
+            }
+            key(&mut a, 'j');
+        }
+    }
+}
+
+#[test]
+fn the_overlay_and_padding_never_panic_at_tiny_sizes() {
+    // `i` opens the note line.
+    let mut a = app();
+    v2::press(&mut a, "i");
+    assert!(matches!(a.overlay, Overlay::Note { .. }));
+    for (w, h) in [
+        (0u16, 0u16),
+        (1, 1),
+        (3, 3),
+        (4, 4),
+        (10, 4),
+        (20, 6),
+        (40, 8),
+        (60, 12),
+        (200, 3),
+    ] {
+        for sel in [0, 4, 8] {
+            a.sel = sel;
+            render(&a, w, h);
+        }
+    }
+}

@@ -1,22 +1,26 @@
 //! Terminal UI runtime: owns the terminal, feeds events to [`app::App`],
 //! and carries out the effects it returns (agent calls, saving, the editor).
 
+pub mod answers;
 pub mod app;
 pub mod ask;
 pub mod commits;
 pub mod diff;
-pub mod flagged;
+pub mod finish;
+pub mod flagged_list;
+pub mod jump;
 pub mod notes;
 pub mod picture;
 pub mod pr_pick;
 pub mod preview;
+pub mod queue;
 pub mod select;
 pub mod setup;
 pub mod slim;
-pub mod swipe;
 pub mod syntax;
 pub mod theme;
 pub mod ui;
+pub mod unit;
 
 use std::io::stdout;
 use std::sync::Arc;
@@ -35,7 +39,8 @@ use futures::StreamExt;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::agent::AgentAdapter;
-use crate::config::{Config, KeyMap};
+use crate::config::Config;
+use crate::keymap::Keymap;
 use crate::review::dive::DiveEvent;
 use crate::review::model::{DiveKind, Review};
 use crate::review::{BuildOptions, prepare, store};
@@ -60,9 +65,8 @@ pub struct Launch {
     pub review: Review,
     pub agent: std::result::Result<crate::cli::Agent, String>,
     pub session_arg: Option<String>,
-    pub swipe: bool,
     pub cfg: Config,
-    pub keymap: KeyMap,
+    pub keymap: Keymap,
 }
 
 /// Carries out effects. Public so tests can drive it with a mock agent.
@@ -90,7 +94,8 @@ pub async fn run(l: Launch) -> Result<()> {
         Ok(a) => (Some(a.adapter), a.sessions, None),
         Err(why) => (None, Vec::new(), Some(why)),
     };
-    // Without --session, teer runs the agent headless in the repo; no picker.
+    // Without a session (none found, none given), teer runs the agent
+    // headless in the repo; no picker.
     let session = match l.session_arg {
         Some(id) => {
             let mut s = crate::cli::session_by_id(&id, &sessions, &repo);
@@ -102,7 +107,7 @@ pub async fn run(l: Launch) -> Result<()> {
         }
         None => crate::review::model::SessionRef::fresh(app.cfg.provider().name(), repo.clone()),
     };
-    let initial = app.start(adapter.is_some(), note, sessions, Some(session), l.swipe);
+    let initial = app.start(adapter.is_some(), note, sessions, Some(session));
     if let Some(b) = app.review.pr.as_ref().and_then(|p| p.base_assumed.clone()) {
         app.status = format!(
             "base assumed: {} (PR has conflicts)",
@@ -111,7 +116,7 @@ pub async fn run(l: Launch) -> Result<()> {
     }
 
     let (tx, mut rx) = unbounded_channel();
-    let rt = Runtime {
+    let mut rt = Runtime {
         adapter,
         tx,
         build,
@@ -148,6 +153,10 @@ pub async fn run(l: Launch) -> Result<()> {
                 _ = crate::cli::SHUTDOWN.notified() => vec![Effect::Quit],
                 _ = tick.tick() => {
                     app.tick = app.tick.wrapping_add(1);
+                    // A key prefix waiting past `timeoutlen` is dropped.
+                    app.keys.tick(std::time::Instant::now());
+                    // Waiting for copied notes' changes: look at the tree.
+                    rt.watch(&mut app, std::time::Instant::now());
                     Vec::new()
                 }
             };
@@ -155,7 +164,7 @@ pub async fn run(l: Launch) -> Result<()> {
                 if let Effect::Edit { file, line } = e {
                     // The editor needs the terminal and stdin to itself.
                     drop(events);
-                    let rerun = app.keys.label(crate::config::Action::Rerun);
+                    let rerun = app.keys.label(crate::keymap::Action::ReviewRerun);
                     app.status = open_editor(
                         &mut terminal,
                         &rt.tools.editor,
@@ -174,20 +183,14 @@ pub async fn run(l: Launch) -> Result<()> {
                 {
                     // The agent CLI needs the terminal and stdin to itself.
                     drop(events);
-                    let rerun = app.keys.label(crate::config::Action::Rerun);
-                    app.status = open_agent(
-                        &mut terminal,
-                        cli,
-                        &rt.tools,
-                        &cwd,
-                        &prompt,
-                        resume.as_deref(),
-                        &rerun,
-                    );
+                    let ran = with_terminal_released(&mut terminal, || {
+                        run_agent(&rt.tools, cli, &cwd, &prompt, resume.as_deref())
+                    });
+                    quit |= rt.agent_exited(&mut app, cli, ran);
                     events = EventStream::new();
                 } else if let Effect::EditComment { text } = e {
                     drop(events);
-                    let for_commit = matches!(app.overlay, app::Overlay::Commit { .. });
+                    let for_commit = app.edits_commit_message();
                     let outcome = with_terminal_released(&mut terminal, || {
                         if for_commit {
                             crate::approve::edit_message_in_editor(&rt.tools.editor, &text)
@@ -212,6 +215,11 @@ pub async fn run(l: Launch) -> Result<()> {
                         quit |= rt.exec(&mut app, follow);
                     }
                     events = EventStream::new();
+                } else if let Effect::Settings = e {
+                    // The setup screen draws on this terminal and reads its own keys.
+                    drop(events);
+                    quit |= open_settings(&mut terminal, &mut app, &mut rt).await;
+                    events = EventStream::new();
                 } else {
                     quit |= rt.exec(&mut app, e);
                 }
@@ -222,10 +230,70 @@ pub async fn run(l: Launch) -> Result<()> {
     .await;
     restore_terminal();
     let _ = store::save(&app.review);
+    // What `:w` did (a commit, a post), once the terminal is the shell's again.
+    if let Some(line) = &app.finish.exit_line {
+        println!("{line}");
+    }
     result
 }
 
 impl Runtime {
+    /// Setup saved `saved` (`<space>s`): the app takes it (see
+    /// [`settings_saved`]), and `gf` and the texts written in the editor
+    /// open the editor it names from now on. The status line to show.
+    pub fn settings_saved(&mut self, app: &mut App, saved: Config) -> String {
+        let mut status = settings_saved(app, saved);
+        match app.cfg.editor() {
+            Ok(editor) => self.tools.editor = editor,
+            Err(e) => status.push_str(&format!(
+                " The editor stays {}: {e:#}",
+                self.tools.editor.name()
+            )),
+        }
+        status
+    }
+
+    /// The agent CLI the notes were handed to ([`Effect::OpenAgent`], run
+    /// with [`run_agent`]) is done, `ran` being how: its exit is the signal
+    /// that the changes are in, so the review re-runs now
+    /// ([`App::agent_returned`]); one that couldn't start says why. The run
+    /// loop calls this once it has the terminal back. Returns true to quit.
+    pub fn agent_exited(
+        &self,
+        app: &mut App,
+        cli: crate::config::Provider,
+        ran: std::io::Result<std::process::ExitStatus>,
+    ) -> bool {
+        match ran {
+            Ok(_) => {
+                let mut quit = false;
+                for follow in app.agent_returned(cli) {
+                    quit |= self.exec(app, follow);
+                }
+                quit
+            }
+            Err(e) => {
+                app.status = agent_failed(&self.tools, cli, &e);
+                false
+            }
+        }
+    }
+
+    /// While the app waits for the changes to copied notes, look at the
+    /// working tree when a look is due ([`App::watch_due`]), off the UI
+    /// thread; what it saw comes back as [`AppEvent::Tree`].
+    pub fn watch(&self, app: &mut App, now: std::time::Instant) {
+        let Some(repo) = app.watch_due(now) else {
+            return;
+        };
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let seen = crate::watch::snapshot(&repo).map_err(|e| format!("{e:#}"));
+            let at = std::time::Instant::now();
+            let _ = tx.send(AppEvent::Tree { seen, at });
+        });
+    }
+
     fn agent(
         &self,
         app: &App,
@@ -282,6 +350,11 @@ impl Runtime {
                     app.status = format!("Couldn't save the review: {e:#}");
                 }
             }
+            Effect::SaveCursor => {
+                if let Err(e) = store::save_cursor(&app.review) {
+                    app.status = format!("Couldn't save the review: {e:#}");
+                }
+            }
             Effect::Prepare(ids) => {
                 let Some((adapter, session)) = self.agent(app) else {
                     return false;
@@ -301,12 +374,18 @@ impl Runtime {
                 let opts = self.build.clone();
                 let pr = app.review.pr.clone();
                 tokio::task::spawn_blocking(move || {
-                    let r = crate::review::build_review(&repo, &opts)
-                        .map(|mut r| {
+                    let r = match pr {
+                        // A pull request is fetched again: a pushed fix
+                        // shows up (Q14).
+                        Some(pr) if pr.repo_dir.is_some() => {
+                            crate::pr::refresh(&repo, &pr, opts.languages.clone())
+                        }
+                        pr => crate::review::build_review(&repo, &opts).map(|mut r| {
                             r.pr = pr;
                             r
-                        })
-                        .map_err(|e| format!("{e:#}"));
+                        }),
+                    };
+                    let r = r.map_err(|e| format!("{e:#}"));
                     let _ = tx.send(AppEvent::Rerun(r.map(Box::new)));
                 });
             }
@@ -329,22 +408,23 @@ impl Runtime {
             }
             Effect::InterpretTests { unit_id } => {
                 let tx = self.tx.clone();
-                let fail = |id: String, error: &str| {
+                let fail = |u: &crate::review::model::Unit, error: &str| {
                     let _ = tx.send(AppEvent::Dive(DiveEvent::Failed {
-                        id,
+                        id: u.id.clone(),
+                        fingerprint: u.fingerprint.clone(),
                         kind: DiveKind::Tests,
                         error: error.into(),
                     }));
                 };
-                let Some((adapter, session)) = self.agent(app) else {
-                    fail(unit_id, "no agent available");
-                    return false;
-                };
                 let Some(unit) = app.review.unit(&unit_id).cloned() else {
                     return false;
                 };
+                let Some((adapter, session)) = self.agent(app) else {
+                    fail(&unit, "no agent available");
+                    return false;
+                };
                 let Some(file) = app.review.file_of(&unit).cloned() else {
-                    fail(unit_id, "changed file not found");
+                    fail(&unit, "changed file not found");
                     return false;
                 };
                 let Some(search) = unit
@@ -354,7 +434,7 @@ impl Runtime {
                     .and_then(|r| r.coverage.as_ref())
                     .and_then(|c| c.search.clone())
                 else {
-                    fail(unit_id, "teer hasn't searched the tests yet");
+                    fail(&unit, "teer hasn't searched the tests yet");
                     return false;
                 };
                 let job = crate::review::dive::TestsJob {
@@ -370,18 +450,19 @@ impl Runtime {
             }
             Effect::Dive { unit_id, kind, web } => {
                 let tx = self.tx.clone();
-                let fail = |tx: &UnboundedSender<AppEvent>, id: String, error: &str| {
+                let fail = |u: &crate::review::model::Unit, error: &str| {
                     let _ = tx.send(AppEvent::Dive(DiveEvent::Failed {
-                        id,
+                        id: u.id.clone(),
+                        fingerprint: u.fingerprint.clone(),
                         kind,
                         error: error.into(),
                     }));
                 };
-                let Some((adapter, session)) = self.agent(app) else {
-                    fail(&tx, unit_id, "no agent available");
+                let Some(unit) = app.review.unit(&unit_id).cloned() else {
                     return false;
                 };
-                let Some(unit) = app.review.unit(&unit_id).cloned() else {
+                let Some((adapter, session)) = self.agent(app) else {
+                    fail(&unit, "no agent available");
                     return false;
                 };
                 let Some(file) = app
@@ -391,7 +472,7 @@ impl Runtime {
                     .find(|f| f.path == unit.file)
                     .cloned()
                 else {
-                    fail(&tx, unit_id, "changed file not found");
+                    fail(&unit, "changed file not found");
                     return false;
                 };
                 if kind == DiveKind::Behavior {
@@ -434,7 +515,8 @@ impl Runtime {
                 };
                 // The code is read where the agent reads it: the repository,
                 // or the PR's checkout.
-                let job = crate::review::ask::Job::new(&app.review, index, session.cwd.clone());
+                let job = crate::review::ask::Job::new(&app.review, index, session.cwd.clone())
+                    .with_web(app.web_allowed());
                 let ptx = tx.clone();
                 let progress = move |progress| {
                     let _ = ptx.send(AppEvent::Asking { index, progress });
@@ -442,26 +524,6 @@ impl Runtime {
                 tokio::spawn(async move {
                     let result = crate::review::ask::answer(adapter, session, job, progress).await;
                     let _ = tx.send(AppEvent::Answer { index, result });
-                });
-            }
-            Effect::Second(ids) => {
-                let tx = self.tx.clone();
-                let units: Vec<_> = ids
-                    .iter()
-                    .filter_map(|id| app.review.unit(id))
-                    .filter_map(|u| app.review.file_of(u).map(|f| (u.clone(), f.clone())))
-                    .collect();
-                let Some((adapter, session)) = self.agent(app) else {
-                    for (u, _) in &units {
-                        let _ = tx.send(AppEvent::Prep(prepare::PrepareEvent::Second {
-                            id: u.id.clone(),
-                            opinion: Err("no agent available".into()),
-                        }));
-                    }
-                    return false;
-                };
-                forward(tx, AppEvent::Prep, |ptx| {
-                    prepare::second_opinions(adapter, session, units, ptx)
                 });
             }
             Effect::OpenVisual { unit_id } => {
@@ -487,10 +549,23 @@ impl Runtime {
                 });
             }
             Effect::Copy { text, what } => {
-                app.status = match crate::clipboard::copy(&text) {
-                    crate::clipboard::Via::Program(_) => format!("Copied {what} to the clipboard."),
-                    crate::clipboard::Via::Terminal => {
-                        format!("Sent {what} to the terminal's clipboard (OSC 52).")
+                let via = crate::clipboard::copy(&text);
+                app.status = if app.waiting.is_some() {
+                    // Copied to be fixed elsewhere: short, so the line
+                    // that teer waits, and how to stop, stays in view.
+                    let copied = match via {
+                        crate::clipboard::Via::Program(_) => "Copied to the clipboard.",
+                        crate::clipboard::Via::Terminal => "Sent to the terminal's clipboard.",
+                    };
+                    format!("{copied} {}", app.waiting_line())
+                } else {
+                    match via {
+                        crate::clipboard::Via::Program(_) => {
+                            format!("Copied {what} to the clipboard.")
+                        }
+                        crate::clipboard::Via::Terminal => {
+                            format!("Sent {what} to the terminal's clipboard (OSC 52).")
+                        }
                     }
                 };
             }
@@ -531,7 +606,8 @@ impl Runtime {
             Effect::Edit { .. }
             | Effect::EditComment { .. }
             | Effect::Commit { .. }
-            | Effect::OpenAgent { .. } => {}
+            | Effect::OpenAgent { .. }
+            | Effect::Settings => {}
         }
         false
     }
@@ -651,36 +727,100 @@ fn open_editor(
     }
 }
 
-/// Run the agent CLI `cli` in `cwd` with `prompt` as its first message
-/// (Claude Code resumes a fork of session `resume` when there is one, so a
-/// session open elsewhere stays as it is), then take the terminal back.
-/// Returns the status line to show afterwards; `rerun` is the key that
-/// re-runs the review.
-fn open_agent(
-    terminal: &mut ratatui::DefaultTerminal,
-    cli: crate::config::Provider,
+/// The program that runs agent CLI `cli`.
+fn agent_program(tools: &crate::approve::Tools, cli: crate::config::Provider) -> &std::ffi::OsStr {
+    match cli {
+        crate::config::Provider::Codex => &tools.codex,
+        _ => &tools.claude,
+    }
+}
+
+/// Run the agent CLI `cli` in `cwd` with `prompt` as its first message, on
+/// this terminal, and wait for it to exit (Claude Code resumes a fork of
+/// session `resume` when there is one, so a session open elsewhere stays as
+/// it is). The caller hands it the terminal first; its exit, however it
+/// went, is the signal that the changes to the notes are in.
+pub fn run_agent(
     tools: &crate::approve::Tools,
+    cli: crate::config::Provider,
     cwd: &std::path::Path,
     prompt: &str,
     resume: Option<&str>,
-    rerun: &str,
-) -> String {
-    let program = match cli {
-        crate::config::Provider::Codex => &tools.codex,
-        _ => &tools.claude,
-    };
-    let result = with_terminal_released(terminal, || {
-        let mut cmd = std::process::Command::new(program);
-        if let Some(id) = resume {
-            cmd.args(["--resume", id, "--fork-session"]);
-        }
-        cmd.arg(prompt).current_dir(cwd).status()
-    });
-    let name = cli.title();
-    match result {
-        Ok(_) => format!("Back from {name}. {rerun} re-runs the review on what it changed."),
-        Err(e) => format!("Couldn't start {name} ({}): {e}", program.to_string_lossy()),
+) -> std::io::Result<std::process::ExitStatus> {
+    let mut cmd = std::process::Command::new(agent_program(tools, cli));
+    if let Some(id) = resume {
+        cmd.args(["--resume", id, "--fork-session"]);
     }
+    cmd.arg(prompt).current_dir(cwd).status()
+}
+
+/// The status line when the agent CLI couldn't start.
+fn agent_failed(
+    tools: &crate::approve::Tools,
+    cli: crate::config::Provider,
+    e: &std::io::Error,
+) -> String {
+    format!(
+        "Couldn't start {} ({}): {e}",
+        cli.title(),
+        agent_program(tools, cli).to_string_lossy()
+    )
+}
+
+/// `<space>s`: the setup screen on the review's terminal, the review
+/// waiting meanwhile. True when ctrl+c left it, which quits teer too.
+async fn open_settings(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+    rt: &mut Runtime,
+) -> bool {
+    let path = store::config_path();
+    let opened = setup::Opened::Review;
+    match setup::run_on(terminal, app.cfg.clone(), &path, opened, app.keys.clone()).await {
+        Ok(setup::Ended::Saved(cfg)) => app.status = rt.settings_saved(app, *cfg),
+        Ok(setup::Ended::Left) => {}
+        Ok(setup::Ended::Quit) => return true,
+        Err(e) => app.status = format!("Couldn't change the settings: {e:#}"),
+    }
+    false
+}
+
+/// The settings that made the running agent: changing them takes a new
+/// start.
+fn agent_settings(c: &Config) -> impl PartialEq + use<> {
+    (
+        c.provider,
+        c.api.clone(),
+        c.prepare_model.clone(),
+        c.prepare_effort.clone(),
+        c.second_model.clone(),
+        c.second_effort.clone(),
+    )
+}
+
+/// Take the config setup saved: the app reads it, and its keys, from now
+/// on. The agent keeps what it was started with until teer starts again,
+/// and so do the names the screens give its models. The status line to
+/// show.
+pub fn settings_saved(app: &mut App, saved: Config) -> String {
+    let mut cfg = saved.with_no_color(std::env::var_os("NO_COLOR").as_deref());
+    let mut status = "Settings saved.".to_string();
+    if agent_settings(&cfg) != agent_settings(&app.cfg) {
+        let old = &app.cfg;
+        cfg.provider = old.provider;
+        cfg.api = old.api.clone();
+        cfg.prepare_model = old.prepare_model.clone();
+        cfg.prepare_effort = old.prepare_effort.clone();
+        cfg.second_model = old.second_model.clone();
+        cfg.second_effort = old.second_effort.clone();
+        status.push_str(" The new agent and models take over when teer starts again.");
+    }
+    match cfg.keymap() {
+        Ok((keys, _)) => app.keys = keys,
+        Err(e) => status.push_str(&format!(" The keys stay as they were: {e:#}")),
+    }
+    app.cfg = cfg;
+    status
 }
 
 #[cfg(test)]
@@ -715,5 +855,69 @@ mod tests {
         frame(&mut t);
         t.backend()
             .assert_buffer_lines([format!("{:20}", "teer").as_str(), &blank]);
+    }
+
+    fn app(cfg: crate::config::Config) -> super::App {
+        let review = crate::review::model::Review {
+            id: "t".into(),
+            repo_root: Default::default(),
+            base: String::new(),
+            head: String::new(),
+            head_commit: String::new(),
+            agent_session: None,
+            pr: None,
+            intent: Default::default(),
+            created_at: chrono::Utc::now(),
+            files: Vec::new(),
+            units: Vec::new(),
+            skipped: Vec::new(),
+            graph: Default::default(),
+            questions: Vec::new(),
+            version: 0,
+            history: Default::default(),
+            branch: None,
+            cursor: None,
+        };
+        super::App::new(review, cfg, Default::default())
+    }
+
+    /// `<space>s` saved: the keys apply at once, the agent's models only
+    /// from the next start, and the screens keep naming the ones running.
+    #[test]
+    fn saved_settings_bring_their_keys_and_keep_the_running_agent() {
+        use crate::config::{Config, Provider};
+        use crate::keymap::{Action, KeySpec};
+        let cfg = Config {
+            provider: Some(Provider::Claude),
+            prepare_model: Some("haiku".into()),
+            ..Config::default()
+        };
+        let mut app = app(cfg.clone());
+        let mut saved = cfg.clone();
+        saved
+            .keys
+            .insert("decide.accept".into(), KeySpec::One("y".into()));
+        assert_eq!(
+            super::settings_saved(&mut app, saved.clone()),
+            "Settings saved."
+        );
+        assert_eq!(app.keys.label(Action::DecideAccept), "y");
+
+        saved.prepare_model = Some("sonnet".into());
+        saved.second_opinion = false;
+        let status = super::settings_saved(&mut app, saved.clone());
+        assert!(status.contains("when teer starts again"), "{status}");
+        assert_eq!(app.cfg.prepare_model.as_deref(), Some("haiku"));
+        // What doesn't make the agent applies now.
+        assert!(!app.cfg.second_opinion);
+
+        // Keys that don't load leave the ones there are.
+        saved.prepare_model = Some("haiku".into());
+        saved
+            .keys
+            .insert("move.down".into(), KeySpec::One("y".into()));
+        let status = super::settings_saved(&mut app, saved);
+        assert!(status.contains("The keys stay as they were"), "{status}");
+        assert_eq!(app.keys.label(Action::DecideAccept), "y");
     }
 }

@@ -56,6 +56,13 @@ impl SessionRef {
     }
 }
 
+/// A branch review's names: the branch and the base it is compared with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchNames {
+    pub head: String,
+    pub base: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Review {
     pub id: String,
@@ -88,6 +95,22 @@ pub struct Review {
     /// What the reviewer asked about the code (Ask), oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub questions: Vec<Question>,
+    /// The saved format's version it was read as ([`super::store::CURRENT`]),
+    /// 0 for files from before it was kept. Always written as the current
+    /// one: this teer writes no other.
+    #[serde(default, serialize_with = "super::store::current_version")]
+    pub version: u32,
+    /// Undo and redo of decisions.
+    #[serde(default, skip_serializing_if = "super::history::History::is_empty")]
+    pub history: super::history::History,
+    /// The branch and base names of a branch review, as its header says
+    /// them ("feature since main"); `None` for other reviews.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<BranchNames>,
+    /// The unit the queue's cursor was on, by id, so a review resumes
+    /// where it was left (Phase 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 /// A question about the code, asked during the review, and the agent's
@@ -313,8 +336,18 @@ pub enum Decision {
     Investigate,
 }
 
-/// The kinds of question about a flagged unit on the Flagged screen. "Dive"
-/// names the agent side; the screen itself is `Screen::Flagged`.
+/// Who accepted a unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AcceptedBy {
+    /// teer, because the unit has no behavior change (`auto_accept`).
+    Auto,
+    /// The reviewer.
+    Reviewer,
+}
+
+/// The kinds of question about a unit the unit view asks the agent. "Dive"
+/// names the agent side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DiveKind {
     /// What should be done about the change, ranked.
@@ -329,13 +362,6 @@ pub enum DiveKind {
     Disagree,
     /// Which existing tests cover the unit, and dangerous cases none does.
     Tests,
-}
-
-/// How a flagged unit was settled after looking into it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Resolution {
-    Ok,
-    NeedsFix,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -405,7 +431,7 @@ pub struct TestSearch {
     pub total: usize,
 }
 
-/// The Tests tile: the tests teer found, then, once asked, the agent's
+/// The Tests panel: the tests teer found, then, once asked, the agent's
 /// reading of them: what covers the unit and what dangerous cases nothing does.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Coverage {
@@ -666,32 +692,58 @@ pub struct SecondOpinion {
     pub missed: Vec<Change>,
 }
 
+/// One point where a second opinion disagrees with the first description.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Doubt<'a> {
+    /// It disputes `statement` of the first description, because `why`.
+    Disputes { statement: &'a str, why: &'a str },
+    /// A behavior change of medium risk or more the first description left out.
+    Missed(&'a str),
+    /// It rates the unit `theirs` risk, where the first description had `had`.
+    Risk { theirs: Risk, had: Risk },
+}
+
 impl SecondOpinion {
-    /// Why it disagrees with `first` (the unit's statements), most important
-    /// first; empty when it doesn't.
-    pub fn disagreements(&self, first: &[Change]) -> Vec<String> {
+    /// Where it disagrees with `first` (the unit's statements), most
+    /// important first; empty when it doesn't.
+    pub fn doubts<'a>(&'a self, first: &[Change]) -> Vec<Doubt<'a>> {
         let mut out = Vec::new();
         for v in self.verdicts.iter().filter(|v| !v.agree) {
-            out.push(format!(
-                "disputes \"{}\": {}",
-                crate::util::truncate(&v.statement, 48),
-                v.why
-            ));
+            out.push(Doubt::Disputes {
+                statement: &v.statement,
+                why: &v.why,
+            });
         }
         for m in self.missed.iter().filter(|m| m.risk >= Risk::Medium) {
-            out.push(format!("missed: {}", m.statement));
+            out.push(Doubt::Missed(&m.statement));
         }
-        if let Some(had) = first.iter().map(|c| c.risk).max() {
-            let word = |r: Risk| format!("{r:?}").to_lowercase();
-            if self.risk > had || had as u8 >= self.risk as u8 + 2 {
-                out.push(format!(
-                    "rates it {} risk, not {}",
-                    word(self.risk),
-                    word(had)
-                ));
-            }
+        if let Some(had) = first.iter().map(|c| c.risk).max()
+            && (self.risk > had || had as u8 >= self.risk as u8 + 2)
+        {
+            out.push(Doubt::Risk {
+                theirs: self.risk,
+                had,
+            });
         }
         out
+    }
+
+    /// [`SecondOpinion::doubts`] in short words, as the Disagreement tab
+    /// lists them.
+    pub fn disagreements(&self, first: &[Change]) -> Vec<String> {
+        self.doubts(first)
+            .into_iter()
+            .map(|d| match d {
+                Doubt::Disputes { statement, why } => format!(
+                    "disputes \"{}\": {why}",
+                    crate::util::truncate(statement, 48)
+                ),
+                Doubt::Missed(statement) => format!("missed: {statement}"),
+                Doubt::Risk { theirs, had } => {
+                    format!("rates it {} risk, not {}", theirs.word(), had.word())
+                }
+            })
+            .collect()
     }
 }
 
@@ -734,22 +786,34 @@ impl Checks {
     }
 }
 
-/// Everything learned about a flagged unit on the Flagged screen.
+/// Everything learned about a unit in the unit view: the agent's answers
+/// and the reviewer's note.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dive {
     pub results: BTreeMap<DiveKind, DiveResult>,
-    /// The questions in the order the reviewer asked them: the order of the
-    /// Flagged screen's report.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub asked: Vec<DiveKind>,
-    pub resolution: Option<Resolution>,
     /// The reviewer's note on the unit's whole change (`m`): for the agent,
     /// the clipboard, or the PR review.
     pub note: String,
     /// The unit's fingerprint when the note was written. The note stays when
-    /// the code changes; this tells that it was about other code.
+    /// the code changes; this tells that it was about other code
+    /// ([`Unit::note_is_stale`]: "the code changed since this note").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_on: Option<String>,
+    /// Notes put away, oldest first: each was on code that changed since,
+    /// and the reviewer accepted the new code (`a`). Kept with the unit, out
+    /// of the queue, the notes and what finishing sends.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub archived: Vec<ArchivedNote>,
+}
+
+/// A note put away when the reviewer accepted the code that changed under
+/// it (see [`Dive::archived`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchivedNote {
+    pub text: String,
+    /// The unit's fingerprint when the note was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<String>,
 }
 
 /// Where the agent-provided details for a unit stand.
@@ -787,6 +851,16 @@ pub struct Unit {
     pub callers: Vec<String>,
     pub callees: Vec<String>,
     pub decision: Decision,
+    /// Who accepted it while `decision` is `Accepted`, `None` otherwise.
+    /// Kept by `attention::settle`.
+    #[serde(default)]
+    pub accepted_by: Option<AcceptedBy>,
+    /// Why it sits at its level beyond the rule that put it there, one short
+    /// sentence each: expensive to undo, a second model disputes it, not
+    /// mentioned in the commits or PR description. Written by
+    /// `attention::settle`.
+    #[serde(default)]
+    pub reasons: Vec<String>,
     /// One broad sentence about the whole unit, from the agent. Shown for
     /// routine units instead of their change statements.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -794,7 +868,7 @@ pub struct Unit {
     /// Why a unit has no behavior change, found from the code (no agent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nbc_reason: Option<String>,
-    /// Flagged-screen answers, resolution and note for a flagged unit.
+    /// The agent's answers about the unit and the reviewer's note.
     #[serde(default)]
     pub dive: Dive,
     /// Dive questions currently in flight. Not persisted.
@@ -808,6 +882,11 @@ pub struct Unit {
 impl Unit {
     pub fn needs_agent(&self) -> bool {
         self.status != UnitStatus::NoBehaviorChange
+    }
+
+    /// teer accepted it for the reviewer (no behavior change).
+    pub fn auto_accepted(&self) -> bool {
+        self.accepted_by == Some(AcceptedBy::Auto)
     }
 
     pub fn display_line(&self) -> u32 {
@@ -825,6 +904,30 @@ impl Unit {
                 .note_on
                 .as_ref()
                 .is_some_and(|f| *f != self.fingerprint)
+    }
+
+    /// Put the note away in [`Dive::archived`] (it was on code that changed
+    /// since, and that code is accepted). False, and nothing changes,
+    /// without a note.
+    pub fn archive_note(&mut self) -> bool {
+        if self.dive.note.trim().is_empty() {
+            return false;
+        }
+        let text = std::mem::take(&mut self.dive.note);
+        let on = self.dive.note_on.take();
+        self.dive.archived.push(ArchivedNote { text, on });
+        true
+    }
+
+    /// Take back the note [`Unit::archive_note`] put away last, if it is
+    /// `text` written on `on`: it is the unit's note again.
+    pub fn unarchive_note(&mut self, text: &str, on: Option<&str>) {
+        let last = self.dive.archived.last();
+        if last.is_some_and(|a| a.text == text && a.on.as_deref() == on) {
+            self.dive.archived.pop();
+        }
+        self.dive.note = text.to_string();
+        self.dive.note_on = on.map(String::from);
     }
 
     pub fn short_name(&self) -> &str {
@@ -869,6 +972,17 @@ pub enum Risk {
     Low,
     Medium,
     High,
+}
+
+impl Risk {
+    /// `low`, `medium`, `high`.
+    pub fn word(self) -> &'static str {
+        match self {
+            Risk::Low => "low",
+            Risk::Medium => "medium",
+            Risk::High => "high",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -947,7 +1061,6 @@ mod tests {
                 coverage: None,
             },
         );
-        u.dive.resolution = Some(Resolution::NeedsFix);
         u.dive.note = "n".into();
         u.dive_pending.insert(DiveKind::Visualize);
         let back: Unit = serde_json::from_str(&serde_json::to_string(&u).unwrap()).unwrap();

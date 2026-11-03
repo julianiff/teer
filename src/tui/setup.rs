@@ -1,14 +1,15 @@
-//! The setup screen (`teer setup`, and the first start in a terminal):
-//! what prepares reviews, its API settings when it is an API, the fast
-//! model, the second model, and a test answer from the fast model before
-//! the choice is saved.
+//! The setup screen (`teer setup`, the first start in a terminal, and
+//! `<space>s` in a review): what prepares reviews, its API settings when it
+//! is an API, the fast model, the second model, and a test answer from the
+//! fast model before the choice is saved. The lists take normal-mode keys
+//! from the keymap; the API fields and the model filter are text inputs.
 
 use std::io::IsTerminal;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, EventStream, KeyEvent, KeyEventKind};
 use futures::StreamExt;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -21,12 +22,24 @@ use unicode_width::UnicodeWidthStr;
 use super::slim::SPINNER;
 use super::theme::Theme;
 use crate::config::{ApiConfig, Config, Provider};
+use crate::keymap::{Action, Edit, Keymap, Outcome};
 use crate::setup::{Choice, Found, PRESETS, Preset, Tool};
 use crate::util::{sanitize, truncate, truncate_pad};
 
 /// A terminal to draw the screen in.
 pub fn can_run() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+}
+
+/// Where the screen was opened, which says what leaving it does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Opened {
+    /// The first start: leaving means "not now".
+    First,
+    /// `teer setup`: leaving quits.
+    Command,
+    /// `<space>s` in a review: leaving goes back to it.
+    Review,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +67,8 @@ pub enum Effect {
     /// Ask the fast model for a test answer.
     Check,
     Save,
-    /// Esc on the first step: "not now", or out of `teer setup`.
+    /// Back from the first step, or close: "not now", out of `teer setup`,
+    /// or back to the review.
     Leave,
     /// ctrl+c: out of teer.
     Quit,
@@ -80,8 +94,7 @@ pub enum Reply {
 }
 
 pub struct Setup {
-    /// The first start: leaving means "not now".
-    pub first: bool,
+    pub opened: Opened,
     pub step: Step,
     pub cfg: Config,
     /// What was found of each preset; `None` while looking.
@@ -105,6 +118,9 @@ pub struct Setup {
     pub asked: u64,
     pub started: Instant,
     pub theme: Theme,
+    /// The lists move with it; the fields and the model filter are text
+    /// inputs ([`Keymap::edit`]).
+    pub keys: Keymap,
     pub tick: u64,
 }
 
@@ -116,11 +132,11 @@ struct Row {
 }
 
 impl Setup {
-    pub fn new(cfg: Config, first: bool) -> Setup {
+    pub fn new(cfg: Config, opened: Opened, keys: Keymap) -> Setup {
         let preset = Preset::of(&cfg);
         let theme = Theme::new(cfg.theme);
         let mut s = Setup {
-            first,
+            opened,
             step: Step::Provider,
             cfg,
             found: None,
@@ -138,6 +154,7 @@ impl Setup {
             asked: 0,
             started: Instant::now(),
             theme,
+            keys,
             tick: 0,
         };
         s.fill_api();
@@ -289,115 +306,136 @@ impl Setup {
         if k.kind == KeyEventKind::Release {
             return None;
         }
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        if ctrl && k.code == KeyCode::Char('c') {
+        if self.keys.is_interrupt(&k) {
             return Some(Effect::Quit);
         }
-        let up = matches!(k.code, KeyCode::Up) || (ctrl && k.code == KeyCode::Char('p'));
-        let down = matches!(k.code, KeyCode::Down) || (ctrl && k.code == KeyCode::Char('n'));
         match self.step {
-            Step::Provider => {
-                let n = PRESETS.len();
-                match k.code {
-                    _ if up || k.code == KeyCode::Char('k') => {
-                        self.preset = (self.preset + n - 1) % n
-                    }
-                    _ if down || k.code == KeyCode::Char('j') => {
-                        self.preset = (self.preset + 1) % n
-                    }
-                    KeyCode::Esc | KeyCode::Char('q') => return Some(Effect::Leave),
-                    KeyCode::Enter => {
-                        self.fill_api();
-                        self.fast = None;
-                        self.models = Load::Waiting;
-                        if self.chosen().provider == Provider::Api {
-                            self.step = Step::Api;
-                            self.field = usize::from(!self.chosen().custom);
-                        } else {
-                            self.enter_models(Step::Fast);
-                            return Some(Effect::Models);
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            // Lists without text: normal mode.
+            Step::Provider | Step::Check => match self.keys.feed(&k, Instant::now()) {
+                Outcome::Run { action, count } => self.on_action(action, count.unwrap_or(1)),
+                _ => None,
+            },
+            // Text: the API's fields, the model filter.
             Step::Api => {
-                let field = if self.field == 0 {
-                    &mut self.url
-                } else {
-                    &mut self.key_env
-                };
-                match k.code {
-                    KeyCode::Esc => self.step = Step::Provider,
-                    KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down => {
-                        self.field = 1 - self.field
-                    }
-                    KeyCode::Backspace => {
-                        field.pop();
-                    }
-                    KeyCode::Char('u') if ctrl => field.clear(),
-                    KeyCode::Char(c) if !ctrl => field.push(c),
-                    KeyCode::Enter => {
-                        if self.chosen().custom && self.url.trim().is_empty() {
-                            self.field = 0;
-                            return None;
-                        }
-                        self.models = Load::Waiting;
-                        self.enter_models(Step::Fast);
-                        return Some(Effect::Models);
-                    }
-                    _ => {}
-                }
+                let e = self.keys.edit(&k);
+                self.api_edit(e)
             }
             Step::Fast | Step::Second => {
-                let rows = self.rows();
-                match k.code {
-                    _ if up => self.sel = self.sel.saturating_sub(1),
-                    _ if down => self.sel = (self.sel + 1).min(rows.len().saturating_sub(1)),
-                    KeyCode::Esc => {
-                        if self.step == Step::Second {
-                            self.enter_models(Step::Fast);
-                        } else if self.chosen().provider == Provider::Api {
-                            self.step = Step::Api;
-                        } else {
-                            self.step = Step::Provider;
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        self.filter.pop();
-                        self.sel = 0;
-                    }
-                    KeyCode::Char('u') if ctrl => {
-                        self.filter.clear();
-                        self.sel = 0;
-                    }
-                    KeyCode::Char(c) if !ctrl => {
-                        self.filter.push(c);
-                        self.sel = 0;
-                    }
-                    KeyCode::Enter => {
-                        let row = rows.get(self.sel)?;
-                        if self.step == Step::Fast {
-                            let v = row.value.clone()?;
-                            self.fast = Some(v);
-                            self.enter_models(Step::Second);
-                        } else {
-                            self.second = Some(row.value.clone());
-                            self.step = Step::Check;
-                            self.check = Load::Waiting;
-                            return Some(Effect::Check);
-                        }
-                    }
-                    _ => {}
-                }
+                let e = self.keys.edit(&k);
+                self.model_edit(e)
             }
-            Step::Check => match k.code {
-                KeyCode::Esc => self.enter_models(Step::Second),
-                KeyCode::Enter if !matches!(self.check, Load::Waiting) => {
+        }
+    }
+
+    /// An action on the agents' list or the last step; moves go `count`
+    /// rows.
+    fn on_action(&mut self, action: Action, count: u32) -> Option<Effect> {
+        if self.step == Step::Check {
+            match action {
+                Action::ViewOpen if !matches!(self.check, Load::Waiting) => {
                     return Some(Effect::Save);
                 }
+                Action::ViewBack => self.enter_models(Step::Second),
+                Action::ViewClose => return Some(Effect::Leave),
                 _ => {}
-            },
+            }
+            return None;
+        }
+        let n = PRESETS.len();
+        let by = count as usize % n;
+        match action {
+            Action::MoveDown => self.preset = (self.preset + by) % n,
+            Action::MoveUp => self.preset = (self.preset + n - by) % n,
+            Action::MoveFirst => self.preset = 0,
+            Action::MoveLast => self.preset = n - 1,
+            Action::ViewBack | Action::ViewClose => return Some(Effect::Leave),
+            Action::ViewOpen => {
+                self.fill_api();
+                self.fast = None;
+                self.models = Load::Waiting;
+                if self.chosen().provider == Provider::Api {
+                    self.step = Step::Api;
+                    self.field = usize::from(!self.chosen().custom);
+                } else {
+                    self.enter_models(Step::Fast);
+                    return Some(Effect::Models);
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// A key in the API step's fields.
+    fn api_edit(&mut self, e: Edit) -> Option<Effect> {
+        let field = if self.field == 0 {
+            &mut self.url
+        } else {
+            &mut self.key_env
+        };
+        match e {
+            Edit::Cancel => self.step = Step::Provider,
+            Edit::Tab | Edit::BackTab | Edit::Up | Edit::Down => self.field = 1 - self.field,
+            Edit::Backspace => {
+                field.pop();
+            }
+            Edit::ClearLine => field.clear(),
+            Edit::Char(c) => field.push(c),
+            Edit::Submit => {
+                if self.chosen().custom && self.url.trim().is_empty() {
+                    self.field = 0;
+                    return None;
+                }
+                self.models = Load::Waiting;
+                self.enter_models(Step::Fast);
+                return Some(Effect::Models);
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// A key in a model step: the filter takes the text, up and down move.
+    fn model_edit(&mut self, e: Edit) -> Option<Effect> {
+        let rows = self.rows();
+        match e {
+            Edit::Up => self.sel = self.sel.saturating_sub(1),
+            Edit::Down => self.sel = (self.sel + 1).min(rows.len().saturating_sub(1)),
+            Edit::Cancel => {
+                if self.step == Step::Second {
+                    self.enter_models(Step::Fast);
+                } else if self.chosen().provider == Provider::Api {
+                    self.step = Step::Api;
+                } else {
+                    self.step = Step::Provider;
+                }
+            }
+            Edit::Backspace => {
+                self.filter.pop();
+                self.sel = 0;
+            }
+            Edit::ClearLine => {
+                self.filter.clear();
+                self.sel = 0;
+            }
+            Edit::Char(c) => {
+                self.filter.push(c);
+                self.sel = 0;
+            }
+            Edit::Submit => {
+                let row = rows.get(self.sel)?;
+                if self.step == Step::Fast {
+                    let v = row.value.clone()?;
+                    self.fast = Some(v);
+                    self.enter_models(Step::Second);
+                } else {
+                    self.second = Some(row.value.clone());
+                    self.step = Step::Check;
+                    self.check = Load::Waiting;
+                    return Some(Effect::Check);
+                }
+            }
+            _ => {}
         }
         None
     }
@@ -463,12 +501,19 @@ pub fn draw(f: &mut Frame, s: &Setup) {
     }
     f.render_widget(Paragraph::new(lines), body);
 
-    let leave = if s.first { "not now" } else { "quit" };
+    let leave = match s.opened {
+        Opened::First => "not now",
+        Opened::Command => "quit",
+        Opened::Review => "back",
+    };
+    // The lists' keys come from the keymap; the text inputs' are fixed.
+    let k = &s.keys;
+    let moves = format!("{}/{}", k.label(Action::MoveDown), k.label(Action::MoveUp));
     let buttons: Vec<(String, &str)> = match s.step {
         Step::Provider => vec![
-            ("⏎".into(), "next"),
-            ("↑/↓".into(), "move"),
-            ("esc".into(), leave),
+            (k.labels(Action::ViewOpen), "next"),
+            (moves, "move"),
+            (k.labels(Action::ViewBack), leave),
         ],
         Step::Api => vec![
             ("⏎".into(), "next"),
@@ -480,10 +525,18 @@ pub fn draw(f: &mut Frame, s: &Setup) {
             ("↑/↓".into(), "move"),
             ("esc".into(), "back"),
         ],
-        Step::Check if matches!(s.check, Load::Failed(_)) => {
-            vec![("⏎".into(), "save anyway"), ("esc".into(), "back")]
-        }
-        Step::Check => vec![("⏎".into(), "save"), ("esc".into(), "back")],
+        Step::Check => vec![
+            (
+                k.labels(Action::ViewOpen),
+                if matches!(s.check, Load::Failed(_)) {
+                    "save anyway"
+                } else {
+                    "save"
+                },
+            ),
+            (k.labels(Action::ViewBack), "back"),
+            (k.label(Action::ViewClose), leave),
+        ],
     };
     let right = match s.step {
         Step::Fast | Step::Second => "type to filter or name a model",
@@ -516,7 +569,7 @@ fn marker(s: &Setup, selected: bool) -> (Span<'static>, ratatui::style::Style) {
 
 fn provider_lines(s: &Setup, w: usize, lines: &mut Vec<Line<'static>>) {
     let t = &s.theme;
-    let sub = if s.first {
+    let sub = if s.opened == Opened::First {
         "teer asks an agent to describe every change. Pick one; `teer setup` changes it later."
     } else {
         "teer asks an agent to describe every change."
@@ -755,7 +808,8 @@ fn check_lines(s: &Setup, w: usize, lines: &mut Vec<Line<'static>>) {
     lines.push(Line::default());
     lines.push(Line::styled(
         format!(
-            "Saved to {} on enter.",
+            "{} saves it to {}.",
+            s.keys.labels(Action::ViewOpen),
             crate::review::store::config_path().display()
         ),
         t.muted(),
@@ -812,48 +866,59 @@ fn start(s: &mut Setup, e: &Effect, tx: &UnboundedSender<Reply>) {
     }
 }
 
-/// Show the screen; saving writes the choice into the config at `path`.
-pub async fn run(cfg: Config, path: &Path, first: bool) -> Result<Ended> {
-    let mut s = Setup::new(cfg, first);
+/// Show the screen on a terminal of its own; saving writes the choice into
+/// the config at `path`.
+pub async fn run(cfg: Config, path: &Path, opened: Opened, keys: Keymap) -> Result<Ended> {
+    let mut terminal = ratatui::init();
+    super::ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+    let ended = run_on(&mut terminal, cfg, path, opened, keys).await;
+    super::restore_terminal();
+    ended
+}
+
+/// Show the screen on `terminal`, which is up already: a review hands its
+/// own over for `<space>s`, and takes it back after.
+pub async fn run_on(
+    terminal: &mut ratatui::DefaultTerminal,
+    cfg: Config,
+    path: &Path,
+    opened: Opened,
+    keys: Keymap,
+) -> Result<Ended> {
+    let mut s = Setup::new(cfg, opened, keys);
     let (tx, mut rx) = unbounded_channel();
     let found = tx.clone();
     tokio::task::spawn_blocking(move || {
         let _ = found.send(Reply::Found(crate::setup::detect()));
     });
-    let (tools, cfg) = (tx.clone(), s.cfg.clone());
+    let (tools, cfg, keys) = (tx.clone(), s.cfg.clone(), s.keys.clone());
     tokio::spawn(async move {
-        let _ = tools.send(Reply::Tools(crate::setup::tools(&cfg).await));
+        let _ = tools.send(Reply::Tools(crate::setup::tools(&cfg, &keys).await));
     });
-    let mut terminal = ratatui::init();
-    super::ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
-    let result: Result<Result<Choice, Ended>> = async {
-        let mut events = EventStream::new();
-        let mut tick = tokio::time::interval(Duration::from_millis(100));
-        loop {
-            terminal.draw(|f| draw(f, &s))?;
-            tokio::select! {
-                ev = events.next() => match ev {
-                    Some(Ok(Event::Key(k))) => match s.on_key(k) {
-                        Some(Effect::Leave) => return Ok(Err(Ended::Left)),
-                        Some(Effect::Quit) => return Ok(Err(Ended::Quit)),
-                        Some(Effect::Save) => return Ok(Ok(s.choice(s.second_choice()))),
-                        Some(e) => start(&mut s, &e, &tx),
-                        None => {}
-                    },
-                    Some(Ok(_)) => {}
-                    Some(Err(e)) => return Err(e.into()),
-                    None => return Ok(Err(Ended::Quit)),
+    let mut events = EventStream::new();
+    let mut tick = tokio::time::interval(Duration::from_millis(100));
+    let choice = loop {
+        terminal.draw(|f| draw(f, &s))?;
+        tokio::select! {
+            ev = events.next() => match ev {
+                Some(Ok(Event::Key(k))) => match s.on_key(k) {
+                    Some(Effect::Leave) => return Ok(Ended::Left),
+                    Some(Effect::Quit) => return Ok(Ended::Quit),
+                    Some(Effect::Save) => break s.choice(s.second_choice()),
+                    Some(e) => start(&mut s, &e, &tx),
+                    None => {}
                 },
-                Some(r) = rx.recv() => s.apply(r),
-                _ = tick.tick() => s.tick = s.tick.wrapping_add(1),
+                Some(Ok(_)) => {}
+                Some(Err(e)) => return Err(e.into()),
+                None => return Ok(Ended::Quit),
+            },
+            Some(r) = rx.recv() => s.apply(r),
+            _ = tick.tick() => {
+                s.tick = s.tick.wrapping_add(1);
+                // A key prefix waiting past `timeoutlen` is dropped.
+                s.keys.tick(Instant::now());
             }
         }
-    }
-    .await;
-    super::restore_terminal();
-    let choice = match result? {
-        Ok(c) => c,
-        Err(ended) => return Ok(ended),
     };
     crate::setup::save(path, &s.cfg, &choice)?;
     Ok(Ended::Saved(Box::new(Config::load(path)?)))

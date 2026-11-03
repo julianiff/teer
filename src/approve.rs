@@ -1,5 +1,5 @@
-//! Posting a review of a pull request on GitHub: approving it from the "all
-//! reviewed" popup, or requesting changes or commenting from the notes.
+//! Posting a review of a pull request on GitHub from the `:w` sheet (see
+//! `tui::finish`): approving it, requesting changes, or commenting.
 //!
 //! The user's notes on units become inline review comments (when their line
 //! is part of the PR diff) or lines of the review summary. The review is
@@ -86,15 +86,6 @@ impl Verdict {
         }
     }
 
-    /// `Approve PR #7`, `Request changes on PR #7`, `Comment on PR #7`.
-    pub fn ask(self, n: u32) -> String {
-        match self {
-            Verdict::Approve => format!("Approve PR #{n}"),
-            Verdict::RequestChanges => format!("Request changes on PR #{n}"),
-            Verdict::Comment => format!("Comment on PR #{n}"),
-        }
-    }
-
     /// `Approving PR #7`, while it is posted.
     pub fn doing(self, n: u32) -> String {
         match self {
@@ -110,15 +101,6 @@ impl Verdict {
             Verdict::Approve => format!("PR #{n} approved"),
             Verdict::RequestChanges => format!("Changes requested on PR #{n}"),
             Verdict::Comment => format!("Review comment posted on PR #{n}"),
-        }
-    }
-
-    /// The label of the key that switches to the next verdict.
-    pub fn label(self) -> &'static str {
-        match self {
-            Verdict::Approve => "approve",
-            Verdict::RequestChanges => "request changes",
-            Verdict::Comment => "comment",
         }
     }
 }
@@ -650,6 +632,8 @@ mod tests {
             summary: None,
             nbc_reason: None,
             dive: Default::default(),
+            accepted_by: None,
+            reasons: Vec::new(),
             dive_pending: Default::default(),
             checks: Default::default(),
         }

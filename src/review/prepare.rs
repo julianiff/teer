@@ -20,10 +20,14 @@ use crate::git::ChangedFile;
 
 // Events are short-lived and moved once; boxing would only add noise.
 #[allow(clippy::large_enum_variant)]
+/// What came back about unit `id`. `fingerprint` is the unit's code as it
+/// was asked about: the answer holds for that code only (see
+/// `Review::apply`).
 #[derive(Debug, Clone)]
 pub enum PrepareEvent {
     Ready {
         id: String,
+        fingerprint: String,
         changes: Vec<Change>,
         summary: Option<String>,
         /// Undoing it would be costly, with the lines that show it.
@@ -36,11 +40,13 @@ pub enum PrepareEvent {
     },
     Failed {
         id: String,
+        fingerprint: String,
         error: String,
     },
     /// The second model's check of a unit described earlier, or why there is none.
     Second {
         id: String,
+        fingerprint: String,
         opinion: Result<SecondOpinion, String>,
     },
 }
@@ -108,6 +114,7 @@ async fn run_batch(
             for (u, _) in &units {
                 let _ = tx.send(PrepareEvent::Failed {
                     id: u.id.clone(),
+                    fingerprint: u.fingerprint.clone(),
                     error: format!("{e:#}"),
                 });
             }
@@ -123,6 +130,7 @@ async fn run_batch(
         else {
             let _ = tx.send(PrepareEvent::Failed {
                 id: u.id.clone(),
+                fingerprint: u.fingerprint.clone(),
                 error: "agent returned nothing for this unit".into(),
             });
             continue;
@@ -148,6 +156,7 @@ async fn run_batch(
         }
         let _ = tx.send(PrepareEvent::Ready {
             id: u.id.clone(),
+            fingerprint: u.fingerprint.clone(),
             changes,
             summary,
             cost,
@@ -180,6 +189,7 @@ pub async fn second_opinions(
             for (u, _) in &units {
                 let _ = tx.send(PrepareEvent::Second {
                     id: u.id.clone(),
+                    fingerprint: u.fingerprint.clone(),
                     opinion: Err(format!("{e:#}")),
                 });
             }
@@ -200,6 +210,7 @@ pub async fn second_opinions(
         };
         let _ = tx.send(PrepareEvent::Second {
             id: u.id.clone(),
+            fingerprint: u.fingerprint.clone(),
             opinion,
         });
     }

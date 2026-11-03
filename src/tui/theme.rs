@@ -248,12 +248,38 @@ impl Theme {
         }
     }
 
+    /// Behind the flagged unit the flagged list has selected: the bar's
+    /// colour; nothing without colour, where its `▌` marks it.
+    pub fn selected_entry(&self) -> Style {
+        if self.mono() {
+            Style::new()
+        } else {
+            Style::new().bg(self.bar)
+        }
+    }
+
+    /// A list row inside the visual selection (`V`): behind the bar's
+    /// colour, reversed without colour.
+    pub fn visual(&self) -> Style {
+        self.button()
+    }
+
     /// Name of an Investigate-flagged row in the list: a style, not a glyph.
     pub fn flagged_row(&self) -> Style {
         if self.mono() {
             Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
             Style::new().fg(self.removed).add_modifier(Modifier::BOLD)
+        }
+    }
+
+    /// `accepted` at the end of a queue row: green, quieter than
+    /// [`Theme::ok`]; dimmed without colour.
+    pub fn accepted_state(&self) -> Style {
+        if self.mono() {
+            Style::new().add_modifier(Modifier::DIM)
+        } else {
+            Style::new().fg(self.added)
         }
     }
 
@@ -282,19 +308,6 @@ impl Theme {
             self.bad().add_modifier(Modifier::UNDERLINED)
         } else {
             self.bad()
-        }
-    }
-
-    /// The swipe card's accept button: dark text on green, reversed without
-    /// colour.
-    pub fn accept_button(&self) -> Style {
-        if self.mono() {
-            Style::new().add_modifier(Modifier::BOLD | Modifier::REVERSED)
-        } else {
-            Style::new()
-                .bg(self.added)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD)
         }
     }
 }

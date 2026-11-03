@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use toml_edit::{DocumentMut, Item, Table, value};
 
 use crate::config::{ApiConfig, ApiFormat, Config, Provider};
+use crate::keymap::{Action, Keymap};
 
 /// One of the agents setup offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,9 +178,9 @@ pub fn tool_names(cfg: &Config) -> Vec<String> {
 }
 
 /// What is found of each of [`tool_names`]: git teer needs, gh for pull
-/// requests (installed and logged in), the editor of `cfg` for `e`, the
-/// sandbox Behavior runs code in.
-pub async fn tools(cfg: &Config) -> Vec<Tool> {
+/// requests (installed and logged in), the editor of `cfg` for
+/// `goto.editor` in `keys`, the sandbox Behavior runs code in.
+pub async fn tools(cfg: &Config, keys: &Keymap) -> Vec<Tool> {
     let names = tool_names(cfg);
     let gh_program = crate::approve::Tools::default().gh;
     let git = tokio::task::spawn_blocking(|| crate::agent::claude::is_installed("git"));
@@ -197,13 +198,17 @@ pub async fn tools(cfg: &Config) -> Vec<Tool> {
         about: about.into(),
     };
     // Looked up, not run: `--version` may open an IDE's window.
+    let opens = format!(
+        "`{}` opens a unit in it (`editor` in the config)",
+        keys.label(Action::GotoEditor)
+    );
     let editor = match cfg.editor() {
         Ok(e) => tool(
             &names[2],
             false,
             on_path(e.program()),
             "not installed",
-            "`e` opens a unit in it (`editor` in the config)",
+            &opens,
         ),
         Err(e) => Tool {
             name: names[2].clone(),
@@ -414,7 +419,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
-            "# mine\ntheme = \"light\"\nprepare_effort = \"max\"\n\n[keys]\naccept = \"y\"\n",
+            "# mine\ntheme = \"light\"\nprepare_effort = \"max\"\n\n[keys]\n\"decide.accept\" = \"y\"\n",
         )
         .unwrap();
         let cfg = Config::load(&path).unwrap();
@@ -445,7 +450,10 @@ mod tests {
             Some("vendor/big")
         );
         assert!(saved.second_opinion);
-        assert_eq!(saved.keys.get("accept").map(String::as_str), Some("y"));
+        assert_eq!(
+            saved.keys.get("decide.accept"),
+            Some(&crate::keymap::KeySpec::One("y".into()))
+        );
         assert_eq!(saved.theme, crate::config::Theme::Light);
     }
 

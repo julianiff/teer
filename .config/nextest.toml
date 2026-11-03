@@ -1,0 +1,6 @@
+# cargo nextest run: every test in a process of its own.
+
+[profile.default]
+# The slowest test takes about 11 s. One still running after 30 s is
+# reported as slow, and stopped after 2 minutes.
+slow-timeout = { period = "30s", terminate-after = 4 }

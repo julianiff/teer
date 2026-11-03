@@ -1,112 +1,39 @@
-//! The Ask view (`/`): questions about the code and the agent's answers,
+//! A unit's conversation (`K`, the unit view's ask panel, see
+//! [`super::unit`]): questions about the unit and the agent's answers,
 //! oldest first. Each answer names the units of this change it has to do
 //! with and shows the code it means, read by teer, in boxes; code of the
-//! change is marked so, its changed lines with `+`. The question being
-//! typed sits at the bottom. An answer also shows on the unit it belongs
-//! to ([`note_lines`]). On the Flagged screen the same conversation, kept
-//! to one unit, is its Chat tile ([`draw_chat`]).
+//! change is marked so, its changed lines with `+`. An answer also shows on
+//! the unit it belongs to ([`note_lines`]).
 
 use std::cell::Cell;
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::{App, LiveAnswer, Target};
 use super::preview::barred;
 use super::slim;
-use crate::config::Action;
-use crate::review::model::{Question, Shown, Unit};
+use super::ui::fixed;
+use crate::keymap::Action;
+use crate::review::model::{Question, Shown};
 use crate::util::{sanitize, truncate, wrap};
 
 /// What a question on its way says.
 pub const ASKING: &str = "the agent reads the code…";
 /// While the answer comes in.
 pub const WRITING: &str = "the agent writes the answer…";
-/// The view's title.
-pub const TITLE: &str = " Ask about the code ";
 /// Lines of an answer a unit's note shows before it is cut.
 const NOTE_LINES: usize = 4;
 
-pub fn draw_ask(f: &mut Frame, app: &App) {
-    let t = &app.theme;
-    let area = f.area();
-    let box_w = area.width.saturating_sub(4).min(120);
-    let box_h = area.height.saturating_sub(2);
-    if box_w < 24 || box_h < 8 {
-        f.render_widget(Clear, area);
-        return;
-    }
-    let r = Rect::new(
-        area.x + (area.width - box_w) / 2,
-        area.y + (area.height - box_h) / 2,
-        box_w,
-        box_h,
-    );
-    f.render_widget(Clear, r);
-    let block = Block::new()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(t.accent())
-        .title(Span::styled(TITLE, t.bold()));
-    let inner = block.inner(r);
-    f.render_widget(block, r);
-    let inner = Rect::new(
-        inner.x + 1,
-        inner.y,
-        inner.width.saturating_sub(2),
-        inner.height,
-    );
-    let [talk, rule, input, keys] = Layout::vertical([
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(inner);
-    let w = inner.width as usize;
-
-    draw_talk(
-        f,
-        app,
-        talk,
-        Talk {
-            which: &app.talk(),
-            chat: false,
-            scroll: &app.ask.scroll,
-            max: &app.ask.max_scroll,
-            focus: app.ask.link,
-        },
-    );
-    f.render_widget(Paragraph::new(Line::styled("─".repeat(w), t.muted())), rule);
-    let typing = app.ask.link.is_none();
-    f.render_widget(
-        Paragraph::new(input_line(app, " ask › ", &app.ask.input, typing, w)),
-        input,
-    );
-    let keys_text = if app.ask.link.is_some() {
-        "↑ ↓ links · ⏎ open · tab type · esc back"
-    } else {
-        "⏎ ask · tab links · ↑ ↓ scroll · ctrl+r ask again · esc close"
-    };
-    f.render_widget(
-        Paragraph::new(Line::styled(truncate(keys_text, w), t.muted())),
-        keys,
-    );
-    super::ui::text_area(app, talk, 0);
-    super::ui::text_area(app, keys, 0);
-    super::ui::click_hints(f, app, keys, keys_text);
-}
-
-/// A conversation to draw: the questions, by index; whether it is one
-/// unit's chat; its scroll (`None` follows the end) and how far it went as
-/// last drawn; the link in focus, kept in view.
+/// A conversation to draw: the questions about one unit, by index; its
+/// scroll (`None` follows the end) and how far it went as last drawn; the
+/// link in focus, kept in view.
 pub struct Talk<'a> {
     pub which: &'a [usize],
-    pub chat: bool,
     pub scroll: &'a Cell<Option<usize>>,
     pub max: &'a Cell<usize>,
     pub focus: Option<usize>,
@@ -114,7 +41,7 @@ pub struct Talk<'a> {
 
 /// Draw `talk` in `area`, each link on show a click target.
 pub fn draw_talk(f: &mut Frame, app: &App, area: Rect, talk: Talk) {
-    let (lines, links) = conversation(app, talk.which, talk.chat, area.width as usize);
+    let (lines, links) = conversation(app, talk.which, area.width as usize);
     let h = area.height as usize;
     let max = lines.len().saturating_sub(h);
     talk.max.set(max);
@@ -141,60 +68,15 @@ pub fn draw_talk(f: &mut Frame, app: &App, area: Rect, talk: Talk) {
     f.render_widget(Paragraph::new(shown), area);
 }
 
-/// The chat about `u` in `area` (a tile's inside): the conversation, a
-/// rule, and the question being typed.
-pub fn draw_chat(f: &mut Frame, app: &App, u: &Unit, area: Rect, focus: bool) {
-    let t = &app.theme;
-    if area.height < 3 || area.width < 4 {
-        return;
-    }
-    let area = Rect::new(area.x + 1, area.y, area.width - 2, area.height);
-    let [talk, rule, input] = Layout::vertical([
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-    let w = area.width as usize;
-    draw_talk(
-        f,
-        app,
-        talk,
-        Talk {
-            which: &app.chat_of(&u.id),
-            chat: true,
-            scroll: &app.ask.chat_scroll,
-            max: &app.ask.chat_max,
-            focus: None,
-        },
-    );
-    if focus {
-        app.detail_rows.set(talk.height as usize);
-        app.detail_max_scroll.set(app.ask.chat_max.get());
-    }
-    f.render_widget(Paragraph::new(Line::styled("─".repeat(w), t.muted())), rule);
-    let typing = focus && app.flagged.typing;
-    let line = if typing || !app.ask.draft.is_empty() {
-        input_line(app, " › ", &app.ask.draft, typing, w)
-    } else {
-        let start = format!(" › {} to ask about it", app.keys.label(Action::Ask));
-        Line::styled(truncate(&start, w), t.muted())
-    };
-    f.render_widget(Paragraph::new(line), input);
-}
-
-/// What the chat's border says about its keys.
-pub fn chat_keys(app: &App, focus: bool) -> String {
-    if focus && app.flagged.typing {
-        " ⏎ ask · ctrl+r again · esc done ".into()
-    } else {
-        format!(" {} type ", app.keys.label(Action::Ask))
-    }
-}
-
 /// `lead` then `text▏`: the end of the text stays in view. Muted while
 /// not `typing`.
-fn input_line(app: &App, lead: &'static str, text: &str, typing: bool, w: usize) -> Line<'static> {
+pub(super) fn input_line(
+    app: &App,
+    lead: &'static str,
+    text: &str,
+    typing: bool,
+    w: usize,
+) -> Line<'static> {
     let t = &app.theme;
     let room = w.saturating_sub(lead.width() + 1);
     let mut tail: Vec<char> = Vec::new();
@@ -221,37 +103,13 @@ fn input_line(app: &App, lead: &'static str, text: &str, typing: bool, w: usize)
     ])
 }
 
-/// The conversation of questions `which` as lines `w` wide, and where each
-/// link is: (line, index into [`App::ask_links`]). Built in the same order
-/// as the links. A `chat` is about one unit, so where its answers are
-/// noted goes without saying.
-fn conversation(
-    app: &App,
-    which: &[usize],
-    chat: bool,
-    w: usize,
-) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
+/// The conversation of questions `which`, all about one unit, as lines `w`
+/// wide, and where each link is: (line, index into [`App::ask_links`]).
+/// Built in the same order as the links.
+fn conversation(app: &App, which: &[usize], w: usize) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
     let t = &app.theme;
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut links = Vec::new();
-    if which.is_empty() {
-        let intro = if !app.has_agent {
-            "No agent: asking needs one. `teer setup` picks Claude Code, Codex or a model API."
-        } else if chat {
-            "Ask about this unit in your own words: \"why is the retry here?\", \"who else calls it?\", \
-\"show me the test for it\". The agent reads the code (read-only) and this conversation so far, \
-so a question can follow on from the last answer. The conversation is kept with the unit."
-        } else {
-            "Ask anything about the code: \"show me the Cart class\", \"how are retries done?\", \
-\"who calls charge_order?\". The agent reads the repository (read-only) and points at the code; \
-teer shows those lines, marks what this change touched, and links the units of the change the \
-question has to do with. Each answer is also noted on the unit it is about."
-        };
-        for l in wrap(intro, w.saturating_sub(1)) {
-            lines.push(Line::styled(format!(" {l}"), t.muted()));
-        }
-        return (lines, links);
-    }
     let mut next_link = 0;
     for (k, &n) in which.iter().enumerate() {
         let q = &app.review.questions[n];
@@ -259,7 +117,7 @@ question has to do with. Each answer is also noted on the unit it is about."
             lines.push(Line::default());
         }
         let last = k + 1 == which.len();
-        question_lines(app, n, q, (last, chat), w, &mut lines);
+        question_lines(app, n, q, last, w, &mut lines);
         // The answer being written, in the old one's place.
         if let Some(text) = app.live_text(n) {
             lines.push(Line::default());
@@ -303,13 +161,12 @@ question has to do with. Each answer is also noted on the unit it is about."
     (lines, links)
 }
 
-/// `› the question`, where its answer is noted (not in a chat), and how it
-/// stands; `ctrl+r` asks the `last` again.
+/// `› the question` and how it stands; `^r` asks the `last` again.
 fn question_lines(
     app: &App,
     n: usize,
     q: &Question,
-    (last, chat): (bool, bool),
+    last: bool,
     w: usize,
     lines: &mut Vec<Line<'static>>,
 ) {
@@ -320,19 +177,6 @@ fn question_lines(
             Span::styled(lead, t.accent().add_modifier(Modifier::BOLD)),
             Span::styled(l, t.bold()),
         ]));
-    }
-    if let Some(u) = q.unit.as_deref().and_then(|id| app.review.unit(id))
-        && !chat
-    {
-        let on = if q.answer.is_some() {
-            "noted on"
-        } else {
-            "about"
-        };
-        lines.push(Line::styled(
-            truncate(&format!("  {on} {}", slim::row_name(u)), w),
-            t.muted(),
-        ));
     }
     if app.ask.pending.contains(&n) {
         let live = app.ask.live.get(&n);
@@ -350,18 +194,26 @@ fn question_lines(
             t.muted(),
         ));
     } else if let Some(e) = &q.error {
-        let again = if last { " · ctrl+r asks again" } else { "" };
+        let again = if last {
+            format!(" · {} asks again", fixed::RETRY)
+        } else {
+            String::new()
+        };
         lines.push(Line::styled(
             truncate(&format!("  ✗ {}{again}", sanitize(e)), w),
             t.needs_fix(),
         ));
     } else if q.answer.is_none() {
-        let again = if last { " · ctrl+r asks it" } else { "" };
+        let again = if last {
+            format!(" · {} asks it", fixed::RETRY)
+        } else {
+            String::new()
+        };
         lines.push(Line::styled(format!("  not answered{again}"), t.muted()));
     }
 }
 
-/// Who answers: the deep model, as for the Flagged questions.
+/// Who answers: the deep model, as for the unit view's other questions.
 fn agent_label(app: &App) -> String {
     format!(
         "agent ({})",
@@ -414,7 +266,7 @@ fn related_line(app: &App, id: &str, why: &str, selected: bool, w: usize) -> Lin
 /// Shown code in a rounded box `w` wide: `file:start-end`, what it is, and
 /// whether this change touched the file on its top border; the lines
 /// numbered and coloured, those the change added or edited with `+`.
-fn code_box(app: &App, s: &Shown, selected: bool, w: usize) -> Vec<Line<'static>> {
+pub(super) fn code_box(app: &App, s: &Shown, selected: bool, w: usize) -> Vec<Line<'static>> {
     let t = &app.theme;
     let border = if selected {
         t.accent().add_modifier(Modifier::BOLD)
@@ -501,10 +353,13 @@ pub fn note_lines(app: &App, id: &str, w: usize) -> Vec<Line<'static>> {
         }
         let more = match a.shown.len() {
             0 => String::new(),
-            1 => format!("1 piece of code · {} shows it", app.keys.label(Action::Ask)),
+            1 => format!(
+                "1 piece of code · {} shows it",
+                app.keys.label(Action::AskOpen)
+            ),
             n => format!(
                 "{n} pieces of code · {} shows them",
-                app.keys.label(Action::Ask)
+                app.keys.label(Action::AskOpen)
             ),
         };
         let card_line = |text: String, style: Style| {

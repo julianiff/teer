@@ -1,13 +1,28 @@
 //! Persistence: reviews as JSON in the XDG data dir, keyed by repo, base
 //! and head, so reopening teer restores decisions.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use serde_json::Value;
 
 use super::model::{PrInfo, Prep, Review};
 use crate::util::hash_hex;
+
+/// The version of the saved format. 1 added the version itself and the
+/// undo history (`Review.history`). A file without one is 0 and loads as it
+/// is; a file from a newer teer doesn't load. Fields that may be missing
+/// (`Review.cursor`, a step's `notes`) need no new version.
+pub const CURRENT: u32 = 1;
+
+/// Writes `Review.version`: always [`CURRENT`], the format this teer writes.
+pub(crate) fn current_version<S: serde::Serializer>(
+    _: &u32,
+    s: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    s.serialize_u32(CURRENT)
+}
 
 fn home() -> PathBuf {
     directories::BaseDirs::new()
@@ -104,11 +119,35 @@ pub fn save(review: &Review) -> Result<PathBuf> {
         &review.head_commit,
     );
     write_atomic(&path, &serde_json::to_vec_pretty(review)?)?;
+    write_atomic(&cursor_path(&path), cursor_bytes(review))?;
     write_atomic(
         &scope_dir(&review.repo_root, pr).join("latest"),
         path.to_string_lossy().as_bytes(),
     )?;
     Ok(path)
+}
+
+/// Save only where the queue's cursor is (`Review.cursor`), next to the
+/// review: a review can be tens of megabytes, and the cursor moves on every
+/// key.
+pub fn save_cursor(review: &Review) -> Result<()> {
+    let path = review_path(
+        &review.repo_root,
+        review.pr.as_ref(),
+        &review.base,
+        &review.head,
+        &review.head_commit,
+    );
+    write_atomic(&cursor_path(&path), cursor_bytes(review))
+}
+
+/// Where the cursor of the review saved at `path` is kept.
+fn cursor_path(path: &Path) -> PathBuf {
+    path.with_extension("cursor")
+}
+
+fn cursor_bytes(review: &Review) -> &[u8] {
+    review.cursor.as_deref().unwrap_or_default().as_bytes()
 }
 
 /// The saved review of `base..head` at `head_commit`, in the PR's namespace
@@ -120,18 +159,52 @@ pub fn load(
     head: &str,
     head_commit: &str,
 ) -> Option<Review> {
-    let bytes = std::fs::read(review_path(repo, pr, base, head, head_commit)).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    read(&review_path(repo, pr, base, head, head_commit))
 }
 
 /// The most recently saved review of the repo, or of the PR when `pr` is given.
 pub fn load_latest(repo: &Path, pr: Option<&PrInfo>) -> Option<Review> {
     let path = std::fs::read_to_string(scope_dir(repo, pr).join("latest")).ok()?;
-    serde_json::from_slice(&std::fs::read(path.trim()).ok()?).ok()
+    read(Path::new(path.trim()))
+}
+
+/// The review saved at `path`, unless it doesn't parse or a newer teer
+/// saved it in a format this one doesn't know.
+fn read(path: &Path) -> Option<Review> {
+    let mut json: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    if json.get("version").and_then(Value::as_u64).unwrap_or(0) == 0 {
+        migrate_v1(&mut json);
+    }
+    let mut review: Review = serde_json::from_value(json).ok()?;
+    // The cursor moves more often than the review is saved.
+    if let Ok(id) = std::fs::read_to_string(cursor_path(path)) {
+        review.cursor = (!id.is_empty()).then_some(id);
+    }
+    (review.version <= CURRENT).then_some(review)
+}
+
+/// A review teer v1 saved (format 0), as JSON, in v2's states. v1 resolved
+/// a flagged unit as "needs fix" or "ok" on its Flagged screen
+/// (`dive.resolution`); v2 has no such state, so a unit with either is
+/// flagged, its note kept, unless it was accepted since. Flagged units stay
+/// flagged, with or without a note. The resolution itself is dropped as the
+/// review loads. v1 kept no swipe position or cursor, so the queue opens on
+/// its first pending ▲ (`App::new`).
+fn migrate_v1(review: &mut Value) {
+    let units = review.get_mut("units").and_then(Value::as_array_mut);
+    for u in units.into_iter().flatten() {
+        let resolved = u.pointer("/dive/resolution").is_some_and(|r| !r.is_null());
+        let accepted = u.get("decision").and_then(Value::as_str) == Some("Accepted");
+        if resolved && !accepted {
+            u["decision"] = Value::from("Investigate");
+        }
+    }
 }
 
 /// Carry decisions and agent answers over from a previous review for units
-/// whose code didn't change.
+/// whose code didn't change. A unit whose code changed starts pending and
+/// keeps only the reviewer's note, marked as written on other code
+/// ([`super::model::Unit::note_is_stale`]), and the notes put away before.
 pub fn merge_previous(new: &mut Review, old: &Review) {
     let by_id: HashMap<&str, &super::model::Unit> =
         old.units.iter().map(|u| (u.id.as_str(), u)).collect();
@@ -142,21 +215,49 @@ pub fn merge_previous(new: &mut Review, old: &Review) {
         // Changed code starts over: no decision, no dive.
         if prev.fingerprint == u.fingerprint {
             u.decision = prev.decision;
+            u.accepted_by = prev.accepted_by;
             u.dive = prev.dive.clone();
             if matches!(prev.prep, Prep::Ready | Prep::Unavailable) {
                 u.changes = prev.changes.clone();
                 u.summary = prev.summary.clone();
                 u.prep = prev.prep;
                 u.checks = prev.checks.clone();
+                u.reasons = prev.reasons.clone();
             }
         } else {
-            // The reviewer's note stays: it may be what changed the code.
+            // The reviewer's note stays until the reviewer acts on it: it
+            // may be what changed the code.
             u.dive.note = prev.dive.note.clone();
             u.dive.note_on = prev.dive.note_on.clone();
+            u.dive.archived = prev.dive.archived.clone();
         }
+    }
+    // Undo and redo go on for units whose decision came along: their code
+    // didn't change.
+    let same: HashSet<&str> = new
+        .units
+        .iter()
+        .filter(|u| {
+            by_id
+                .get(u.id.as_str())
+                .is_some_and(|p| p.fingerprint == u.fingerprint)
+        })
+        .map(|u| u.id.as_str())
+        .collect();
+    let mut history = old.history.clone();
+    history.retain_units(|id| same.contains(id));
+    new.history = history;
+    // The queue resumes on the unit it was left on, if it is still there
+    // (else on the first pending ▲: see `App::new`).
+    if new.cursor.is_none() {
+        new.cursor = old.cursor.clone();
     }
     if new.agent_session.is_none() {
         new.agent_session = old.agent_session.clone();
+    }
+    // A re-run knows the commits, not the names the header shows.
+    if new.branch.is_none() {
+        new.branch = old.branch.clone();
     }
     // gh didn't answer this time (or a re-run doesn't ask): keep what it said before.
     if new.pr.is_some() && new.intent.pr.is_none() {
@@ -184,9 +285,25 @@ pub fn merge_previous(new: &mut Review, old: &Review) {
     }
 }
 
+/// The units of `new` whose code is not what it was in `old`: changed,
+/// or not there before. In `new`'s order.
+pub fn changed_units(new: &Review, old: &Review) -> Vec<String> {
+    let before: HashMap<&str, &str> = old
+        .units
+        .iter()
+        .map(|u| (u.id.as_str(), u.fingerprint.as_str()))
+        .collect();
+    new.units
+        .iter()
+        .filter(|u| before.get(u.id.as_str()) != Some(&u.fingerprint.as_str()))
+        .map(|u| u.id.clone())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::review::history::{Change, Step};
     use crate::review::model::{Decision, Dive, DiveKind, DiveResult, Unit};
 
     fn unit(fingerprint: &str) -> Unit {
@@ -215,6 +332,10 @@ mod tests {
             skipped: Vec::new(),
             graph: Default::default(),
             questions: Vec::new(),
+            version: 0,
+            history: Default::default(),
+            branch: None,
+            cursor: None,
         }
     }
 
@@ -247,6 +368,25 @@ mod tests {
     }
 
     #[test]
+    fn who_accepted_carries_over_with_the_decision() {
+        use crate::review::model::AcceptedBy;
+        let mut accepted = unit("same");
+        accepted.decision = Decision::Accepted;
+        accepted.accepted_by = Some(AcceptedBy::Auto);
+        let old = review(accepted);
+        let mut new = review(unit("same"));
+        merge_previous(&mut new, &old);
+        assert_eq!(new.units[0].accepted_by, Some(AcceptedBy::Auto));
+        // Changed code starts over.
+        let mut new = review(unit("other"));
+        merge_previous(&mut new, &old);
+        assert_eq!(
+            (new.units[0].decision, new.units[0].accepted_by),
+            (Decision::Pending, None)
+        );
+    }
+
+    #[test]
     fn dive_is_dropped_when_the_code_changed_but_the_note_stays() {
         let mut flagged = flagged_with_dive("before");
         flagged.dive.note_on = Some("before".into());
@@ -254,11 +394,275 @@ mod tests {
         let mut new = review(unit("after"));
         merge_previous(&mut new, &old);
         let dive = &new.units[0].dive;
-        assert!(dive.results.is_empty() && dive.resolution.is_none());
+        assert!(dive.results.is_empty());
         assert_eq!(dive.note, "check");
         // Written on the old code: it says so.
         assert!(new.units[0].note_is_stale());
         // Same as before this feature: a changed unit starts undecided.
         assert_eq!(new.units[0].decision, Decision::Pending);
+    }
+
+    #[test]
+    fn a_changed_unit_keeps_its_archived_notes_and_starts_pending() {
+        let mut flagged = flagged_with_dive("before");
+        flagged.dive.note_on = Some("before".into());
+        flagged.archive_note();
+        flagged.dive.note = "second".into();
+        flagged.dive.note_on = Some("before".into());
+        let old = review(flagged);
+        let mut new = review(unit("after"));
+        merge_previous(&mut new, &old);
+        let u = &new.units[0];
+        assert_eq!(u.decision, Decision::Pending);
+        assert_eq!(u.dive.note, "second");
+        assert!(u.note_is_stale());
+        assert_eq!(u.dive.archived.len(), 1);
+        assert_eq!(u.dive.archived[0].text, "check");
+    }
+
+    #[test]
+    fn changed_units_are_the_changed_and_the_new_ones() {
+        let old = saved_at(
+            "/teer-tests/changed",
+            vec![named("a", "1"), named("b", "2")],
+        );
+        let new = saved_at(
+            "/teer-tests/changed",
+            vec![named("c", "3"), named("a", "1"), named("b", "2b")],
+        );
+        assert_eq!(changed_units(&new, &old), ["c", "b"]);
+        assert!(changed_units(&old, &old).is_empty());
+    }
+
+    fn named(id: &str, fingerprint: &str) -> Unit {
+        Unit {
+            id: id.into(),
+            ..unit(fingerprint)
+        }
+    }
+
+    fn change(id: &str, before: Decision, after: Decision) -> Change {
+        Change {
+            id: id.into(),
+            before,
+            after,
+        }
+    }
+
+    /// A review saved where no other test saves one.
+    fn saved_at(repo: &str, units: Vec<Unit>) -> Review {
+        let mut r = review(unit("x"));
+        r.repo_root = PathBuf::from(repo);
+        r.units = units;
+        r
+    }
+
+    /// What teer 0.1 wrote: no `version`, no `history`.
+    const V1_REVIEW: &str = r#"{
+      "id": "v1",
+      "repo_root": "/teer-tests/v1",
+      "base": "abc123",
+      "head": "WORKTREE",
+      "head_commit": "def456",
+      "agent_session": { "agent": "claude", "id": "", "cwd": "/teer-tests/v1" },
+      "created_at": "2026-10-27T12:00:00Z",
+      "files": [],
+      "units": [{
+        "id": "a.rs::f", "file": "a.rs", "symbol": "f", "kind": "Function",
+        "status": "Changed", "old_range": null, "new_range": null,
+        "fingerprint": "fp", "changes": [], "callers": [], "callees": [],
+        "decision": "Accepted"
+      }],
+      "skipped": [],
+      "questions": []
+    }"#;
+
+    fn write_v1(text: &str) {
+        let path = review_path(
+            Path::new("/teer-tests/v1"),
+            None,
+            "abc123",
+            "WORKTREE",
+            "def456",
+        );
+        write_atomic(&path, text.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn a_review_saved_before_versions_loads_as_version_0() {
+        write_v1(V1_REVIEW);
+        let r = load(
+            Path::new("/teer-tests/v1"),
+            None,
+            "abc123",
+            "WORKTREE",
+            "def456",
+        )
+        .expect("a v1 file loads");
+        assert_eq!(r.version, 0);
+        assert!(r.history.is_empty());
+        assert_eq!(r.units[0].decision, Decision::Accepted);
+        // Who accepted it wasn't kept then; the reasons come with the levels.
+        assert_eq!(r.units[0].accepted_by, None);
+        assert!(r.units[0].reasons.is_empty());
+        // Saved again, it is the current format.
+        let path = save(&r).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(json["version"], CURRENT);
+        assert_eq!(
+            load_latest(Path::new("/teer-tests/v1"), None)
+                .unwrap()
+                .version,
+            CURRENT
+        );
+    }
+
+    #[test]
+    fn a_review_from_a_newer_teer_is_not_loaded() {
+        let mut r = saved_at("/teer-tests/newer", vec![unit("x")]);
+        r.version = CURRENT;
+        let path = save(&r).unwrap();
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        json["version"] = (CURRENT + 1).into();
+        write_atomic(&path, &serde_json::to_vec(&json).unwrap()).unwrap();
+        assert!(load(&r.repo_root, None, &r.base, &r.head, &r.head_commit).is_none());
+        assert!(load_latest(&r.repo_root, None).is_none());
+    }
+
+    #[test]
+    fn the_history_is_saved_and_loaded() {
+        let mut r = saved_at(
+            "/teer-tests/history",
+            vec![named("a", "1"), named("b", "2")],
+        );
+        r.history.record(Step {
+            changes: vec![
+                change("a", Decision::Pending, Decision::Accepted),
+                change("b", Decision::Pending, Decision::Investigate),
+            ],
+            ..Default::default()
+        });
+        r.history.record(Step {
+            changes: vec![change("a", Decision::Accepted, Decision::Investigate)],
+            ..Default::default()
+        });
+        r.history.undo();
+        save(&r).unwrap();
+        let back = load(&r.repo_root, None, &r.base, &r.head, &r.head_commit).unwrap();
+        assert_eq!(back.history, r.history);
+        assert_eq!(back.version, CURRENT);
+    }
+
+    #[test]
+    fn a_rerun_keeps_the_history_of_units_whose_code_stayed() {
+        let mut old = saved_at("/teer-tests/rerun", vec![named("a", "1"), named("b", "2")]);
+        old.history.record(Step {
+            changes: vec![
+                change("a", Decision::Pending, Decision::Accepted),
+                change("b", Decision::Pending, Decision::Accepted),
+            ],
+            ..Default::default()
+        });
+        old.history.record(Step {
+            changes: vec![change("b", Decision::Accepted, Decision::Investigate)],
+            ..Default::default()
+        });
+        // `b` changed; `a` didn't.
+        let mut new = saved_at("/teer-tests/rerun", vec![named("a", "1"), named("b", "2b")]);
+        merge_previous(&mut new, &old);
+        assert_eq!(
+            new.history.undo,
+            vec![Step {
+                changes: vec![change("a", Decision::Pending, Decision::Accepted)],
+                ..Default::default()
+            }]
+        );
+        assert!(new.history.redo.is_empty());
+    }
+
+    #[test]
+    fn the_cursor_is_saved_and_carried_over() {
+        let mut r = saved_at("/teer-tests/cursor", vec![named("a", "1"), named("b", "2")]);
+        r.cursor = Some("b".into());
+        save(&r).unwrap();
+        let back = load(&r.repo_root, None, &r.base, &r.head, &r.head_commit).unwrap();
+        assert_eq!(back.cursor.as_deref(), Some("b"));
+        // A new run of the same changes starts where the last one was left,
+        // even when the unit's code changed since.
+        let mut new = saved_at(
+            "/teer-tests/cursor",
+            vec![named("a", "1"), named("b", "2b")],
+        );
+        merge_previous(&mut new, &back);
+        assert_eq!(new.cursor.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn a_v1_resolution_becomes_a_flag_with_its_note() {
+        use Decision::*;
+        // Each unit, its decision, the resolution v1 saved with it, its note.
+        let v1 = [
+            ("fix", Investigate, "NeedsFix", "the +1"),
+            ("ok", Investigate, "Ok", ""),
+            ("plain", Investigate, "", ""),
+            // Reset after resolving it: the fix still stands.
+            ("reset", Pending, "NeedsFix", "why"),
+            // Accepted after resolving it: accepted.
+            ("later", Accepted, "NeedsFix", "n"),
+            ("note", Pending, "", "a question"),
+        ];
+        let units = v1
+            .iter()
+            .map(|&(id, decision, _, note)| {
+                let mut u = named(id, "1");
+                u.decision = decision;
+                u.dive.note = note.into();
+                u
+            })
+            .collect();
+        let r = saved_at("/teer-tests/v1-resolutions", units);
+        let path = save(&r).unwrap();
+        // Saved by v1: no version, and a resolution on the resolved units.
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("version");
+        for (u, (_, _, resolution, _)) in json["units"].as_array_mut().unwrap().iter_mut().zip(v1) {
+            u["dive"]["resolution"] = match resolution {
+                "" => serde_json::Value::Null,
+                r => r.into(),
+            };
+        }
+        write_atomic(&path, &serde_json::to_vec(&json).unwrap()).unwrap();
+
+        let back = load(&r.repo_root, None, &r.base, &r.head, &r.head_commit).unwrap();
+        let got: Vec<(&str, Decision, &str)> = back
+            .units
+            .iter()
+            .map(|u| (u.id.as_str(), u.decision, u.dive.note.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("fix", Investigate, "the +1"),
+                ("ok", Investigate, ""),
+                ("plain", Investigate, ""),
+                ("reset", Investigate, "why"),
+                ("later", Accepted, "n"),
+                ("note", Pending, "a question"),
+            ]
+        );
+        // The resolution is gone once it loads.
+        save(&back).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("\"resolution\""), "{saved}");
+
+        // A file of this teer keeps what it says.
+        let mut r = back;
+        r.units[1].decision = Pending;
+        save(&r).unwrap();
+        let back = load(&r.repo_root, None, &r.base, &r.head, &r.head_commit).unwrap();
+        assert_eq!(back.units[1].decision, Pending);
     }
 }

@@ -1,10 +1,10 @@
 //! The code change of a unit that changes behavior, as a compact diff in
-//! a box of its own: in the list preview, on the swipe card and on the
-//! Flagged screen. Built from the old and new contents stored in the
+//! a box of its own: in the queue's preview, the unit view and its
+//! panels. Built from the old and new contents stored in the
 //! review, so drawing never runs git. Changed lines keep [`CONTEXT`]
 //! unchanged lines around them; longer unchanged runs between changes
 //! fold into one gap row. Line numbers are those of the new file, where
-//! `e` opens the unit; removed lines show their number in the old file,
+//! `gf` opens the unit; removed lines show their number in the old file,
 //! styled apart. Each statement can be written into the code under the rows
 //! it cites, like a review comment; then the code change shows only what
 //! they cite: each cited line keeps [`NOTE_CONTEXT`] lines around it, and
@@ -24,9 +24,10 @@ use crate::review::attention::Level;
 use crate::review::model::{Change, LineRef, Marker, Prep, Range, Review, Side, Unit};
 use crate::util::{DiffOp, diff_lines, sanitize};
 
-/// Units at this level or above show their code change: every unit that
-/// changes behavior (not formatting, comments or renames).
-pub const DIFF_LEVEL: Level = Level::Routine;
+/// Units at this level or above show their code change: every unit, now
+/// that units without a behavior change are listed too (accepted for you,
+/// shown with `za`).
+pub const DIFF_LEVEL: Level = Level::Same;
 /// Unchanged lines kept before and after each change.
 pub const CONTEXT: usize = 2;
 /// Lines kept before and after each line a statement cites, when the
@@ -85,6 +86,18 @@ fn rows_near(
     cites: &[LineRef],
     syntax: Option<&Cache>,
 ) -> (Vec<Row>, usize, usize) {
+    rows_around(review, u, cites, false, syntax)
+}
+
+/// [`rows_near`]; with `every`, every change is kept as well as the lines
+/// in `cites`, each with [`CONTEXT`] lines around it.
+fn rows_around(
+    review: &Review,
+    u: &Unit,
+    cites: &[LineRef],
+    every: bool,
+    syntax: Option<&Cache>,
+) -> (Vec<Row>, usize, usize) {
     let Some(f) = review.file_of(u) else {
         return (Vec::new(), 0, 0);
     };
@@ -112,7 +125,9 @@ fn rows_near(
             })
         })
         .collect();
-    let (around, context) = if cited.is_empty() {
+    let (around, context) = if every {
+        (changed.into_iter().chain(cited).collect(), CONTEXT)
+    } else if cited.is_empty() {
         (changed, CONTEXT)
     } else {
         (cited, NOTE_CONTEXT)
@@ -193,7 +208,7 @@ fn rows_near(
     (rows, added, removed)
 }
 
-/// The new file's line at the unit's first change, where `e` opens a whole
+/// The new file's line at the unit's first change, where `gf` opens a whole
 /// file: the line added there, else the next (or last) line the new file has.
 pub fn first_change(review: &Review, u: &Unit) -> Option<u32> {
     let rows = unit_rows(review, u);
@@ -386,12 +401,15 @@ pub fn listing(
 /// What the code change shows of the agent's statements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Notes {
-    /// Nothing: the statements aren't drawn (a routine swipe card), and
+    /// Nothing: the statements aren't drawn, and
     /// every change shows.
     Off,
     /// Each statement written into the code under the last row it cites,
     /// like a review comment; only the code they cite is shown.
     Inline,
+    /// The statements written in as with `Inline`, and every change shown
+    /// (the unit view, where `]c` and `[c` go from hunk to hunk).
+    Full,
 }
 
 /// The code change of `u` as blocks, each row as the lines it wraps into,
@@ -405,11 +423,32 @@ pub fn code_change(
     w: usize,
     notes: Notes,
 ) -> (Vec<Vec<Line<'static>>>, usize, usize, u16) {
+    let c = code_change_of(app, u, w, notes);
+    (c.blocks, c.added, c.removed, c.gutter)
+}
+
+/// The code change of a unit as [`code_change`] draws it, and where its
+/// hunks start.
+#[derive(Debug, Default)]
+pub struct CodeChange {
+    pub blocks: Vec<Vec<Line<'static>>>,
+    pub added: usize,
+    pub removed: usize,
+    /// Columns the line numbers and signs take.
+    pub gutter: u16,
+    /// The block each hunk (a run of added and removed rows) starts at, in
+    /// order: where `]c` and `[c` go.
+    pub hunks: Vec<usize>,
+}
+
+/// [`code_change`] with the hunks.
+pub fn code_change_of(app: &App, u: &Unit, w: usize, notes: Notes) -> CodeChange {
     if app.assessment(&u.id).is_none_or(|a| a.level < DIFF_LEVEL) {
-        return (Vec::new(), 0, 0, 0);
+        return CodeChange::default();
     }
-    let said = notes == Notes::Inline && u.prep == Prep::Ready;
-    // Where the statements are drawn, they show only the code they cite.
+    let said = notes != Notes::Off && u.prep == Prep::Ready;
+    // Where the statements are drawn inline, they show only the code they
+    // cite; in full, the code they cite as well as every change.
     let cites: Vec<LineRef> = if said {
         u.changes
             .iter()
@@ -418,10 +457,15 @@ pub fn code_change(
     } else {
         Vec::new()
     };
-    let (rows, added, removed) = rows_near(&app.review, u, &cites, Some(&app.syntax));
+    let every = notes == Notes::Full;
+    let (rows, added, removed) = rows_around(&app.review, u, &cites, every, Some(&app.syntax));
     if rows.is_empty() {
-        return (Vec::new(), 0, 0, 0);
+        return CodeChange::default();
     }
+    let changes = |k: usize| matches!(rows[k].kind, Kind::Added | Kind::Removed);
+    let mut hunks: Vec<usize> = (0..rows.len())
+        .filter(|&k| changes(k) && (k == 0 || !changes(k - 1)))
+        .collect();
     let t = &app.theme;
     let digits = rows
         .iter()
@@ -503,8 +547,19 @@ pub fn code_change(
             let note = note_lines(app, &u.changes[n], digits + 1, w);
             blocks.insert(k, note);
         }
+        // A row moves down by the notes inserted before it.
+        for h in &mut hunks {
+            let row = *h;
+            *h = row + at.iter().filter(|&&(k, _)| k <= row).count();
+        }
     }
-    (blocks, added, removed, (digits + 3) as u16)
+    CodeChange {
+        blocks,
+        added,
+        removed,
+        gutter: (digits + 3) as u16,
+        hunks,
+    }
 }
 
 /// The row a statement is written under: the last one it cites, else the
@@ -693,6 +748,10 @@ mod tests {
             skipped: Vec::new(),
             graph: Default::default(),
             questions: Vec::new(),
+            version: 0,
+            history: Default::default(),
+            branch: None,
+            cursor: None,
         }
     }
 
@@ -715,6 +774,8 @@ mod tests {
             summary: None,
             nbc_reason: None,
             dive: Default::default(),
+            accepted_by: None,
+            reasons: Vec::new(),
             dive_pending: Default::default(),
             checks: Default::default(),
         }
@@ -789,7 +850,8 @@ mod tests {
     /// each line's number, its sign and its last span (the code, on a code
     /// row).
     fn drawn(theme: crate::config::Theme, notes: Notes) -> Vec<(String, Style, Style, Style)> {
-        use crate::config::{Config, KeyMap};
+        use crate::config::Config;
+        use crate::keymap::Keymap;
         let old = "def f():\n    a = 1\n    return a\n";
         let new = "def f():\n    a = 2\n    return a\n";
         let mut u = unit(UnitStatus::Changed, Some((1, 3)), Some((1, 3)));
@@ -802,7 +864,7 @@ mod tests {
             theme,
             ..Config::default()
         };
-        let app = App::new(review(Some(old), Some(new), u), cfg, KeyMap::default());
+        let app = App::new(review(Some(old), Some(new), u), cfg, Keymap::default());
         let u = &app.review.units[0];
         code_change(&app, u, 40, notes)
             .0
@@ -889,7 +951,8 @@ mod tests {
 
     #[test]
     fn drawn_statements_show_only_the_code_they_cite() {
-        use crate::config::{Config, KeyMap};
+        use crate::config::Config;
+        use crate::keymap::Keymap;
         let (old, new) = twenty();
         let mut u = unit(UnitStatus::Changed, Some((1, 20)), Some((1, 20)));
         u.prep = Prep::Ready;
@@ -897,7 +960,7 @@ mod tests {
         let app = App::new(
             review(Some(&old), Some(&new), u),
             Config::default(),
-            KeyMap::default(),
+            Keymap::default(),
         );
         let lines = |notes| -> Vec<Line<'static>> {
             code_change(&app, &app.review.units[0], 40, notes)
@@ -931,6 +994,11 @@ mod tests {
                 " 19   l19",
             ]
         );
+        // In full, every change shows too, the statement under its line.
+        let full = text(Notes::Full);
+        assert!(full.contains(&"  2 + L2".to_string()), "{full:?}");
+        let note = full.iter().position(|l| l == "    │ s │").unwrap();
+        assert_eq!(full[note - 2], " 17 + L17", "{full:?}");
         // Without statements, every change shows.
         let all = text(Notes::Off);
         assert!(all.contains(&"  2 + L2".to_string()), "{all:?}");
@@ -942,8 +1010,45 @@ mod tests {
     }
 
     #[test]
+    fn hunks_start_at_the_first_changed_row_of_each_run_past_the_notes() {
+        use crate::config::Config;
+        use crate::keymap::Keymap;
+        let (old, new) = twenty();
+        let mut u = unit(UnitStatus::Changed, Some((1, 20)), Some((1, 20)));
+        u.prep = Prep::Ready;
+        u.changes = vec![change(&[(Side::New, 2)]), change(&[(Side::New, 17)])];
+        let app = App::new(
+            review(Some(&old), Some(&new), u),
+            Config::default(),
+            Keymap::default(),
+        );
+        let text = |l: &Line| -> String { l.spans.iter().map(|s| s.content.to_string()).collect() };
+        for notes in [Notes::Off, Notes::Inline, Notes::Full] {
+            let c = code_change_of(&app, &app.review.units[0], 40, notes);
+            assert_eq!(c.hunks.len(), 2, "{notes:?}");
+            for &h in &c.hunks {
+                let first = text(&c.blocks[h][0]);
+                assert!(
+                    first.starts_with("  2 -") || first.starts_with(" 17 -"),
+                    "{notes:?} {first}"
+                );
+                let before = text(&c.blocks[h - 1][0]);
+                assert!(
+                    !before.contains(" - ") && !before.contains(" + "),
+                    "{notes:?} {before}"
+                );
+            }
+        }
+        // Without statements: l1, then the first hunk; the second after
+        // l3, l4, the gap, l15 and l16.
+        let c = code_change_of(&app, &app.review.units[0], 40, Notes::Off);
+        assert_eq!(c.hunks, [1, 8]);
+    }
+
+    #[test]
     fn code_keeps_its_syntax_colours_and_removed_lines_are_tinted() {
-        use crate::config::{Config, KeyMap, Theme};
+        use crate::config::{Config, Theme};
+        use crate::keymap::Keymap;
         let old = "def f(order):\n\ta = 1\n\treturn a\n";
         let new = "def f(order):\n\ta = price(order)\n\treturn a\n";
         let app = |theme| {
@@ -952,7 +1057,7 @@ mod tests {
                 ..Config::default()
             };
             let u = unit(UnitStatus::Changed, Some((1, 3)), Some((1, 3)));
-            App::new(review(Some(old), Some(new), u), cfg, KeyMap::default())
+            App::new(review(Some(old), Some(new), u), cfg, Keymap::default())
         };
         let spans = |app: &App, row: usize| -> Vec<Span<'static>> {
             code_change(app, &app.review.units[0], 50, Notes::Off)

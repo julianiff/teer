@@ -87,7 +87,7 @@ pub trait AgentAdapter: Send + Sync {
     async fn ask_prepare(&self, s: &SessionRef, prompt: &str, schema: &Value) -> Result<Value> {
         self.ask_structured(s, prompt, schema).await
     }
-    /// Writing a Behavior probe: a Flagged-screen question without the web,
+    /// Writing a Behavior probe: a unit view question without the web,
     /// given longer, since the agent may have to read a lot of a big repository.
     async fn ask_probe(&self, s: &SessionRef, prompt: &str, schema: &Value) -> Result<Value> {
         self.ask_dive(s, prompt, schema, false).await

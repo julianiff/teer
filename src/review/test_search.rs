@@ -1,7 +1,7 @@
 //! Find the tests that reach a unit without an agent: parse the repository's
 //! test files with tree-sitter, list their test cases, and keep those that
-//! call the unit, call one of its callers, or name it. The Tests tile shows
-//! this list at once; the agent reads it only when asked.
+//! call the unit, call one of its callers, or name it. The Tests panel shows
+//! this list at once; then the agent reads it, when there is one.
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, VecDeque};

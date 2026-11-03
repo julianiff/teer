@@ -1,0 +1,220 @@
+{
+  "id": "3d4f121d2ccbd913",
+  "repo_root": "/private/var/folders/4h/l6qrhpq11mb8khs7zr5101b80000gp/T/.tmpW79MkG",
+  "base": "ca34492e944dab3561ac77469164e4d38c66abba",
+  "head": "WORKTREE",
+  "head_commit": "ca34492e944dab3561ac77469164e4d38c66abba",
+  "agent_session": null,
+  "created_at": "2026-11-02T22:51:48.869450Z",
+  "files": [
+    {
+      "path": "calc.py",
+      "status": "Modified",
+      "old_content": "def total(a, b):\n    return a + b\n\n\ndef fee(x):\n    return x + 1\n\n\ndef tax(x):\n    return x * 0.2\n\n\ndef discount(x):\n    return x - 1\n\n\ndef rounding(x):\n    return round(x)\n",
+      "new_content": "def total(a, b):\n    return a + b + fee(a)\n\n\ndef fee(x):\n    return x + 2\n\n\ndef tax(x):\n    return x * 0.25\n\n\ndef discount(x):\n    return x - 2\n\n\ndef rounding(x):\n    return round(x, 2)\n"
+    }
+  ],
+  "units": [
+    {
+      "id": "calc.py::total",
+      "file": "calc.py",
+      "symbol": "total",
+      "kind": "Function",
+      "status": "Changed",
+      "old_range": {
+        "start": 1,
+        "end": 2
+      },
+      "new_range": {
+        "start": 1,
+        "end": 2
+      },
+      "fingerprint": "866d34010ee8b836",
+      "changes": [],
+      "prep": "NotRequested",
+      "callers": [],
+      "callees": [
+        "calc.py::fee"
+      ],
+      "decision": "Investigate",
+      "dive": {
+        "results": {},
+        "resolution": "NeedsFix",
+        "note": "charges the fee twice",
+        "note_on": "866d34010ee8b836"
+      }
+    },
+    {
+      "id": "calc.py::fee",
+      "file": "calc.py",
+      "symbol": "fee",
+      "kind": "Function",
+      "status": "Changed",
+      "old_range": {
+        "start": 5,
+        "end": 6
+      },
+      "new_range": {
+        "start": 5,
+        "end": 6
+      },
+      "fingerprint": "1d420f1dc210f4e0",
+      "changes": [],
+      "prep": "NotRequested",
+      "callers": [
+        "calc.py::total"
+      ],
+      "callees": [],
+      "decision": "Investigate",
+      "dive": {
+        "results": {},
+        "resolution": "Ok",
+        "note": ""
+      }
+    },
+    {
+      "id": "calc.py::tax",
+      "file": "calc.py",
+      "symbol": "tax",
+      "kind": "Function",
+      "status": "Changed",
+      "old_range": {
+        "start": 9,
+        "end": 10
+      },
+      "new_range": {
+        "start": 9,
+        "end": 10
+      },
+      "fingerprint": "a3309f487acadf58",
+      "changes": [],
+      "prep": "NotRequested",
+      "callers": [],
+      "callees": [],
+      "decision": "Investigate",
+      "dive": {
+        "results": {},
+        "resolution": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "calc.py::discount",
+      "file": "calc.py",
+      "symbol": "discount",
+      "kind": "Function",
+      "status": "Changed",
+      "old_range": {
+        "start": 13,
+        "end": 14
+      },
+      "new_range": {
+        "start": 13,
+        "end": 14
+      },
+      "fingerprint": "23f7d3396c9b47b2",
+      "changes": [],
+      "prep": "NotRequested",
+      "callers": [],
+      "callees": [],
+      "decision": "Accepted",
+      "dive": {
+        "results": {},
+        "resolution": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "calc.py::rounding",
+      "file": "calc.py",
+      "symbol": "rounding",
+      "kind": "Function",
+      "status": "Changed",
+      "old_range": {
+        "start": 17,
+        "end": 18
+      },
+      "new_range": {
+        "start": 17,
+        "end": 18
+      },
+      "fingerprint": "b3b703e19d04f311",
+      "changes": [],
+      "prep": "NotRequested",
+      "callers": [],
+      "callees": [],
+      "decision": "Pending",
+      "dive": {
+        "results": {},
+        "resolution": null,
+        "note": ""
+      }
+    }
+  ],
+  "skipped": [],
+  "graph": {
+    "nodes": [
+      {
+        "id": "calc.py::total",
+        "file": "calc.py",
+        "symbol": "total",
+        "kind": "Function",
+        "range": {
+          "start": 1,
+          "end": 2
+        },
+        "in_review": true
+      },
+      {
+        "id": "calc.py::fee",
+        "file": "calc.py",
+        "symbol": "fee",
+        "kind": "Function",
+        "range": {
+          "start": 5,
+          "end": 6
+        },
+        "in_review": true
+      },
+      {
+        "id": "calc.py::tax",
+        "file": "calc.py",
+        "symbol": "tax",
+        "kind": "Function",
+        "range": {
+          "start": 9,
+          "end": 10
+        },
+        "in_review": true
+      },
+      {
+        "id": "calc.py::discount",
+        "file": "calc.py",
+        "symbol": "discount",
+        "kind": "Function",
+        "range": {
+          "start": 13,
+          "end": 14
+        },
+        "in_review": true
+      },
+      {
+        "id": "calc.py::rounding",
+        "file": "calc.py",
+        "symbol": "rounding",
+        "kind": "Function",
+        "range": {
+          "start": 17,
+          "end": 18
+        },
+        "in_review": true
+      }
+    ],
+    "edges": [
+      [
+        0,
+        1
+      ]
+    ]
+  }
+}

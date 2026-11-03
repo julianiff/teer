@@ -1,0 +1,28 @@
+---
+source: tests/it/tui.rs
+expression: card
+---
+" your changes                                                                   "
+" ▲ charge_order  checkout.py:8-12                                       pending "
+"                                                                                "
+" Why this level                                                                 "
+" ▲ 3 callers · agent: high risk                                                 "
+"                                                                                "
+" What changed                                                                   "
+" ┃ agent (haiku, sonnet)                                                        "
+" ┃ Changes how orders are charged.                                              "
+"                                                                                "
+" ╭ code change ──────────────────────────────────────────────────────── +3 −2 ╮ "
+" │   8   def charge_order(order):                                             │ "
+" │   9 +     if order.currency not in SUPPORTED:                              │ "
+" │  10 +         raise ValueError("unsupported currency")                     │ "
+" │     ╭────────────────────────────────────────────────────────────╮         │ "
+" │     │ Rejects unsupported currencies. 2 callers don't handle it. │         │ "
+" │     ╰────────────────────────────────────────────────────────────╯         │ "
+" │  11       result = pay(order)                                              │ "
+" │  10 -     send_receipt(order)                                              │ "
+" │     ╭────────────────────────────────────╮                                 │ "
+" │     │ No longer sends the receipt email. │                                 │ "
+" │     ╰────────────────────────────────────╯                                 │ "
+" … 7 more lines · ^d scroll · gf editor                                         "
+" 4 pending · 0 flagged · 3 accepted                                      ? keys "

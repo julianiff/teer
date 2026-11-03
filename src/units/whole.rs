@@ -169,6 +169,8 @@ pub fn unit(f: &ChangedFile) -> Option<Unit> {
         decision: Decision::Pending,
         summary: None,
         dive: Default::default(),
+        accepted_by: None,
+        reasons: Vec::new(),
         dive_pending: Default::default(),
         checks: Default::default(),
     })

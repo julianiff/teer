@@ -1,4 +1,4 @@
-//! Live preview pane for the selected unit in the Slim list.
+//! Live preview pane for the unit under the cursor in the queue.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -9,7 +9,6 @@ use unicode_width::UnicodeWidthStr;
 
 use super::app::{App, Target};
 use super::slim;
-use crate::review::attention::Level;
 use crate::review::model::{Prep, Unit};
 use crate::util::{truncate, wrap};
 
@@ -27,8 +26,9 @@ const MAX_CODE_PANE_ROWS: u16 = 24;
 pub const MIN_BOX_ROWS: usize = 5;
 /// Narrowest list beside the pane; it is never wider than [`SIDE_LIST_MOST`].
 const MIN_SIDE_LIST: u16 = 24;
-/// Widest list beside the pane, in percent: the code change gets the rest.
-const SIDE_LIST_MOST: u32 = 35;
+/// Widest list beside the pane, in percent: its rows name the file and the
+/// state too; the code change gets the rest.
+const SIDE_LIST_MOST: u32 = 45;
 
 /// Which edge of the list the preview sits on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +55,7 @@ impl ListSize {
         padded_rows: u16::MAX,
     };
 
-    /// The size of `app`'s list, as far as a layout of `area` needs it.
+    /// The size of `app`'s queue, as far as a layout of `area` needs it.
     pub fn of(app: &App, area: Rect) -> ListSize {
         if area.width >= SIDE_WIDTH {
             let width = slim::fit_width(app).min(u16::MAX as usize) as u16;
@@ -68,7 +68,7 @@ impl ListSize {
         if app.order.len() >= area.height as usize {
             return ListSize::FULL;
         }
-        let count = |padded| slim::build_with(app, area.width, padded).lines.len() as u16;
+        let count = |padded| slim::build_queue(app, area.width, padded).lines.len() as u16;
         let rows = count(false);
         let padded_rows = if rows as usize >= slim::PADDING_MIN_ROWS {
             count(true)
@@ -86,7 +86,7 @@ impl ListSize {
 /// Splits `area` into the list and the preview pane, which is always there
 /// unless the area is too small to hold one. At 110 columns or more the pane
 /// sits beside the list, and the list is as wide as `list` needs, at least
-/// 24 columns and at most 35%. Otherwise the pane sits below and takes about
+/// 24 columns and at most 45%. Otherwise the pane sits below and takes about
 /// 40% of the height (5 to 12 rows), or with `code` (the selected unit shows
 /// its code change) about 60%, up to 24 rows, so the diff is visible below
 /// the statements. It takes more when the list leaves more free; the list
@@ -125,7 +125,7 @@ pub fn layout_fit(area: Rect, code: bool, list: ListSize) -> (Rect, Option<(Rect
     (list, Some((pane, Pane::Bottom)))
 }
 
-/// The list and the pane for `app` in `area`, as the list view draws them.
+/// The queue and the pane for `app` in `area`.
 pub fn layout_of(app: &App, area: Rect) -> (Rect, Option<(Rect, Pane)>) {
     let code = app.selected().is_some_and(|u| super::diff::shows(app, u));
     layout_fit(area, code, ListSize::of(app, area))
@@ -133,8 +133,8 @@ pub fn layout_of(app: &App, area: Rect) -> (Rect, Option<(Rect, Pane)>) {
 
 /// The change itself as lines: its name, why it matters and its commits
 /// under it, then a blank row before each other group of [`unit_groups`].
-/// With `statements` its statements are listed too; the list preview and
-/// the swipe card write them into the code change instead (see
+/// With `statements` its statements are listed too; the preview writes
+/// them into the code change instead when it shows one (see
 /// [`super::diff`]).
 pub fn unit_lines(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Line<'static>> {
     let name = truncate(&slim::row_name(u), w);
@@ -219,76 +219,52 @@ fn marked(
         .collect()
 }
 
-/// `lines` from [`marked`] with `label`, where their text starts, in
-/// `style`.
-fn labelled(mut lines: Vec<Line<'static>>, label: &str, style: Style) -> Vec<Line<'static>> {
-    if let Some(first) = lines.first_mut()
-        && let Some(text) = first.spans.get(1)
-        && let Some(rest) = text.content.strip_prefix(label)
-    {
-        let rest = Span::styled(rest.to_string(), text.style);
-        first.spans.truncate(1);
-        first.spans.push(Span::styled(label.to_string(), style));
-        first.spans.push(rest);
-    }
-    lines
-}
+/// The heading of what says why a unit has its level.
+pub const WHY_HEADING: &str = "Why this level";
 
-/// Lines for the signals beside the reasons, `indent` cells in: expensive
-/// to undo (`$`, with `tagged` `(agent)` when the agent says so rather than
-/// the path), a second opinion that disagrees (`⚠`, its model, the first
-/// point in at most two lines and how many more; the Disagreement tab has
-/// them all) and a change the commit messages don't mention (`≠`, with
-/// `tagged` `(agent)`).
+/// Why `u` has its level, `indent` cells in: its written reasons
+/// (`Unit::reasons`: expensive to undo, what a second model disputes, what
+/// the commits or PR description don't mention), each wrapped behind a
+/// muted `·`. With `heading`, under [`WHY_HEADING`] and the rules that set
+/// the level, behind the level's icon.
 pub fn check_lines(
     app: &App,
     u: &Unit,
     w: usize,
     indent: usize,
-    tagged: bool,
+    heading: bool,
 ) -> Vec<Line<'static>> {
     let t = &app.theme;
     let mut lines = Vec::new();
-    let Some(a) = app.assessment(&u.id) else {
-        return lines;
-    };
-    // Each says what it is in the icon's colour, then what was found.
-    let mut check = |icon: &str, label: String, text: &str, style: Style, keep: (usize, &str)| {
-        let all = marked(
-            icon,
-            &format!("{label} {text}"),
+    if heading && let Some(a) = app.assessment(&u.id) {
+        if a.reasons.is_empty() && u.reasons.is_empty() {
+            return lines;
+        }
+        lines.push(Line::styled(
+            format!("{}{WHY_HEADING}", " ".repeat(indent)),
+            t.bold(),
+        ));
+        if !a.reasons.is_empty() {
+            let level = a.level.shown(u.auto_accepted());
+            lines.extend(marked(
+                level.icon(),
+                &a.reasons.join(" · "),
+                w,
+                (slim::level_style(app, level), t.muted()),
+                indent,
+                (usize::MAX, ""),
+            ));
+        }
+    }
+    for r in &u.reasons {
+        lines.extend(marked(
+            "·",
+            r,
             w,
-            (style, t.text()),
+            (t.muted(), t.text()),
             indent,
-            keep,
-        );
-        lines.extend(labelled(all, &label, style));
-    };
-    if let Some(why) = &a.cost {
-        let by = if tagged && u.checks.cost.is_some() {
-            " (agent)"
-        } else {
-            ""
-        };
-        let label = format!("Expensive to undo{by}:");
-        check("$", label, why, t.needs_fix(), (usize::MAX, ""));
-    }
-    if let Some(first) = a.doubts.first() {
-        let more = match a.doubts.len() {
-            1 => String::new(),
-            n => format!(" (+{} more)", n - 1),
-        };
-        let label = format!(
-            "Second opinion ({}):",
-            slim::model_name(app, crate::config::Role::Second)
-        );
-        let style = t.risk(crate::review::model::Risk::Medium);
-        check("⚠", label, first, style, (2, &more));
-    }
-    if let Some(gap) = &u.checks.unmentioned {
-        let by = if tagged { " (agent)" } else { "" };
-        let label = format!("Not in the commit messages{by}:");
-        check("≠", label, &gap.text, t.accent(), (usize::MAX, ""));
+            (usize::MAX, ""),
+        ));
     }
     lines
 }
@@ -332,47 +308,20 @@ pub fn agent_lines(
     lines.into_iter().map(|l| barred(app, l, indent)).collect()
 }
 
-/// [`unit_groups`] one after the other.
-pub fn unit_explain(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Line<'static>> {
-    unit_groups(app, u, w, statements).concat()
-}
-
-/// What `u` is, in groups: why it matters and its commits; what the agent
-/// said (see [`agent_lines`]), or a note while it hasn't; the checks; the
-/// reviewer's note; the answers to questions asked about it. Some may be
-/// empty.
+/// What `u` is, in groups: why it has its level (see [`check_lines`]) and
+/// its commits; what the agent said (see [`agent_lines`]), or a note while
+/// it hasn't; the reviewer's note; the answers to questions asked about it.
+/// Some may be empty.
 pub fn unit_groups(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Vec<Line<'static>>> {
-    let level = app
-        .assessment(&u.id)
-        .map(|a| a.level)
-        .unwrap_or(Level::Routine);
-    let style = slim::level_style(app, level);
-    // Why it matters comes first: the list no longer shows it.
-    let mut about = Vec::new();
-    if let Some(a) = app.assessment(&u.id).filter(|a| !a.reasons.is_empty()) {
-        about.extend(marked(
-            level.icon(),
-            &a.reasons.join(" · "),
-            w,
-            (style, app.theme.muted()),
-            1,
-            (usize::MAX, ""),
-        ));
-    }
+    // Why it matters comes first: the list only shows a dispute.
+    let mut about = check_lines(app, u, w, 1, true);
     about.extend(commits_line(app, u, w, 1));
     let mut said = agent_lines(app, u, w.saturating_sub(2), statements, 1);
-    if u.summary.is_none()
-        && let Some(r) = u.nbc_reason.as_deref()
-    {
-        for l in wrap(r, w) {
-            said.push(Line::raw(format!(" {l}")));
-        }
-    }
-    // Not described (yet): the spinner or why not.
+    // Not described (yet): the spinner or why not. Why a unit has no
+    // behavior change is said above.
     if u.prep != Prep::Ready && u.summary.is_none() && u.nbc_reason.is_none() {
         said.extend(slim::statement_lines(app, u, w, 1));
     }
-    let checks = check_lines(app, u, w, 1, true);
     let indented = |lines: Vec<Line<'static>>| -> Vec<Line<'static>> {
         lines
             .into_iter()
@@ -383,21 +332,15 @@ pub fn unit_groups(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Vec<L
             })
             .collect()
     };
-    // The reviewer's note. Under the code box when there is one; the
-    // Flagged screen has it in its head.
-    let card = if statements && app.screen != super::app::Screen::Flagged {
+    // The reviewer's note. Under the code box when there is one.
+    let card = if statements {
         super::notes::card(app, u, w.saturating_sub(1))
     } else {
         Vec::new()
     };
-    // Answers to questions asked about it, so they are seen. On the Flagged
-    // screen they are in its chat.
-    let asked = if app.screen == super::app::Screen::Flagged {
-        Vec::new()
-    } else {
-        super::ask::note_lines(app, &u.id, w.saturating_sub(1))
-    };
-    vec![about, said, checks, indented(card), indented(asked)]
+    // Answers to questions asked about it, so they are seen.
+    let asked = super::ask::note_lines(app, &u.id, w.saturating_sub(1));
+    vec![about, said, indented(card), indented(asked)]
 }
 
 /// `commits: c86f6fc Batch invalidate. · 1a2b3c4 Renames DTO.`: the commits
@@ -498,7 +441,7 @@ fn scroll_in(
     editor: bool,
     offset: usize,
 ) -> Scroll {
-    use crate::config::Action;
+    use crate::keymap::Action;
     let total: usize = blocks.iter().map(Vec::len).sum();
     let starts: Vec<usize> = blocks
         .iter()
@@ -539,7 +482,7 @@ fn scroll_in(
         out.push(hint(format!(
             "… {above} line{} above · {} scroll up",
             plural(above),
-            k(Action::PreviewUp)
+            k(Action::ScrollHalfUp)
         )));
         top = 1;
     }
@@ -568,10 +511,10 @@ fn scroll_in(
         let mut more = format!(
             "… {left} more line{} · {} scroll",
             plural(left),
-            k(Action::PreviewDown)
+            k(Action::ScrollHalfDown)
         );
         if editor {
-            more.push_str(&format!(" · {} editor", k(Action::Edit)));
+            more.push_str(&format!(" · {} editor", k(Action::GotoEditor)));
         }
         out.push(hint(more));
     }
@@ -680,8 +623,8 @@ mod tests {
         assert_eq!(pane, Pane::Side);
         assert_eq!(l.width + p.width, 110);
         assert_eq!(p.x, l.width);
-        // The list takes at most 35%: 38 of 110.
-        assert_eq!(p.width, 72);
+        // The list takes at most 45%: 49 of 110.
+        assert_eq!(p.width, 61);
         assert_eq!(p.height, 20);
         assert_eq!(layout(r(109, 20)).1.map(|x| x.1), Some(Pane::Bottom));
     }
@@ -728,7 +671,7 @@ mod tests {
         for (w, need, want) in [
             (120u16, 20u16, 24u16),
             (120, 30, 30),
-            (120, 90, 42),
+            (120, 90, 54),
             (110, 0, 24),
             (200, 70, 70),
         ] {
@@ -739,7 +682,7 @@ mod tests {
             assert_eq!((p.x, p.width), (want, w - want), "{w} {need}");
         }
         // A list of unknown size gets the most it can.
-        assert_eq!(layout_for(r(120, 30), true).0.width, 42);
+        assert_eq!(layout_for(r(120, 30), true).0.width, 54);
     }
 
     #[test]
@@ -796,7 +739,8 @@ mod tests {
     }
 
     fn app(with_unit: bool) -> App {
-        use crate::config::{Config, KeyMap};
+        use crate::config::Config;
+        use crate::keymap::Keymap;
         use crate::review::model::{Range, Review, Unit, UnitKind, UnitStatus};
         use std::path::PathBuf;
         let units = if with_unit {
@@ -818,6 +762,8 @@ mod tests {
                 summary: Some("Does a thing".into()),
                 nbc_reason: None,
                 dive: Default::default(),
+                accepted_by: None,
+                reasons: Vec::new(),
                 dive_pending: Default::default(),
                 checks: Default::default(),
             }]
@@ -839,8 +785,12 @@ mod tests {
             skipped: Vec::new(),
             graph: Default::default(),
             questions: Vec::new(),
+            version: 0,
+            history: Default::default(),
+            branch: None,
+            cursor: None,
         };
-        App::new(review, Config::default(), KeyMap::default())
+        App::new(review, Config::default(), Keymap::default())
     }
 
     fn render(app: &App, w: u16, h: u16, pane: Pane) -> String {

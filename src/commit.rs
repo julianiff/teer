@@ -1,5 +1,5 @@
-//! Committing the reviewed changes of a plain `teer` review from the "all
-//! reviewed" popup.
+//! Committing the reviewed changes of a plain `teer` review from the `:w`
+//! sheet (see `tui::finish`).
 //!
 //! Only the files of the review are committed: `git add -A -- <paths>` and
 //! `git commit -F <file> --only -- <paths>`, so staged changes and working-tree
@@ -416,17 +416,26 @@ fn short(s: &str) -> String {
     s.chars().take(7).collect()
 }
 
-/// Everything that must hold before staging anything. On success: the paths
-/// to commit. No git command here changes the repository.
+/// Everything that must hold before staging anything, starting with every
+/// unit accepted, by the reviewer or for them: a unit with no behavior
+/// change that is still pending (`auto_accept = "none"`, or taken back)
+/// holds the commit back too. On success: the paths to commit. No git
+/// command here changes the repository.
 pub fn check(review: &Review) -> Result<Vec<PathBuf>, Refusal> {
-    let counts_open = review
+    if review
         .units
         .iter()
-        .filter(|u| u.status != UnitStatus::NoBehaviorChange)
-        .any(|u| u.decision != Decision::Accepted);
-    if counts_open {
+        .any(|u| u.decision != Decision::Accepted)
+    {
         return Err(Refusal::NotReviewed);
     }
+    check_anyway(review)
+}
+
+/// [`check`] without the decisions, for "commit anyway" (units flagged or
+/// pending, and the reviewer said so): the paths, the repository's state,
+/// HEAD and every reviewed file must still hold.
+pub fn check_anyway(review: &Review) -> Result<Vec<PathBuf>, Refusal> {
     let repo = &review.repo_root;
     let paths = reviewed_paths(review).map_err(Refusal::BadPath)?;
     if let Some(what) = in_progress(repo) {
@@ -638,9 +647,7 @@ pub fn failure_status(code: Option<i32>, output: &str) -> String {
         format!("exit status {c}")
     });
     if last.is_empty() {
-        format!(
-            "Commit failed ({exit}). Nothing was committed; fix the problem and press y to retry."
-        )
+        format!("Commit failed ({exit}). Nothing was committed; fix the problem and commit again.")
     } else {
         format!("Commit failed ({exit}): {last}")
     }

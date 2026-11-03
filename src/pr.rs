@@ -20,7 +20,7 @@ use serde_json::Value;
 
 use crate::agent::{AgentAdapter, SessionInfo};
 use crate::review::model::{DiffSize, PrInfo, PrMeta, Review, SessionRef};
-use crate::review::{BuildOptions, build_review, store};
+use crate::review::{BuildOptions, build_commits_review, store};
 use crate::util::{hash_hex, sanitize};
 
 /// Added to every agent prompt while a PR is reviewed.
@@ -61,7 +61,7 @@ fn valid_remote_name(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'))
 }
 
-fn valid_branch_name(s: &str) -> bool {
+pub(crate) fn valid_branch_name(s: &str) -> bool {
     !s.is_empty()
         && !s.starts_with(['-', '/'])
         && !s.ends_with(['/', '.'])
@@ -154,6 +154,48 @@ pub fn parse_url(input: &str) -> Result<PrInfo> {
         number: n,
         ..Default::default()
     })
+}
+
+/// A pull request named on the command line: `teer <url>` or `teer 482`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// Its URL, as [`parse_url`] accepts it.
+    Url(String),
+    /// Its number in the repository behind this clone's GitHub remote
+    /// ([`url_of_number`]).
+    Number(u32),
+}
+
+/// Read the pull request in `teer <PR>`: its URL, or its number (1 to 9
+/// digits, not zero).
+pub fn parse_target(input: &str) -> Result<Target> {
+    if !input.is_empty() && input.bytes().all(|b| b.is_ascii_digit()) {
+        return match input.parse::<u32>() {
+            Ok(n) if n > 0 && input.len() <= 9 => Ok(Target::Number(n)),
+            _ => bail!("the pull request number must be 1 to 9 digits and not zero"),
+        };
+    }
+    if !input.contains('/') {
+        bail!(
+            "'{}' is neither a command nor a pull request; give the pull request's URL \
+(https://<host>/<owner>/<repo>/pull/<number>) or its number",
+            sanitize(input)
+        );
+    }
+    parse_url(input)?;
+    Ok(Target::Url(input.to_string()))
+}
+
+/// The URL of pull request `number` of the GitHub repository behind this
+/// clone's remotes, picked as `teer pr list` picks it
+/// ([`crate::pr_list::target_repo`]).
+pub fn url_of_number(repo: &Path, number: u32) -> Result<String> {
+    let target = crate::pr_list::target_repo(repo)
+        .with_context(|| format!("pull request #{number} needs a GitHub remote"))?;
+    Ok(format!(
+        "https://{}/{}/{}/pull/{number}",
+        target.host, target.owner, target.repo
+    ))
 }
 
 // ----------------------------------------------------------- remote matching
@@ -481,9 +523,14 @@ fn default_branch(repo: &Path, remote: &str) -> Option<String> {
 
 /// Fetch the PR's refs and work out head and base. Prints one status line to stderr.
 fn resolve(repo: &Path, info: &PrInfo) -> Result<PrPlan> {
-    let n = info.number;
     let remote = find_remote(repo, info)?;
-    eprintln!("teer: fetching PR #{n} from {remote}…");
+    eprintln!("teer: fetching PR #{} from {remote}…", info.number);
+    resolve_from(repo, info, remote, &|note| eprintln!("teer: note: {note}"))
+}
+
+/// [`resolve`] from `remote`, found already; `note` says what was assumed.
+fn resolve_from(repo: &Path, info: &PrInfo, remote: String, note: &dyn Fn(&str)) -> Result<PrPlan> {
+    let n = info.number;
     let head_ref = format!("refs/teer/pr/{n}/head");
     let merge_ref = format!("refs/teer/pr/{n}/merge");
 
@@ -534,9 +581,9 @@ could not be determined"
             .with_context(|| {
                 format!("couldn't fetch the base branch '{branch}' from '{remote}'")
             })?;
-            eprintln!(
-                "teer: note: PR #{n} has no merge ref (merge conflicts?); assuming its base is the default branch '{branch}' of '{remote}'."
-            );
+            note(&format!(
+                "PR #{n} has no merge ref (merge conflicts?); assuming its base is the default branch '{branch}' of '{remote}'."
+            ));
             (tip, Some(branch))
         }
     };
@@ -1076,7 +1123,7 @@ pub fn prepare(cwd: &Path, url: &str, languages: Option<Vec<String>>) -> Result<
         base: Some(plan.base.clone()),
         languages,
     };
-    let mut review = build_review(worktree.path(), &opts)?;
+    let mut review = build_commits_review(worktree.path(), &opts)?;
     let mut info = info;
     info.base_assumed = plan.assumed_base_branch.clone();
     info.remote = Some(plan.remote.clone());
@@ -1096,6 +1143,41 @@ pub fn prepare(cwd: &Path, url: &str, languages: Option<Vec<String>>) -> Result<
     review.pr = Some(info);
     crate::cli::restore(&mut review);
     Ok(PrSession { review, worktree })
+}
+
+/// `:e` on a pull request: fetch the PR again, move its checkout `dir` to
+/// the head the PR has now (a pushed fix shows up), and build the review
+/// there; `info` comes along with the new head and base, unapproved. Says
+/// nothing on stderr: the review's screen has the terminal.
+pub fn refresh(dir: &Path, info: &PrInfo, languages: Option<Vec<String>>) -> Result<Review> {
+    if !info_is_valid(info) {
+        bail!("invalid pull request");
+    }
+    let repo = info
+        .repo_dir
+        .as_deref()
+        .context("teer doesn't know the clone this PR was fetched into")?;
+    let remote = match &info.remote {
+        Some(r) if valid_remote_name(r) => r.clone(),
+        _ => find_remote(repo, info)?,
+    };
+    let plan = resolve_from(repo, info, remote, &|note| crate::log::write(note))?;
+    switch(dir, &plan.head)
+        .with_context(|| format!("couldn't move the checkout to PR #{}'s head", info.number))?;
+    let opts = BuildOptions {
+        base: Some(plan.base.clone()),
+        languages,
+    };
+    let mut review = build_commits_review(dir, &opts)?;
+    let mut info = info.clone();
+    info.base_assumed = plan.assumed_base_branch;
+    info.remote = Some(plan.remote);
+    info.head_sha = Some(plan.head);
+    // An approval is of one head: `store::merge_previous` keeps it while the
+    // head is the same.
+    info.approved_head = None;
+    review.pr = Some(info);
+    Ok(review)
 }
 
 // -------------------------------------------------------------------- agent
@@ -1135,6 +1217,21 @@ impl AgentAdapter for UntrustedCode {
         let _ = web;
         self.0
             .ask_dive(s, &with_notice(prompt), schema, false)
+            .await
+    }
+
+    /// Streams as the wrapped adapter does; never with the web, as above.
+    async fn ask_live(
+        &self,
+        s: &SessionRef,
+        prompt: &str,
+        schema: &Value,
+        web: bool,
+        live: crate::agent::live::LiveTx,
+    ) -> Result<Value> {
+        let _ = web;
+        self.0
+            .ask_live(s, &with_notice(prompt), schema, false, live)
             .await
     }
 
@@ -1300,10 +1397,54 @@ mod tests {
     }
 
     #[test]
+    fn a_target_is_a_url_or_a_number() {
+        assert_eq!(parse_target("482").unwrap(), Target::Number(482));
+        assert_eq!(parse_target("1").unwrap(), Target::Number(1));
+        assert_eq!(
+            parse_target("github.com/acme/shop/pull/7/files").unwrap(),
+            Target::Url("github.com/acme/shop/pull/7/files".into())
+        );
+        for bad in ["0", "0000", "1234567890", "99999999999999999999"] {
+            let e = parse_target(bad).unwrap_err().to_string();
+            assert!(e.contains("1 to 9 digits"), "{bad}: {e}");
+        }
+        let e = parse_target("notse").unwrap_err().to_string();
+        assert!(e.contains("neither a command nor a pull request"), "{e}");
+        for bad in [
+            "",
+            "-1",
+            "#482",
+            "4 82",
+            "https://github.com/acme/shop/issues/7",
+        ] {
+            assert!(parse_target(bad).is_err(), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
     fn notice_keeps_the_dive_marker_first() {
         let p = with_notice("DIVE:Recommend\n\nYou are helping");
         assert!(p.starts_with("DIVE:Recommend\n"));
         assert!(p.contains(UNTRUSTED_NOTICE) && p.contains("You are helping"));
         assert!(with_notice("Rules").starts_with("SECURITY NOTE"));
+    }
+
+    #[tokio::test]
+    async fn untrusted_code_streams_asks_with_the_notice_and_without_the_web() {
+        use crate::agent::live::Live;
+        use crate::agent::mock::MockAdapter;
+        let mut mock = MockAdapter::new(|_, _| Ok(serde_json::json!({ "text": "ok" })));
+        mock.live = vec![Live::Step("read cart.py".into())];
+        let wrapped = UntrustedCode(Arc::new(mock.clone()));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let s = SessionRef::fresh("mock", PathBuf::from("/r"));
+        let v = wrapped
+            .ask_live(&s, "ASK\n\nwhy?", &serde_json::json!({}), true, tx)
+            .await
+            .unwrap();
+        assert_eq!(v["text"], "ok");
+        assert_eq!(rx.recv().await, Some(Live::Step("read cart.py".into())));
+        assert_eq!(*mock.web_calls.lock().unwrap(), [false]);
+        assert!(mock.prompts.lock().unwrap()[0].starts_with("SECURITY NOTE"));
     }
 }

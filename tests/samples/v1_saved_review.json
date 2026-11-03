@@ -1,0 +1,315 @@
+{
+  "id": "bd1451bf47f532b3",
+  "repo_root": "/home/you/shop",
+  "base": "d5b0304a9d0e8ce89a0b1e8223c8bb6dec640330",
+  "head": "WORKTREE",
+  "head_commit": "d5b0304a9d0e8ce89a0b1e8223c8bb6dec640330",
+  "agent_session": null,
+  "created_at": "2026-11-02T22:47:20.266344Z",
+  "files": [
+    {
+      "path": "src/lib.rs",
+      "status": "Modified",
+      "old_content": "pub fn total(items: &[u32]) -> u32 {\n    items.iter().sum()\n}\n\npub fn refund(amount: u32, fee: u32) -> u32 {\n    amount - fee\n}\n\npub fn label(name: &str) -> String {\n    format!(\"item {name}\")\n}\n\npub fn retry(times: u32) -> u32 {\n    times\n}\n",
+      "new_content": "pub fn total(items: &[u32]) -> u32 {\n    items.iter().copied().sum::<u32>() + 1\n}\n\npub fn refund(amount: u32, fee: u32) -> u32 {\n    amount.saturating_sub(fee)\n}\n\npub fn label(name: &str) -> String {\n    format!(\"item: {name}\")\n}\n\npub fn retry(times: u32) -> u32 {\n    times.min(3)\n}\n\npub fn audit(amount: u32) -> bool {\n    amount > 1000\n}\n"
+    }
+  ],
+  "units": [
+    {
+      "id": "src/lib.rs::total",
+      "file": "src/lib.rs",
+      "symbol": "total",
+      "kind": "Function",
+      "status": "Changed",
+      "old_range": {
+        "start": 1,
+        "end": 3
+      },
+      "new_range": {
+        "start": 1,
+        "end": 3
+      },
+      "fingerprint": "cdf58d3fa19c54f0",
+      "changes": [
+        {
+          "marker": "changed",
+          "statement": "Every total is now one more than the sum of the items.",
+          "evidence": [
+            {
+              "side": "new",
+              "line": 2
+            }
+          ],
+          "risk": "high"
+        }
+      ],
+      "prep": "Ready",
+      "callers": [],
+      "callees": [],
+      "decision": "Investigate",
+      "dive": {
+        "results": {
+          "Recommend": {
+            "text": "1. Drop the + 1: nothing asks for it.",
+            "sources": []
+          }
+        },
+        "asked": [
+          "Recommend"
+        ],
+        "resolution": "NeedsFix",
+        "note": "The + 1 is wrong: totals must stay the sum.",
+        "note_on": "cdf58d3fa19c54f0"
+      },
+      "checks": {
+        "cost": {
+          "why": "Invoices already sent would carry the wrong total.",
+          "evidence": [
+            {
+              "side": "new",
+              "line": 2
+            }
+          ]
+        },
+        "second": {
+          "risk": "high",
+          "verdicts": [
+            {
+              "statement": "Every total is now one more than the sum of the items.",
+              "agree": true,
+              "why": "The + 1 is unconditional.",
+              "evidence": [
+                {
+                  "side": "new",
+                  "line": 2
+                }
+              ]
+            }
+          ],
+          "missed": []
+        }
+      }
+    },
+    {
+      "id": "src/lib.rs::refund",
+      "file": "src/lib.rs",
+      "symbol": "refund",
+      "kind": "Function",
+      "status": "Changed",
+      "old_range": {
+        "start": 5,
+        "end": 7
+      },
+      "new_range": {
+        "start": 5,
+        "end": 7
+      },
+      "fingerprint": "c28b321f5cb6448e",
+      "changes": [
+        {
+          "marker": "changed",
+          "statement": "A fee larger than the amount gives 0 instead of underflowing.",
+          "evidence": [
+            {
+              "side": "new",
+              "line": 6
+            }
+          ],
+          "risk": "medium"
+        }
+      ],
+      "prep": "Ready",
+      "callers": [],
+      "callees": [],
+      "decision": "Investigate",
+      "dive": {
+        "results": {},
+        "resolution": "Ok",
+        "note": ""
+      }
+    },
+    {
+      "id": "src/lib.rs::label",
+      "file": "src/lib.rs",
+      "symbol": "label",
+      "kind": "Function",
+      "status": "Changed",
+      "old_range": {
+        "start": 9,
+        "end": 11
+      },
+      "new_range": {
+        "start": 9,
+        "end": 11
+      },
+      "fingerprint": "573ef1405a6629d5",
+      "changes": [
+        {
+          "marker": "changed",
+          "statement": "Labels read \"item: name\".",
+          "evidence": [
+            {
+              "side": "new",
+              "line": 10
+            }
+          ],
+          "risk": "low"
+        }
+      ],
+      "prep": "Ready",
+      "callers": [],
+      "callees": [],
+      "decision": "Accepted",
+      "dive": {
+        "results": {},
+        "resolution": null,
+        "note": ""
+      },
+      "summary": "Only the label text changes."
+    },
+    {
+      "id": "src/lib.rs::retry",
+      "file": "src/lib.rs",
+      "symbol": "retry",
+      "kind": "Function",
+      "status": "Changed",
+      "old_range": {
+        "start": 13,
+        "end": 15
+      },
+      "new_range": {
+        "start": 13,
+        "end": 15
+      },
+      "fingerprint": "2001b6c49f25cd65",
+      "changes": [
+        {
+          "marker": "changed",
+          "statement": "Retries are capped at 3.",
+          "evidence": [
+            {
+              "side": "new",
+              "line": 14
+            }
+          ],
+          "risk": "medium"
+        }
+      ],
+      "prep": "Ready",
+      "callers": [],
+      "callees": [],
+      "decision": "Investigate",
+      "dive": {
+        "results": {},
+        "resolution": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "src/lib.rs::audit",
+      "file": "src/lib.rs",
+      "symbol": "audit",
+      "kind": "Function",
+      "status": "Added",
+      "old_range": null,
+      "new_range": {
+        "start": 17,
+        "end": 19
+      },
+      "fingerprint": "627b0728a23123bc",
+      "changes": [
+        {
+          "marker": "added",
+          "statement": "New: amounts above 1000 are audited.",
+          "evidence": [
+            {
+              "side": "new",
+              "line": 18
+            }
+          ],
+          "risk": "medium"
+        }
+      ],
+      "prep": "Ready",
+      "callers": [],
+      "callees": [],
+      "decision": "Pending",
+      "dive": {
+        "results": {},
+        "resolution": null,
+        "note": "Where does 1000 come from?",
+        "note_on": "627b0728a23123bc"
+      }
+    }
+  ],
+  "skipped": [],
+  "graph": {
+    "nodes": [
+      {
+        "id": "src/lib.rs::total",
+        "file": "src/lib.rs",
+        "symbol": "total",
+        "kind": "Function",
+        "range": {
+          "start": 1,
+          "end": 3
+        },
+        "in_review": true
+      },
+      {
+        "id": "src/lib.rs::refund",
+        "file": "src/lib.rs",
+        "symbol": "refund",
+        "kind": "Function",
+        "range": {
+          "start": 5,
+          "end": 7
+        },
+        "in_review": true
+      },
+      {
+        "id": "src/lib.rs::label",
+        "file": "src/lib.rs",
+        "symbol": "label",
+        "kind": "Function",
+        "range": {
+          "start": 9,
+          "end": 11
+        },
+        "in_review": true
+      },
+      {
+        "id": "src/lib.rs::retry",
+        "file": "src/lib.rs",
+        "symbol": "retry",
+        "kind": "Function",
+        "range": {
+          "start": 13,
+          "end": 15
+        },
+        "in_review": true
+      },
+      {
+        "id": "src/lib.rs::audit",
+        "file": "src/lib.rs",
+        "symbol": "audit",
+        "kind": "Function",
+        "range": {
+          "start": 17,
+          "end": 19
+        },
+        "in_review": true
+      }
+    ],
+    "edges": []
+  },
+  "questions": [
+    {
+      "text": "Who calls total?",
+      "unit": "src/lib.rs::total",
+      "answer": {
+        "text": "Nothing in this repository calls it."
+      }
+    }
+  ]
+}

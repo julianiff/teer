@@ -18,7 +18,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::approve::tidy_output;
-use crate::config::{Config, KeyMap};
+use crate::config::Config;
+use crate::keymap::Keymap;
 use crate::pr;
 use crate::tui::pr_pick::Picked;
 use crate::util::{sanitize, truncate};
@@ -245,7 +246,7 @@ async fn search(gh: &OsStr, cwd: &Path, target: &RepoRef, s: Section) -> Result<
         .await
         .map_err(|e| match e {
             crate::gh::Error::NotInstalled => anyhow::anyhow!(
-                "teer pr list needs the GitHub CLI: install gh (https://cli.github.com) and run 'gh auth login'"
+                "teer pr needs the GitHub CLI: install gh (https://cli.github.com) and run 'gh auth login'"
             ),
             e => anyhow::anyhow!("{e}"),
         })?;
@@ -417,17 +418,17 @@ pub fn render(l: &Listing, now: DateTime<Utc>, width: Option<usize>, color: bool
             "\n{dim}Only the first {LIMIT} of a section are listed.{off}\n"
         ));
     }
-    out.push_str(&format!("\n{dim}Review one with: teer pr <url>{off}\n"));
+    out.push_str(&format!("\n{dim}Review one with: teer <url>{off}\n"));
     out
 }
 
 /// `teer pr list` for the repository at `cwd`. On a terminal the pull
 /// requests open in a picker and the one picked is returned, to be reviewed;
 /// piped or with `json`, they are printed.
-pub async fn run(cwd: &Path, json: bool, cfg: &Config, keys: KeyMap) -> Result<Option<ListedPr>> {
+pub async fn run(cwd: &Path, json: bool, cfg: &Config, keys: Keymap) -> Result<Option<ListedPr>> {
     use std::io::IsTerminal;
     let repo = crate::git::repo_root(cwd)
-        .context("teer pr list must run inside a clone of a GitHub repository")?;
+        .context("teer pr must run inside a clone of a GitHub repository")?;
     let target = {
         let repo = repo.clone();
         tokio::task::spawn_blocking(move || target_repo(&repo)).await??
@@ -593,7 +594,7 @@ mod tests {
             text.contains("https://github.com/acme/shop/pull/12"),
             "{text}"
         );
-        assert!(text.contains("teer pr <url>"), "{text}");
+        assert!(text.contains("Review one with: teer <url>"), "{text}");
         for line in text.lines() {
             use unicode_width::UnicodeWidthStr;
             assert!(line.width() <= 100, "{line:?}");

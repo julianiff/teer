@@ -1,55 +1,60 @@
 # teer features
 
-[how it works](#how-it-works) · [commands](#commands) · [agents](#agents) · [the list](#the-list) · [swipe](#swipe) · [the flagged screen](#the-flagged-screen) · [ask](#ask) · [notes](#notes) · [commit and approve](#commit-and-approve) · [keys](#keys) · [config](#config) · [safety](#safety) · [limits](#limits)
+[how it works](#how-it-works) · [start](#start) · [agents](#agents) · [the queue](#the-queue) · [the unit view](#the-unit-view) · [finish](#finish) · [the fix loop](#the-fix-loop) · [notes](#notes) · [keys](#keys) · [config](#config) · [safety](#safety) · [limits](#limits)
 
 ## how it works
 
 1. **split** — teer parses the old and new version of every changed file and lists the units that changed: functions, methods, classes, top-level code. rust, python, typescript, javascript and php are split; any other text file is one whole-file unit. binary, huge and non-utf-8 files are listed as not shown.
-2. **sort** — every unit gets a level from what the code shows. the agent can raise it, never lower it.
+2. **sort** — every unit gets a level from what the code shows. the agent can raise it, never lower it. a unit with no behavior change is accepted for you.
 3. **explain** — a fast model writes a one-line summary and up to three statements per unit. a statement that doesn't cite lines of its unit is dropped. a second model checks every description.
-4. **triage** — accept or flag, in the list or one card at a time.
-5. **dig in** — flagged units get a screen of their own, with questions on demand.
-6. **hand back** — notes go to your agent, the clipboard or the pull request. accepted changes can be committed, a pr approved.
+4. **review** — down the queue, accept (`a`) or flag (`f`), and write a note (`i`) where you have something to say. `l` opens any unit to look closer.
+5. **finish** — `:w` reads your decisions and offers one next step: send the notes to your agent, commit, request changes or approve.
+6. **fix loop** — when the agent is done with your notes, teer reviews again on its own and puts only the changed units back.
 
-your place is saved as you go. a re-run (`r`) keeps every decision, answer and note for units whose code didn't change.
+your place is saved on every change: decisions, notes, undo history and the cursor. quit with `q` (or crash), run `teer` again, and you're on the same unit. a re-run keeps every decision, answer and note for units whose code didn't change.
 
 ### levels
 
 | | level | when |
 | --- | --- | --- |
 | `▲` | needs a close look | removed but still called · the agent rates it high risk |
-| `◆` | worth a look | signature changed and it has callers · 40+ changed lines · medium risk · the second model disagrees · expensive to undo · couldn't be described |
+| `◆` | worth a look | signature changed and it has callers · 40+ changed lines · medium risk · the second model disputes it · expensive to undo · couldn't be described |
 | `●` | routine | everything else that changes behavior · removed with no callers · lock files, snapshots |
 | `○` | no behavior change | formatting or comments · renamed locals · renamed with the same body |
 
-### markers
+`○` units are accepted for you and left out of the queue; `za` shows them, `u` on one makes it pending again. `auto_accept = "none"` turns this off, and they wait as routine.
+
+### reasons
+
+besides the rule that set its level, a unit can have reasons to look, each a sentence under "why this level":
+
+- **expensive to undo** — deletes or rewrites data, changes a schema, sends, charges or publishes, changes a public api. files under `migrations/` always count.
+- **the second model disputes** a statement: the statement, quoted, and what it says instead. this one also shows as `⚠` on the unit's row.
+- **not mentioned in the commits or pr description** — a behavior change nobody wrote down.
+
+## start
 
 | | |
 | --- | --- |
-| `$` | expensive to undo: deletes or rewrites data, changes a schema, sends, charges or publishes, changes a public api. files under `migrations/` always count |
-| `⚠` | the second model disagrees: a disputed statement, a missed change, or a different risk |
-| `≠` | a behavior change the commit messages and pr description don't mention |
-
-## commands
-
-| | |
-| --- | --- |
-| `teer` | your uncommitted changes, untracked files included |
-| `teer --base main` | this branch against where it left `main` |
-| `teer pr <url>` | a github pull request of this repo |
-| `teer pr list` | pick a pr waiting for your review, assigned to you, or yours |
+| `teer` | your uncommitted changes, staged, unstaged and untracked. with none, this branch since its base. with none on the default branch, there's nothing to review |
+| `teer <url>` | a github pull request of this repo |
+| `teer 482` | pull request 482 of this repo |
+| `teer pr` | pick a pr waiting for your review, assigned to you, or yours |
 | `teer notes [url]` | print the notes of the last review as markdown |
-| `teer setup` | pick the agent and its models, check what teer needs |
 
 | flag | |
 | --- | --- |
-| `--swipe` | open in swipe mode |
+| `--base <ref>` | review this branch since `<ref>`, instead of the base teer finds |
 | `--no-agent` | no agent: sort the change and review it yourself |
 | `--json` | prepare the review, print it as json, exit |
-| `--session <id>` | claude code only: questions go to a fork of that session, which knows why the code changed |
-| `-C <dir>` | run as if started in `<dir>` |
+
+**the base** — `--base` if given, else the base of this branch's pull request if `gh` knows it, else `origin/HEAD`, else `main` or `master`. the queue's header names it: "feature since main, 6 commits".
 
 **pull requests** are fetched with plain git into a checkout teer keeps for itself, so your working tree is never touched. `gh` adds the title, author and description; without it teer reads the commits. new commits on the pr keep your decisions for every unit that didn't change.
+
+**the session that wrote it** — with claude code, teer looks for the session that made the change: the newest one in this repo that edited the changed files in the last 24 hours. `K` asks a fork of it, which knows why the code changed, and your notes go to a fork of it too. `--session <id>` names one instead.
+
+**first start** — without a config, teer asks which agent and models to use, then goes straight on into the review. `teer setup`, or `<space>s` in a review, changes them later.
 
 ## agents
 
@@ -66,103 +71,186 @@ then two models:
 - **fast model** — describes every unit. quick and cheap: `haiku` by default.
 - **second model** — checks each description: `sonnet` by default. `none` turns the check off.
 
-the flagged questions, ask and commit messages use the cli's own default model, or the second model with an api.
+the advice, `K`, the tools and commit messages use the cli's own default model, or the second model with an api.
 
 setup also checks what else teer needs: git, gh (and whether it's logged in), your editor and the macos sandbox. before saving, the fast model gives a test answer. api keys never go into the config, only the name of the variable that holds one.
 
-## the list
+## the queue
 
-one box per level, most critical first. each file sits in the box of its most critical unit, with its units under it. units that call each other stay together, caller first (`↳`).
+what teer opens on. one box per level, most critical first; in each, units by file, callers before callees (`↳`). the cursor starts on the first pending unit.
 
-- `f` lists units by their own level instead of by file
-- `ctrl+d` `ctrl+u` jump between files, `] [` between pending units
-- `A` accepts every pending unit of a file
-- accepted units dim in place; flagged ones turn red
+- **header** — what you review ("your changes", "feature since main, 6 commits", "PR #482 by ana") and a line about the whole change. `<space>c` shows the pr's title and description and every commit, with its message and the units it changed.
+- **rows** — level, file, unit, `⚠` when the second model disputes it, and where it stands: pending, accepted, or flagged with the start of its note.
+- **accepted for you** — a line under the boxes: "14 units accepted for you, za shows them".
+- **preview** — beside the list from 110 columns, else below: why the unit got its level, the agent's summary, and the change with each statement written under the lines it cites. `<c-d>` `<c-u>` scroll it.
+- **bottom bar** — `4 pending · 1 flagged · 37 accepted`, then a key sequence you started and what can follow it, `-- VISUAL --`, or the `:` line.
 
-the preview (beside the list from 110 columns, else below) shows why the unit got its level, the agent's summary, the `$ ⚠ ≠` lines, and the code change with each statement written under the lines it cites. `J` `K` scroll it, `e` opens the unit in your editor.
+deciding:
 
-**history** — `C` shows a summary of the whole change, the pr's title and description, and every commit with its type and tickets. `enter` on a commit lists the units it changed.
+- `a` accepts, `f` flags; neither asks for anything. both go to the next pending unit, not the next row. when nothing is pending, the bar says "Nothing pending. :w to finish".
+- `A` and `F` do the same for the pending units of the file under the cursor (listed by level, the ones in its box), never for ones you decided.
+- a count decides more: `3a` accepts this unit and the next two pending ones.
+- `V` starts a selection, `j` `k` grow it, `a` or `f` decide every unit in it, `esc` leaves it.
+- `u` undoes the last decision, `<c-r>` redoes it, `.` repeats it on the unit under the cursor, with its count. the undo history is saved with the review.
+- `i` opens a note line at the bottom, with the note so far, without changing the decision: `enter` saves it (empty is no note), `esc` drops the edit.
+
+moving: `n` `N` go to the next and previous pending unit, `]f` `[f` to the next and previous file, `/` finds a unit by file or name. `zf` lists by file instead: each file in the box of its most critical unit.
 
 **mouse** — click to select, wheel to scroll, drag to copy, double-click to copy a word (`src/app.rs:120` and urls count as one).
 
-## swipe
+## the unit view
 
-`s` deals the pending and flagged units as cards, most critical first.
+`l` or `enter` opens any unit, flagged or not. it's written before you get there, so you read first:
+
+1. **title** — level, file, unit, where it stands.
+2. **why this level** — the rule that set it and the [reasons](#reasons).
+3. **what changed** — the summary, then the diff in its box with each statement under the lines it cites. `]c` `[c` jump between hunks.
+4. **second model** — its verdict on every statement, only when it disputes one.
+
+beside the text, two tiles are open from the start:
+
+- **advice** — what the agent says to do about the unit: concrete steps, most important first, each with its reason. nothing is asked until you say so: `<space>a` (here or from the queue), `enter` on the tile, or a click on its question. the answer is kept with the unit until its code changes; who wrote it is on the tile's bottom edge.
+- **keys** — what you can do here, by group (decide, look closer, move, finish). click one to run it; `?` lists every key.
+
+with `--no-agent`, the second model and the advice are left out, and so are the keys that need an agent.
+
+each of these opens a tile, tmux style, next to the ones already open: the text keeps a tall column on the left (on top in a narrow terminal), the tiles share the rest in the order you opened them, the keys tile under them. the new tile gets the focus, and the scroll keys go to whatever has it. `tab` `shift+tab` (`gt` `gT`) move the focus, the text among the tiles; `zz` zooms what has it; `h` closes it. the same key on an open tile gives it the focus, and in focus closes it:
 
 | | |
 | --- | --- |
-| `l` `→` swipe right | accept |
-| `i` `←` swipe left | flag |
-| `h` | previous card |
-| `u` | undo |
-| `esc` | back to the list |
+| `<space>a` | the advice, asked for now (see above). in focus with an answer, closes it |
+| `K` | ask anything; "this" is the unit (from the queue, `K` opens it first). while the agent works you see each step it takes (the file it reads, what it searches), then the answer as it's written (claude code and model apis; codex shows the steps and the answer once done). the answer brings the code it talks about and the units it relates to: `tab` moves to them, `enter` opens one. follow-ups stay in the tile; the conversation is kept with the unit. `esc` stops typing and leaves the tile open; `K` or `i` types again |
+| `<space>t` | the tests that reach the unit, found by teer at once without an agent. with one, the tile then asks whether the agent reads them: `enter` (or a click on the question) and it says what each checks, and the dangerous cases none covers. with none found, it offers to look for tests itself |
+| `<space>r` | old and new side by side: the agent writes a small program, teer runs it before and after the change in a sandbox, then checks the statements against the runs and whether your tests notice the change. macos only |
+| `<space>v` | what talks to the unit and what the change adds or removes, as a diagram in the terminal (kitty, ghostty, iterm2, sixel). `gx` opens it in the browser |
+| `gd` | what the unit calls: in the review, a list to jump to; outside it, the definition, read-only |
+| `gr` | what calls the unit, to jump to |
+| `gf` | your editor, at the unit's first changed line |
 
-once everything is accepted, teer offers the next step: commit (`c`) or approve the pr (`a`).
+`a` `f` `A` `F` `u` `.` work as in the queue; after `a` or `f` the next pending unit opens here. `n` `N` move without deciding, and close the tiles but the advice. `h` on the text goes back to the queue, on the unit you were looking at.
 
-## the flagged screen
+**flagged units** — `<space>f`, here or in the queue, lists every unit you flagged one after another, each as the queue's preview shows it: why it has its level, the agent's summary, the whole change in its box with the statements written in, your note under it. one is selected, with the `▌` bar and a background behind it. `j` `k` (or `n` `N`) select the next and previous one and scroll it to the top, a click selects one, `]c` `[c` jump from hunk to hunk, `<c-d>` `<c-u>` scroll. `l` or `enter` looks closer at the selected one (`h` comes back), `a` accepts it and it leaves the list, `i` writes its note, `h` or `<space>f` goes back.
 
-`d` shows your flagged units one at a time: the code in a tall tile, then a tile for every question you ask.
+like statements, every claim in the advice and the tools must cite real lines. what doesn't is dropped and logged to `teer.log`.
 
-| key | question | |
-| --- | --- | --- |
-| `n` | recommend | what to do about it. may search the web, after asking once; never for a pr |
-| `v` | visualize | what talks to the unit and what the change adds or removes, as a diagram in the terminal (kitty, ghostty, iterm2, sixel). `b` opens it in the browser |
-| `c` | tests | the tests that reach the unit, found by teer at once without an agent. `a` has the agent read them: what each checks, and the dangerous cases none covers |
-| `t` | behavior | the agent writes a small program, teer runs it before and after the change in a sandbox, then checks the statements against the runs and whether your tests notice the change. macos only |
-| `x` | disagreement | the second model's verdict on every statement |
-| `/` | chat | a conversation about this unit |
+## finish
 
-`tab` `←` `→` move between tiles, `z` zooms, `r` asks again, `j` `k` go to the next flagged unit. resolve with `o` (fine) or `f` (needs a fix).
+`:w` opens one sheet that reads your decisions and offers one next step. `enter` does it; `j` `k` pick another.
 
-like statements, every claim in a tile must cite real lines. what doesn't is dropped and logged to `teer.log`.
+| reviewing | state | `enter` | or |
+| --- | --- | --- | --- |
+| your changes | something flagged | send the notes to your agent | yank the notes · commit anyway |
+| your changes | all accepted | commit, with a message the agent drafts | yank the notes |
+| a branch | something flagged | send the notes to your agent | yank the notes |
+| a branch | all accepted | done | yank the notes |
+| a pull request | something flagged | request changes: notes inline, plus a summary | comment only · yank the notes |
+| a pull request | all accepted | approve | approve with a comment · yank the notes |
 
-## ask
+- with units still pending, the sheet says how many first, the step is "keep reviewing", and `n` goes to the first pending unit. the other steps ask before they run.
+- the sheet lists the flagged units with their notes.
+- `y` copies the notes as markdown, each with its unit's diff.
+- `i` edits the commit message or the review summary in your editor.
+- `esc` or `q` closes it and does nothing.
+- a commit or a post ends teer with one line saying what it did.
 
-`/` asks anything about the code; "this" is the unit on screen. while the agent works you see each step it takes (the file it reads, what it searches), then the answer as it is written (claude code and model apis; codex shows the steps and the answer once done). the answer brings the code it talks about (read by teer, changed lines marked) and the units it relates to: `tab`, then `enter` jumps to a unit or opens the code in your editor. answers stay on the unit they're about and are kept with the review.
+**commit** — teer commits exactly the files you reviewed, with your hooks and signing, and refuses when one changed since.
+
+**post** — notes become inline comments where their line is in the pr diff; the rest go in the summary. teer checks the pr still has the head you reviewed, posts with `gh` only after `enter`, and opens the pr page if posting fails.
+
+## the fix loop
+
+flag what's wrong, say in the note what should change, then `:w` `enter`:
+
+1. teer opens claude code or codex in your terminal with the notes as its first message: with claude code, in a fork of the session that wrote the change when teer found one.
+2. when you leave the agent, teer reviews again at once. no key to press.
+3. units whose code changed are pending again, on top of their level, with your note kept and marked "code changed since this note". the rest keep your decision.
+4. the cursor lands on the first changed unit, and the bar says how many changed: "3 units changed by Claude Code".
+
+on a note marked changed, `a` accepts and archives the note, `f` keeps the flag and edits it, `i` edits it without deciding. on a branch the agent doesn't have to commit: a branch review covers the branch's commits and whatever isn't committed yet.
+
+**notes teer doesn't hand over** — a model api has no session to take them, so `:w` `enter` copies the notes, with what to do, for you to paste into your agent; `y` copies them too. teer then waits, with the queue on screen and read-only (no deciding, no `:w`), and reviews again once your files have been quiet for 5 seconds (`quiet_seconds` under `[fix_loop]`). `q` stops waiting.
+
+**`:e`** reviews again now and keeps your decisions; on a pull request it fetches the head first, so a pushed fix shows up. **`:e!`** asks "Reset all 42 decisions? y/n", then reviews again with every unit pending, and decides afresh which ones are accepted for you.
+
+pull requests have no fix loop: the notes go on the pr.
 
 ## notes
 
-`m` writes a note on the unit on screen, anywhere. `N` lists them all:
+`f` writes a note as it flags; `i` edits one any time. `<space>n` lists them all: `enter` goes to the unit, `i` edits, `d` deletes, `y` copies them as markdown, `:w` finishes.
 
-| | |
-| --- | --- |
-| `y` | copy as markdown, each with its unit's diff |
-| `c` | hand them to claude code or codex to work through (not for a pr) |
-| `p` | post them on the pull request |
-
-`teer notes` prints the same markdown for any agent. a note stays when its code changes, marked as such until you confirm it with `m`.
-
-## commit and approve
-
-**commit** — when every unit of your uncommitted changes is accepted, `c` commits them. the agent drafts the message, `e` edits it. teer commits exactly the files you reviewed, with your hooks and signing, and refuses when one changed since.
-
-**approve** — when every unit of a pr is accepted, `a` approves it; `p` in the notes requests changes or comments (`v` switches). notes become inline comments where their line is in the pr diff, the rest go in the summary. teer checks the pr still has the head you reviewed, posts with `gh` only after you confirm, and opens the pr page if posting fails.
+`teer notes` prints the same markdown for any agent: each note with its file, lines and diff. a note stays when its code changes, marked as such until you act on it.
 
 ## keys
 
-| everywhere | |
-| --- | --- |
-| `?` | every key |
-| `/` | ask |
-| `m` · `N` | note · all notes |
-| `e` | open in your editor |
-| `J` `K` | scroll the preview, card or tile (pageup / pagedown: a page) |
-| `r` | re-run the review |
-| `R` | reset every decision |
-| `q` · `ctrl+c` | quit, saved |
+keys follow neovim, and a key does the same on every screen. a prefix (`g`, `]`, `[`, `z`, `<space>`) waits `timeoutlen` milliseconds (default 1000) for the next key and lists what can follow. digits before a key are a count (`3a`, `5j`); `esc` drops one. `:` opens a command line for `:w`, `:e`, `:e!` and `:q`.
 
-| list | |
-| --- | --- |
-| `j` `k` `g` `G` | move |
-| `l` · `i` | accept · flag |
-| `u` | undo |
-| `] [` | next · previous pending |
-| `ctrl+d` `ctrl+u` | next · previous file |
-| `A` | accept the file |
-| `f` | by file · by unit |
-| `s` · `d` · `C` | swipe · flagged · commits |
+| keys | action id | does |
+| --- | --- | --- |
+| `j` `<down>` | `move.down` | move down |
+| `k` `<up>` | `move.up` | move up |
+| `gg` `<home>` | `move.first` | first unit |
+| `G` `<end>` | `move.last` | last unit |
+| `n` | `move.next_pending` | next pending unit |
+| `N` | `move.prev_pending` | previous pending unit |
+| `]c` | `move.next_hunk` | next hunk |
+| `[c` | `move.prev_hunk` | previous hunk |
+| `]f` | `move.next_file` | next file |
+| `[f` | `move.prev_file` | previous file |
+| `<tab>` `gt` | `move.next_tile` | next tile |
+| `<s-tab>` `gT` | `move.prev_tile` | previous tile |
+| `<c-d>` | `scroll.half_down` | scroll half a page down |
+| `<c-u>` | `scroll.half_up` | scroll half a page up |
+| `<pagedown>` | `scroll.page_down` | scroll a page down |
+| `<pageup>` | `scroll.page_up` | scroll a page up |
+| `/` | `find.unit` | find a unit by file or name |
+| `a` | `decide.accept` | accept the unit |
+| `f` | `decide.flag` | flag the unit |
+| `i` | `note.edit` | edit the note |
+| `A` | `decide.accept_file` | accept the file's pending units |
+| `F` | `decide.flag_file` | flag the file's pending units |
+| `V` | `visual.start` | select lines |
+| `u` | `history.undo` | undo the last decision |
+| `<c-r>` | `history.redo` | redo |
+| `.` | `history.repeat` | repeat the last decision |
+| `l` `<cr>` | `view.open` | open |
+| `h` `<esc>` | `view.back` | back |
+| `K` | `ask.open` | ask about the unit |
+| `gd` | `goto.definition` | what this unit calls |
+| `gr` | `goto.callers` | what calls this unit |
+| `gf` | `goto.editor` | open in the editor |
+| `gx` | `goto.browser` | open the picture in the browser |
+| `za` | `toggle.auto_accepted` | show units accepted for you |
+| `zf` | `toggle.by_file` | list by file or by level |
+| `zz` | `toggle.zoom` | zoom the tile in focus |
+| `<space>a` | `tool.advice` | advice: what to do about the unit |
+| `<space>t` | `tool.tests` | tests that cover this unit |
+| `<space>r` | `tool.run_old_new` | run old and new |
+| `<space>v` | `tool.diagram` | diagram of the change |
+| `<space>c` | `tool.history` | commits and PR description |
+| `<space>n` | `tool.notes` | every note |
+| `<space>f` | `tool.flagged` | flagged units, one after another |
+| `<space>s` | `tool.settings` | settings |
+| `:w` | `finish.open` | finish |
+| `y` | `finish.yank` | copy the notes |
+| `:e` | `review.rerun` | re-run, decisions kept |
+| `:e!` | `review.reset` | re-run and reset every decision |
+| `q` `:q` | `view.close` | close; in the list, quit |
+| `?` | `help.open` | keys |
+| `d` | `note.delete` | delete the note |
 
-swipe and flagged keys are in their sections. every key can be rebound (see [config](#config)).
+most keys work in the queue and the unit view alike. `]c` `[c` work in the unit view and the flagged list; `gx`, the tile keys and `zz` are the unit view's, `V` `za` `zf` the queue's; `y` works on the `:w` sheet and in the notes, `d` in the notes. `?` shows the keys of the screen you're on, as you bound them.
+
+typing a note, a question or a message, `enter` saves, `esc` cancels and `<c-u>` clears the line. a yes/no question takes `y` or `enter` for yes, any other key for no. `<c-c>` quits from anywhere, saved.
+
+**rebinding** — `[keys]` in the config takes an action id and a key, or a list of keys, in neovim notation: `<cr>` enter, `<esc>`, `<tab>`, `<s-tab>`, `<space>`, `<bs>`, `<up>` `<down>` `<left>` `<right>`, `<home>` `<end>` `<pageup>` `<pagedown>`, `<c-x>` ctrl, `<a-x>` alt, `<lt>` for `<`, and `:cmd` for a command. keys you bind replace the action's own; a key another action had by default is taken from it, with a warning. an unknown action id is warned about and skipped. teer refuses a key bound twice, or one that starts another (`g` can't be bound while `gg` is).
+
+```toml
+timeoutlen = 500
+
+[keys]
+"goto.editor" = ["gf", "e"]       # a list keeps gf
+"history.redo" = "U"              # <c-r> no longer redoes
+```
 
 ## config
 
@@ -174,7 +262,7 @@ editor = "code --wait --goto {file}:{line}"
 second_opinion = false
 
 [keys]
-accept = "y"
+"goto.editor" = ["gf", "e"]
 ```
 
 | key | default | |
@@ -185,18 +273,21 @@ accept = "y"
 | `prepare_effort` · `second_effort` | `low` | how hard each model thinks |
 | `second_opinion` | `true` | check every description with the second model |
 | `[api]` | | `format` (`anthropic` or `openai`), `base_url`, `key_env` (the variable holding the key) |
-| `editor` | `nvim +{line} {file}` | what `e` runs; `{file}` and `{line}` are filled in |
+| `editor` | `nvim +{line} {file}` | what `gf` runs, and `i` on the `:w` sheet; `{file}` and `{line}` are filled in |
 | `theme` | `dark` | `dark`, `light` or `mono` (`NO_COLOR` means mono) |
 | `order` | `story` | callers and callees together, or `line` |
+| `auto_accept` | `no_behavior_change` | accept units with no behavior change for you, or `none` |
 | `languages` | all five | which ones are split into functions |
 | `concurrency` | `4` | agent requests at once |
 | `large_review` | `150` | above this many units, a file is described when you reach it |
-| `dive_web` | `true` | recommend may search the web |
+| `dive_web` | `true` | the advice and `K` may search the web, after asking once; never for a pr |
 | `images` | `true` | draw diagrams in the terminal |
-| `behavior_timeout` | `120` | seconds per behavior run |
-| `[keys]` | | `action = "key"` |
+| `behavior_timeout` | `120` | seconds per old or new run of `<space>r` |
+| `timeoutlen` | `1000` | milliseconds a prefix waits for the next key |
+| `[fix_loop]` | | `quiet_seconds` (`5`): after you copied the notes, how long the files must be quiet before teer reviews again |
+| `[keys]` | | `"action.id" = "key"` or a list, see [keys](#keys) |
 
-**editors** — a gui editor needs its wait flag, or commit messages and review text come back unedited; `e` then waits until you close the tab:
+**editors** — a gui editor needs its wait flag, or commit messages and review text come back unedited; `gf` then waits until you close the tab:
 
 ```toml
 editor = "code --wait --goto {file}:{line}"   # vs code
@@ -204,29 +295,21 @@ editor = "idea --wait --line {line} {file}"   # intellij
 editor = "zed --wait {file}:{line}"           # zed
 ```
 
-<details>
-<summary>key actions</summary>
-
-`quit` q · `down` j · `up` k · `top` g · `bottom` G · `preview_down` J · `preview_up` K · `open` enter · `edit` e · `swipe` s · `rerun` r · `reset` R · `accept` l · `investigate` i · `flagged` d · `undo` u · `back` esc · `help` ? · `next_pending` ] · `prev_pending` [ · `prev_card` h · `next_group` ctrl+d · `prev_group` ctrl+u · `grouping` f · `accept_file` A · `commits` C · `ask` / · `edit_note` m · `notes` N · `dive_recommend` n · `dive_visualize` v · `dive_tests` c · `interpret_tests` a · `dive_behavior` t · `dive_disagree` x · `open_visual` b · `dive_rerun` r · `resolve_ok` o · `resolve_fix` f · `prev_tile` left · `next_tile` right · `zoom` z · `approve_pr` a · `commit` c
-
-keys: a character, `enter tab esc space left right up down backspace`, or `ctrl+x` `alt+x` `shift+x`.
-
-</details>
-
 **elsewhere** — `TEER_CONFIG` moves the config, `TEER_DATA_DIR` the data (default `~/.local/share/teer`), `TEER_GH` names another `gh`.
 
 ## safety
 
-- **the agent only reads.** claude code runs without shell or write tools, codex in its read-only sandbox, a model api with teer's own list, read and grep, kept inside the repo. only recommend may search the web, and only after you allow it.
+- **the agent only reads.** claude code runs without shell or write tools, codex in its read-only sandbox, a model api with teer's own list, read and grep, kept inside the repo. only the advice and `K` may search the web, and only after you allow it.
+- **the fix loop is your agent.** `:w` opens claude code or codex in your terminal as if you had started it, with its usual permissions. never for a pull request.
 - **pull requests are untrusted.** their own checkout, no web, and the repo's agent instructions (`CLAUDE.md`, `AGENTS.md`, skills, settings) aren't loaded.
-- **code runs only in behavior**, on a separate checkout, in a macos sandbox: no network, no writes outside the checkout, no reads in your home folder beyond the checkout and language toolchains, no keys or tokens in its environment.
+- **code runs only in `<space>r`**, on a separate checkout, in a macos sandbox: no network, no writes outside the checkout, no reads in your home folder beyond the checkout and language toolchains, no keys or tokens in its environment.
 - **git runs nothing of the repo's.** hooks, fsmonitor and lfs filters are off for every git command teer runs, except the commit you confirm.
-- **nothing is posted without you.** github sees a review only after you confirm it.
+- **nothing is posted without you.** github sees a review only after `enter` on the `:w` sheet.
 - **what leaves your machine** is the changed code, plus what the agent reads in the repo to answer you. reviews, `teer.log`, diagrams and probe runs stay in `~/.local/share/teer`.
 
 ## limits
 
-- behavior runs on macos only, with the dependencies your checkout has installed.
+- `<space>r` runs on macos only, with the dependencies your checkout has installed.
 - codex's read-only sandbox can read the whole disk, not only the repo. for untrusted prs, prefer claude code or an api.
 - the model apis are tested against a fake server, not yet live.
 - the small default model can miss a change; `prepare_model = "sonnet"` trades a little speed for depth.
