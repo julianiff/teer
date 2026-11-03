@@ -546,7 +546,6 @@ impl Session {
             note,
             sessions,
             session,
-            l.swipe,
             tools,
         )
     }
@@ -565,17 +564,7 @@ impl Session {
         let session = session
             .unwrap_or_else(|| SessionRef::fresh(cfg.provider().name(), review.repo_root.clone()));
         let note = model.is_none().then(|| teer::cli::NO_AGENT.to_string());
-        Session::begin(
-            review,
-            cfg,
-            keys,
-            model,
-            note,
-            Vec::new(),
-            session,
-            false,
-            tools,
-        )
+        Session::begin(review, cfg, keys, model, note, Vec::new(), session, tools)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -587,7 +576,6 @@ impl Session {
         note: Option<String>,
         sessions: Vec<teer::agent::SessionInfo>,
         session: SessionRef,
-        swipe: bool,
         tools: Tools,
     ) -> Session {
         env();
@@ -597,7 +585,7 @@ impl Session {
             languages: cfg.languages.clone(),
         };
         let mut app = App::new(review, cfg, keys);
-        let initial = app.start(model.is_some(), note, sessions, Some(session), swipe);
+        let initial = app.start(model.is_some(), note, sessions, Some(session));
         let (tx, rx) = unbounded_channel();
         let adapter = model.clone().map(|m| Arc::new(m) as Arc<dyn AgentAdapter>);
         let rt = Runtime {
@@ -737,6 +725,26 @@ impl Session {
     /// Run the loop for `d`, whatever comes.
     pub async fn wait(&mut self, d: Duration) {
         self.until(d, |_| false).await;
+    }
+
+    /// Let the background work started so far finish (nothing came for
+    /// half a second), and keep what it sent from the app: answers still
+    /// on their way, handed over later with [`Session::deliver`].
+    pub async fn hold(&mut self) -> Vec<AppEvent> {
+        let mut held = Vec::new();
+        while let Ok(Some(ev)) =
+            tokio::time::timeout(Duration::from_millis(500), self.rx.recv()).await
+        {
+            held.push(ev);
+        }
+        held
+    }
+
+    /// Hand `events` to the app now, in order, as the run loop does.
+    pub fn deliver(&mut self, events: Vec<AppEvent>) {
+        for ev in events {
+            self.feed(ev);
+        }
     }
 
     /// How many times the runtime's re-run has come back.

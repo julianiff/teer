@@ -98,7 +98,7 @@ fn open(dir: &Path, base: Option<String>, cfg: Config) -> App {
     };
     let review = build_review(dir, &opts).unwrap();
     let mut a = App::new(review, cfg, Keymap::default());
-    a.start(false, None, Vec::new(), None, false);
+    a.start(false, None, Vec::new(), None);
     a
 }
 
@@ -245,6 +245,80 @@ async fn the_agent_exiting_reruns_the_review_on_what_it_changed() {
     let s = screen(&a, 140, 40);
     assert!(s.contains("the code changed since"), "{s}");
     assert!(s.contains("1 unit changed by Claude Code."), "{s}");
+}
+
+/// `NEW` committed on `feature`, the tree clean: plain `teer` reviews the
+/// branch since `main`.
+fn branch_repo() -> FixtureRepo {
+    isolate_env();
+    let r = FixtureRepo::new();
+    r.write("calc.py", OLD).commit("init");
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    r.write("calc.py", NEW).commit("charge a fee");
+    r
+}
+
+/// A branch review covers what isn't committed too: the agent fixes the
+/// note without committing, and the re-run (as `tui::run` builds it, from
+/// the review's base) shows the fix, its unit pending again, on the same
+/// review.
+#[tokio::test]
+async fn a_branch_review_reruns_on_fixes_that_are_not_committed() {
+    let r = branch_repo();
+    let mut a = open(&r.path(), Some("main".into()), Config::default());
+    assert_ne!(a.review.head, teer::git::WORKTREE);
+    let fee_before = a.review.unit(FEE).unwrap().fingerprint.clone();
+    let key = |a: &App| {
+        let r = &a.review;
+        (
+            r.id.clone(),
+            r.base.clone(),
+            r.head.clone(),
+            r.head_commit.clone(),
+        )
+    };
+    let before = key(&a);
+    reviewed(&mut a);
+    let e = press(&mut a, ":w<cr><cr>");
+    let [
+        Effect::OpenAgent {
+            cli,
+            cwd,
+            prompt,
+            resume,
+        },
+    ] = &e[..]
+    else {
+        panic!("{e:?}")
+    };
+    let d = tempfile::tempdir().unwrap();
+    let tools = Tools {
+        claude: fake_claude(d.path()).into(),
+        ..Default::default()
+    };
+    let exit = teer::tui::run_agent(&tools, *cli, cwd, prompt, resume.as_deref()).unwrap();
+    assert_eq!(r.file("calc.py"), FIXED);
+    assert!(
+        r.git(&["status", "--porcelain"]).contains("calc.py"),
+        "not committed"
+    );
+
+    let (rt, mut rx) = runtime(tools, Some(a.review.base.clone()));
+    assert!(!rt.agent_exited(&mut a, *cli, Ok(exit)));
+    reran(&mut a, &mut rx).await;
+    assert_eq!(a.status, "1 unit changed by Claude Code.");
+    assert_eq!(key(&a), before, "the same review, saved where it was");
+    let file = &a.review.files[0];
+    assert_eq!(file.new_content.as_deref(), Some(FIXED));
+    let fee = a.review.unit(FEE).unwrap();
+    assert_ne!(fee.fingerprint, fee_before);
+    assert_eq!(fee.decision, Decision::Pending);
+    assert!(fee.note_is_stale());
+    assert_eq!(a.selected_id().as_deref(), Some(FEE));
+    assert_eq!(decision(&a, TOTAL), Decision::Accepted);
+    assert_eq!(decision(&a, TAX), Decision::Accepted);
+    // The header still names the branch's commits.
+    assert_eq!(a.review.intent.commits.len(), 1);
 }
 
 #[tokio::test]

@@ -97,10 +97,7 @@ fn app(notes: [&str; 2], pr: Option<PrInfo>) -> App {
         branch: None,
         cursor: None,
     };
-    // The v1 list (`--swipe`, until Phase 8).
-    let mut app = App::new(review, Config::default(), Keymap::default());
-    app.open_v1_list();
-    app
+    App::new(review, Config::default(), Keymap::default())
 }
 
 fn code(a: &mut App, c: KeyCode) -> Vec<Effect> {
@@ -143,14 +140,14 @@ fn draw(a: &App, w: u16, h: u16) -> String {
 // ---------------------------------------------------------------- writing
 
 #[test]
-fn i_writes_a_note_in_the_list_and_in_swipe() {
+fn i_writes_a_note_in_the_queue_and_in_the_unit_view() {
     let mut a = app(["", ""], None);
     let id = a.selected().unwrap().id.clone();
     key(&mut a, 'i');
     assert!(matches!(&a.overlay, Overlay::Note { id: i, back: None, .. } if *i == id));
     // Letters that are actions elsewhere are text here.
     typed(&mut a, "zero amounts?");
-    assert_eq!(a.screen, Screen::Slim);
+    assert_eq!(a.screen, Screen::Queue);
     assert_eq!(code(&mut a, KeyCode::Enter), vec![Effect::Save]);
     let u = a.review.unit(&id).unwrap();
     assert_eq!(u.dive.note, "zero amounts?");
@@ -158,16 +155,15 @@ fn i_writes_a_note_in_the_list_and_in_swipe() {
     assert_eq!(u.dive.note_on.as_deref(), Some(u.fingerprint.as_str()));
     assert!(!u.note_is_stale());
 
-    key(&mut a, 's');
-    assert_eq!(a.screen, Screen::Swipe);
-    key(&mut a, 'a');
-    let card = a.swipe_current().unwrap().clone();
-    assert_ne!(card, id);
+    keys(&mut a, "jl");
+    assert_eq!(a.screen, Screen::Unit);
+    let other = a.unit.id.clone();
+    assert_ne!(other, id);
     key(&mut a, 'i');
-    assert!(matches!(&a.overlay, Overlay::Note { id: i, .. } if *i == card));
+    assert!(matches!(&a.overlay, Overlay::Note { id: i, .. } if *i == other));
     typed(&mut a, "and here");
     code(&mut a, KeyCode::Enter);
-    assert_eq!(a.review.unit(&card).unwrap().dive.note, "and here");
+    assert_eq!(a.review.unit(&other).unwrap().dive.note, "and here");
 }
 
 #[test]
@@ -195,8 +191,9 @@ fn the_note_shows_under_the_code_and_marks_the_row() {
     a.review.units[0].dive.note_on = Some("older".into());
     let out = draw(&a, 120, 30);
     assert!(out.contains("the code changed since"), "{out}");
-    // On a swipe card too.
-    key(&mut a, 's');
+    // In the unit view too.
+    key(&mut a, 'l');
+    assert_eq!(a.screen, Screen::Unit);
     let out = draw(&a, 120, 40);
     assert!(out.contains("zero hits the gateway"), "{out}");
 }
@@ -332,14 +329,17 @@ fn the_sheet_hands_the_notes_to_claude_code() {
     assert_eq!(a.overlay, Overlay::None);
 
     // With the session that made the change, a fork of it, where it was
-    // started. `c` in the notes view opens the sheet on it.
+    // started. `:w` in the notes view opens the sheet on it.
     a.review.agent_session = Some(SessionRef {
         agent: "claude".into(),
         id: "abc-123".into(),
         cwd: PathBuf::from("/repo/sub"),
     });
     keys(&mut a, "<space>n");
+    // `c` was v1's way to hand them over: nothing now.
     key(&mut a, 'c');
+    assert!(matches!(a.overlay, Overlay::Notes { .. }));
+    keys(&mut a, ":w<cr>");
     assert_eq!(a.finish_step(), Some(Step::SendNotes));
     let e = code(&mut a, KeyCode::Enter);
     let [Effect::OpenAgent { cwd, resume, .. }] = &e[..] else {
@@ -397,8 +397,11 @@ fn a_pull_request_posts_the_notes_and_never_hands_them_to_claude() {
     accept(&mut a, "g");
     keys(&mut a, "<space>n");
     assert!(draw(&a, 100, 30).contains(":w finish"));
-    // `p` opens the sheet on requesting changes; nothing hands to Claude.
+    // `p` was v1's way to post them: nothing now.
     key(&mut a, 'p');
+    assert!(matches!(a.overlay, Overlay::Notes { .. }));
+    // `:w` opens the sheet on requesting changes; nothing hands to Claude.
+    keys(&mut a, ":w<cr>");
     assert_eq!(
         a.finish_steps(),
         [Step::RequestChanges, Step::CommentOnly, Step::Yank]

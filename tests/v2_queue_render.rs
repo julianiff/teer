@@ -325,7 +325,7 @@ fn the_auto_line_counts_units_accepted_for_you_and_za_shows_them() {
 #[test]
 fn visual_rows_are_marked() {
     let mut app = queue();
-    app.visual = Some(0);
+    app.visual = Some(app.review.units[app.order[0]].id.clone());
     app.sel = 1;
     let buf = draw(&app, 160, 40);
     let visual = app.theme.visual().bg;
@@ -408,11 +408,6 @@ fn beside_the_preview_the_queue_takes_up_to_45_percent() {
     let app = queue();
     let (list, _) = preview::layout_of(&app, Rect::new(0, 1, 120, 38));
     assert!(list.width > 42 && list.width <= 54, "{list:?}");
-    // The old list keeps its 35%.
-    let mut slim = queue();
-    slim.screen = Screen::Slim;
-    let (list, _) = preview::layout_of(&slim, Rect::new(0, 1, 120, 38));
-    assert!(list.width <= 42, "{list:?}");
 }
 
 #[test]
@@ -523,7 +518,7 @@ fn the_finish_key_in_the_bar_follows_the_keymap() {
 #[test]
 fn the_bottom_bar_keeps_the_mode_after_the_counts() {
     let mut app = queue();
-    app.visual = Some(0);
+    app.visual = Some(app.review.units[app.order[0]].id.clone());
     app.sel = 1;
     let line = bar(&app, 120);
     assert!(
@@ -590,10 +585,6 @@ fn the_bar_is_on_the_unit_view_and_under_the_finish_sheet() {
     let mut app = queue();
     app.overlay = Overlay::Finish { sel: 0 };
     assert!(bar(&app, 120).starts_with(" 2 pending · 1 flagged · 3 accepted"));
-    // The old list keeps its buttons.
-    let mut app = queue();
-    app.screen = Screen::Slim;
-    assert!(bar(&app, 160).contains("open in editor"));
 }
 
 #[test]
@@ -686,7 +677,7 @@ fn an_empty_queue_says_what_is_left() {
 #[test]
 fn every_size_draws() {
     let mut app = queue();
-    app.visual = Some(0);
+    app.visual = Some(app.review.units[app.order[0]].id.clone());
     for (w, h) in [
         (20, 6),
         (40, 12),

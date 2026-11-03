@@ -82,7 +82,7 @@ const QUOTES: (&str, &str) = ("“", "”");
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let area = ui::banner(f, app, area);
     if app.order.is_empty() {
-        ui::draw_empty(f, app, area, slim::Flavor::Queue);
+        ui::draw_empty(f, app, area);
         return;
     }
     let (list, pane) = preview::layout_of(app, area);

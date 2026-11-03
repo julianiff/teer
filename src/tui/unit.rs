@@ -25,10 +25,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
+use super::answers::{self, TOOLS, tool_key, tool_kind};
 use super::app::{
     App, Effect, JumpKind, Overlay, QUESTION_MAX, SCROLL_STEP, Screen, Target, typed,
 };
-use super::{ask, diff, flagged, preview, slim};
+use super::{ask, diff, preview, slim};
 use crate::keymap::{Action, Edit};
 use crate::review::dive::DiveEvent;
 use crate::review::model::{AcceptedBy, Cite, Decision, DiveKind, Prep, Shown, Unit};
@@ -136,26 +137,6 @@ pub struct UnitView {
     pub web_question: Option<usize>,
     /// Units whose tests the agent reads once teer's search is done (Q6).
     pub read_tests: HashSet<String>,
-}
-
-/// The leader tools, in the order the ask panel suggests them.
-const TOOLS: [(DiveKind, Action); 3] = [
-    (DiveKind::Tests, Action::ToolTests),
-    (DiveKind::Behavior, Action::ToolRunOldNew),
-    (DiveKind::Visualize, Action::ToolDiagram),
-];
-
-/// The tool `a` opens.
-fn tool_kind(a: Action) -> Option<DiveKind> {
-    TOOLS.iter().find(|t| t.1 == a).map(|t| t.0)
-}
-
-/// The key that opens tool `kind`.
-fn tool_key(app: &App, kind: DiveKind) -> String {
-    TOOLS
-        .iter()
-        .find(|t| t.0 == kind)
-        .map_or(String::new(), |t| app.keys.label(t.1))
 }
 
 // ---- Drawing -----------------------------------------------------------
@@ -342,20 +323,20 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<u
             heading_by(
                 app,
                 "What to do about it",
-                flagged::answer_label(app, u, rec),
+                answers::answer_label(app, u, rec),
             )
         } else {
             heading(app, "What to do about it")
         };
         add(&mut blocks, vec![Line::default(), head]);
-        add(&mut blocks, flagged::section_body(app, u, rec, w));
+        add(&mut blocks, answers::section_body(app, u, rec, w));
         if disputed(app, u) {
-            let by = flagged::answer_label(app, u, DiveKind::Disagree);
+            let by = answers::answer_label(app, u, DiveKind::Disagree);
             add(
                 &mut blocks,
                 vec![Line::default(), heading_by(app, "Second model", by)],
             );
-            add(&mut blocks, flagged::disagree_lines(app, u, w));
+            add(&mut blocks, answers::disagree_lines(app, u, w));
         }
     }
     (blocks, hunks)
@@ -426,12 +407,12 @@ fn draw_panel(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect) {
             (Line::from(title), keys)
         }
         Panel::Tool(kind) => {
-            let (name, _) = flagged::light(kind);
+            let (name, _) = answers::light(kind);
             let mut title = vec![
                 Span::styled(format!(" {}", tool_key(app, kind)), t.accent()),
                 Span::styled(format!(" {name} "), t.bold()),
             ];
-            if flagged::pending(u, kind) {
+            if answers::pending(u, kind) {
                 title.push(Span::styled(format!("{} ", app.spinner()), t.muted()));
             }
             let mut keys = format!(" {} close ", k(Action::ViewBack));
@@ -468,14 +449,14 @@ fn draw_panel(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect) {
     match p {
         Panel::Ask => draw_ask(f, app, u, inner),
         Panel::Tool(DiveKind::Visualize)
-            if flagged::draw_picture(f, app, u, inner, inner.width as usize) =>
+            if answers::draw_picture(f, app, u, inner, inner.width as usize) =>
         {
             app.detail_max_scroll.set(0);
             app.detail_rows.set(inner.height as usize);
         }
         Panel::Tool(kind) => {
             let w = inner.width as usize;
-            let lines = flagged::section_body(app, u, kind, w);
+            let lines = answers::section_body(app, u, kind, w);
             draw_scrolled(f, app, lines, inner);
         }
         Panel::Outside => {
@@ -523,8 +504,8 @@ fn draw_ask(f: &mut Frame, app: &App, u: &Unit, area: Rect) {
         let lines = preview::cut(app, empty_ask(app, u, w), talk.height as usize);
         f.render_widget(Paragraph::new(lines), talk);
         // A click on a tool opens it.
-        for (kind, action) in TOOLS {
-            let shown = format!("{}  {}", tool_key(app, kind), flagged::light(kind).0);
+        for (kind, action, name, _) in TOOLS {
+            let shown = format!("{}  {name}", tool_key(app, kind));
             if let Some(r) = super::select::find(f.buffer_mut(), talk, &shown) {
                 let row = Rect::new(talk.x, r.y, talk.width, 1);
                 app.targets.borrow_mut().push((row, Target::Action(action)));
@@ -537,7 +518,6 @@ fn draw_ask(f: &mut Frame, app: &App, u: &Unit, area: Rect) {
             talk,
             ask::Talk {
                 which: &chat,
-                chat: true,
                 scroll: &app.ask.chat_scroll,
                 max: &app.ask.chat_max,
                 focus: app.ask.link,
@@ -577,23 +557,18 @@ so a question can follow on from the last answer. The conversation is kept with 
         }
     }
     lines.push(Line::default());
-    lines.push(Line::styled(format!(" {}", flagged::MENU), t.bold()));
+    lines.push(Line::styled(format!(" {}", answers::MENU), t.bold()));
     let key_w = TOOLS
         .iter()
-        .map(|(k, _)| tool_key(app, *k).width())
+        .map(|t| tool_key(app, t.0).width())
         .max()
         .unwrap_or(1);
-    let name_w = TOOLS
-        .iter()
-        .map(|(k, _)| flagged::light(*k).0.width())
-        .max()
-        .unwrap_or(0);
-    for (kind, _) in TOOLS {
+    let name_w = TOOLS.iter().map(|t| t.2.width()).max().unwrap_or(0);
+    for (kind, _, name, what) in TOOLS {
         // Without an agent only teer's own test search works.
         if !app.has_agent && kind != DiveKind::Tests {
             continue;
         }
-        let (name, what) = flagged::light(kind);
         let done = u.dive.results.contains_key(&kind);
         let mut spans = vec![
             Span::styled(format!(" {:>key_w$}  ", tool_key(app, kind)), t.accent()),
@@ -659,10 +634,10 @@ impl App {
 
     /// When the queue opens: ask for the recommendation of the first
     /// [`PREFETCH`] pending units that need a close look or are worth one,
-    /// in queue order. Nothing without an agent, or on the swipe cards.
+    /// in queue order. Nothing without an agent.
     pub(super) fn prefetch_start(&mut self) -> Vec<Effect> {
         use crate::review::attention::Level;
-        if !self.can_ask() || self.screen == Screen::Swipe {
+        if !self.can_ask() {
             return Vec::new();
         }
         let ids: Vec<String> = self
@@ -684,7 +659,7 @@ impl App {
         if !self.can_ask() {
             return Vec::new();
         }
-        self.dive_on(id, DiveKind::Recommend, false)
+        self.dive_on(id, DiveKind::Recommend)
     }
 
     /// Show unit `id`, the queue's cursor on it; ask for what it and the
@@ -792,13 +767,13 @@ impl App {
     /// Keys on the ask panel's links (link `i` in focus), a panel
     /// ([`App::panel_action`]): `tab` and `j` move to the next, `shift+tab`
     /// and `k` to the one before (`tab` past the last, or `shift+tab`
-    /// before the first, back to the question), `view.open` follows one
+    /// before the first, back to the question; `tab` and `shift+tab` are
+    /// the question's own keys, [`Keymap::edit`]), `view.open` follows one
     /// (a unit opens here, code in the editor), `i` or `K` types again,
     /// `h`/`esc`/`q` close the panel; the scroll keys scroll.
+    ///
+    /// [`Keymap::edit`]: crate::keymap::Keymap::edit
     fn unit_link_key(&mut self, i: usize, k: &KeyEvent) -> Vec<Effect> {
-        let Some(a) = self.panel_action(k) else {
-            return Vec::new();
-        };
         let n = self.ask_links().len();
         let last = n.saturating_sub(1);
         let page = self.detail_rows.get().saturating_sub(2).max(1) as isize;
@@ -806,21 +781,26 @@ impl App {
             app.ask.link = None;
             app.unit.typing = true;
         };
-        match a {
-            Action::MoveDown => self.ask.link = Some((i + 1).min(last)),
-            Action::MoveUp => self.ask.link = Some(i.saturating_sub(1)),
-            Action::V1NextTile if i + 1 < n => self.ask.link = Some(i + 1),
-            Action::V1PrevTile if i > 0 => self.ask.link = Some(i - 1),
-            Action::V1NextTile | Action::V1PrevTile | Action::NoteEdit | Action::AskOpen => {
-                typing(self)
-            }
-            Action::MoveFirst => self.ask.link = Some(0),
-            Action::MoveLast => self.ask.link = Some(last),
-            Action::ViewOpen => return self.follow_ask_link(i),
-            Action::ViewBack | Action::ViewClose => self.close_panel(),
-            Action::ScrollPageDown | Action::ScrollHalfDown => return self.chat_scroll(page),
-            Action::ScrollPageUp | Action::ScrollHalfUp => return self.chat_scroll(-page),
-            _ => {}
+        match self.keys.edit(k) {
+            Edit::Tab if i + 1 < n => self.ask.link = Some(i + 1),
+            Edit::BackTab if i > 0 => self.ask.link = Some(i - 1),
+            Edit::Tab | Edit::BackTab => typing(self),
+            _ => match self.panel_action(k) {
+                Some(Action::MoveDown) => self.ask.link = Some((i + 1).min(last)),
+                Some(Action::MoveUp) => self.ask.link = Some(i.saturating_sub(1)),
+                Some(Action::NoteEdit | Action::AskOpen) => typing(self),
+                Some(Action::MoveFirst) => self.ask.link = Some(0),
+                Some(Action::MoveLast) => self.ask.link = Some(last),
+                Some(Action::ViewOpen) => return self.follow_ask_link(i),
+                Some(Action::ViewBack | Action::ViewClose) => self.close_panel(),
+                Some(Action::ScrollPageDown | Action::ScrollHalfDown) => {
+                    return self.chat_scroll(page);
+                }
+                Some(Action::ScrollPageUp | Action::ScrollHalfUp) => {
+                    return self.chat_scroll(-page);
+                }
+                _ => {}
+            },
         }
         Vec::new()
     }
@@ -1067,40 +1047,14 @@ impl App {
         self.detail_scroll.borrow_mut().1 = to;
     }
 
-    /// A leader tool (`<space>t` `<space>r` `<space>v`), or asking the
-    /// recommendation or the second model again: its panel opens (again
-    /// the same key closes it) and its answer is asked for unless it has
-    /// one. After teer's test search, the agent reads the tests on its own
-    /// when there is one (Q6).
+    /// A leader tool (`<space>t` `<space>r` `<space>v`): its panel opens
+    /// (again the same key closes it) and its answer is asked for unless it
+    /// has one. After teer's test search, the agent reads the tests on its
+    /// own when there is one (Q6).
     pub(super) fn unit_tool(&mut self, a: Action) -> Vec<Effect> {
         let id = self.unit.id.clone();
         if self.review.unit(&id).is_none() {
             return Vec::new();
-        }
-        match a {
-            Action::V1Recommend | Action::V1Disagree => {
-                if !self.can_ask() {
-                    self.status = "No agent: `teer setup` picks one.".into();
-                    return Vec::new();
-                }
-                let kind = if a == Action::V1Recommend {
-                    DiveKind::Recommend
-                } else {
-                    DiveKind::Disagree
-                };
-                if kind == DiveKind::Recommend
-                    && let Some(u) = self.review.unit_mut(&id)
-                    && !u.dive_pending.contains(&kind)
-                {
-                    u.dive.results.remove(&kind);
-                }
-                return self.dive_on(&id, kind, false);
-            }
-            Action::V1InterpretTests => {
-                self.open_panel(Panel::Tool(DiveKind::Tests));
-                return self.interpret_tests_on(&id, false);
-            }
-            _ => {}
         }
         let Some(kind) = tool_kind(a) else {
             return Vec::new();
@@ -1110,13 +1064,13 @@ impl App {
             return Vec::new();
         }
         if kind != DiveKind::Tests && !self.can_ask() {
-            let (name, _) = flagged::light(kind);
+            let (name, _) = answers::light(kind);
             self.status = format!("No agent: {name} needs one (`teer setup` picks it).");
             return Vec::new();
         }
         self.open_panel(Panel::Tool(kind));
         if kind != DiveKind::Tests {
-            return self.dive_on(&id, kind, false);
+            return self.dive_on(&id, kind);
         }
         let u = self.review.unit(&id).expect("checked above");
         let coverage = u.dive.results.get(&kind).and_then(|r| r.coverage.as_ref());
@@ -1124,13 +1078,13 @@ impl App {
         let found = coverage.is_some_and(|c| c.search.is_some());
         let busy = u.dive_pending.contains(&kind);
         if !self.can_ask() || read || busy {
-            return self.dive_on(&id, kind, false);
+            return self.dive_on(&id, kind);
         }
         if found {
-            return self.interpret_tests_on(&id, false);
+            return self.interpret_tests_on(&id);
         }
         self.unit.read_tests.insert(id.clone());
-        self.dive_on(&id, kind, false)
+        self.dive_on(&id, kind)
     }
 
     /// teer's test search came back for a unit whose tests the agent is
@@ -1148,7 +1102,7 @@ impl App {
         if c.judged || !self.unit.read_tests.remove(id) || !self.can_ask() {
             return Vec::new();
         }
-        self.interpret_tests_on(id, false)
+        self.interpret_tests_on(id)
     }
 
     /// `gd` in the unit view: the jump list of what the unit calls in the
@@ -1404,7 +1358,7 @@ mod tests {
         a.open_unit(first.clone());
         // `gd`, `gr`, a link or `/` open another unit to look at it.
         let other = a.review.units[a.order[row + 2]].id.clone();
-        assert!(a.go_to_unit(&other, true).is_some());
+        assert!(a.go_to_unit(&other).is_some());
         assert_eq!(a.unit.id, other);
         press(&mut a, "h");
         assert_eq!((a.screen, a.sel), (from, row));

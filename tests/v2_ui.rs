@@ -32,9 +32,8 @@ fn review() -> (Review, FixtureRepo) {
 
 fn app_with(keys: Keymap) -> (App, FixtureRepo) {
     let (review, repo) = review();
-    let mut app = App::new(review, Config::default(), keys);
-    // The v1 list's drawing (`--swipe`); the queue's is tests/v2_queue.rs.
-    app.open_v1_list();
+    let app = App::new(review, Config::default(), keys);
+    assert_eq!(app.screen, Screen::Queue);
     assert!(app.order.len() >= 2, "the fixture lists units");
     (app, repo)
 }
@@ -100,15 +99,16 @@ fn a_prefix_shows_each_key_that_can_follow() {
     assert_eq!(feed(&mut app, "g"), Outcome::Pending);
     let line = bar(&app, 200);
     assert!(
-        line.starts_with(
-            " g  g first unit · d what this unit calls · r what calls this unit · \
-             f open in the editor · x open the picture in the browser · t next tile"
+        line.contains(
+            "g  g first unit · d what this unit calls · r what calls this unit · \
+             f open in the editor · x open the picture in the browser"
         ),
         "{line}"
     );
-    // Cut to a narrow terminal.
-    let narrow = bar(&app, 50);
-    assert!(narrow.starts_with(" g  g first unit · d what"), "{narrow}");
+    assert!(!line.contains("next tile"), "{line}");
+    // Cut to a narrow terminal: the counts give way first.
+    let narrow = bar(&app, 30);
+    assert!(narrow.starts_with(" g  g first unit"), "{narrow}");
     assert!(narrow.trim_end().ends_with('…'), "{narrow}");
 
     let (mut app, _repo) = self::app();
@@ -124,10 +124,10 @@ fn a_prefix_shows_each_key_that_can_follow() {
 fn a_count_shows_while_it_waits() {
     let (mut app, _repo) = app();
     feed(&mut app, "3");
-    assert!(bar(&app, 80).starts_with(" 3 "), "{}", bar(&app, 80));
+    assert!(bar(&app, 80).contains("accepted  3"), "{}", bar(&app, 80));
     feed(&mut app, "]");
     let line = bar(&app, 120);
-    assert!(line.starts_with(" 3]  c next hunk · f next file"), "{line}");
+    assert!(line.contains("  3]  c next hunk · f next file"), "{line}");
 }
 
 #[test]
@@ -136,10 +136,11 @@ fn the_command_line_shows_what_is_typed_and_where_it_goes() {
     assert_eq!(feed(&mut app, ":w"), Outcome::Command);
     let buf = draw(&app, 100, 30);
     let line = rows(&buf).pop().unwrap();
-    assert!(line.starts_with(" :w    :w finish"), "{line}");
-    // The cursor after the text.
+    assert!(line.contains("  :w    :w finish"), "{line}");
+    // The cursor right after the text.
+    let at = line.chars().take_while(|c| *c != ':').count() as u16;
     assert!(
-        buf[(3, 29)]
+        buf[(at + 2, 29)]
             .style()
             .add_modifier
             .contains(Modifier::REVERSED)
@@ -161,22 +162,22 @@ fn an_unknown_command_shows_in_the_bar_whole() {
     let Outcome::Error(e) = feed(&mut app, ":nope<cr>") else {
         panic!("not an error");
     };
-    // As normal mode puts it: the bar shows it, not cut for the buttons.
+    // As normal mode puts it: the bar shows it, not cut for the counts.
     app.status = e;
     let line = bar(&app, 80);
     assert!(line.trim_end().ends_with("Not a command: :nope"), "{line}");
-    assert!(line.starts_with(" gf open in editor"), "{line}");
+    assert!(line.contains(" pending · "), "{line}");
 }
 
 #[test]
 fn visual_mode_says_so_and_marks_its_rows() {
     let (mut app, _repo) = app();
-    app.visual = Some(0);
+    app.visual = Some(app.review.units[app.order[0]].id.clone());
     app.sel = 1;
     let buf = draw(&app, 120, 30);
     let line = rows(&buf).pop().unwrap();
     assert!(
-        line.starts_with(" -- VISUAL --  a accept   f flag   h leave"),
+        line.contains("  -- VISUAL --  a accept   f flag   h leave"),
         "{line}"
     );
     assert!(line.trim_end().ends_with("2 units"), "{line}");
@@ -199,39 +200,15 @@ fn visual_mode_says_so_and_marks_its_rows() {
     assert!(t.contains(&Target::Action(Action::ViewBack)));
 }
 
-#[test]
-fn the_list_footer_names_v2_keys() {
-    let (mut app, _repo) = app();
-    let line = bar(&app, 160);
-    for hint in [
-        "gf open in editor",
-        "s swipe",
-        "? help",
-        "f flag",
-        "K ask",
-        "i note",
-    ] {
-        assert!(line.contains(hint), "{hint}: {line}");
-    }
-    assert!(
-        !line.contains("l open"),
-        "only a flagged unit opens: {line}"
-    );
-    let i = app.order[app.sel];
-    app.review.units[i].decision = Decision::Investigate;
-    let line = bar(&app, 160);
-    assert!(line.contains("l open"), "{line}");
-}
-
 // ---- The help ----------------------------------------------------------
 
 #[test]
-fn the_help_lists_the_lists_keys_from_the_keymap() {
+fn the_help_lists_the_queues_keys_from_the_keymap() {
     let (mut app, _repo) = app();
     app.overlay = Overlay::Help;
     let screen = text(&app, 160, 50);
     for want in [
-        "keys · list",
+        "keys · queue",
         "Move",
         "Decide",
         "Look closer",
@@ -245,40 +222,29 @@ fn the_help_lists_the_lists_keys_from_the_keymap() {
         "u ^r  undo the last decision / redo",
         "␣t  tests that cover this unit",
         ":e!  re-run and reset every decision",
-        "s  swipe through the cards (until v2)",
         "zf  list by file or by level",
         "any key closes",
     ] {
         assert!(screen.contains(want), "{want}:\n{screen}");
     }
-    // Not the Flagged screen's keys, nor the panels'.
-    assert!(!screen.contains("zoom the tile"), "{screen}");
-    assert!(!screen.contains("delete the note"), "{screen}");
+    // Not the unit view's keys, nor the panels', nor v1's.
+    for gone in ["next hunk", "delete the note", "swipe", "(until v2)"] {
+        assert!(!screen.contains(gone), "{gone}:\n{screen}");
+    }
 }
 
 #[test]
 fn the_help_follows_the_screen() {
     let (mut app, _repo) = app();
     app.overlay = Overlay::Help;
-    app.screen = Screen::Flagged;
+    app.screen = Screen::Unit;
     let screen = text(&app, 160, 50);
-    for want in [
-        "keys · Flagged",
-        "gt/tab/→ gT/⇧tab/←  next / previous tile (until v2)",
-        "zz  zoom the tile (until v2)",
-        "o x  resolved: ok / needs fix (until v2)",
-        "r  ask the tile again (until v2)",
-    ] {
+    for want in ["keys · unit", "]c [c  next / previous hunk"] {
         assert!(screen.contains(want), "{want}:\n{screen}");
     }
     assert!(!screen.contains("list by file or by level"), "{screen}");
-
-    app.screen = Screen::Swipe;
-    let screen = text(&app, 160, 50);
-    assert!(screen.contains("keys · swipe"), "{screen}");
-    assert!(screen.contains("k/↑  move up"), "{screen}");
     assert!(!screen.contains("select lines"), "{screen}");
-    assert!(!screen.contains("next tile"), "{screen}");
+    assert!(!screen.contains("needs fix"), "{screen}");
 }
 
 #[test]
@@ -296,7 +262,7 @@ fn the_help_fits_a_small_terminal() {
     app.overlay = Overlay::Help;
     for (w, h) in [(80, 24), (60, 20), (40, 12)] {
         let screen = text(&app, w, h);
-        assert!(screen.contains("keys · list"), "{w}x{h}:\n{screen}");
+        assert!(screen.contains("keys · queue"), "{w}x{h}:\n{screen}");
         assert!(screen.contains("move"), "{w}x{h}:\n{screen}");
     }
 }
@@ -372,11 +338,7 @@ fn prompts_and_sheets_name_their_own_keys() {
     assert!(targets(&app).contains(&key("<cr>")));
     assert!(targets(&app).contains(&key("<esc>")));
 
-    let file = app.review.units[app.order[0]].file.clone();
-    app.overlay = Overlay::ConfirmAcceptFile {
-        file,
-        ids: vec!["x".into()],
-    };
+    app.overlay = Overlay::ConfirmWeb;
     let screen = text(&app, 100, 30);
     assert!(screen.contains("y/⏎ yes · esc no"), "{screen}");
     assert!(!screen.contains("(y/n)"), "{screen}");

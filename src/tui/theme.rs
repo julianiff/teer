@@ -300,17 +300,4 @@ impl Theme {
             self.bad()
         }
     }
-
-    /// The swipe card's accept button: dark text on green, reversed without
-    /// colour.
-    pub fn accept_button(&self) -> Style {
-        if self.mono() {
-            Style::new().add_modifier(Modifier::BOLD | Modifier::REVERSED)
-        } else {
-            Style::new()
-                .bg(self.added)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD)
-        }
-    }
 }

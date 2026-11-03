@@ -90,7 +90,7 @@ fn done_app(r: &FixtureRepo) -> App {
     assert_eq!(rv.files.len(), 3, "{:?}", rv.files);
     accept_all(&mut rv);
     let mut a = app_of(rv);
-    a.start(false, None, Vec::new(), None, false);
+    a.start(false, None, Vec::new(), None);
     assert_eq!(a.overlay, Overlay::None);
     a
 }
@@ -300,7 +300,7 @@ fn a_complete_saved_review_opens_on_the_list_and_colon_w_commits() {
     let mut fresh = review_of(&r);
     teer::cli::restore(&mut fresh);
     let mut a = app_of(fresh);
-    a.start(false, None, Vec::new(), None, false);
+    a.start(false, None, Vec::new(), None);
     assert_eq!(a.overlay, Overlay::None);
     open(&mut a);
     assert!(draw(&a, 100, 30).contains("⏎ commit"));
@@ -381,7 +381,7 @@ fn the_template_message_has_a_bullet_per_summary() {
         });
     }
     let mut a = app_of(rv);
-    a.start(false, None, Vec::new(), None, false);
+    a.start(false, None, Vec::new(), None);
     open(&mut a);
     let m = parts(&a).message;
     assert!(m.starts_with("Update a.py, gone.py, new.py\n\n- "), "{m}");
@@ -521,7 +521,7 @@ fn finish_open_can_be_rebound_and_the_sheet_still_commits_on_enter() {
     )]);
     let (keys, _) = Keymap::new(&ov, 1000).unwrap();
     let mut a = App::new(rv, Config::default(), keys);
-    a.start(false, None, Vec::new(), None, false);
+    a.start(false, None, Vec::new(), None);
     common::v2::press(&mut a, ":done<cr>");
     assert_eq!(a.finish_step(), Some(Step::Commit));
     let e = enter(&mut a);
@@ -539,7 +539,6 @@ fn agent_app(r: &FixtureRepo) -> App {
         None,
         Vec::new(),
         Some(SessionRef::fresh("claude", r.path())),
-        false,
     );
     assert_eq!(a.overlay, Overlay::None);
     a
@@ -980,7 +979,7 @@ fn a_renamed_file_is_committed_under_both_names() {
     );
     accept_all(&mut rv);
     let mut a = app_of(rv);
-    a.start(false, None, Vec::new(), None, false);
+    a.start(false, None, Vec::new(), None);
     open(&mut a);
     assert_eq!(parts(&a).others, 0, "{}", status(&r));
     assert!(draw(&a, 100, 40).contains("ren_old.py → ren_new.py"));
@@ -998,7 +997,7 @@ fn the_first_commit_of_a_repository_works() {
     assert_eq!(rv.head_commit, teer::git::EMPTY_TREE);
     accept_all(&mut rv);
     let mut a = app_of(rv);
-    a.start(false, None, Vec::new(), None, false);
+    a.start(false, None, Vec::new(), None);
     r.write("unrelated.txt", "u\n");
     open(&mut a);
     assert_eq!(parts(&a).branch, Branch::Named("main".into()));
@@ -1019,7 +1018,7 @@ fn a_path_with_glob_characters_is_taken_literally() {
     assert_eq!(rv.files.len(), 2);
     accept_all(&mut rv);
     let mut a = app_of(rv);
-    a.start(false, None, Vec::new(), None, false);
+    a.start(false, None, Vec::new(), None);
     // Made after the review; a glob `[b].py` would match it.
     r.write("b.py", "decoy = 1\n");
     open(&mut a);
@@ -1117,7 +1116,7 @@ fn the_hardened_read_helpers_still_do_not_run_hooks() {
     let mut rv = review_of(&r);
     accept_all(&mut rv);
     let mut a = app_of(rv);
-    a.start(false, None, Vec::new(), None, false);
+    a.start(false, None, Vec::new(), None);
     open(&mut a);
     let out = confirm(&mut a);
     assert!(matches!(out, Outcome::Failed { .. }), "{out:?}");

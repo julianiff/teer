@@ -1,6 +1,6 @@
 //! The second opinion and "expensive to undo": a scripted agent describes
 //! the units, a second scripted model disputes one statement, and the
-//! review, the list preview and the Flagged screen show both.
+//! review, the queue's preview and the unit view show both.
 
 mod common;
 
@@ -16,11 +16,11 @@ use teer::agent::mock::MockAdapter;
 use teer::config::Config;
 use teer::keymap::Keymap;
 use teer::review::attention::Level;
-use teer::review::model::{Decision, DiveKind, Review, SessionRef};
+use teer::review::model::{Review, SessionRef};
 use teer::review::prepare::{PrepareEvent, prepare};
 use teer::review::prompts::SECOND_RULES;
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, Effect, Pane, Screen};
+use teer::tui::app::{App, Effect, Screen};
 
 /// The first line of each unit in the prompt, by id.
 fn units_in(prompt: &str) -> Vec<(String, u32)> {
@@ -130,7 +130,7 @@ fn press(app: &mut App, c: char) -> Vec<Effect> {
     )))
 }
 
-/// Type `keys` in Neovim notation (`<space>m`, `zz`).
+/// Type `keys` in Neovim notation (`gg`, `<space>t`).
 fn keys(app: &mut App, keys: &str) -> Vec<Effect> {
     common::v2::press(app, keys)
 }
@@ -177,10 +177,10 @@ async fn a_disputed_statement_and_an_expensive_change_are_warnings() {
     assert_eq!(a.cost.as_deref(), Some("Charges the card again on retry."));
     assert_eq!(a.doubts.len(), 2);
 
-    // The list preview says why, a reason per line under "Why this level";
-    // the row keeps only the dispute's ⚠.
+    // The queue's preview says why, a reason per line under "Why this
+    // level"; the row keeps only the dispute's ⚠.
     let mut app = App::new(review, Config::default(), Keymap::default());
-    app.open_v1_list();
+    assert_eq!(app.screen, Screen::Queue);
     while app.selected().is_some_and(|u| u.symbol != "charge_order") {
         press(&mut app, 'j');
     }
@@ -199,34 +199,29 @@ async fn a_disputed_statement_and_an_expensive_change_are_warnings() {
 }
 
 #[tokio::test]
-async fn the_disagreement_tab_shows_the_check_and_asks_again() {
-    let (_repo, mut review, _mock) = prepared(true).await;
-    for u in review
-        .units
-        .iter_mut()
-        .filter(|u| u.symbol == "charge_order")
-    {
-        u.decision = Decision::Investigate;
-    }
+async fn the_unit_view_shows_the_second_model_where_it_disputes() {
+    let (_repo, review, _mock) = prepared(true).await;
     let mut app = App::new(review, Config::default(), Keymap::default());
-    app.open_v1_list();
-    while app.selected().is_some_and(|u| u.symbol != "charge_order") {
-        press(&mut app, 'j');
-    }
-    press(&mut app, 'l');
-    assert_eq!(app.screen, Screen::Flagged);
-    // Already checked while preparing: the tile that asks for more says
-    // so, and `␣m` only gives it a tile.
-    assert!(screen(&app, 120, 40).contains("␣m  Disagreement ⚠"));
-    assert!(keys(&mut app, "<space>m").is_empty());
-    assert_eq!(app.flagged.pane, Pane::Answer(DiveKind::Disagree));
-    let text = screen(&app, 120, 40);
-    assert!(text.contains("╭ ␣m Disagreement ⚠"), "{text}");
-    // The answer names the model that wrote it, under it.
-    assert!(text.contains(" second opinion (sonnet) ╯"), "{text}");
-    // Zoomed, the tile is as wide as the screen.
-    keys(&mut app, "zz");
-    let text = screen(&app, 120, 40);
+    app.has_agent = true;
+    // The unit view on `symbol`, drawn, then back to the queue.
+    let open = |app: &mut App, symbol: &str| {
+        keys(app, "gg");
+        while app.selected().is_some_and(|u| u.symbol != symbol) {
+            press(app, 'j');
+        }
+        keys(app, "l");
+        assert_eq!(app.screen, Screen::Unit);
+        let text = screen(app, 120, 80);
+        keys(app, "h");
+        text
+    };
+    // Already checked while preparing: the unit view shows it, the model
+    // that wrote it named next to the heading.
+    let text = open(&mut app, "charge_order");
+    assert!(
+        text.contains("Second model  second opinion (sonnet)"),
+        "{text}"
+    );
     assert!(
         text.contains("A second model disagrees on 2 points"),
         "{text}"
@@ -236,12 +231,11 @@ async fn the_disagreement_tab_shows_the_check_and_asks_again() {
         text.contains("It also stops sending the receipt. (L8)"),
         "{text}"
     );
-    // `r` asks the second model again.
-    let fx = press(&mut app, 'r');
-    let id = app.flagged_unit_id().unwrap();
-    assert_eq!(fx, vec![Effect::Second(vec![id])]);
-    assert!(app.flagged_unit().unwrap().checks.second_pending);
-    assert!(screen(&app, 120, 40).contains("a second model checks the description"));
+    // Where it agrees, there is nothing to say.
+    let text = open(&mut app, "new_helper");
+    assert!(!text.contains("Second model"), "{text}");
+    // Nothing asks it again: it ran while preparing.
+    assert!(app.review.units.iter().all(|u| !u.checks.second_pending));
 }
 
 #[tokio::test]

@@ -12,10 +12,8 @@ use std::path::PathBuf;
 
 use common::v2::{Driver, review, unit, units};
 use teer::keymap::{Action, KeySpec, Keymap, Trigger};
-use teer::review::model::{
-    Change, Decision, DiveKind, DiveResult, Marker, Range, Resolution, Risk, Visual,
-};
-use teer::tui::app::{Effect, Grouping, JumpKind, Overlay, Pane, Screen};
+use teer::review::model::{Change, Decision, DiveKind, DiveResult, Marker, Range, Risk, Visual};
+use teer::tui::app::{Effect, Grouping, JumpKind, Overlay, Screen};
 use teer::tui::unit::Panel;
 
 use Decision::{Accepted as A, Investigate as F, Pending as P};
@@ -36,14 +34,6 @@ fn accept(d: &mut Driver, at: &[usize]) {
     }
 }
 
-/// `n` pending units on the v1 list (`--swipe`, until Phase 8): swipe and
-/// the Flagged screen are entered from there.
-fn v1(n: usize) -> Driver {
-    let mut d = Driver::new(n);
-    d.app.open_v1_list();
-    d
-}
-
 /// `u` with one change statement, so the second model has something to check.
 fn described(mut u: teer::review::model::Unit) -> teer::review::model::Unit {
     u.changes = vec![Change {
@@ -53,21 +43,6 @@ fn described(mut u: teer::review::model::Unit) -> teer::review::model::Unit {
         risk: Risk::Low,
     }];
     u
-}
-
-/// Six units, u1 u3 u4 flagged, open on the Flagged screen at u1. Web
-/// search is off so questions go out at once.
-fn on_flagged() -> Driver {
-    let mut d = Driver::of(units(6).into_iter().map(described).collect());
-    // The Flagged screen is v1's (`--swipe`), entered from the v1 list.
-    d.app.open_v1_list();
-    d.app.cfg.dive_web = false;
-    flag(&mut d, &[1, 3, 4]);
-    d.select(1);
-    d.keys("l");
-    assert_eq!(d.screen(), Screen::Flagged);
-    assert_eq!(d.app.flagged_unit_id().as_deref(), Some("u1"));
-    d
 }
 
 fn has_dive(effects: &[Effect], id: &str, want: DiveKind) -> bool {
@@ -307,7 +282,7 @@ fn i_opens_the_note_line_and_decides_nothing() {
 
 #[test]
 fn shift_a_accepts_the_files_pending_units_in_one_step() {
-    // The queue acts at once (Phase 4); the v1 list asks first.
+    // The queue acts at once (Phase 4).
     let mut d = Driver::new(6);
     flag(&mut d, &[1]);
     d.keys("A");
@@ -340,10 +315,14 @@ fn visual_mode_applies_to_selection() {
     let mut d = Driver::new(9);
     d.select(1);
     d.keys("V");
-    assert_eq!(d.app.visual, Some(1));
+    assert_eq!(d.app.visual_rows(), Some(1..=1));
     d.keys("jj");
     assert_eq!(d.sel(), 3);
-    assert_eq!(d.app.visual, Some(1), "moves extend the selection");
+    assert_eq!(
+        d.app.visual_rows(),
+        Some(1..=3),
+        "moves extend the selection"
+    );
     d.keys("a");
     assert_eq!(d.positions(A), vec![1, 2, 3]);
     assert_eq!(d.app.visual, None, "deciding leaves visual mode");
@@ -352,7 +331,7 @@ fn visual_mode_applies_to_selection() {
 
 #[test]
 fn visual_f_flags_the_selection_with_one_note_line() {
-    // The queue opens one line for the selection (Phase 4); the v1 list none.
+    // The queue opens one line for the selection (Phase 4).
     let mut d = Driver::new(6);
     d.keys("Vjf");
     assert_eq!(d.positions(F), vec![0, 1]);
@@ -362,11 +341,6 @@ fn visual_f_flags_the_selection_with_one_note_line() {
         d.overlay()
     );
     assert_eq!(d.app.visual, None);
-    let mut d = Driver::new(6);
-    d.app.open_v1_list();
-    d.keys("Vjf");
-    assert_eq!(d.positions(F), vec![0, 1]);
-    assert_eq!(*d.overlay(), Overlay::None);
 }
 
 #[test]
@@ -498,38 +472,6 @@ fn l_and_enter_open_any_unit_in_the_unit_view() {
 }
 
 #[test]
-fn l_and_enter_open_a_flagged_unit_on_the_flagged_screen() {
-    // The v1 list (`--swipe`).
-    let mut d = Driver::new(6);
-    d.app.open_v1_list();
-    flag(&mut d, &[2, 4]);
-    d.select(4);
-    d.keys("l");
-    assert_eq!(d.screen(), Screen::Flagged);
-    assert_eq!(d.app.flagged_unit_id().as_deref(), Some("u4"));
-    d.keys("<esc>");
-    assert_eq!(d.screen(), Screen::Slim);
-    d.select(2);
-    d.keys("<cr>");
-    assert_eq!(d.screen(), Screen::Flagged);
-    assert_eq!(d.app.flagged_unit_id().as_deref(), Some("u2"));
-}
-
-#[test]
-fn l_on_a_unit_not_flagged_says_how_to_flag_it() {
-    // The v1 list (`--swipe`); the queue opens any unit.
-    let mut d = Driver::new(6);
-    d.app.open_v1_list();
-    flag(&mut d, &[2]);
-    d.keys("l");
-    assert_eq!(d.screen(), Screen::Slim);
-    assert_eq!(
-        d.status(),
-        "Only flagged units open for now. f flags this one."
-    );
-}
-
-#[test]
 fn h_and_esc_do_nothing_on_the_list_outside_visual_mode() {
     let mut d = Driver::new(6);
     d.select(2);
@@ -556,11 +498,13 @@ fn shift_k_opens_ask() {
     d.keys("K");
     assert_eq!(d.screen(), Screen::Unit);
     assert_eq!(d.app.unit.panel, Some(Panel::Ask));
-    // On the v1 list (`--swipe`): the Ask view.
-    let mut d = Driver::new(3);
-    d.app.screen = Screen::Slim;
+    // In the unit view: the ask panel, typing.
+    d.keys("<esc>");
+    assert_eq!(d.app.unit.panel, None);
     d.keys("K");
-    assert_eq!(*d.overlay(), Overlay::Ask);
+    assert_eq!(d.app.unit.panel, Some(Panel::Ask));
+    assert!(d.app.unit.typing);
+    assert_eq!(*d.overlay(), Overlay::None);
 }
 
 #[test]
@@ -657,42 +601,6 @@ fn za_says_when_nothing_is_accepted_for_you() {
 // ---- Leader: tools --------------------------------------------------------------
 
 #[test]
-fn leader_tools_on_a_unit_not_flagged_say_to_flag_it_first() {
-    for keys in [
-        "<space>t", "<space>r", "<space>v", "<space>w", "<space>m", "<space>a",
-    ] {
-        // The v1 list's tiles (the unit view replaces them).
-        let mut d = Driver::new(3);
-        d.app.open_v1_list();
-        assert!(d.keys(keys).is_empty(), "{keys}");
-        assert_eq!(d.screen(), Screen::Slim, "{keys}");
-        assert_eq!(d.status(), "Flag the unit (f) to use this.", "{keys}");
-    }
-}
-
-#[test]
-fn leader_tools_on_a_flagged_unit_open_it_and_ask_that_tile() {
-    for (keys, kind) in [
-        ("<space>t", DiveKind::Tests),
-        ("<space>r", DiveKind::Behavior),
-        ("<space>v", DiveKind::Visualize),
-        ("<space>w", DiveKind::Recommend),
-    ] {
-        // The v1 list (`--swipe`) opens the Flagged screen.
-        let mut d = Driver::new(6);
-        d.app.screen = Screen::Slim;
-        d.app.cfg.dive_web = false;
-        flag(&mut d, &[1, 2]);
-        d.select(2);
-        let effects = d.keys(keys);
-        assert_eq!(d.screen(), Screen::Flagged, "{keys}");
-        assert_eq!(d.app.flagged_unit_id().as_deref(), Some("u2"), "{keys}");
-        assert!(has_dive(&effects, "u2", kind), "{keys}: {effects:?}");
-        assert_eq!(d.app.flagged.pane, Pane::Answer(kind), "{keys}");
-    }
-}
-
-#[test]
 fn leader_tools_on_the_queue_open_the_unit_view_with_that_panel() {
     for (keys, kind) in [
         ("<space>t", DiveKind::Tests),
@@ -714,26 +622,21 @@ fn leader_tools_on_the_queue_open_the_unit_view_with_that_panel() {
 }
 
 #[test]
-fn leader_m_on_a_flagged_unit_asks_the_second_model() {
-    let mut d = Driver::of(units(3).into_iter().map(described).collect());
-    d.app.screen = Screen::Slim;
-    flag(&mut d, &[0]);
-    let effects = d.keys("<space>m");
-    assert_eq!(d.screen(), Screen::Flagged);
-    assert_eq!(effects, vec![Effect::Second(vec!["u0".into()])]);
-}
-
-#[test]
-fn leader_a_on_a_flagged_unit_wants_the_test_search_first() {
-    let mut d = Driver::new(3);
-    d.app.screen = Screen::Slim;
-    flag(&mut d, &[0]);
-    assert!(d.keys("<space>a").is_empty());
-    assert_eq!(d.screen(), Screen::Flagged);
-    assert_eq!(
-        d.status(),
-        "Nothing found yet: ␣t searches the tests first."
-    );
+fn the_v1_tile_keys_are_gone_from_the_queue_and_the_unit_view() {
+    // v1's tiles: what to do (`␣w`), the second model (`␣m`), the agent
+    // reading the tests (`␣a`); the unit view asks the first two by itself.
+    for keys in ["<space>w", "<space>m", "<space>a"] {
+        let mut d = Driver::of(units(3).into_iter().map(described).collect());
+        d.app.has_agent = true;
+        d.app.review.agent_session = Some(teer::review::model::SessionRef::default());
+        assert!(d.keys(keys).is_empty(), "{keys}");
+        assert_eq!(d.screen(), Screen::Queue, "{keys}");
+        assert_eq!(d.decisions(), vec![P, P, P], "{keys}");
+        d.keys("l");
+        assert_eq!(d.screen(), Screen::Unit, "{keys}");
+        assert!(d.keys(keys).is_empty(), "{keys}");
+        assert_eq!(d.app.unit.panel, None, "{keys}");
+    }
 }
 
 #[test]
@@ -835,15 +738,27 @@ fn keys_of_the_notes_view_do_nothing_on_the_list() {
     }
 }
 
-// ---- The old screens' keys on the list ------------------------------------------
+// ---- The old screens' keys ------------------------------------------------------
 
 #[test]
-fn s_enters_swipe_and_leaves_it() {
-    let mut d = v1(3);
-    d.keys("s");
-    assert_eq!(d.screen(), Screen::Swipe);
-    d.keys("s");
-    assert_eq!(d.screen(), Screen::Slim);
+fn the_v1_screens_keys_do_nothing_in_the_queue_or_the_unit_view() {
+    // Swipe, the Flagged screen's tiles, zoom, resolutions, ask again.
+    for keys in [
+        "s", "gt", "gT", "<tab>", "<s-tab>", "<right>", "<left>", "zz", "o", "x", "r",
+    ] {
+        let mut d = Driver::new(3);
+        d.select(1);
+        assert!(d.keys(keys).is_empty(), "{keys}");
+        assert_eq!(d.screen(), Screen::Queue, "{keys}");
+        assert_eq!(d.sel(), 1, "{keys}");
+        assert_eq!(*d.overlay(), Overlay::None, "{keys}");
+        d.keys("l");
+        assert!(d.keys(keys).is_empty(), "{keys}");
+        assert_eq!(d.screen(), Screen::Unit, "{keys}");
+        assert_eq!(d.app.unit.panel, None, "{keys}");
+        assert_eq!(*d.overlay(), Overlay::None, "{keys}");
+        assert_eq!(d.decisions(), vec![P, P, P], "{keys}");
+    }
 }
 
 #[test]
@@ -854,215 +769,6 @@ fn zf_switches_between_by_unit_and_by_file() {
     assert_eq!(d.app.grouping, Grouping::File);
     d.keys("zf");
     assert_eq!(d.app.grouping, Grouping::Unit);
-}
-
-// ---- Swipe ----------------------------------------------------------------------
-
-#[test]
-fn in_swipe_a_accepts_f_flags_and_k_goes_back_a_card() {
-    let mut d = v1(6);
-    d.keys("s");
-    assert_eq!(d.app.swipe_current().map(String::as_str), Some("u0"));
-    d.keys("a");
-    assert_eq!(d.decision_of("u0"), A);
-    d.keys("f");
-    assert_eq!(d.decision_of("u1"), F);
-    assert_eq!(*d.overlay(), Overlay::None, "no note line in swipe");
-    assert_eq!(d.app.swipe_current().map(String::as_str), Some("u2"));
-    d.keys("k");
-    assert_eq!(d.app.swipe_current().map(String::as_str), Some("u1"));
-    assert_eq!(d.decision_of("u1"), F, "going back decides nothing");
-    d.keys("j");
-    assert_eq!(
-        d.app.swipe_current().map(String::as_str),
-        Some("u1"),
-        "j is unbound in swipe"
-    );
-}
-
-#[test]
-fn in_swipe_h_esc_and_q_go_back_to_the_list() {
-    for keys in ["h", "<esc>", "q"] {
-        let mut d = v1(3);
-        d.keys("s");
-        let effects = d.keys(keys);
-        assert_eq!(d.screen(), Screen::Slim, "{keys}");
-        assert!(!effects.contains(&Effect::Quit), "{keys}");
-    }
-}
-
-#[test]
-fn in_swipe_u_undoes_the_last_card() {
-    let mut d = v1(3);
-    d.keys("sa");
-    assert_eq!(d.decision_of("u0"), A);
-    d.keys("u");
-    assert_eq!(d.decision_of("u0"), P);
-    assert_eq!(d.app.swipe_current().map(String::as_str), Some("u0"));
-    d.keys("<c-r>");
-    assert_eq!(d.decision_of("u0"), A);
-}
-
-// ---- Flagged --------------------------------------------------------------------
-
-#[test]
-fn on_flagged_j_k_gg_and_shift_g_move_between_flagged_units() {
-    let mut d = on_flagged();
-    let at = |d: &Driver| d.app.flagged_unit_id().unwrap();
-    d.keys("j");
-    assert_eq!(at(&d), "u3");
-    d.keys("G");
-    assert_eq!(at(&d), "u4");
-    d.keys("k");
-    assert_eq!(at(&d), "u3");
-    d.keys("gg");
-    assert_eq!(at(&d), "u1");
-}
-
-#[test]
-fn on_flagged_a_accepts_the_unit_and_it_leaves_the_flagged_list() {
-    let mut d = on_flagged();
-    let effects = d.keys("a");
-    assert!(effects.contains(&Effect::Save), "{effects:?}");
-    assert_eq!(d.decision_of("u1"), A);
-    assert_eq!(d.app.flagged_units().len(), 2);
-    assert_eq!(d.screen(), Screen::Flagged);
-    assert_eq!(d.app.flagged_unit_id().as_deref(), Some("u3"));
-}
-
-#[test]
-fn on_flagged_f_and_i_open_the_note_line() {
-    for keys in ["f", "i"] {
-        let mut d = on_flagged();
-        d.keys(keys);
-        assert!(
-            matches!(d.overlay(), Overlay::Note { id, .. } if id == "u1"),
-            "{keys}: {:?}",
-            d.overlay()
-        );
-        assert_eq!(d.decision_of("u1"), F, "{keys}: still flagged");
-    }
-}
-
-#[test]
-fn on_flagged_h_unzooms_then_goes_back_and_q_goes_back() {
-    let mut d = on_flagged();
-    d.keys("zz");
-    assert!(d.app.flagged.zoom);
-    d.keys("h");
-    assert!(!d.app.flagged.zoom);
-    assert_eq!(d.screen(), Screen::Flagged);
-    d.keys("h");
-    assert_eq!(d.screen(), Screen::Slim);
-
-    let mut d = on_flagged();
-    let effects = d.keys("q");
-    assert_eq!(d.screen(), Screen::Slim, "q goes back to the list");
-    assert!(!effects.contains(&Effect::Quit), "{effects:?}");
-    let mut d = on_flagged();
-    d.keys(":q<cr>");
-    assert_eq!(d.screen(), Screen::Slim);
-}
-
-#[test]
-fn on_flagged_gt_gt_tab_and_arrows_move_the_tile_focus() {
-    let mut d = on_flagged();
-    {
-        let u = d.app.review.unit_mut("u1").unwrap();
-        u.dive.asked = vec![DiveKind::Recommend, DiveKind::Tests];
-    }
-    d.keys("gg");
-    let panes = |d: &Driver| {
-        let u = d.app.flagged_unit().unwrap();
-        d.app.flagged_panes(u)
-    };
-    let focus = |d: &Driver| {
-        let u = d.app.flagged_unit().unwrap();
-        d.app.flagged_focus(u)
-    };
-    let all = panes(&d);
-    assert!(all.len() >= 3, "{all:?}");
-    for (fwd, back) in [("gt", "gT"), ("<tab>", "<s-tab>"), ("<right>", "<left>")] {
-        let from = focus(&d);
-        let i = all.iter().position(|p| *p == from).unwrap();
-        d.keys(fwd);
-        assert_eq!(focus(&d), all[(i + 1) % all.len()], "{fwd}");
-        d.keys(back);
-        assert_eq!(focus(&d), from, "{back}");
-    }
-}
-
-#[test]
-fn on_flagged_shift_k_opens_the_chat_and_enter_types_in_it() {
-    let mut d = on_flagged();
-    d.keys("K");
-    assert_eq!(d.app.flagged.pane, Pane::Chat);
-    assert!(d.app.flagged.typing);
-    d.keys("<esc>");
-    assert!(!d.app.flagged.typing, "esc stops typing");
-    assert_eq!(d.screen(), Screen::Flagged);
-    d.keys("<cr>");
-    assert!(d.app.flagged.typing, "enter on the chat starts typing");
-}
-
-#[test]
-fn on_flagged_leader_keys_ask_their_tile() {
-    for (keys, kind) in [
-        ("<space>w", DiveKind::Recommend),
-        ("<space>v", DiveKind::Visualize),
-        ("<space>r", DiveKind::Behavior),
-        ("<space>t", DiveKind::Tests),
-    ] {
-        let mut d = on_flagged();
-        let effects = d.keys(keys);
-        assert!(has_dive(&effects, "u1", kind), "{keys}: {effects:?}");
-        assert_eq!(d.app.flagged.pane, Pane::Answer(kind), "{keys}");
-    }
-    let mut d = on_flagged();
-    assert_eq!(d.keys("<space>m"), vec![Effect::Second(vec!["u1".into()])]);
-    let mut d = on_flagged();
-    assert!(d.keys("<space>a").is_empty());
-    assert!(d.status().contains("␣t"), "{}", d.status());
-}
-
-#[test]
-fn on_flagged_o_and_x_set_the_resolution_and_r_asks_the_tile_again() {
-    let mut d = on_flagged();
-    let res = |d: &Driver| d.app.review.unit("u1").unwrap().dive.resolution;
-    assert!(d.keys("o").contains(&Effect::Save));
-    assert_eq!(res(&d), Some(Resolution::Ok));
-    d.keys("o");
-    assert_eq!(res(&d), None, "the same key again clears it");
-    d.keys("x");
-    assert_eq!(res(&d), Some(Resolution::NeedsFix));
-
-    d.keys("<space>w");
-    d.app.review.unit_mut("u1").unwrap().dive_pending.clear();
-    d.app
-        .review
-        .unit_mut("u1")
-        .unwrap()
-        .dive
-        .results
-        .insert(DiveKind::Recommend, DiveResult::default());
-    let effects = d.keys("r");
-    assert!(has_dive(&effects, "u1", DiveKind::Recommend), "{effects:?}");
-}
-
-#[test]
-fn on_flagged_gx_opens_the_picture_or_says_how_to_draw_one() {
-    let mut d = on_flagged();
-    assert!(d.keys("gx").is_empty());
-    assert_eq!(d.status(), "No picture yet: press ␣v to draw one.");
-}
-
-#[test]
-fn on_flagged_n_and_shift_n_do_not_move_between_flagged_units() {
-    // n / N are the list's pending jumps; on Flagged, j / k move.
-    let mut d = on_flagged();
-    d.keys("n");
-    assert_eq!(d.app.flagged_unit_id().as_deref(), Some("u1"));
-    assert_eq!(d.screen(), Screen::Flagged);
 }
 
 // ---- The keymap's modes ---------------------------------------------------------
@@ -1100,22 +806,14 @@ fn screens_receive_actions_not_keys() {
     assert_eq!(d.decision(0), A);
 
     let mut d = Driver::with(review(units(6)), keys());
-    d.app.open_v1_list();
-    d.keys("s");
-    d.keys("a");
-    assert_eq!(d.decision_of("u0"), P, "swipe: a is unbound");
-    d.keys("e");
-    assert_eq!(d.decision_of("u0"), A, "swipe: e accepts");
-
-    let mut d = Driver::with(review(units(6)), keys());
-    d.app.open_v1_list();
     flag(&mut d, &[0, 1]);
     d.keys("l");
-    assert_eq!(d.screen(), Screen::Flagged);
+    assert_eq!(d.screen(), Screen::Unit);
+    let on = d.app.unit.id.clone();
     d.keys("a");
-    assert_eq!(d.decision_of("u0"), F, "Flagged: a is unbound");
+    assert_eq!(d.decision_of(&on), F, "unit view: a is unbound");
     d.keys("e");
-    assert_eq!(d.decision_of("u0"), A, "Flagged: e accepts");
+    assert_eq!(d.decision_of(&on), A, "unit view: e accepts");
 }
 
 #[test]
@@ -1209,15 +907,11 @@ fn rebinding_changes_dispatch_and_help() {
     d.keys("]f");
     assert_eq!(d.sel(), 3, "]f is no longer bound");
 
-    // The v1 list's help (the queue's lists `queue::ACTIONS`: Q-draw).
-    d.app.open_v1_list();
+    // The queue's help.
     d.keys("?");
     assert_eq!(*d.overlay(), Overlay::Help);
     let help = d.render(120, 50);
-    let accept_rows: Vec<&str> = help
-        .lines()
-        .filter(|l| l.contains("accept") && !l.contains("all pending"))
-        .collect();
+    let accept_rows: Vec<&str> = help.lines().filter(|l| l.contains("accept /")).collect();
     assert!(
         accept_rows
             .iter()

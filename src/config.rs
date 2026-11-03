@@ -5,7 +5,7 @@
 //! concurrency = 4           # agent requests in flight
 //! languages = ["rust", "python", "typescript", "javascript", "php"]
 //! large_review = 150        # above this many units, prepare lazily per file
-//! dive_web = true           # a Flagged-screen question may search the web (asks once per session)
+//! dive_web = true           # a question in the unit view may search the web (asks once per session)
 //! images = true             # draw Visualize pictures in the terminal when it can show images
 //! provider = "claude"       # claude | codex | api; `teer setup` picks it (asked on first start)
 //! prepare_model = "haiku"   # fast model that describes units; "default" = the CLI's own
@@ -213,7 +213,7 @@ pub struct Config {
     pub concurrency: usize,
     pub languages: Option<Vec<String>>,
     pub large_review: usize,
-    /// Whether Flagged-screen questions that can use web search may do so.
+    /// Whether the unit view's questions that can use web search may do so.
     pub dive_web: bool,
     /// Draw Visualize pictures inside the terminal when it supports images
     /// (asked once at start-up); false keeps the text list.

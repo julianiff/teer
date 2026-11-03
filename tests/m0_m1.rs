@@ -3,11 +3,12 @@
 mod common;
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::process::Command;
 
 use common::*;
 use teer::review::model::{UnitKind, UnitStatus};
-use teer::review::{BuildOptions, build_review};
+use teer::review::{BuildOptions, build_commits_review, build_review};
 
 #[test]
 fn json_lists_changed_files_with_contents() {
@@ -63,22 +64,32 @@ fn base_mode_compares_branch_to_merge_base() {
     repo.git(&["checkout", "-q", "-b", "feature"]);
     repo.write("a.py", "def a():\n    return 2\n")
         .commit("feature work");
-    // Uncommitted changes are not part of a --base review.
+    // What isn't committed yet is part of a --base review (an agent's
+    // fixes are, on a re-run); a pull request's is its commits alone.
     repo.write("b.py", "def b():\n    pass\n");
-    let review = build_review(
-        &repo.path(),
-        &BuildOptions {
-            base: Some("main".into()),
-            languages: None,
-        },
-    )
-    .unwrap();
-    assert_eq!(review.files.len(), 1);
+    let opts = BuildOptions {
+        base: Some("main".into()),
+        languages: None,
+    };
+    let review = build_review(&repo.path(), &opts).unwrap();
+    let paths: Vec<_> = review.files.iter().map(|f| f.path.clone()).collect();
+    assert_eq!(paths, [PathBuf::from("a.py"), PathBuf::from("b.py")]);
     assert_eq!(
         review.files[0].new_content.as_deref(),
         Some("def a():\n    return 2\n")
     );
     assert_ne!(review.head, "WORKTREE");
+    let commits = build_commits_review(&repo.path(), &opts).unwrap();
+    assert_eq!(commits.files.len(), 1);
+    assert_eq!(
+        commits.files[0].new_content.as_deref(),
+        Some("def a():\n    return 2\n")
+    );
+    assert_eq!(
+        (&commits.base, &commits.head),
+        (&review.base, &review.head),
+        "the same commits"
+    );
 }
 
 #[test]

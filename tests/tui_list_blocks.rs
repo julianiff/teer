@@ -1,4 +1,4 @@
-//! The Slim list as a titled box per level, each holding its files: a
+//! The queue, listed by file, as a titled box per level, each holding its files: a
 //! file's name, then its units, each unit row its level's icon and its
 //! name; an always-present preview pane, and scrolling and clicks that
 //! still line up with the units.
@@ -17,7 +17,7 @@ use ratatui::layout::Rect;
 use teer::config::Config;
 use teer::keymap::Keymap;
 use teer::review::model::{Decision, Prep, Range, Review, Unit, UnitKind, UnitStatus};
-use teer::tui::app::{App, Target};
+use teer::tui::app::{App, Grouping, Target};
 use teer::tui::{preview, ui};
 
 /// Unit `i`, alone in its file, gets a level by `i % 4`: routine, worth a
@@ -84,9 +84,10 @@ fn app(n: usize) -> App {
         branch: None,
         cursor: None,
     };
-    // The v1 list (`--swipe`, until Phase 8).
+    // The queue listed by file (`zf`): each file's units under its name.
     let mut app = App::new(review, Config::default(), Keymap::default());
-    app.open_v1_list();
+    app.grouping = Grouping::File;
+    app.rebuild_order();
     app
 }
 
@@ -262,7 +263,7 @@ fn unit_rows_are_exactly_the_list_width_and_inside_their_box() {
 }
 
 #[test]
-fn rows_are_just_the_icon_and_the_name() {
+fn listed_by_file_a_row_is_the_icon_the_name_and_the_state() {
     for (w, h) in [(60u16, 30u16), (80, 24), (120, 40)] {
         let mut a = app(12);
         a.review.units[0].decision = Decision::Accepted;
@@ -291,9 +292,16 @@ fn rows_are_just_the_icon_and_the_name() {
                 assert!(!line.contains(g), "{w}x{h}: {g} in {line:?}");
             }
             // After the border, the gutter and the icon, the name starts
-            // directly.
+            // directly; where the unit stands ends the row.
             let after: String = line.chars().skip(NAME_X as usize).collect();
             assert!(after.starts_with("sym"), "{w}x{h}: {line:?}");
+            let state = match u.decision {
+                Decision::Pending => "pending",
+                Decision::Accepted => "accepted",
+                Decision::Investigate => "flagged",
+            };
+            let end = line.trim_end_matches('│').trim_end();
+            assert!(end.ends_with(state), "{w}x{h}: {line:?}");
         }
     }
 }

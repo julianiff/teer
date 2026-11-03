@@ -15,14 +15,14 @@ use teer::config::Config;
 use teer::keymap::Keymap;
 use teer::review::model::Decision;
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, Effect, Overlay, Screen};
+use teer::tui::app::{App, Effect, Grouping, Overlay};
 use teer::tui::ui;
 
 const W: u16 = 100;
 const H: u16 = 24;
 
-/// `total` and `fee` changed, no agent; the cursor on `total`, whose code
-/// change shows in the preview.
+/// `total` and `fee` changed, no agent, the queue listed by file (`zf`);
+/// the cursor on `total`, whose code change shows in the preview.
 fn app() -> (App, FixtureRepo) {
     let _env = isolate_env();
     let repo = FixtureRepo::new();
@@ -37,8 +37,9 @@ fn app() -> (App, FixtureRepo) {
     );
     let review = build_review(&repo.path(), &BuildOptions::default()).unwrap();
     let mut app = App::new(review, Config::default(), Keymap::default());
-    app.start(false, None, Vec::new(), None, false);
-    app.open_v1_list();
+    app.start(false, None, Vec::new(), None);
+    app.grouping = Grouping::File;
+    app.rebuild_order();
     assert_eq!(app.selected().unwrap().symbol, "total");
     (app, repo)
 }
@@ -128,13 +129,13 @@ fn a_drag_stays_in_the_pane_it_started_in() {
     let (mut a, _repo) = app();
     let (rows, _) = draw(&a);
     let from = at(&rows, "calc.py");
-    // Down into the preview and the footer: the list's rows only.
+    // Down into the preview and the bottom bar: the queue's rows only.
     let e = drag(&mut a, from, (60, H - 1));
     let (text, _) = copied(&e).expect("copied");
     assert!(text.starts_with("calc.py"), "{text}");
     assert!(text.contains("total") && text.contains("fee"), "{text}");
     assert!(!text.contains("code change"), "{text}");
-    assert!(!text.contains("open in editor"), "{text}");
+    assert!(!text.contains("2 pending"), "{text}");
     // Without the boxes' left and right edges.
     assert!(
         !text.lines().any(|l| l.starts_with('│') || l.ends_with('│')),
@@ -188,7 +189,7 @@ fn a_click_without_a_drag_still_selects_a_row() {
 fn a_double_click_on_a_button_presses_it_twice_and_copies_nothing() {
     let (mut a, _repo) = app();
     let (rows, _) = draw(&a);
-    let help = at(&rows, "? help");
+    let help = at(&rows, "? keys");
     click(&mut a, help);
     assert_eq!(a.overlay, Overlay::Help);
     // The help covers the screen: a click anywhere closes it.
@@ -205,19 +206,12 @@ fn keys_named_in_an_overlay_can_be_clicked() {
     let (rows, _) = draw(&a);
     click(&mut a, at(&rows, "esc cancel"));
     assert_eq!(a.overlay, Overlay::None);
-
-    // `A` asks before accepting the file; its `y` is a button.
-    key(&mut a, KeyCode::Char('A'));
-    assert!(matches!(a.overlay, Overlay::ConfirmAcceptFile { .. }));
-    let (rows, _) = draw(&a);
-    click(&mut a, at(&rows, "y/⏎ yes"));
     assert!(
         a.review
             .units
             .iter()
-            .all(|u| u.decision == Decision::Accepted)
+            .all(|u| u.decision == Decision::Pending)
     );
-    assert_eq!(a.overlay, Overlay::None);
 }
 
 #[test]
@@ -237,27 +231,4 @@ fn notes_can_be_picked_and_closed_with_the_mouse() {
     let (rows, _) = draw(&a);
     click(&mut a, at(&rows, "q close"));
     assert_eq!(a.overlay, Overlay::None);
-}
-
-#[test]
-fn on_the_swipe_card_a_sideways_drag_swipes_and_a_downward_one_copies() {
-    let (mut a, _repo) = app();
-    key(&mut a, KeyCode::Char('s'));
-    assert_eq!(a.screen, Screen::Swipe);
-    let first = a.swipe_current().cloned().unwrap();
-    let (rows, _) = draw(&a);
-    let (x, y) = at(&rows, "subtotal = price");
-    let e = drag(&mut a, (x, y), (x, y + 1));
-    let (text, _) = copied(&e).expect("copied");
-    assert!(text.starts_with("subtotal = price * qty\n"), "{text}");
-    assert_eq!(a.review.unit(&first).unwrap().decision, Decision::Pending);
-
-    // Sideways but short of a swipe: nothing.
-    let e = drag(&mut a, (x, y), (x + 5, y));
-    assert_eq!(copied(&e), None);
-    assert_eq!(a.review.unit(&first).unwrap().decision, Decision::Pending);
-
-    let e = drag(&mut a, (x, y), (x + 60, y));
-    assert_eq!(copied(&e), None);
-    assert_eq!(a.review.unit(&first).unwrap().decision, Decision::Accepted);
 }

@@ -66,12 +66,10 @@ fn unit_of<'a>(d: &'a Driver, id: &str) -> &'a Unit {
 
 #[test]
 fn no_behavior_change_is_accepted_for_you_hidden_and_counted() {
-    let mut d = driver(
+    let d = driver(
         vec![unit(0, "a.rs"), same(1, "a.rs"), same(2, "b.rs")],
         Config::default(),
     );
-    // The v1 list's drawing (the queue's: tests/v2_queue.rs).
-    d.app.open_v1_list();
     for id in ["u1", "u2"] {
         assert_eq!(unit_of(&d, id).decision, Decision::Accepted, "{id}");
         assert_eq!(unit_of(&d, id).accepted_by, Some(AcceptedBy::Auto), "{id}");
@@ -108,8 +106,8 @@ fn za_lists_them_and_u_takes_one_back() {
         vec![unit(0, "a.rs"), same(1, "a.rs"), same(2, "b.rs")],
         Config::default(),
     );
-    // The v1 list's drawing (the queue's: tests/v2_queue.rs).
-    d.app.open_v1_list();
+    // Listed by file: a box holds files.
+    d.keys("zf");
     d.keys("za");
     assert!(d.app.show_auto);
     // Last, in a box of their own when their file has nothing else.
@@ -224,9 +222,7 @@ fn marks_become_reasons_and_rows_show_only_the_dispute() {
         text: "Also stops sending the receipt.".into(),
         evidence: at(1),
     });
-    let mut d = driver(vec![u], Config::default());
-    // The v1 list's rows and preview (the queue's: tests/v2_queue.rs).
-    d.app.open_v1_list();
+    let d = driver(vec![u], Config::default());
     let u = unit_of(&d, "u0");
     assert_eq!(
         u.reasons,
@@ -236,16 +232,13 @@ fn marks_become_reasons_and_rows_show_only_the_dispute() {
             "Not mentioned in the commits or PR description: Also stops sending the receipt.",
         ]
     );
-    let rows = teer::tui::slim::build(&d.app, 40);
+    let rows = teer::tui::slim::build_queue(&d.app, 60, true);
     let row: String = rows.lines[rows.spans[0].0]
         .spans
         .iter()
         .map(|s| s.content.as_ref())
         .collect();
-    assert!(
-        row.contains("◆ s0") && row.trim_end_matches(['│', ' ']).ends_with('⚠'),
-        "{row}"
-    );
+    assert!(row.contains("◆ ") && row.contains("s0 ⚠"), "{row}");
     let screen = d.render(140, 30);
     for glyph in ['$', '≠'] {
         assert!(!screen.contains(glyph), "{glyph}:\n{screen}");

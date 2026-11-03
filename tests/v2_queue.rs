@@ -174,16 +174,9 @@ fn queue_is_the_default_screen() {
     assert_eq!(d.screen(), Screen::Unit);
     d.keys("h");
     assert_eq!(d.screen(), Screen::Queue);
-    // The old screens are only for `--swipe`.
+    // `s` was v1's way into swipe; there is no swipe.
     d.keys("s");
     assert_eq!(d.screen(), Screen::Queue, "s opens no swipe from the queue");
-    let swipe = Driver::start(
-        review(units_named(&["a0", "a1"])),
-        Config::default(),
-        false,
-        true,
-    );
-    assert_eq!(swipe.screen(), Screen::Swipe);
 }
 
 // ---- Q2 ---------------------------------------------------------------------------
@@ -426,15 +419,15 @@ fn no_needs_fix_state() {
     let u = d.app.review.unit("u0").unwrap();
     assert_eq!(u.decision, F);
     assert_eq!(u.dive.note, "fix the retry");
-    assert_eq!(
-        u.dive.resolution, None,
-        "a flag with a note is all there is"
-    );
     // v1's "needs fix" key does nothing in the queue.
     d.keys("k");
     assert_eq!(d.selected().as_deref(), Some("u0"));
+    let before = serde_json::to_string(&d.app.review).unwrap();
     d.keys("x");
-    assert_eq!(d.app.review.unit("u0").unwrap().dive.resolution, None);
+    let after = serde_json::to_string(&d.app.review).unwrap();
+    assert_eq!(after, before, "x changes nothing");
+    // A flag with a note is all there is: nothing saved says more.
+    assert!(!after.contains("\"resolution\""), "{after}");
     assert_eq!(d.decision_of("u0"), F);
     for (w, h) in [(140, 30), (80, 30)] {
         let screen = d.render(w, h).to_lowercase();

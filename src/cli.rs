@@ -56,11 +56,6 @@ pub struct Args {
     #[arg(global = true, long, value_name = "ID", hide = true)]
     pub session: Option<String>,
 
-    /// Open the v1 screens (swipe, the list, Flagged) instead of the
-    /// queue, on swipe. Hidden; Phase 8 removes it.
-    #[arg(global = true, long, hide = true)]
-    pub swipe: bool,
-
     /// Print the prepared review as JSON and exit (no TUI).
     #[arg(global = true, long)]
     pub json: bool,
@@ -860,7 +855,6 @@ async fn run_review(
             review,
             agent,
             session_arg,
-            swipe: args.swipe,
             cfg,
             keymap,
         })
@@ -917,8 +911,9 @@ mod tests {
         let plain = parse(&[]);
         assert!(plain.target.is_none() && plain.command.is_none());
         // Still there, only hidden.
-        assert!(parse(&["--swipe"]).swipe);
         assert_eq!(parse(&["--session", "abc"]).session.as_deref(), Some("abc"));
+        // Gone with the v1 screens.
+        assert!(Args::try_parse_from(["teer", "--swipe"]).is_err());
         assert_eq!(parse(&["--base", "main"]).base.as_deref(), Some("main"));
     }
 
@@ -936,7 +931,6 @@ mod tests {
             assert!(help.contains(shown), "{shown} missing:\n{help}");
         }
         for hidden in [
-            "--swipe",
             "--session",
             "  setup ",
             "  help ",

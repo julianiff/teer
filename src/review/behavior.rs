@@ -883,6 +883,7 @@ pub async fn run(
     tx: UnboundedSender<DiveEvent>,
 ) {
     let id = job.unit.id.clone();
+    let fingerprint = job.unit.fingerprint.clone();
     let progress = Progress {
         id: id.clone(),
         tx: tx.clone(),
@@ -890,6 +891,7 @@ pub async fn run(
     let ev = match behave(adapter, &session, Arc::new(job), &progress).await {
         Ok(b) => DiveEvent::Ready {
             id,
+            fingerprint,
             kind: DiveKind::Behavior,
             text: b.summary(),
             sources: Vec::new(),
@@ -899,6 +901,7 @@ pub async fn run(
         },
         Err(error) => DiveEvent::Failed {
             id,
+            fingerprint,
             kind: DiveKind::Behavior,
             error,
         },

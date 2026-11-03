@@ -162,8 +162,10 @@ fn open(d: &mut Driver, id: &str) -> Vec<Effect> {
 
 /// The agent's answer of `kind` about unit `id` arrives.
 fn answer(d: &mut Driver, id: &str, kind: DiveKind, text: &str) -> Vec<Effect> {
+    let fingerprint = d.app.review.unit(id).unwrap().fingerprint.clone();
     d.app.on_app_event(AppEvent::Dive(DiveEvent::Ready {
         id: id.into(),
+        fingerprint,
         kind,
         text: text.into(),
         sources: Vec::new(),
@@ -603,6 +605,7 @@ fn leader_panels_and_gx() {
     };
     let effects = d.app.on_app_event(AppEvent::Dive(DiveEvent::Ready {
         id: "u0".into(),
+        fingerprint: "fp0".into(),
         kind: DiveKind::Tests,
         text: String::new(),
         sources: Vec::new(),
@@ -639,6 +642,7 @@ fn leader_panels_and_gx() {
     assert_eq!(asked(&effects, DiveKind::Visualize), ["u0"], "{effects:?}");
     d.app.on_app_event(AppEvent::Dive(DiveEvent::Ready {
         id: "u0".into(),
+        fingerprint: "fp0".into(),
         kind: DiveKind::Visualize,
         text: "Orders flow to the payment.".into(),
         sources: Vec::new(),

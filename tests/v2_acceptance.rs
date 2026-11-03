@@ -146,7 +146,6 @@ fn asks_model(e: &Effect) -> bool {
         Effect::Prepare(_)
             | Effect::Dive { .. }
             | Effect::InterpretTests { .. }
-            | Effect::Second(_)
             | Effect::DraftCommitMessage(_)
             | Effect::Summarize
             | Effect::Ask { .. }

@@ -65,7 +65,7 @@ fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
 
 fn app_with(rv: Review, cfg: Config) -> App {
     let mut a = App::new(rv, cfg, Keymap::default());
-    a.start(false, None, Vec::new(), None, false);
+    a.start(false, None, Vec::new(), None);
     a
 }
 

@@ -489,7 +489,7 @@ const ASK_THREAD: usize = 8;
 /// unit's chat, and of any other.
 const ASK_THREAD_CHARS: usize = 1500;
 const ASK_EARLIER_CHARS: usize = 400;
-/// Characters of each answer on the Flagged screen an Ask prompt repeats.
+/// Characters of each answer in the unit view an Ask prompt repeats.
 const ASK_SEEN_CHARS: usize = 1200;
 
 const ASK_RULES: &str = "\
@@ -796,7 +796,7 @@ If you made the change earlier in this session, use what you know about why.\n\n
     p
 }
 
-/// What the Flagged screen answered about `unit`, cut short, and the
+/// What the unit view answered about `unit`, cut short, and the
 /// reviewer's note: what a question in its chat may be about. Empty when
 /// there is nothing.
 fn flagged_answers(unit: &Unit) -> String {

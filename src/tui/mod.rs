@@ -1,12 +1,12 @@
 //! Terminal UI runtime: owns the terminal, feeds events to [`app::App`],
 //! and carries out the effects it returns (agent calls, saving, the editor).
 
+pub mod answers;
 pub mod app;
 pub mod ask;
 pub mod commits;
 pub mod diff;
 pub mod finish;
-pub mod flagged;
 pub mod jump;
 pub mod notes;
 pub mod picture;
@@ -16,7 +16,6 @@ pub mod queue;
 pub mod select;
 pub mod setup;
 pub mod slim;
-pub mod swipe;
 pub mod syntax;
 pub mod theme;
 pub mod ui;
@@ -65,9 +64,6 @@ pub struct Launch {
     pub review: Review,
     pub agent: std::result::Result<crate::cli::Agent, String>,
     pub session_arg: Option<String>,
-    /// `--swipe`: open the v1 screens, on swipe, instead of the queue
-    /// (until Phase 8).
-    pub swipe: bool,
     pub cfg: Config,
     pub keymap: Keymap,
 }
@@ -110,7 +106,7 @@ pub async fn run(l: Launch) -> Result<()> {
         }
         None => crate::review::model::SessionRef::fresh(app.cfg.provider().name(), repo.clone()),
     };
-    let initial = app.start(adapter.is_some(), note, sessions, Some(session), l.swipe);
+    let initial = app.start(adapter.is_some(), note, sessions, Some(session));
     if let Some(b) = app.review.pr.as_ref().and_then(|p| p.base_assumed.clone()) {
         app.status = format!(
             "base assumed: {} (PR has conflicts)",
@@ -119,7 +115,7 @@ pub async fn run(l: Launch) -> Result<()> {
     }
 
     let (tx, mut rx) = unbounded_channel();
-    let rt = Runtime {
+    let mut rt = Runtime {
         adapter,
         tx,
         build,
@@ -221,7 +217,7 @@ pub async fn run(l: Launch) -> Result<()> {
                 } else if let Effect::Settings = e {
                     // The setup screen draws on this terminal and reads its own keys.
                     drop(events);
-                    quit |= open_settings(&mut terminal, &mut app).await;
+                    quit |= open_settings(&mut terminal, &mut app, &mut rt).await;
                     events = EventStream::new();
                 } else {
                     quit |= rt.exec(&mut app, e);
@@ -241,6 +237,21 @@ pub async fn run(l: Launch) -> Result<()> {
 }
 
 impl Runtime {
+    /// Setup saved `saved` (`<space>s`): the app takes it (see
+    /// [`settings_saved`]), and `gf` and the texts written in the editor
+    /// open the editor it names from now on. The status line to show.
+    pub fn settings_saved(&mut self, app: &mut App, saved: Config) -> String {
+        let mut status = settings_saved(app, saved);
+        match app.cfg.editor() {
+            Ok(editor) => self.tools.editor = editor,
+            Err(e) => status.push_str(&format!(
+                " The editor stays {}: {e:#}",
+                self.tools.editor.name()
+            )),
+        }
+        status
+    }
+
     /// The agent CLI the notes were handed to ([`Effect::OpenAgent`], run
     /// with [`run_agent`]) is done, `ran` being how: its exit is the signal
     /// that the changes are in, so the review re-runs now
@@ -396,22 +407,23 @@ impl Runtime {
             }
             Effect::InterpretTests { unit_id } => {
                 let tx = self.tx.clone();
-                let fail = |id: String, error: &str| {
+                let fail = |u: &crate::review::model::Unit, error: &str| {
                     let _ = tx.send(AppEvent::Dive(DiveEvent::Failed {
-                        id,
+                        id: u.id.clone(),
+                        fingerprint: u.fingerprint.clone(),
                         kind: DiveKind::Tests,
                         error: error.into(),
                     }));
                 };
-                let Some((adapter, session)) = self.agent(app) else {
-                    fail(unit_id, "no agent available");
-                    return false;
-                };
                 let Some(unit) = app.review.unit(&unit_id).cloned() else {
                     return false;
                 };
+                let Some((adapter, session)) = self.agent(app) else {
+                    fail(&unit, "no agent available");
+                    return false;
+                };
                 let Some(file) = app.review.file_of(&unit).cloned() else {
-                    fail(unit_id, "changed file not found");
+                    fail(&unit, "changed file not found");
                     return false;
                 };
                 let Some(search) = unit
@@ -421,7 +433,7 @@ impl Runtime {
                     .and_then(|r| r.coverage.as_ref())
                     .and_then(|c| c.search.clone())
                 else {
-                    fail(unit_id, "teer hasn't searched the tests yet");
+                    fail(&unit, "teer hasn't searched the tests yet");
                     return false;
                 };
                 let job = crate::review::dive::TestsJob {
@@ -437,18 +449,19 @@ impl Runtime {
             }
             Effect::Dive { unit_id, kind, web } => {
                 let tx = self.tx.clone();
-                let fail = |tx: &UnboundedSender<AppEvent>, id: String, error: &str| {
+                let fail = |u: &crate::review::model::Unit, error: &str| {
                     let _ = tx.send(AppEvent::Dive(DiveEvent::Failed {
-                        id,
+                        id: u.id.clone(),
+                        fingerprint: u.fingerprint.clone(),
                         kind,
                         error: error.into(),
                     }));
                 };
-                let Some((adapter, session)) = self.agent(app) else {
-                    fail(&tx, unit_id, "no agent available");
+                let Some(unit) = app.review.unit(&unit_id).cloned() else {
                     return false;
                 };
-                let Some(unit) = app.review.unit(&unit_id).cloned() else {
+                let Some((adapter, session)) = self.agent(app) else {
+                    fail(&unit, "no agent available");
                     return false;
                 };
                 let Some(file) = app
@@ -458,7 +471,7 @@ impl Runtime {
                     .find(|f| f.path == unit.file)
                     .cloned()
                 else {
-                    fail(&tx, unit_id, "changed file not found");
+                    fail(&unit, "changed file not found");
                     return false;
                 };
                 if kind == DiveKind::Behavior {
@@ -510,26 +523,6 @@ impl Runtime {
                 tokio::spawn(async move {
                     let result = crate::review::ask::answer(adapter, session, job, progress).await;
                     let _ = tx.send(AppEvent::Answer { index, result });
-                });
-            }
-            Effect::Second(ids) => {
-                let tx = self.tx.clone();
-                let units: Vec<_> = ids
-                    .iter()
-                    .filter_map(|id| app.review.unit(id))
-                    .filter_map(|u| app.review.file_of(u).map(|f| (u.clone(), f.clone())))
-                    .collect();
-                let Some((adapter, session)) = self.agent(app) else {
-                    for (u, _) in &units {
-                        let _ = tx.send(AppEvent::Prep(prepare::PrepareEvent::Second {
-                            id: u.id.clone(),
-                            opinion: Err("no agent available".into()),
-                        }));
-                    }
-                    return false;
-                };
-                forward(tx, AppEvent::Prep, |ptx| {
-                    prepare::second_opinions(adapter, session, units, ptx)
                 });
             }
             Effect::OpenVisual { unit_id } => {
@@ -775,11 +768,15 @@ fn agent_failed(
 
 /// `<space>s`: the setup screen on the review's terminal, the review
 /// waiting meanwhile. True when ctrl+c left it, which quits teer too.
-async fn open_settings(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> bool {
+async fn open_settings(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+    rt: &mut Runtime,
+) -> bool {
     let path = store::config_path();
     let opened = setup::Opened::Review;
     match setup::run_on(terminal, app.cfg.clone(), &path, opened, app.keys.clone()).await {
-        Ok(setup::Ended::Saved(cfg)) => app.status = settings_saved(app, *cfg),
+        Ok(setup::Ended::Saved(cfg)) => app.status = rt.settings_saved(app, *cfg),
         Ok(setup::Ended::Left) => {}
         Ok(setup::Ended::Quit) => return true,
         Err(e) => app.status = format!("Couldn't change the settings: {e:#}"),

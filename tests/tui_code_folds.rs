@@ -1,7 +1,7 @@
-//! Every code box that shows the agent's statements, in the list preview,
-//! on the swipe card and on the Flagged screen, shows only the code they
-//! cite: each cited line with a little around it, the rest left out with
-//! a quiet `...` under the line numbers.
+//! The queue's preview shows only the code the agent's statements cite:
+//! each cited line with a little around it, the rest left out with a quiet
+//! `...` under the line numbers. The unit view shows the whole change, the
+//! statements written into it the same way.
 
 mod common;
 
@@ -17,7 +17,7 @@ use teer::agent::mock::MockAdapter;
 use teer::config::Config;
 use teer::keymap::Keymap;
 use teer::review::dive::DiveEvent;
-use teer::review::model::{Decision, SessionRef};
+use teer::review::model::SessionRef;
 use teer::review::{BuildOptions, build_review};
 use teer::tui::app::{App, AppEvent, Screen};
 use teer::tui::ui;
@@ -74,8 +74,7 @@ async fn app() -> (App, FixtureRepo) {
     )
     .await;
     let mut app = App::new(review, Config::default(), Keymap::default());
-    app.start(true, None, Vec::new(), Some(session), false);
-    app.open_v1_list();
+    app.start(true, None, Vec::new(), Some(session));
     (app, repo)
 }
 
@@ -109,31 +108,53 @@ fn folded(out: &str, place: &str) {
 }
 
 #[tokio::test]
-async fn every_code_box_with_statements_shows_only_the_code_they_cite() {
-    let (mut app, _repo) = app().await;
+async fn the_preview_shows_only_the_code_the_statements_cite() {
+    let (app, _repo) = app().await;
     assert_eq!(app.review.units.len(), 1);
-    folded(&screen(&app), "list preview");
-    press(&mut app, KeyCode::Char('s'));
-    assert_eq!(app.screen, Screen::Swipe);
-    folded(&screen(&app), "swipe card");
-    press(&mut app, KeyCode::Esc);
-    app.review.units[0].decision = Decision::Investigate;
-    press(&mut app, KeyCode::Char('l'));
-    assert_eq!(app.screen, Screen::Flagged);
+    assert_eq!(app.screen, Screen::Queue);
     let out = screen(&app);
-    folded(&out, "Flagged screen");
-    // The same box: the statement is in the code, not listed above it.
+    folded(&out, "queue preview");
+    // The statement is in the code, not listed above it.
     assert!(
         out.contains("│ Charges the order a second time. │"),
         "{out}"
     );
     assert!(!out.contains("~ Charges the order a second time."), "{out}");
-    // An answer gets a tile of its own; the code keeps its tile. (The
-    // recommendation was asked for as the review opened: it arrives.)
-    let ids: Vec<String> = app.review.units.iter().map(|u| u.id.clone()).collect();
-    for id in ids {
+}
+
+#[tokio::test]
+async fn the_unit_view_shows_the_whole_change_with_the_statement_in_it() {
+    let (mut app, _repo) = app().await;
+    press(&mut app, KeyCode::Char('l'));
+    assert_eq!(app.screen, Screen::Unit);
+    let out = screen(&app);
+    // Every change shows, the one no statement cites too; nothing is left
+    // out.
+    for shown in [
+        "   4 + audit(order)",
+        "  26 + charge_twice(order)",
+        "  27   step_27(order)",
+    ] {
+        assert!(out.contains(shown), "{shown}\n{out}");
+    }
+    assert!(!out.contains("│ ... "), "{out}");
+    assert!(
+        out.contains("│ Charges the order a second time. │"),
+        "{out}"
+    );
+    assert!(!out.contains("~ Charges the order a second time."), "{out}");
+    // The recommendation, asked for as the unit opened, arrives under its
+    // own heading; the code stays as it was.
+    let units: Vec<(String, String)> = app
+        .review
+        .units
+        .iter()
+        .map(|u| (u.id.clone(), u.fingerprint.clone()))
+        .collect();
+    for (id, fingerprint) in units {
         app.on_app_event(AppEvent::Dive(DiveEvent::Ready {
             id,
+            fingerprint,
             kind: teer::review::model::DiveKind::Recommend,
             text: "Looks fine.".into(),
             sources: Vec::new(),
@@ -142,14 +163,11 @@ async fn every_code_box_with_statements_shows_only_the_code_they_cite() {
             coverage: None,
         }));
     }
+    // The answer sits under the code: at the end of the text.
+    press(&mut app, KeyCode::Char('G'));
     let out = screen(&app);
-    folded(&out, "Flagged screen with an answer");
     assert!(
-        out.contains("│ Charges the order a second time. │"),
-        "{out}"
-    );
-    assert!(
-        out.contains("╭ ␣w Recommend ✓") && out.contains("Looks fine."),
+        out.contains("What to do about it") && out.contains("Looks fine."),
         "{out}"
     );
 }

@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use teer::approve::{EditOutcome, Verdict};
+use teer::approve::{EditOutcome, Tools, Verdict};
 use teer::config::Config;
 use teer::git::{ChangedFile, FileStatus};
 use teer::keymap::{Keymap, parse_keys};
@@ -16,6 +16,7 @@ use teer::review::model::{
     Decision, Dive, PrInfo, Prep, Range, Review, Unit, UnitKind, UnitStatus,
 };
 use teer::review::{BuildOptions, build_review};
+use teer::tui::Runtime;
 use teer::tui::app::{App, DraftState, Effect, JumpKind, Overlay, Screen};
 use teer::tui::finish::Step;
 
@@ -170,7 +171,7 @@ fn done_app(dir: &Path) -> App {
         u.decision = Decision::Accepted;
     }
     let mut a = App::new(rv, Config::default(), Keymap::default());
-    a.start(false, None, Vec::new(), None, false);
+    a.start(false, None, Vec::new(), None);
     press(&mut a, ":w<cr>");
     assert_eq!(a.finish_step(), Some(Step::Commit));
     a
@@ -336,6 +337,105 @@ fn the_commit_sheet_edits_commits_and_closes() {
     assert_eq!(a.overlay, Overlay::None);
 }
 
+// ------------------------------------------------------------- the editor
+
+/// An editor in `dir`: a script that writes how it was started, after its
+/// `name`, to `log` there.
+fn editor_script(dir: &Path, name: &str) -> PathBuf {
+    let p = dir.join(name);
+    let log = dir.join("log");
+    let body = format!(
+        "#!/bin/sh\nprintf '{name} %s\\n' \"$*\" >> '{}'\n",
+        log.display()
+    );
+    std::fs::write(&p, body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    p
+}
+
+/// An editor saved with `<space>s` opens at once, not after a restart:
+/// `i` on the commit sheet hands it the message, `gf` the file at its
+/// line, each as `tui::run` does.
+#[test]
+fn an_editor_saved_in_the_settings_opens_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir = dir.path().canonicalize().unwrap();
+    let mut a = done_app(&dir);
+    let bin = tempfile::tempdir().unwrap();
+    let old = editor_script(bin.path(), "old");
+    let new = editor_script(bin.path(), "new");
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rt = Runtime {
+        adapter: None,
+        tx,
+        build: BuildOptions::default(),
+        tools: Tools {
+            editor: old.into(),
+            ..Default::default()
+        },
+    };
+    let mut saved = a.cfg.clone();
+    saved.editor = format!("'{}' +{{line}} {{file}}", new.display());
+    assert_eq!(rt.settings_saved(&mut a, saved), "Settings saved.");
+
+    let e = press(&mut a, "i");
+    let [Effect::EditComment { text }] = &e[..] else {
+        panic!("{e:?}")
+    };
+    let edited = teer::approve::edit_message_in_editor(&rt.tools.editor, text);
+    assert!(matches!(edited, EditOutcome::Edited(_)), "{edited:?}");
+    a.comment_edited(edited);
+    press(&mut a, "<esc>");
+    let e = press(&mut a, "gf");
+    let [Effect::Edit { file, line }] = &e[..] else {
+        panic!("{e:?}")
+    };
+    let opened = rt
+        .tools
+        .editor
+        .command(&dir.join(file), *line)
+        .current_dir(&dir)
+        .status()
+        .unwrap();
+    assert!(opened.success());
+
+    let log = std::fs::read_to_string(bin.path().join("log")).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines.len(), 2, "{log}");
+    assert!(lines[0].starts_with("new +1 "), "{log}");
+    assert!(lines[0].ends_with("COMMIT_EDITMSG"), "{log}");
+    assert_eq!(
+        lines[1],
+        format!("new +{line} {}", dir.join("a.py").display())
+    );
+}
+
+/// A saved editor that doesn't parse leaves the one there was, and says so.
+#[test]
+fn an_editor_that_does_not_parse_keeps_the_one_there_was() {
+    let mut a = app(["", ""], None);
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rt = Runtime {
+        adapter: None,
+        tx,
+        build: BuildOptions::default(),
+        tools: Tools::default(),
+    };
+    let before = rt.tools.editor.clone();
+    let mut saved = a.cfg.clone();
+    saved.editor = "'code".into();
+    let status = rt.settings_saved(&mut a, saved);
+    assert!(
+        status.starts_with("Settings saved. The editor stays nvim:"),
+        "{status}"
+    );
+    assert_eq!(rt.tools.editor, before);
+}
+
 // ------------------------------------------------------------- post sheet
 
 #[test]
@@ -362,7 +462,7 @@ fn the_post_sheet_picks_the_verdict_with_j_and_k() {
 // ------------------------------------------------------------- Ask
 
 #[test]
-fn letters_typed_in_the_ask_view_go_into_the_question() {
+fn letters_typed_in_the_ask_panel_go_into_the_question() {
     use teer::tui::unit::Panel;
     // From the queue, `K` asks in the unit view's panel.
     let mut a = app(["", ""], None);
@@ -375,17 +475,10 @@ fn letters_typed_in_the_ask_view_go_into_the_question() {
     press(&mut a, "<bs><esc>");
     assert_eq!(a.ask.draft, "jkq ");
     assert_eq!((a.screen, a.unit.panel), (Screen::Unit, None));
-    // On the v1 list it is the Ask view.
-    let mut a = app(["", ""], None);
-    a.open_v1_list();
-    press(&mut a, "K");
-    assert_eq!(a.overlay, Overlay::Ask);
-    press(&mut a, "jkq ?");
-    assert_eq!(a.ask.input, "jkq ?");
-    assert_eq!(a.overlay, Overlay::Ask);
-    press(&mut a, "<bs><esc>");
-    assert_eq!(a.ask.input, "jkq ");
-    assert_eq!(a.overlay, Overlay::None);
+    // In the unit view, `K` opens it there and keeps the draft.
+    press(&mut a, "K?");
+    assert_eq!(a.ask.draft, "jkq ?");
+    assert_eq!(a.overlay, Overlay::None, "no Ask view over the screen");
 }
 
 // ------------------------------------------------------------- jump list

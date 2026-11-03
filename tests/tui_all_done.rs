@@ -1,6 +1,6 @@
-//! Finishing on the v1 screens (`--swipe`, until Phase 8): the "all
-//! reviewed" popup is gone. Accepting the last unit says `:w` finishes, and
-//! `:w` opens the same sheet as everywhere (see `tui::finish`).
+//! Finishing from the queue: there is no "all reviewed" popup. Once every
+//! unit is accepted the bottom bar says `:w` finishes, and `:w` opens the
+//! sheet (see `tui::finish`).
 
 mod common;
 
@@ -82,10 +82,7 @@ fn app_with(n: usize, cfg: Config, keys: Keymap) -> App {
         branch: None,
         cursor: None,
     };
-    // The popup is the v1 screens' (`--swipe`); `:w` replaces it.
-    let mut app = App::new(review, cfg, keys);
-    app.open_v1_list();
-    app
+    App::new(review, cfg, keys)
 }
 
 fn app(n: usize) -> App {
@@ -142,7 +139,7 @@ fn mouse_up(a: &mut App) -> Vec<Effect> {
     }))
 }
 
-/// Three units that need a look (no behavior-change one), list screen.
+/// Three units that need a look (no behavior-change one), in the queue.
 fn three() -> App {
     app(3)
 }
@@ -156,7 +153,7 @@ fn all_but_last() -> App {
     a
 }
 
-/// Accept the one pending unit through the list.
+/// Accept the one pending unit through the queue.
 fn accept_last(a: &mut App) {
     let pos = a
         .order
@@ -167,15 +164,23 @@ fn accept_last(a: &mut App) {
     key(a, 'a');
 }
 
-/// The review just got done: no popup, the status says `:w` finishes.
+/// The bottom row of the screen at 90x24.
+fn bar(a: &App) -> String {
+    rows(&draw(a, 90, 24)).pop().unwrap_or_default()
+}
+
+/// The review is done: every unit accepted, no popup, and the bottom bar
+/// says how to finish.
 fn says_done(a: &App) -> bool {
-    a.overlay == Overlay::None && a.status == "Everything is accepted. :w finishes."
+    a.overlay == Overlay::None
+        && a.all_reviewed()
+        && bar(a).contains("Nothing pending. :w to finish")
 }
 
 // ---- Getting there ------------------------------------------------------
 
 #[test]
-fn accepting_the_last_pending_unit_in_the_list_says_how_to_finish() {
+fn accepting_the_last_pending_unit_in_the_queue_says_how_to_finish() {
     let mut a = three();
     for _ in 0..2 {
         key(&mut a, 'a');
@@ -199,25 +204,13 @@ fn a_no_behavior_change_unit_does_not_hold_it_back() {
 }
 
 #[test]
-fn the_last_swipe_card_says_it_too() {
-    let mut a = all_but_last();
-    key(&mut a, 's');
-    assert_eq!(a.screen, Screen::Swipe);
-    key(&mut a, 'a');
-    assert!(says_done(&a), "{}", a.status);
-    assert!(a.swipe_current().is_none());
-    let mut b = all_but_last();
-    key(&mut b, 's');
-    b.swipe_dir(teer::tui::swipe::Dir::Right);
-    assert!(says_done(&b), "{}", b.status);
-}
-
-#[test]
-fn not_while_a_unit_is_flagged_and_never_at_launch() {
+fn not_while_a_unit_is_flagged_and_never_a_sheet_at_launch() {
     let mut a = all_but_last();
     a.review.units[0].decision = Decision::Investigate;
     accept_last(&mut a);
     assert!(!says_done(&a));
+    // Nothing is pending, but the bar counts the flagged unit.
+    assert!(bar(&a).contains("1 flagged"), "{}", bar(&a));
     // Accepting the flagged one too finishes it.
     a.sel = a
         .order
@@ -225,16 +218,15 @@ fn not_while_a_unit_is_flagged_and_never_at_launch() {
         .position(|&i| a.review.units[i].decision == Decision::Investigate)
         .unwrap();
     key(&mut a, 'a');
-    assert!(says_done(&a), "{}", a.status);
-    // A review accepted before it was opened opens on the list, no sheet.
-    for swipe in [false, true] {
-        let mut b = three();
-        for u in b.review.units.iter_mut() {
-            u.decision = Decision::Accepted;
-        }
-        b.start(false, None, Vec::new(), None, swipe);
-        assert_eq!(b.overlay, Overlay::None);
+    assert!(says_done(&a), "{}", bar(&a));
+    // A review accepted before it was opened opens on the queue, no sheet.
+    let mut b = three();
+    for u in b.review.units.iter_mut() {
+        u.decision = Decision::Accepted;
     }
+    b.start(false, None, Vec::new(), None);
+    assert_eq!(b.screen, Screen::Queue);
+    assert_eq!(b.overlay, Overlay::None);
 }
 
 #[test]
@@ -278,43 +270,38 @@ fn a_rebound_finish_key_is_the_one_named() {
         .position(|&i| a.review.units[i].decision == Decision::Pending)
         .unwrap();
     key(&mut a, 'e');
-    assert_eq!(a.status, "Everything is accepted. :done finishes.");
+    assert!(
+        bar(&a).contains("Nothing pending. :done to finish"),
+        "{}",
+        bar(&a)
+    );
     keys(&mut a, ":done<cr>");
     assert!(matches!(a.overlay, Overlay::Finish { .. }));
 }
 
-// ---- The sheet from the v1 screens -------------------------------------
+// ---- The sheet from the queue -------------------------------------------
 
 #[test]
-fn colon_w_opens_the_sheet_on_the_list_and_in_swipe() {
-    for swipe in [false, true] {
-        let mut a = all_but_last();
-        accept_last(&mut a);
-        if swipe {
-            a.enter_swipe();
-        }
-        keys(&mut a, ":w<cr>");
-        assert!(matches!(a.overlay, Overlay::Finish { .. }), "{swipe}");
-        // A branch, everything accepted: done.
-        assert_eq!(
-            a.finish_step(),
-            Some(teer::tui::finish::Step::Done),
-            "{swipe}"
-        );
-        let t = text(&a, 90, 24);
-        assert!(t.contains("All 3 units accepted."), "{t}");
-        // `q` and esc close it and quit nothing; ctrl+c still quits.
-        assert!(key(&mut a, 'q').is_empty());
-        assert_eq!(a.overlay, Overlay::None);
-        keys(&mut a, ":w<cr>");
-        assert!(press(&mut a, KeyCode::Esc, KeyModifiers::NONE).is_empty());
-        assert_eq!(a.overlay, Overlay::None);
-        keys(&mut a, ":w<cr>");
-        assert_eq!(
-            press(&mut a, KeyCode::Char('c'), KeyModifiers::CONTROL),
-            vec![Effect::Save, Effect::Quit]
-        );
-    }
+fn colon_w_opens_the_sheet_from_the_queue() {
+    let mut a = all_but_last();
+    accept_last(&mut a);
+    keys(&mut a, ":w<cr>");
+    assert!(matches!(a.overlay, Overlay::Finish { .. }));
+    // A branch, everything accepted: done.
+    assert_eq!(a.finish_step(), Some(teer::tui::finish::Step::Done));
+    let t = text(&a, 90, 24);
+    assert!(t.contains("All 3 units accepted."), "{t}");
+    // `q` and esc close it and quit nothing; ctrl+c still quits.
+    assert!(key(&mut a, 'q').is_empty());
+    assert_eq!(a.overlay, Overlay::None);
+    keys(&mut a, ":w<cr>");
+    assert!(press(&mut a, KeyCode::Esc, KeyModifiers::NONE).is_empty());
+    assert_eq!(a.overlay, Overlay::None);
+    keys(&mut a, ":w<cr>");
+    assert_eq!(
+        press(&mut a, KeyCode::Char('c'), KeyModifiers::CONTROL),
+        vec![Effect::Save, Effect::Quit]
+    );
 }
 
 #[test]
@@ -329,7 +316,7 @@ fn keys_in_the_sheet_never_decide_or_move_the_list() {
         assert_eq!(a.sel, sel, "{c}");
         assert_eq!(decisions(&a), before, "{c}");
         assert_eq!(a.review.history.undo.len(), n, "{c} must not undo");
-        assert_eq!(a.screen, Screen::Slim, "{c}");
+        assert_eq!(a.screen, Screen::Queue, "{c}");
     }
     // A click outside its keys does nothing either.
     let mut a = all_but_last();
@@ -338,7 +325,7 @@ fn keys_in_the_sheet_never_decide_or_move_the_list() {
     draw(&a, 80, 24);
     assert!(mouse_up(&mut a).is_empty());
     assert!(a.all_reviewed());
-    // `A` on what is left still asks first, then finishes.
+    // `A` on what is left accepts it at once and finishes.
     let mut b = all_but_last();
     b.sel = b
         .order
@@ -346,31 +333,23 @@ fn keys_in_the_sheet_never_decide_or_move_the_list() {
         .position(|&i| b.review.units[i].decision == Decision::Pending)
         .unwrap();
     shift_a(&mut b);
-    assert!(matches!(b.overlay, Overlay::ConfirmAcceptFile { .. }));
-    key(&mut b, 'y');
-    assert!(b.all_reviewed());
-    assert_eq!(b.overlay, Overlay::None);
+    assert!(says_done(&b), "{}", bar(&b));
 }
 
 #[test]
-fn the_sheet_renders_inside_the_screen_on_list_or_swipe() {
-    for swipe in [false, true] {
-        let mut a = all_but_last();
-        accept_last(&mut a);
-        if swipe {
-            a.enter_swipe();
-        }
-        keys(&mut a, ":w<cr>");
-        for (w, h) in [(60u16, 20u16), (80, 24), (120, 40)] {
-            let r = rows(&draw(&a, w, h));
-            let joined = r.join("\n");
-            assert!(joined.contains("Finish"), "{w}x{h}\n{joined}");
-            assert!(joined.contains('╭') && joined.contains('╯'));
-            assert_eq!(r.len(), h as usize);
-            assert!(r.iter().all(|l| l.chars().count() == w as usize));
-        }
-        for (w, h) in [(0u16, 0u16), (1, 1), (10, 3), (3, 10), (20, 6), (200, 3)] {
-            draw(&a, w, h);
-        }
+fn the_sheet_renders_inside_the_screen() {
+    let mut a = all_but_last();
+    accept_last(&mut a);
+    keys(&mut a, ":w<cr>");
+    for (w, h) in [(60u16, 20u16), (80, 24), (120, 40)] {
+        let r = rows(&draw(&a, w, h));
+        let joined = r.join("\n");
+        assert!(joined.contains("Finish"), "{w}x{h}\n{joined}");
+        assert!(joined.contains('╭') && joined.contains('╯'));
+        assert_eq!(r.len(), h as usize);
+        assert!(r.iter().all(|l| l.chars().count() == w as usize));
+    }
+    for (w, h) in [(0u16, 0u16), (1, 1), (10, 3), (3, 10), (20, 6), (200, 3)] {
+        draw(&a, w, h);
     }
 }

@@ -1,7 +1,7 @@
-//! Ask (`/`): a question about the code, the agent's answer checked by
-//! teer (the code it shows read from the files, lines that exist, the
-//! change's lines marked, units of the change linked), the view, the note
-//! on the unit the answer is about, and the chat about a flagged unit.
+//! Ask (`K`): a question about a unit, the agent's answer checked by teer
+//! (the code it shows read from the files, lines that exist, the change's
+//! lines marked, units of the change linked), the unit view's ask panel
+//! with the unit's conversation, and the note on the unit in the queue.
 
 mod common;
 
@@ -14,12 +14,13 @@ use ratatui::backend::TestBackend;
 use serde_json::json;
 use teer::agent::mock::MockAdapter;
 use teer::config::Config;
-use teer::keymap::{Action, Keymap};
-use teer::review::model::{Answer, Decision, DiveKind, DiveResult, Question, Review, SessionRef};
+use teer::keymap::Keymap;
+use teer::review::model::{Answer, DiveKind, DiveResult, Question, Review, SessionRef};
 use teer::review::prompts::ask_prompt;
 use teer::review::validate::validate_answer;
 use teer::review::{BuildOptions, ask, build_review, store};
-use teer::tui::app::{App, AppEvent, Effect, Overlay, Pane, Screen};
+use teer::tui::app::{App, AppEvent, Effect, Overlay, Screen};
+use teer::tui::unit::Panel;
 
 const CART: &str = "class Cart:\n    def add(self, item):\n        self.items.append(item)\n";
 const CHARGE: &str = "checkout.py::charge_order";
@@ -211,13 +212,13 @@ async fn what_the_agent_does_is_told_before_the_answer_comes() {
     );
 }
 
-// ---- The view ---------------------------------------------------------------
+// ---- The unit view's ask panel ------------------------------------------------
 
 fn app(review: Review) -> App {
     let mut a = App::new(review, Config::default(), Keymap::default());
-    // The v1 list and Flagged screen (`--swipe`); the unit view replaces them.
-    a.open_v1_list();
     a.has_agent = true;
+    // Whether a question may search the web is tests/v2_unit_view.rs.
+    a.cfg.dive_web = false;
     a
 }
 
@@ -240,6 +241,17 @@ fn screen(a: &App, w: u16, h: u16) -> String {
         .collect()
 }
 
+/// The ask panel of the screen drawn at `w` x `h`: the lines from its
+/// title on.
+fn panel(a: &App, w: u16, h: u16) -> String {
+    let text = screen(a, w, h);
+    let at = text
+        .find(" Ask about it ")
+        .unwrap_or_else(|| panic!("no ask panel:\n{text}"));
+    let start = text[..at].rfind('\n').map_or(0, |n| n + 1);
+    text[start..].to_string()
+}
+
 fn select(a: &mut App, id: &str) {
     a.sel = a
         .order
@@ -248,22 +260,35 @@ fn select(a: &mut App, id: &str) {
         .unwrap();
 }
 
+/// `K` on unit `id` in the queue: the unit view on it, its ask panel open
+/// and typing.
+fn ask_on(a: &mut App, id: &str) {
+    select(a, id);
+    code(a, KeyCode::Char('K'));
+    assert_eq!(a.screen, Screen::Unit);
+    assert_eq!(a.unit.id, id);
+    assert_eq!(a.unit.panel, Some(Panel::Ask));
+    assert!(a.unit.typing);
+}
+
 #[test]
 fn shift_k_asks_about_the_unit_on_show_and_shows_the_answer() {
     let (_repo, review) = fixture();
     let mut a = app(review);
-    select(&mut a, CHARGE);
-    assert!(code(&mut a, KeyCode::Char('K')).is_empty());
-    assert_eq!(a.overlay, Overlay::Ask);
-    assert!(screen(&a, 120, 40).contains("Ask anything about the code"));
+    ask_on(&mut a, CHARGE);
+    assert!(
+        screen(&a, 120, 40).contains("Ask about this unit in your own words"),
+        "{}",
+        screen(&a, 120, 40)
+    );
     typed(&mut a, "how is an order charged?");
-    assert_eq!(a.ask.input, "how is an order charged?");
+    assert_eq!(a.ask.draft, "how is an order charged?");
     let effects = code(&mut a, KeyCode::Enter);
     assert_eq!(effects, [Effect::Save, Effect::Ask { index: 0 }]);
-    assert!(a.ask.input.is_empty());
+    assert!(a.ask.draft.is_empty());
     let q = &a.review.questions[0];
     assert_eq!(q.unit.as_deref(), Some(CHARGE));
-    let text = screen(&a, 120, 40);
+    let text = panel(&a, 120, 40);
     assert!(text.contains("› how is an order charged?"), "{text}");
     assert!(text.contains(teer::tui::ask::ASKING), "{text}");
     // A second Enter on nothing asks nothing.
@@ -276,8 +301,9 @@ fn shift_k_asks_about_the_unit_on_show_and_shows_the_answer() {
         }),
         [Effect::Save]
     );
-    let text = screen(&a, 120, 50);
-    assert!(text.contains("noted on charge_order"), "{text}");
+    let text = panel(&a, 120, 120);
+    // The conversation is the unit's: where the answer is noted goes unsaid.
+    assert!(!text.contains("noted on"), "{text}");
     assert!(
         text.contains("┃ agent (Claude Code's default model)"),
         "{text}"
@@ -315,17 +341,16 @@ fn a_question_on_its_way_shows_the_agents_steps_then_its_answer_as_it_is_written
     use teer::tui::ask::{ASKING, WRITING};
     let (_repo, review) = fixture();
     let mut a = app(review);
-    select(&mut a, CHARGE);
-    code(&mut a, KeyCode::Char('K'));
+    ask_on(&mut a, CHARGE);
     typed(&mut a, "how is an order charged?");
     code(&mut a, KeyCode::Enter);
     asking(&mut a, 0, Step("search “charge”".into()));
     asking(&mut a, 0, Step("read checkout.py".into()));
-    let text = screen(&a, 120, 40);
+    let text = panel(&a, 120, 40);
     assert!(text.contains("step 2: read checkout.py"), "{text}");
     assert!(!text.contains(ASKING), "{text}");
     asking(&mut a, 0, Text("charge_order checks the\ncurrency".into()));
-    let text = screen(&a, 120, 40);
+    let text = panel(&a, 120, 40);
     assert!(text.contains(WRITING), "{text}");
     assert!(!text.contains("step 2"), "{text}");
     assert!(
@@ -343,7 +368,7 @@ fn a_question_on_its_way_shows_the_agents_steps_then_its_answer_as_it_is_written
     assert!(a.ask.live.is_empty());
     asking(&mut a, 0, Step("read late.py".into()));
     assert!(a.ask.live.is_empty());
-    let text = screen(&a, 120, 50);
+    let text = panel(&a, 120, 120);
     assert!(!text.contains(WRITING), "{text}");
     assert!(text.contains("In this change"), "{text}");
     let links = a.ask_links().len();
@@ -357,10 +382,10 @@ fn a_question_on_its_way_shows_the_agents_steps_then_its_answer_as_it_is_written
         [Effect::Save, Effect::Ask { index: 0 }]
     );
     asking(&mut a, 0, Step("read checkout.py".into()));
-    assert!(screen(&a, 120, 50).contains("In this change"));
+    assert!(panel(&a, 120, 120).contains("In this change"));
     assert_eq!(a.ask_links().len(), links);
     asking(&mut a, 0, Text("It charges".into()));
-    let text = screen(&a, 120, 50);
+    let text = panel(&a, 120, 120);
     assert!(text.contains("It charges"), "{text}");
     assert!(!text.contains("In this change"), "{text}");
     assert!(a.ask_links().is_empty());
@@ -370,39 +395,33 @@ fn a_question_on_its_way_shows_the_agents_steps_then_its_answer_as_it_is_written
         result: Err("claude timed out".into()),
     });
     assert_eq!(a.ask_links().len(), links);
-    assert!(screen(&a, 120, 50).contains("In this change"));
+    assert!(panel(&a, 120, 120).contains("In this change"));
 }
 
 #[test]
-fn a_chat_shows_its_answer_as_it_is_written() {
-    let (_repo, review) = fixture();
-    let mut a = flagged(review);
-    code(&mut a, KeyCode::Char('K'));
-    typed(&mut a, "does it charge twice?");
-    code(&mut a, KeyCode::Enter);
-    asking(&mut a, 0, ask::Progress::Step("read checkout.py".into()));
-    assert!(screen(&a, 160, 50).contains("step 1: read checkout.py"));
-    asking(&mut a, 0, ask::Progress::Text("No: it saves".into()));
-    let text = screen(&a, 160, 50);
-    assert!(text.contains("No: it saves"), "{text}");
-    assert!(text.contains(teer::tui::ask::WRITING), "{text}");
-}
-
-#[test]
-fn links_go_to_the_unit_in_the_list_and_open_code_in_the_editor() {
+fn links_open_the_unit_in_the_unit_view_and_code_in_the_editor() {
     let (_repo, mut review) = fixture();
+    // Asked on another unit; the answer relates charge_order.
+    let other = review
+        .units
+        .iter()
+        .find(|u| u.id != CHARGE)
+        .unwrap()
+        .id
+        .clone();
     review.questions.push(Question {
         text: "how is an order charged?".into(),
-        unit: None,
+        unit: Some(other.clone()),
         answer: Some(answer()),
         error: None,
     });
     let mut a = app(review);
-    code(&mut a, KeyCode::Char('K'));
+    ask_on(&mut a, &other);
     // tab: the newest answer's first link, the unit; then its two pieces of code.
     code(&mut a, KeyCode::Tab);
     assert_eq!(a.ask.link, Some(0));
-    let text = screen(&a, 120, 50);
+    assert!(!a.unit.typing);
+    let text = panel(&a, 120, 120);
     assert!(
         text.contains("▌ ◆ charge_order  checkout.py:8-12"),
         "{text}"
@@ -418,18 +437,19 @@ fn links_go_to_the_unit_in_the_list_and_open_code_in_the_editor() {
     code(&mut a, KeyCode::Down);
     code(&mut a, KeyCode::Down);
     assert_eq!(a.ask.link, Some(2), "stops at the last link");
-    // Back to typing, and letters go into the question again.
+    // tab past the last: typing again, and letters go into the question.
     code(&mut a, KeyCode::Tab);
     assert_eq!(a.ask.link, None);
+    assert!(a.unit.typing);
     typed(&mut a, "j");
-    assert_eq!(a.ask.input, "j");
-    // A unit: the view closes on it in the list.
-    a.screen = Screen::Flagged;
+    assert_eq!(a.ask.draft, "j");
+    // A unit: it opens here, the panel closed.
     code(&mut a, KeyCode::Tab);
     code(&mut a, KeyCode::Enter);
     assert_eq!(a.overlay, Overlay::None);
-    assert_eq!(a.screen, Screen::Slim);
-    assert_eq!(a.selected().unwrap().id, CHARGE);
+    assert_eq!(a.screen, Screen::Unit);
+    assert_eq!(a.unit.id, CHARGE);
+    assert_eq!(a.unit.panel, None);
 }
 
 #[test]
@@ -461,10 +481,10 @@ fn without_an_agent_or_when_it_fails_the_question_says_why() {
     let (_repo, review) = fixture();
     let mut a = app(review);
     a.has_agent = false;
-    code(&mut a, KeyCode::Char('K'));
+    ask_on(&mut a, CHARGE);
     typed(&mut a, "anything?");
     assert_eq!(code(&mut a, KeyCode::Enter), [Effect::Save]);
-    assert!(screen(&a, 120, 40).contains("✗ no agent"));
+    assert!(panel(&a, 120, 40).contains("✗ no agent"));
     // With one, a failure says so and ctrl+r asks again.
     a.has_agent = true;
     let ctrl_r = Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
@@ -477,9 +497,10 @@ fn without_an_agent_or_when_it_fails_the_question_says_why() {
         index: 0,
         result: Err("boom".into()),
     });
-    assert!(screen(&a, 120, 40).contains("✗ boom · ^r asks again"));
+    assert!(panel(&a, 120, 40).contains("✗ boom · ^r asks again"));
     code(&mut a, KeyCode::Esc);
-    assert_eq!(a.overlay, Overlay::None);
+    assert_eq!(a.unit.panel, None);
+    assert_eq!(a.screen, Screen::Unit);
 }
 
 #[test]
@@ -508,57 +529,30 @@ fn questions_are_saved_and_survive_a_rerun() {
     assert_eq!(again.questions, back.questions);
 }
 
-// ---- The chat on the Flagged screen --------------------------------------------
-
-/// The app on the Flagged screen, on `charge_order`.
-fn flagged(review: Review) -> App {
-    let mut a = app(review);
-    a.review.unit_mut(CHARGE).unwrap().decision = Decision::Investigate;
-    select(&mut a, CHARGE);
-    a.on_action(Action::ViewOpen);
-    assert_eq!(a.screen, Screen::Flagged);
-    a
-}
-
 #[test]
-fn shift_k_on_a_flagged_unit_opens_its_chat_and_keeps_the_conversation() {
+fn the_conversation_stays_with_the_unit_and_follow_ups_get_it() {
     let (_repo, review) = fixture();
-    let mut a = flagged(review);
-    // Offered in the tile that asks for more.
-    let text = screen(&a, 160, 50);
-    assert!(text.contains(" K  Chat "), "{text}");
-    assert!(text.contains("ask about it in your own words"), "{text}");
-    assert!(code(&mut a, KeyCode::Char('K')).is_empty());
-    assert_eq!(a.flagged.pane, Pane::Chat);
-    assert!(a.flagged.typing);
-    let text = screen(&a, 160, 50);
-    assert!(text.contains("K Chat"), "{text}");
-    assert!(
-        text.contains("Ask about this unit in your own words"),
-        "{text}"
-    );
-    // Letters go into the question, not to the screen's keys (q, a, r…).
+    let mut a = app(review);
+    ask_on(&mut a, CHARGE);
+    // Letters go into the question, not to the screen's keys (q, a, h…).
     typed(&mut a, "does it charge twice? q");
     assert_eq!(a.ask.draft, "does it charge twice? q");
-    assert_eq!(a.screen, Screen::Flagged);
+    assert_eq!(a.screen, Screen::Unit);
     assert_eq!(
         code(&mut a, KeyCode::Enter),
         [Effect::Save, Effect::Ask { index: 0 }]
     );
     assert!(a.ask.draft.is_empty());
     assert_eq!(a.review.questions[0].unit.as_deref(), Some(CHARGE));
-    assert!(screen(&a, 160, 50).contains(teer::tui::ask::ASKING));
     a.on_app_event(AppEvent::Answer {
         index: 0,
         result: Ok(answer()),
     });
-    let text = screen(&a, 160, 50);
+    let text = screen(&a, 160, 120);
     assert!(text.contains("› does it charge twice? q"), "{text}");
     assert!(text.contains("charge_order checks the currency"), "{text}");
     assert!(text.contains("checkout.py:8-12 charging"), "{text}");
-    // The chat is about this unit: where the answer is noted goes unsaid,
-    // and it is not noted again above the tiles.
-    assert!(!text.contains("noted on"), "{text}");
+    // The conversation is about this unit: it is not noted again above it.
     assert!(!text.contains("╭ ? does it charge twice"), "{text}");
 
     // A follow-up: the agent gets the conversation so far and the unit.
@@ -579,53 +573,40 @@ fn shift_k_on_a_flagged_unit_opens_its_chat_and_keeps_the_conversation() {
     assert!(p.contains("## The unit they are looking at"), "{p}");
     assert!(p.contains("def charge_order(order):"), "{p}");
 
-    // esc stops typing: the screen's keys work again; the chat stays, with
-    // its conversation, on the way back to the unit.
+    // esc closes the panel, h goes back to the queue; the conversation is
+    // there when the panel opens on the unit again.
     code(&mut a, KeyCode::Esc);
-    assert!(!a.flagged.typing);
-    assert_eq!(a.screen, Screen::Flagged);
-    code(&mut a, KeyCode::Esc);
-    assert_eq!(a.screen, Screen::Slim);
-    select(&mut a, CHARGE);
-    a.on_action(Action::ViewOpen);
-    let u = a.flagged_unit().unwrap();
-    assert!(a.flagged_panes(u).contains(&Pane::Chat));
-    a.flagged.pane = Pane::Chat;
-    let text = screen(&a, 160, 50);
+    assert_eq!(a.unit.panel, None);
+    code(&mut a, KeyCode::Char('h'));
+    assert_eq!(a.screen, Screen::Queue);
+    ask_on(&mut a, CHARGE);
+    let text = panel(&a, 160, 120);
     assert!(text.contains("› does it charge twice? q"), "{text}");
     assert!(text.contains("› and if pay fails?"), "{text}");
-    // Both are in the Ask view too, noted on the unit.
-    a.on_action(Action::ViewBack);
-    code(&mut a, KeyCode::Char('K'));
-    assert_eq!(a.overlay, Overlay::Ask);
-    assert!(screen(&a, 120, 50).contains("noted on charge_order"));
+    // The queue's preview notes the answer on the unit.
+    code(&mut a, KeyCode::Esc);
+    code(&mut a, KeyCode::Char('h'));
+    assert!(screen(&a, 120, 50).contains("╭ ? does it charge twice? q"));
 }
 
 #[test]
-fn an_empty_chat_closes_when_left_and_keys_move_in_and_out_of_it() {
+fn a_question_left_unasked_waits_for_the_next_time() {
     let (_repo, review) = fixture();
-    let mut a = flagged(review);
-    code(&mut a, KeyCode::Char('K'));
+    let mut a = app(review);
+    ask_on(&mut a, CHARGE);
     typed(&mut a, "x");
-    // tab leaves for the next tile; nothing was asked, so the chat goes.
-    code(&mut a, KeyCode::Tab);
-    assert_ne!(a.flagged.pane, Pane::Chat);
-    assert!(!a.flagged.typing);
-    let u = a.flagged_unit().unwrap();
-    assert!(!a.flagged_panes(u).contains(&Pane::Chat));
-    // The question typed so far waits for the next time.
+    // esc closes the panel; the question typed so far waits.
+    code(&mut a, KeyCode::Esc);
+    assert_eq!(a.unit.panel, None);
+    assert!(a.review.questions.is_empty());
     code(&mut a, KeyCode::Char('K'));
+    assert!(a.unit.typing);
     assert_eq!(a.ask.draft, "x");
     code(&mut a, KeyCode::Backspace);
-    // Not typing, q goes back to the list as anywhere on the screen;
-    // enter types again.
-    code(&mut a, KeyCode::Esc);
-    assert_eq!(a.flagged.pane, Pane::Chat);
-    code(&mut a, KeyCode::Enter);
-    assert!(a.flagged.typing);
+    // Not typing, q leaves the unit view, not teer.
     code(&mut a, KeyCode::Esc);
     assert!(!code(&mut a, KeyCode::Char('q')).contains(&Effect::Quit));
-    assert_eq!(a.screen, Screen::Slim);
+    assert_eq!(a.screen, Screen::Queue);
 }
 
 #[test]

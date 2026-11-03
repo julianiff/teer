@@ -20,7 +20,7 @@ use serde_json::Value;
 
 use crate::agent::{AgentAdapter, SessionInfo};
 use crate::review::model::{DiffSize, PrInfo, PrMeta, Review, SessionRef};
-use crate::review::{BuildOptions, build_review, store};
+use crate::review::{BuildOptions, build_commits_review, store};
 use crate::util::{hash_hex, sanitize};
 
 /// Added to every agent prompt while a PR is reviewed.
@@ -1123,7 +1123,7 @@ pub fn prepare(cwd: &Path, url: &str, languages: Option<Vec<String>>) -> Result<
         base: Some(plan.base.clone()),
         languages,
     };
-    let mut review = build_review(worktree.path(), &opts)?;
+    let mut review = build_commits_review(worktree.path(), &opts)?;
     let mut info = info;
     info.base_assumed = plan.assumed_base_branch.clone();
     info.remote = Some(plan.remote.clone());
@@ -1168,7 +1168,7 @@ pub fn refresh(dir: &Path, info: &PrInfo, languages: Option<Vec<String>>) -> Res
         base: Some(plan.base.clone()),
         languages,
     };
-    let mut review = build_review(dir, &opts)?;
+    let mut review = build_commits_review(dir, &opts)?;
     let mut info = info.clone();
     info.base_assumed = plan.assumed_base_branch;
     info.remote = Some(plan.remote);

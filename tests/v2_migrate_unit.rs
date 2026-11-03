@@ -136,13 +136,8 @@ fn a_v1_review_continues_in_the_queue() {
     assert_eq!(d.decision_of(&id("retry")), Decision::Investigate);
     assert_eq!(d.decision_of(&id("label")), Decision::Accepted);
     assert_eq!(d.decision_of(&id("audit")), Decision::Pending);
-    assert!(
-        d.app
-            .review
-            .units
-            .iter()
-            .all(|u| u.dive.resolution.is_none())
-    );
+    let saved = serde_json::to_string(&d.app.review).unwrap();
+    assert!(!saved.contains("\"resolution\""), "{saved}");
 
     // v1 kept no place: the queue opens where it opens on a new review,
     // and `n` finds the one pending unit.

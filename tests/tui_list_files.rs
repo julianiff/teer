@@ -1,10 +1,10 @@
-//! The list is a box per level, each holding the files whose most critical
-//! unit has that level: the file's name as a label, its units under it,
-//! most critical first. The cursor only ever moves over units. `ctrl+d`
-//! `ctrl+u` jump file to file, `A` accepts a file's pending units (one undo
-//! step), and a large review asks the agent about a file when the cursor
-//! gets to it. `f` lists each unit in its own level's box instead, its file
-//! named on its row.
+//! The queue listed by file (`zf`) is a box per level, each holding the
+//! files whose most critical unit has that level: the file's name as a
+//! label, its units under it, most critical first. The cursor only ever
+//! moves over units. `]f` `[f` jump file to file, `A` accepts a file's
+//! pending units (one undo step), and a large review asks the agent about a
+//! file when the cursor gets to it. `zf` lists each unit in its own level's
+//! box instead, its file named on its row.
 
 mod common;
 
@@ -145,9 +145,10 @@ fn app_keys(units: Vec<Unit>, cfg: Config, keys: Keymap) -> App {
         branch: None,
         cursor: None,
     };
-    // The v1 list (`--swipe`, until Phase 8).
+    // The queue listed by file (`zf`).
     let mut app = App::new(review, cfg, keys);
-    app.open_v1_list();
+    app.grouping = Grouping::File;
+    app.rebuild_order();
     app
 }
 
@@ -300,7 +301,7 @@ fn each_file_sits_in_the_box_of_its_most_critical_unit_with_its_units_under_its_
 #[test]
 fn only_units_are_selectable() {
     let a = app();
-    let rows = slim::build(&a, 80);
+    let rows = slim::build_queue(&a, 80, true);
     let owned: Vec<String> = (0..rows.lines.len())
         .filter(|&y| rows.owner[y].is_some())
         .map(|y| row_text(&rows.lines[y]))
@@ -315,7 +316,7 @@ fn only_units_are_selectable() {
     }
     let mut a = a;
     v2::press(&mut a, "za");
-    let rows = slim::build(&a, 80);
+    let rows = slim::build_queue(&a, 80, true);
     let owner = |t: &str| {
         let y = rows
             .lines
@@ -360,17 +361,21 @@ fn only_units_are_selectable() {
 fn every_row_fits_its_width_and_nothing_is_cut_at_the_fitted_width() {
     let a = app();
     for w in [0u16, 1, 3, 4, 10, 30, 60, 80, 120] {
-        for l in &slim::build(&a, w).lines {
+        for l in &slim::build_queue(&a, w, true).lines {
             assert!(l.width() <= w as usize, "{w}: {l:?}");
         }
     }
     for w in [30u16, 60, 80, 120] {
-        for l in &slim::build(&a, w).lines {
+        for l in &slim::build_queue(&a, w, true).lines {
             assert_eq!(l.width(), w as usize, "{w}: {l:?}");
         }
     }
     let w = slim::fit_width(&a) as u16;
-    let s: Vec<String> = slim::build(&a, w).lines.iter().map(row_text).collect();
+    let s: Vec<String> = slim::build_queue(&a, w, true)
+        .lines
+        .iter()
+        .map(row_text)
+        .collect();
     for u in a.order.iter().map(|&i| &a.review.units[i]) {
         assert!(
             s.iter().any(|l| l.contains(&u.symbol)),
@@ -388,7 +393,7 @@ fn every_row_fits_its_width_and_nothing_is_cut_at_the_fitted_width() {
 #[test]
 fn blank_lines_separate_boxes_and_files_when_the_list_has_room() {
     let a = app();
-    let rows = slim::build(&a, 80);
+    let rows = slim::build_queue(&a, 80, true);
     let text: Vec<String> = rows.lines.iter().map(row_text).collect();
     let at = |t: &str| text.iter().position(|l| l.contains(t)).unwrap();
     // Between boxes: a bare blank line.
@@ -404,7 +409,7 @@ fn blank_lines_separate_boxes_and_files_when_the_list_has_room() {
         assert_eq!(rows.owner[y], None);
     }
     // Without padding: none of them.
-    let flat: Vec<String> = slim::build_with(&a, 80, false)
+    let flat: Vec<String> = slim::build_queue(&a, 80, false)
         .lines
         .iter()
         .map(row_text)
@@ -489,13 +494,11 @@ fn j_and_k_move_over_units_only_and_esc_and_tab_do_nothing() {
         assert!(code(&mut a, k).is_empty());
         assert_eq!(text(&a, 120, 30), before, "{k:?}");
     }
-    // Enter opens only a flagged unit; on this one it says so.
-    assert!(code(&mut a, KeyCode::Enter).is_empty());
-    assert_eq!((a.screen, a.sel), (Screen::Slim, 0));
-    assert_eq!(
-        a.status,
-        "Only flagged units open for now. f flags this one."
-    );
+    // Enter opens any unit in the unit view; `h` comes back to its row.
+    code(&mut a, KeyCode::Enter);
+    assert_eq!((a.screen, a.sel), (Screen::Unit, 0));
+    key(&mut a, 'h');
+    assert_eq!((a.screen, a.sel), (Screen::Queue, 0));
     // Deciding moves on to the next pending unit, across files.
     a.sel = 2;
     key(&mut a, 'a');
@@ -533,29 +536,17 @@ fn bracket_f_goes_to_the_first_unit_of_the_next_or_previous_file() {
 }
 
 #[test]
-fn bracket_f_is_list_only_and_l_opens_a_flagged_unit() {
+fn bracket_f_jumps_files_and_ctrl_d_and_d_do_not() {
     let mut a = app();
-    a.review.units[1].decision = Decision::Investigate;
     v2::press(&mut a, "]f");
-    assert_eq!((a.screen, symbol(&a)), (Screen::Slim, "look_a"));
-    a.sel = a.order.iter().position(|&i| i == 1).unwrap();
-    key(&mut a, 'l');
-    assert_eq!(a.screen, Screen::Flagged);
-    let sel = a.flagged.sel;
-    v2::press(&mut a, "]f");
-    assert_eq!((a.screen, a.flagged.sel), (Screen::Flagged, sel));
-    let mut b = app();
-    key(&mut b, 's');
-    let cursor = b.swipe.cursor;
-    v2::press(&mut b, "]f");
-    assert_eq!((b.screen, b.swipe.cursor), (Screen::Swipe, cursor));
+    assert_eq!((a.screen, symbol(&a)), (Screen::Queue, "look_a"));
     // ctrl+d scrolls now: no file jump.
     let mut c = app();
     ctrl(&mut c, 'd');
-    assert_eq!((c.screen, c.sel), (Screen::Slim, 0));
+    assert_eq!((c.screen, c.sel), (Screen::Queue, 0));
     // `d` is the notes view's alone.
     key(&mut c, 'd');
-    assert_eq!((c.screen, c.sel), (Screen::Slim, 0));
+    assert_eq!((c.screen, c.sel), (Screen::Queue, 0));
 }
 
 #[test]
@@ -570,79 +561,6 @@ fn the_selected_unit_stays_selected_through_a_rebuild() {
 
 // ---- A: accept the file ------------------------------------------------------
 
-/// On the v1 list `A` asks first; the queue's acts at once (see
-/// `tests/v2_queue.rs`, `file_actions_skip_decided_units`).
-#[test]
-fn a_asks_first_then_accepts_the_files_pending_units_in_one_undo_step() {
-    for confirm in [KeyCode::Char('y'), KeyCode::Enter] {
-        let mut a = app();
-        assert_eq!(a.screen, Screen::Slim, "the v1 list");
-        a.sel = 15; // r2_1
-        a.review.units[a.order[16]].decision = Decision::Investigate;
-        let before = decisions(&a);
-        // The cursor was put on r2_1 by hand: the key saves it, and only it.
-        assert_eq!(shift_a(&mut a), vec![Effect::SaveCursor]);
-        match &a.overlay {
-            Overlay::ConfirmAcceptFile { file, ids } => {
-                assert_eq!(ids.len(), 3);
-                assert_eq!(file, &PathBuf::from("src/r2.rs"));
-            }
-            other => panic!("{other:?}"),
-        }
-        assert_eq!(decisions(&a), before);
-        let s = text(&a, 80, 30);
-        assert!(
-            s.contains("Accept 3 pending units in \"src/r2.rs\"?"),
-            "{s}"
-        );
-        let effects = code(&mut a, confirm);
-        assert_eq!(effects, vec![Effect::Save]);
-        assert_eq!(a.overlay, Overlay::None);
-        assert_eq!(
-            accepted(&a),
-            ["tidy", "quiet", "r2_0", "r2_1", "r2_3"],
-            "and the 2 accepted for you"
-        );
-        assert_eq!(a.sel, 15);
-        assert_eq!(a.review.history.undo.len(), 1);
-        key(&mut a, 'u');
-        assert_eq!(decisions(&a), before);
-    }
-    let mut b = app();
-    b.review.units[1].decision = Decision::Accepted;
-    b.review.units[2].decision = Decision::Accepted;
-    shift_a(&mut b);
-    let s = text(&b, 100, 24);
-    assert!(s.contains("Accept 1 pending unit in \"src/c.rs\"?"), "{s}");
-    assert!(s.contains("y/⏎ yes · esc no"), "{s}");
-}
-
-#[test]
-fn other_keys_cancel_the_file_accept_and_nothing_pending_asks_nothing() {
-    for k in [KeyCode::Char('n'), KeyCode::Esc, KeyCode::Char('x')] {
-        let mut a = app();
-        let before = decisions(&a);
-        shift_a(&mut a);
-        assert!(code(&mut a, k).is_empty());
-        assert_eq!(a.overlay, Overlay::None);
-        assert_eq!(decisions(&a), before);
-    }
-    let mut a = app();
-    a.review.units[0].decision = Decision::Accepted;
-    a.review.units[1].decision = Decision::Accepted;
-    a.review.units[2].decision = Decision::Investigate;
-    shift_a(&mut a);
-    assert_eq!(a.overlay, Overlay::None);
-    assert_eq!(a.status, "nothing pending in this file");
-    let mut b = app();
-    key(&mut b, 's');
-    shift_a(&mut b);
-    assert_eq!(b.overlay, Overlay::None);
-    let mut c = app();
-    v2::press(&mut c, ":e!<cr>");
-    assert_eq!(c.overlay, Overlay::ConfirmReset);
-}
-
 #[test]
 fn both_keys_can_be_rebound_in_the_config() {
     let cfg: Config =
@@ -654,16 +572,23 @@ fn both_keys_can_be_rebound_in_the_config() {
     assert_eq!(a.sel, 0);
     key(&mut a, 'n');
     assert_eq!(symbol(&a), "look_a");
+    let before = decisions(&a);
     shift_a(&mut a);
-    assert_eq!(a.overlay, Overlay::None);
+    assert_eq!(decisions(&a), before, "A is unbound");
+    // The file's pending units, at once, as one undo step.
     ctrl(&mut a, 'a');
-    assert!(matches!(a.overlay, Overlay::ConfirmAcceptFile { .. }));
+    assert_eq!(
+        accepted(&a),
+        ["tidy", "look_a", "look_b", "quiet"],
+        "and the 2 accepted for you"
+    );
+    assert_eq!(a.review.history.undo.len(), 1);
 }
 
 // ---- f: listed by unit ---------------------------------------------------------
 
 #[test]
-fn f_lists_each_unit_in_its_own_levels_box_with_its_file_on_its_row() {
+fn zf_lists_each_unit_in_its_own_levels_box_with_its_file_on_its_row() {
     let mut a = app();
     a.sel = 2;
     assert_eq!(symbol(&a), "c_helper");
@@ -675,22 +600,26 @@ fn f_lists_each_unit_in_its_own_levels_box_with_its_file_on_its_row() {
     );
     // The cursor stays on its unit, now in the routine box.
     assert_eq!((a.sel, symbol(&a)), (5, "c_helper"));
-    let s = lines(&a, 120, 60);
+    let rows: Vec<String> = slim::build_queue(&a, 60, true)
+        .lines
+        .iter()
+        .map(row_text)
+        .collect();
     let at = |t: &str| {
-        s.iter()
+        rows.iter()
             .position(|l| l.contains(t))
-            .unwrap_or_else(|| panic!("no {t}\n{}", s.join("\n")))
+            .unwrap_or_else(|| panic!("no {t}\n{}", rows.join("\n")))
     };
     let order = [
         "╭─ Needs a close look · 2 units ",
-        "▲ close_a",
+        " close_a ",
         "╭─ Worth a look · 3 units ",
-        "◆ look_a",
-        "◆ look_c",
+        " look_a ",
+        " look_c ",
         "╭─ Routine · 21 units ",
-        "● c_helper",
-        "● r0_0",
-        "● r4_3",
+        " c_helper ",
+        " r0_0 ",
+        " r4_3 ",
         "╭─ Not shown · 1 file ",
         " 2 units accepted for you, za shows them",
     ];
@@ -699,35 +628,39 @@ fn f_lists_each_unit_in_its_own_levels_box_with_its_file_on_its_row() {
     }
     // No file names as labels, no gaps: a box's units follow each other.
     assert!(
-        !s.iter().any(|l| l.starts_with("│ src/")),
+        !rows.iter().any(|l| l.starts_with("│ src/")),
         "{}",
-        s.join("\n")
+        rows.join("\n")
     );
-    assert_eq!(at("▲ close_b"), at("▲ close_a") + 1);
-    assert_eq!(at("◆ look_c"), at("◆ look_a") + 2);
-    assert_eq!(at("● r0_0"), at("● c_helper") + 1);
-    // Each row names its file on the right, in a column.
-    let rows: Vec<String> = slim::build(&a, 40).lines.iter().map(row_text).collect();
-    let row = |name: &str| {
-        rows.iter()
-            .find(|l| l.contains(&format!(" {name} ")))
-            .unwrap_or_else(|| panic!("no {name}\n{}", rows.join("\n")))
-    };
-    assert!(row("close_a").ends_with(" c.rs  │"), "{}", row("close_a"));
-    assert!(row("look_c").ends_with(" l1.rs │"), "{}", row("look_c"));
-    assert!(row("r4_3").ends_with(" r4.rs │"), "{}", row("r4_3"));
+    assert_eq!(at(" close_b "), at(" close_a ") + 1);
+    assert_eq!(at(" look_c "), at(" look_a ") + 2);
+    assert_eq!(at(" r0_0 "), at(" c_helper ") + 1);
+    // Each row names its file in a column in front of its name.
+    for (name, path) in [
+        ("close_a", "src/c.rs"),
+        ("look_c", "src/l1.rs"),
+        ("r4_3", "src/r4.rs"),
+    ] {
+        let row = &rows[at(&format!(" {name} "))];
+        let file = row.find(path).unwrap_or_else(|| panic!("{row}"));
+        assert!(file < row.find(name).unwrap(), "{row}");
+    }
     insta::assert_snapshot!("units", render(&a, 120, 60).backend());
     // With `za`, the units accepted for you close the list in their box.
     v2::press(&mut a, "za");
-    let s = lines(&a, 120, 60);
+    let rows: Vec<String> = slim::build_queue(&a, 60, true)
+        .lines
+        .iter()
+        .map(row_text)
+        .collect();
     let at = |t: &str| {
-        s.iter()
+        rows.iter()
             .position(|l| l.contains(t))
-            .unwrap_or_else(|| panic!("no {t}\n{}", s.join("\n")))
+            .unwrap_or_else(|| panic!("no {t}\n{}", rows.join("\n")))
     };
-    assert!(at("● r4_3") < at("╭─ Accepted for you · 2 units "));
-    assert_eq!(at("○ tidy") + 1, at("○ quiet"));
-    assert!(at("○ quiet") < at("╭─ Not shown · 1 file "));
+    assert!(at(" r4_3 ") < at("╭─ Accepted for you · 2 units "));
+    assert_eq!(at(" tidy ") + 1, at(" quiet "));
+    assert!(at(" quiet ") < at("╭─ Not shown · 1 file "));
     v2::press(&mut a, "za");
     // `zf` again: by file, the cursor still on its unit.
     v2::press(&mut a, "zf");
@@ -740,40 +673,11 @@ fn f_lists_each_unit_in_its_own_levels_box_with_its_file_on_its_row() {
 }
 
 #[test]
-fn listed_by_unit_a_row_names_its_file_by_as_much_path_as_tells_it_apart() {
-    let mut readme = unit("readme", "docs/README.md", 1, Kind::Routine);
-    readme.kind = UnitKind::File;
-    let units = vec![
-        unit("a", "src/review/mod.rs", 10, Kind::Routine),
-        unit("b", "src/agent/mod.rs", 10, Kind::Routine),
-        unit("c", "src/tui/app.rs", 10, Kind::Routine),
-        unit("d", "lib/tui/app.rs", 10, Kind::Routine),
-        unit("e", "src/main.rs", 10, Kind::Routine),
-        readme,
-    ];
-    let mut a = app_with(units, Config::default());
-    v2::press(&mut a, "zf");
-    let rows: Vec<String> = slim::build(&a, 60).lines.iter().map(row_text).collect();
-    let row = |name: &str| {
-        rows.iter()
-            .find(|l| l.contains(&format!("● {name} ")))
-            .unwrap_or_else(|| panic!("no {name}\n{}", rows.join("\n")))
-    };
-    assert!(row("a").contains("  review/mod.rs "), "{}", row("a"));
-    assert!(row("b").contains("  agent/mod.rs "), "{}", row("b"));
-    assert!(row("c").contains("  src/tui/app.rs "), "{}", row("c"));
-    assert!(row("d").contains("  lib/tui/app.rs "), "{}", row("d"));
-    assert!(row("e").contains("  main.rs ") && !row("e").contains("src/"));
-    // A whole file is named already.
-    assert_eq!(row("README.md").matches("README.md").count(), 1);
-}
-
-#[test]
 fn listed_by_unit_every_row_fits_and_nothing_is_cut_at_the_fitted_width() {
     let mut a = app();
     v2::press(&mut a, "zf");
     for w in 0u16..=120 {
-        for l in &slim::build(&a, w).lines {
+        for l in &slim::build_queue(&a, w, true).lines {
             assert!(l.width() <= w as usize, "{w}: {l:?}");
             if w >= 30 {
                 assert_eq!(l.width(), w as usize, "{w}: {l:?}");
@@ -781,19 +685,20 @@ fn listed_by_unit_every_row_fits_and_nothing_is_cut_at_the_fitted_width() {
         }
     }
     let w = slim::fit_width(&a) as u16;
-    let s: Vec<String> = slim::build(&a, w).lines.iter().map(row_text).collect();
+    let rows = slim::build_queue(&a, w, true);
+    let s: Vec<String> = rows.lines.iter().map(row_text).collect();
     for (pos, &i) in a.order.iter().enumerate() {
         let u = &a.review.units[i];
-        let file = u.file.file_name().unwrap().to_string_lossy();
-        let line = &s[slim::build(&a, w).spans[pos].0];
+        let path = u.file.display().to_string();
+        let line = &s[rows.spans[pos].0];
         assert!(
-            line.contains(&format!(" {} ", u.symbol)) && line.contains(&format!(" {file} ")),
+            line.contains(&format!(" {} ", u.symbol)) && line.contains(&format!(" {path} ")),
             "{w}: {line}"
         );
     }
     assert!(s.iter().any(|l| l.contains("Routine · 21 units")));
-    // Narrow: the file column goes before the names get short.
-    let rows = slim::build(&a, 20);
+    // Narrow: the path column goes before the names get short.
+    let rows = slim::build_queue(&a, 20, true);
     for &(s, _) in &rows.spans {
         let line = row_text(&rows.lines[s]);
         assert!(!line.contains(".rs"), "{line}");
@@ -824,34 +729,20 @@ fn listed_by_unit_bracket_f_and_a_go_by_the_files_units_in_the_box() {
     assert_eq!(symbol(&a), "a_routine");
     v2::press(&mut a, "[f");
     assert_eq!(symbol(&a), "a_look");
-    // `A` takes the file's pending units in this box only.
+    // `A` takes the file's pending units in this box only, at once.
     a.sel = 2;
     shift_a(&mut a);
-    match &a.overlay {
-        Overlay::ConfirmAcceptFile { ids, .. } => assert_eq!(ids.len(), 2),
-        other => panic!("{other:?}"),
-    }
-    let s = text(&a, 100, 24);
-    assert!(
-        s.contains("Accept 2 pending units of \"src/a.rs\" in this box?"),
-        "{s}"
-    );
-    key(&mut a, 'y');
+    assert_eq!(a.overlay, Overlay::None);
+    assert_eq!(a.status, "Accepted 2 units.");
     assert_eq!(accepted(&a), ["a_routine", "a_more"]);
 }
 
 #[test]
-fn zf_is_list_only_and_can_be_rebound() {
+fn zf_is_the_queues_alone_and_can_be_rebound() {
     let mut a = app();
-    a.review.units[1].decision = Decision::Investigate;
-    a.sel = a.order.iter().position(|&i| i == 1).unwrap();
     key(&mut a, 'l');
     v2::press(&mut a, "zf");
-    assert_eq!((a.screen, a.grouping), (Screen::Flagged, Grouping::File));
-    let mut b = app();
-    key(&mut b, 's');
-    v2::press(&mut b, "zf");
-    assert_eq!((b.screen, b.grouping), (Screen::Swipe, Grouping::File));
+    assert_eq!((a.screen, a.grouping), (Screen::Unit, Grouping::File));
     let cfg: Config = toml::from_str("[keys]\n\"toggle.by_file\" = \"w\"\n").unwrap();
     let (keys, _) = cfg.keymap().unwrap();
     let mut c = app_keys(units(), cfg, keys);
@@ -889,26 +780,25 @@ fn the_keys_are_in_the_help_overlay_and_the_legend_shows_when_it_fits() {
     for (w, h) in [(100u16, 40u16), (120, 50), (160, 50)] {
         let out = text(&a, w, h);
         assert!(
-            out.contains("legend") && out.contains("▲ close look") && out.contains("needs fix"),
+            out.contains("legend")
+                && out.contains("▲ close look")
+                && out.contains("○ accepted for you"),
             "{w}x{h}\n{out}"
         );
+        assert!(!out.contains("needs fix"), "{w}x{h}\n{out}");
     }
-    // The help lists the keys of the screen it is opened on: the Flagged
-    // screen's tiles, zoom and resolution only there.
+    // The help lists the keys of the screen it is opened on: the unit
+    // view's own in the unit view.
+    let mut f = app();
+    key(&mut f, 'l');
+    assert_eq!(f.screen, Screen::Unit);
+    f.overlay = Overlay::Help;
+    let out = text(&f, 100, 40);
+    assert!(out.contains("keys · unit"), "{out}");
     assert!(
         !out.contains("zoom the tile") && !out.contains("resolved: ok"),
         "{out}"
     );
-    let mut f = app();
-    f.review.units[1].decision = Decision::Investigate;
-    f.sel = f.order.iter().position(|&i| i == 1).unwrap();
-    key(&mut f, 'l');
-    assert_eq!(f.screen, Screen::Flagged);
-    f.overlay = Overlay::Help;
-    let out = text(&f, 100, 40);
-    assert!(out.contains("keys · Flagged"), "{out}");
-    assert!(out.contains("zz  zoom the tile"), "{out}");
-    assert!(out.contains("o x  resolved: ok / needs fix"), "{out}");
     // The footer has no file button.
     a.overlay = Overlay::None;
     let out = text(&a, 120, 30);
@@ -938,7 +828,7 @@ fn a_long_path_is_cut_at_the_front_so_the_file_name_stays() {
     );
 }
 
-// ---- Large reviews, swipe, sizes -------------------------------------------------
+// ---- Large reviews, order, sizes -------------------------------------------------
 
 #[test]
 fn a_large_review_asks_about_a_file_when_the_cursor_gets_to_it() {
@@ -951,7 +841,7 @@ fn a_large_review_asks_about_a_file_when_the_cursor_gets_to_it() {
         ..Config::default()
     };
     let mut a = app_with(units, cfg);
-    let effects = a.start(true, None, Vec::new(), Some(SessionRef::default()), false);
+    let effects = a.start(true, None, Vec::new(), Some(SessionRef::default()));
     // The close looks and the rest of the selected unit's file.
     let mut first = prepared(&effects);
     first.sort();
@@ -973,16 +863,16 @@ fn a_large_review_asks_about_a_file_when_the_cursor_gets_to_it() {
 }
 
 #[test]
-fn swipe_still_shows_the_most_attention_first() {
+fn listed_by_unit_the_most_attention_comes_first_whatever_its_file() {
     let mut units = units();
     // A close look in a routine file.
     units[11].status = UnitStatus::Removed;
     units[11].callers = vec!["somebody".into()];
     let mut a = app_with(units, Config::default());
-    key(&mut a, 's');
-    let first: Vec<&str> = a.swipe.cards[..3]
+    v2::press(&mut a, "zf");
+    let first: Vec<&str> = a.order[..3]
         .iter()
-        .map(|id| a.review.unit(id).unwrap().symbol.as_str())
+        .map(|&i| a.review.units[i].symbol.as_str())
         .collect();
     assert_eq!(first, ["close_a", "close_b", "r0_3"]);
 }
@@ -1080,9 +970,10 @@ fn the_selection_stays_visible_with_its_box_title_or_file_name_when_they_fit() {
 
 #[test]
 fn the_overlay_and_padding_never_panic_at_tiny_sizes() {
+    // `F` flags the file and opens one note line for its units.
     let mut a = app();
-    shift_a(&mut a);
-    assert!(matches!(a.overlay, Overlay::ConfirmAcceptFile { .. }));
+    v2::press(&mut a, "F");
+    assert!(matches!(a.overlay, Overlay::Note { .. }));
     for (w, h) in [
         (0u16, 0u16),
         (1, 1),

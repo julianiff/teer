@@ -24,7 +24,7 @@ use crate::git::{self, ChangedFile, SkippedFile};
 use crate::graph;
 use crate::units;
 use crate::util::hash_hex;
-use model::{Decision, Prep, Review, SessionRef, Unit};
+use model::{Prep, Review, SessionRef, Unit};
 use prepare::PrepareEvent;
 
 #[derive(Debug, Clone, Default)]
@@ -34,9 +34,23 @@ pub struct BuildOptions {
 }
 
 /// Build a review from the repository: diff, units, call graph. No agent.
+/// With a base, the branch since it, what isn't committed yet included
+/// (untracked files too): a re-run sees the fixes an agent made without
+/// committing them.
 pub fn build_review(cwd: &Path, opts: &BuildOptions) -> Result<Review> {
+    build(cwd, opts, true)
+}
+
+/// [`build_review`] of the commits since the base alone: a pull request's,
+/// in teer's own checkout of it.
+pub fn build_commits_review(cwd: &Path, opts: &BuildOptions) -> Result<Review> {
+    build(cwd, opts, false)
+}
+
+/// With a base, `tree` takes in the working tree too (see [`git::resolve`]).
+fn build(cwd: &Path, opts: &BuildOptions, tree: bool) -> Result<Review> {
     let repo = git::repo_root(cwd)?;
-    let spec = git::resolve(&repo, opts.base.as_deref())?;
+    let spec = git::resolve(&repo, opts.base.as_deref(), tree)?;
     let (files, skipped) = git::changes(&repo, &spec)?;
     let analysis = units::analyze(&files, opts.languages.as_deref());
     let mut units = analysis.units.clone();
@@ -107,21 +121,6 @@ impl Review {
         ))
     }
 
-    /// Units flagged for a closer look, in display order (file, then line).
-    pub fn flagged(&self) -> Vec<&Unit> {
-        let mut v: Vec<&Unit> = self
-            .units
-            .iter()
-            .filter(|u| u.decision == Decision::Investigate)
-            .collect();
-        v.sort_by(|a, b| {
-            a.file
-                .cmp(&b.file)
-                .then(a.display_line().cmp(&b.display_line()))
-        });
-        v
-    }
-
     pub fn unit_mut(&mut self, id: &str) -> Option<&mut Unit> {
         self.units.iter_mut().find(|u| u.id == id)
     }
@@ -136,10 +135,21 @@ impl Review {
             .collect()
     }
 
+    /// Unit `id` while its code is still `fingerprint`, the code an answer
+    /// was asked about; `None` once a re-run changed it (or removed the
+    /// unit) since.
+    pub fn unit_as_asked(&mut self, id: &str, fingerprint: &str) -> Option<&mut Unit> {
+        self.unit_mut(id).filter(|u| u.fingerprint == fingerprint)
+    }
+
+    /// Keep what the agent said about a unit. An answer about code a re-run
+    /// changed since it was asked is dropped: the unit keeps no result of
+    /// it and is asked again about the code it has now.
     pub fn apply(&mut self, ev: PrepareEvent) {
         match ev {
             PrepareEvent::Ready {
                 id,
+                fingerprint,
                 changes,
                 summary,
                 cost,
@@ -147,7 +157,7 @@ impl Review {
                 checking,
                 ..
             } => {
-                if let Some(u) = self.unit_mut(&id) {
+                if let Some(u) = self.unit_as_asked(&id, &fingerprint) {
                     u.summary = summary;
                     u.prep = if changes.is_empty() {
                         Prep::Unavailable
@@ -163,8 +173,12 @@ impl Review {
                     u.checks.second_pending = checking;
                 }
             }
-            PrepareEvent::Second { id, opinion } => {
-                if let Some(u) = self.unit_mut(&id) {
+            PrepareEvent::Second {
+                id,
+                fingerprint,
+                opinion,
+            } => {
+                if let Some(u) = self.unit_as_asked(&id, &fingerprint) {
                     u.checks.second_pending = false;
                     match opinion {
                         Ok(o) => {
@@ -178,9 +192,13 @@ impl Review {
                     }
                 }
             }
-            PrepareEvent::Failed { id, error } => {
+            PrepareEvent::Failed {
+                id,
+                fingerprint,
+                error,
+            } => {
                 crate::log::write(&format!("preparing {id} failed: {error}"));
-                if let Some(u) = self.unit_mut(&id) {
+                if let Some(u) = self.unit_as_asked(&id, &fingerprint) {
                     u.prep = Prep::Unavailable;
                 }
             }

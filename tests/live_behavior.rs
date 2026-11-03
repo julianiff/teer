@@ -66,7 +66,7 @@ async fn probe(r: &FixtureRepo, symbol: &str) {
                     if c.surprise() {
                         "!"
                     } else if c.changed() {
-                        "≠"
+                        "~"
                     } else {
                         "="
                     },

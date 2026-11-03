@@ -72,7 +72,7 @@ fn started(review: Review, agent: bool) -> (App, Vec<Effect>) {
     let _env = isolate_env();
     let cwd = review.repo_root.clone();
     let mut app = App::new(review, Config::default(), Keymap::default());
-    let effects = app.start(agent, None, Vec::new(), Some(session(&cwd)), false);
+    let effects = app.start(agent, None, Vec::new(), Some(session(&cwd)));
     (app, effects)
 }
 
@@ -110,9 +110,11 @@ fn pending_after(app: &App, id: &str) -> Vec<String> {
         .collect()
 }
 
-fn ready(id: &str, kind: DiveKind, text: &str) -> AppEvent {
+/// The answer to `kind` on unit `id` of `app`, about its code as it is.
+fn ready(app: &App, id: &str, kind: DiveKind, text: &str) -> AppEvent {
     AppEvent::Dive(DiveEvent::Ready {
         id: id.into(),
+        fingerprint: app.review.unit(id).unwrap().fingerprint.clone(),
         kind,
         text: text.into(),
         sources: Vec::new(),
@@ -242,7 +244,8 @@ fn sections_and_hunk_jumps() {
         missed: Vec::new(),
     });
     app.rebuild_order();
-    app.on_app_event(ready(CHARGE, DiveKind::Recommend, "Check the currency."));
+    let answer = ready(&app, CHARGE, DiveKind::Recommend, "Check the currency.");
+    app.on_app_event(answer);
     let text = screen(&app, 120, 60);
     let at = |s: &str| {
         text.find(s)
@@ -295,7 +298,8 @@ fn prefetch_and_cache() {
     assert_eq!(recommends(&effects), want);
 
     // The answer is kept with the unit and shown.
-    app.on_app_event(ready(&first, DiveKind::Recommend, "Rename it back."));
+    let answer = ready(&app, &first, DiveKind::Recommend, "Rename it back.");
+    app.on_app_event(answer);
     assert!(text(&app).contains("Rename it back."));
     assert!(recommends(&app.open_unit(first.clone())).is_empty());
 
@@ -632,6 +636,7 @@ fn leader_panels_and_gx() {
     assert!(t.contains("␣t Tests"), "{t}");
     let found = AppEvent::Dive(DiveEvent::Ready {
         id: CHARGE.into(),
+        fingerprint: app.review.unit(CHARGE).unwrap().fingerprint.clone(),
         kind: DiveKind::Tests,
         text: String::new(),
         sources: Vec::new(),
@@ -758,11 +763,6 @@ fn decide_and_advance_in_unit_view() {
     press(&mut app, "n");
     assert_eq!(app.unit.id, ids[3]);
     press(&mut app, "A");
-    if let Overlay::ConfirmAcceptFile { .. } = app.overlay {
-        // Before Phase 4's `A` acts at once it asks; then `n` moves on.
-        press(&mut app, "y");
-        press(&mut app, "n");
-    }
     for id in &ids[3..6] {
         assert_eq!(
             app.review.unit(id).unwrap().decision,
@@ -772,19 +772,10 @@ fn decide_and_advance_in_unit_view() {
     }
     assert_eq!(app.unit.id, ids[6]);
     assert_eq!(app.screen, Screen::Unit);
-    // F: the same, flagged.
+    // F: the same, flagged, with one note line for them.
     press(&mut app, "F");
-    match app.overlay {
-        Overlay::ConfirmFlagFile { .. } => {
-            // As for `A`: the last pending unit is before this one.
-            press(&mut app, "y");
-            press(&mut app, "N");
-        }
-        Overlay::Note { .. } => {
-            press(&mut app, "<esc>");
-        }
-        _ => {}
-    }
+    assert!(matches!(app.overlay, Overlay::Note { .. }));
+    press(&mut app, "<esc>");
     for id in &ids[6..9] {
         assert_eq!(
             app.review.unit(id).unwrap().decision,

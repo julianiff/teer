@@ -244,17 +244,6 @@ impl App {
         self.on_step()
     }
 
-    /// Open the sheet on `step` when it is on offer, else on the default
-    /// (the notes view's old ways out: `c` hand over, `p` post).
-    pub fn open_finish_on(&mut self, step: Step) -> Vec<Effect> {
-        let mut effects = self.open_finish();
-        if let Some(sel) = self.finish_steps().iter().position(|s| *s == step) {
-            self.overlay = Overlay::Finish { sel };
-            effects.extend(self.on_step());
-        }
-        effects
-    }
-
     /// The configured editor is about to edit the commit message, not the
     /// review summary.
     pub fn edits_commit_message(&self) -> bool {
@@ -447,8 +436,7 @@ impl App {
         let id = self.review.units[self.order[pos]].id.clone();
         match self.screen {
             Screen::Unit => self.open_unit(id),
-            Screen::Queue | Screen::Slim => self.move_sel(pos),
-            Screen::Swipe | Screen::Flagged => self.go_to_unit(&id, false).unwrap_or_default(),
+            Screen::Queue => self.move_sel(pos),
         }
     }
 

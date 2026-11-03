@@ -1,5 +1,5 @@
 //! Agent questions asked about a unit (the "dive" naming is kept here): the
-//! unit view's recommendation and tools, and the Flagged screen's tiles.
+//! unit view's recommendation and tools.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,10 +13,14 @@ use super::{prompts, test_search, validate, visual};
 use crate::agent::AgentAdapter;
 use crate::git::ChangedFile;
 
+/// What came back about unit `id`. `fingerprint` is the unit's code as it
+/// was asked about: an answer holds for that code only (see
+/// [`Review::is_current`]).
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiveEvent {
     Ready {
         id: String,
+        fingerprint: String,
         kind: DiveKind,
         text: String,
         sources: Vec<String>,
@@ -29,6 +33,7 @@ pub enum DiveEvent {
     },
     Failed {
         id: String,
+        fingerprint: String,
         kind: DiveKind,
         error: String,
     },
@@ -38,6 +43,22 @@ pub enum DiveEvent {
         kind: DiveKind,
         text: String,
     },
+}
+
+impl DiveEvent {
+    /// The unit an answer or a failure is about, and its code then; `None`
+    /// for progress, which isn't kept.
+    pub fn asked_on(&self) -> Option<(&str, &str)> {
+        match self {
+            DiveEvent::Ready {
+                id, fingerprint, ..
+            }
+            | DiveEvent::Failed {
+                id, fingerprint, ..
+            } => Some((id, fingerprint)),
+            DiveEvent::Progress { .. } => None,
+        }
+    }
 }
 
 /// Whether a dive of this kind may use the web.
@@ -95,6 +116,7 @@ pub fn search_tests(root: &Path, unit: &Unit, callers: &[test_search::Caller]) -
     let search = test_search::find(root, unit, callers);
     DiveEvent::Ready {
         id: unit.id.clone(),
+        fingerprint: unit.fingerprint.clone(),
         kind: DiveKind::Tests,
         text: String::new(),
         sources: Vec::new(),
@@ -126,6 +148,7 @@ pub async fn interpret_tests(
     tx: UnboundedSender<DiveEvent>,
 ) {
     let id = job.unit.id.clone();
+    let fingerprint = job.unit.fingerprint.clone();
     let _ = tx.send(DiveEvent::Progress {
         id: id.clone(),
         kind: DiveKind::Tests,
@@ -138,6 +161,7 @@ pub async fn interpret_tests(
     let ev = match interpret(adapter, &session, job).await {
         Ok((text, c)) => DiveEvent::Ready {
             id,
+            fingerprint,
             kind: DiveKind::Tests,
             text,
             sources: Vec::new(),
@@ -147,6 +171,7 @@ pub async fn interpret_tests(
         },
         Err(error) => DiveEvent::Failed {
             id,
+            fingerprint,
             kind: DiveKind::Tests,
             error,
         },
@@ -216,6 +241,7 @@ pub async fn run_dive(
         let ev = match result {
             Ok(v) => DiveEvent::Ready {
                 id: unit.id.clone(),
+                fingerprint: unit.fingerprint.clone(),
                 kind,
                 text: v.claim.clone(),
                 sources: Vec::new(),
@@ -225,6 +251,7 @@ pub async fn run_dive(
             },
             Err(error) => DiveEvent::Failed {
                 id: unit.id.clone(),
+                fingerprint: unit.fingerprint.clone(),
                 kind,
                 error,
             },
@@ -241,6 +268,7 @@ pub async fn run_dive(
         Ok(v) => match parse_answer(&v) {
             Ok((text, sources)) => DiveEvent::Ready {
                 id: unit.id.clone(),
+                fingerprint: unit.fingerprint.clone(),
                 kind,
                 text,
                 sources,
@@ -250,12 +278,14 @@ pub async fn run_dive(
             },
             Err(error) => DiveEvent::Failed {
                 id: unit.id.clone(),
+                fingerprint: unit.fingerprint.clone(),
                 kind,
                 error,
             },
         },
         Err(e) => DiveEvent::Failed {
             id: unit.id.clone(),
+            fingerprint: unit.fingerprint.clone(),
             kind,
             error: format!("{e:#}"),
         },
@@ -264,9 +294,23 @@ pub async fn run_dive(
 }
 
 impl Review {
+    /// Is `ev` about the code of its unit as it is now? An answer asked
+    /// about code a re-run changed since (or about a unit it removed) is
+    /// not, and is dropped.
+    pub fn is_current(&self, ev: &DiveEvent) -> bool {
+        ev.asked_on().is_none_or(|(id, fingerprint)| {
+            self.unit(id).is_some_and(|u| u.fingerprint == fingerprint)
+        })
+    }
+
     /// Store a dive answer, or clear the pending marker when it failed.
-    /// Returns whether anything changed (false for an unknown unit).
+    /// Returns whether anything changed (false for an unknown unit). An
+    /// answer that isn't [current](Review::is_current) is dropped: the unit
+    /// keeps no result of it, so it is asked again about the code it has.
     pub fn apply_dive(&mut self, ev: &DiveEvent) -> bool {
+        if !self.is_current(ev) {
+            return false;
+        }
         match ev {
             DiveEvent::Ready {
                 id,
@@ -276,6 +320,7 @@ impl Review {
                 visual,
                 behavior,
                 coverage,
+                ..
             } => {
                 let Some(u) = self.unit_mut(id) else {
                     return false;
@@ -293,7 +338,9 @@ impl Review {
                 );
                 true
             }
-            DiveEvent::Failed { id, kind, error } => {
+            DiveEvent::Failed {
+                id, kind, error, ..
+            } => {
                 crate::log::write(&format!("dive {kind:?} for {id} failed: {error}"));
                 let Some(u) = self.unit_mut(id) else {
                     return false;
@@ -346,6 +393,7 @@ mod tests {
         r.units[0].dive_pending.insert(DiveKind::Recommend);
         let ev = DiveEvent::Ready {
             id: "a::f".into(),
+            fingerprint: "x".into(),
             kind: DiveKind::Recommend,
             text: "why".into(),
             sources: vec!["a.rs:1".into()],
@@ -367,6 +415,7 @@ mod tests {
         r.units[0].dive_pending.insert(DiveKind::Recommend);
         let ev = DiveEvent::Failed {
             id: "a::f".into(),
+            fingerprint: "x".into(),
             kind: DiveKind::Recommend,
             error: "boom".into(),
         };
@@ -382,6 +431,7 @@ mod tests {
         let mut r = review();
         let ev = DiveEvent::Ready {
             id: "nope".into(),
+            fingerprint: "x".into(),
             kind: DiveKind::Recommend,
             text: String::new(),
             sources: vec![],
@@ -390,6 +440,37 @@ mod tests {
             coverage: None,
         };
         assert!(!r.apply_dive(&ev));
+    }
+
+    /// Asked about code a re-run changed since: the answer, or the failure,
+    /// leaves the unit as the re-run made it, asked again (pending) or not.
+    #[test]
+    fn an_answer_about_code_that_changed_since_is_dropped() {
+        let mut r = review();
+        r.units[0].fingerprint = "y".into();
+        r.units[0].dive_pending.insert(DiveKind::Recommend);
+        let ready = DiveEvent::Ready {
+            id: "a::f".into(),
+            fingerprint: "x".into(),
+            kind: DiveKind::Recommend,
+            text: "about the old code".into(),
+            sources: vec![],
+            visual: None,
+            behavior: None,
+            coverage: None,
+        };
+        let failed = DiveEvent::Failed {
+            id: "a::f".into(),
+            fingerprint: "x".into(),
+            kind: DiveKind::Recommend,
+            error: "boom".into(),
+        };
+        for ev in [&ready, &failed] {
+            assert!(!r.is_current(ev));
+            assert!(!r.apply_dive(ev));
+            assert!(r.units[0].dive.results.is_empty());
+            assert!(r.units[0].dive_pending.contains(&DiveKind::Recommend));
+        }
     }
 }
 
@@ -446,6 +527,7 @@ mod run_tests {
         match dive(&m, DiveKind::Recommend, true).await {
             DiveEvent::Ready {
                 id,
+                fingerprint,
                 kind,
                 text,
                 sources,
@@ -454,6 +536,7 @@ mod run_tests {
                 coverage: None,
             } => {
                 assert_eq!((id.as_str(), kind), ("a::f", DiveKind::Recommend));
+                assert_eq!(fingerprint, "x", "the code it was asked about");
                 assert!(text.starts_with("mock"));
                 assert_eq!(sources.len(), 2);
             }

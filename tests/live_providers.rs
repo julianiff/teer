@@ -89,7 +89,7 @@ async fn round_trip(adapter: Arc<dyn AgentAdapter>, name: &str) {
     let units = changed.iter().map(|u| (u.clone(), file.clone())).collect();
     second_opinions(adapter.clone(), session.clone(), units, tx).await;
     while let Ok(ev) = rx.try_recv() {
-        if let PrepareEvent::Second { id, opinion } = ev {
+        if let PrepareEvent::Second { id, opinion, .. } = ev {
             println!("second opinion on {id}: {opinion:?}");
             assert!(opinion.is_ok(), "{opinion:?}");
         }

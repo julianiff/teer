@@ -1,5 +1,4 @@
-//! Live preview pane for the unit under the cursor in the queue and the
-//! v1 list.
+//! Live preview pane for the unit under the cursor in the queue.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -8,8 +7,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use super::app::{App, Screen, Target};
-use super::slim::{self, Flavor};
+use super::app::{App, Target};
+use super::slim;
 use crate::review::model::{Prep, Unit};
 use crate::util::{truncate, wrap};
 
@@ -27,11 +26,9 @@ const MAX_CODE_PANE_ROWS: u16 = 24;
 pub const MIN_BOX_ROWS: usize = 5;
 /// Narrowest list beside the pane; it is never wider than [`SIDE_LIST_MOST`].
 const MIN_SIDE_LIST: u16 = 24;
-/// Widest list beside the pane, in percent: the code change gets the rest.
-const SIDE_LIST_MOST: u32 = 35;
-/// Widest queue beside the pane, in percent: its rows name the file and
-/// the state too.
-const SIDE_QUEUE_MOST: u32 = 45;
+/// Widest list beside the pane, in percent: its rows name the file and the
+/// state too; the code change gets the rest.
+const SIDE_LIST_MOST: u32 = 45;
 
 /// Which edge of the list the preview sits on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,11 +55,10 @@ impl ListSize {
         padded_rows: u16::MAX,
     };
 
-    /// The size of `app`'s list of `flavor`, as far as a layout of `area`
-    /// needs it.
-    pub fn of(app: &App, area: Rect, flavor: Flavor) -> ListSize {
+    /// The size of `app`'s queue, as far as a layout of `area` needs it.
+    pub fn of(app: &App, area: Rect) -> ListSize {
         if area.width >= SIDE_WIDTH {
-            let width = slim::fit_width_of(app, flavor).min(u16::MAX as usize) as u16;
+            let width = slim::fit_width(app).min(u16::MAX as usize) as u16;
             return ListSize {
                 width,
                 ..ListSize::FULL
@@ -72,11 +68,7 @@ impl ListSize {
         if app.order.len() >= area.height as usize {
             return ListSize::FULL;
         }
-        let count = |padded| {
-            slim::build_rows(app, area.width, padded, flavor)
-                .lines
-                .len() as u16
-        };
+        let count = |padded| slim::build_queue(app, area.width, padded).lines.len() as u16;
         let rows = count(false);
         let padded_rows = if rows as usize >= slim::PADDING_MIN_ROWS {
             count(true)
@@ -94,7 +86,7 @@ impl ListSize {
 /// Splits `area` into the list and the preview pane, which is always there
 /// unless the area is too small to hold one. At 110 columns or more the pane
 /// sits beside the list, and the list is as wide as `list` needs, at least
-/// 24 columns and at most 35%. Otherwise the pane sits below and takes about
+/// 24 columns and at most 45%. Otherwise the pane sits below and takes about
 /// 40% of the height (5 to 12 rows), or with `code` (the selected unit shows
 /// its code change) about 60%, up to 24 rows, so the diff is visible below
 /// the statements. It takes more when the list leaves more free; the list
@@ -102,16 +94,11 @@ impl ListSize {
 /// 14) and at
 /// least 3. A pane under 2 rows is not drawn.
 pub fn layout_fit(area: Rect, code: bool, list: ListSize) -> (Rect, Option<(Rect, Pane)>) {
-    layout_split(area, code, list, SIDE_LIST_MOST)
-}
-
-/// [`layout_fit`] with a list beside the pane of at most `most` percent.
-fn layout_split(area: Rect, code: bool, list: ListSize, most: u32) -> (Rect, Option<(Rect, Pane)>) {
     if area.width == 0 || area.height == 0 {
         return (area, None);
     }
     if area.width >= SIDE_WIDTH {
-        let most = (u32::from(area.width) * most / 100) as u16;
+        let most = (u32::from(area.width) * SIDE_LIST_MOST / 100) as u16;
         let width = list.width.clamp(MIN_SIDE_LIST, most);
         let [list, pane] =
             Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area);
@@ -138,21 +125,16 @@ fn layout_split(area: Rect, code: bool, list: ListSize, most: u32) -> (Rect, Opt
     (list, Some((pane, Pane::Bottom)))
 }
 
-/// The list and the pane for `app` in `area`, as the screen on show draws
-/// them: the queue gets up to 45% beside the pane, the list 35%.
+/// The queue and the pane for `app` in `area`.
 pub fn layout_of(app: &App, area: Rect) -> (Rect, Option<(Rect, Pane)>) {
     let code = app.selected().is_some_and(|u| super::diff::shows(app, u));
-    let (flavor, most) = match app.screen {
-        Screen::Queue => (Flavor::Queue, SIDE_QUEUE_MOST),
-        _ => (Flavor::List, SIDE_LIST_MOST),
-    };
-    layout_split(area, code, ListSize::of(app, area, flavor), most)
+    layout_fit(area, code, ListSize::of(app, area))
 }
 
 /// The change itself as lines: its name, why it matters and its commits
 /// under it, then a blank row before each other group of [`unit_groups`].
-/// With `statements` its statements are listed too; the list preview and
-/// the swipe card write them into the code change instead (see
+/// With `statements` its statements are listed too; the preview writes
+/// them into the code change instead when it shows one (see
 /// [`super::diff`]).
 pub fn unit_lines(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Line<'static>> {
     let name = truncate(&slim::row_name(u), w);
@@ -326,11 +308,6 @@ pub fn agent_lines(
     lines.into_iter().map(|l| barred(app, l, indent)).collect()
 }
 
-/// [`unit_groups`] one after the other.
-pub fn unit_explain(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Line<'static>> {
-    unit_groups(app, u, w, statements).concat()
-}
-
 /// What `u` is, in groups: why it has its level (see [`check_lines`]) and
 /// its commits; what the agent said (see [`agent_lines`]), or a note while
 /// it hasn't; the reviewer's note; the answers to questions asked about it.
@@ -355,20 +332,14 @@ pub fn unit_groups(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Vec<L
             })
             .collect()
     };
-    // The reviewer's note. Under the code box when there is one; the
-    // Flagged screen has it in its head.
-    let card = if statements && app.screen != super::app::Screen::Flagged {
+    // The reviewer's note. Under the code box when there is one.
+    let card = if statements {
         super::notes::card(app, u, w.saturating_sub(1))
     } else {
         Vec::new()
     };
-    // Answers to questions asked about it, so they are seen. On the Flagged
-    // screen they are in its chat.
-    let asked = if app.screen == super::app::Screen::Flagged {
-        Vec::new()
-    } else {
-        super::ask::note_lines(app, &u.id, w.saturating_sub(1))
-    };
+    // Answers to questions asked about it, so they are seen.
+    let asked = super::ask::note_lines(app, &u.id, w.saturating_sub(1));
     vec![about, said, indented(card), indented(asked)]
 }
 
@@ -652,8 +623,8 @@ mod tests {
         assert_eq!(pane, Pane::Side);
         assert_eq!(l.width + p.width, 110);
         assert_eq!(p.x, l.width);
-        // The list takes at most 35%: 38 of 110.
-        assert_eq!(p.width, 72);
+        // The list takes at most 45%: 49 of 110.
+        assert_eq!(p.width, 61);
         assert_eq!(p.height, 20);
         assert_eq!(layout(r(109, 20)).1.map(|x| x.1), Some(Pane::Bottom));
     }
@@ -700,7 +671,7 @@ mod tests {
         for (w, need, want) in [
             (120u16, 20u16, 24u16),
             (120, 30, 30),
-            (120, 90, 42),
+            (120, 90, 54),
             (110, 0, 24),
             (200, 70, 70),
         ] {
@@ -711,7 +682,7 @@ mod tests {
             assert_eq!((p.x, p.width), (want, w - want), "{w} {need}");
         }
         // A list of unknown size gets the most it can.
-        assert_eq!(layout_for(r(120, 30), true).0.width, 42);
+        assert_eq!(layout_for(r(120, 30), true).0.width, 54);
     }
 
     #[test]

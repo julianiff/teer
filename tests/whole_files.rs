@@ -211,14 +211,16 @@ fn key(app: &mut App, c: char) {
 }
 
 #[test]
-fn the_list_shows_whole_files_and_the_files_it_cant_show_last() {
-    let mut a = App::new(review(), Config::default(), Keymap::default());
-    // The v1 list (`--swipe`); the queue's drawing is tests/v2_queue.rs.
-    a.open_v1_list();
+fn the_queue_shows_whole_files_and_the_files_it_cant_show_last() {
+    let a = App::new(review(), Config::default(), Keymap::default());
     let t = draw(&a, 120, 50);
-    // A whole file goes by its file name, in the list and over the preview.
-    assert!(t.lines().any(|l| l.starts_with("│ README.md")), "{t}");
-    assert!(t.lines().any(|l| l.starts_with("│▌  ◆ README.md")), "{t}");
+    // A whole file goes by its path in the queue, "whole file" its name,
+    // and by its file name over the preview.
+    assert!(
+        t.lines()
+            .any(|l| l.starts_with("│▌  ◆ README.md") && l.contains("whole file pending")),
+        "{t}"
+    );
     assert!(
         t.lines().any(|l| l.trim_end().ends_with("╮  README.md")),
         "{t}"
@@ -263,9 +265,7 @@ fn a_change_of_only_a_binary_file_still_says_so() {
     repo.write("logo.png", "PNG\0");
     let r = build_review(&repo.path(), &BuildOptions::default()).unwrap();
     assert!(r.units.is_empty());
-    let mut a = App::new(r, Config::default(), Keymap::default());
-    // The v1 list (`--swipe`); the queue's drawing is tests/v2_queue.rs.
-    a.open_v1_list();
+    let a = App::new(r, Config::default(), Keymap::default());
     let t = draw(&a, 80, 20);
     assert!(t.contains("╭─ Not shown · 1 file"), "{t}");
     assert!(
@@ -277,8 +277,6 @@ fn a_change_of_only_a_binary_file_still_says_so() {
 #[test]
 fn a_file_too_large_to_describe_says_so_and_shows_its_diff() {
     let mut a = App::new(review(), Config::default(), Keymap::default());
-    // The v1 list (`--swipe`); the queue's drawing is tests/v2_queue.rs.
-    a.open_v1_list();
     a.sel = a
         .order
         .iter()
@@ -293,8 +291,6 @@ fn a_file_too_large_to_describe_says_so_and_shows_its_diff() {
 #[test]
 fn all_done_waits_for_whole_files_and_names_what_was_not_shown() {
     let mut a = App::new(review(), Config::default(), Keymap::default());
-    // The v1 list (`--swipe`); the queue's drawing is tests/v2_queue.rs.
-    a.open_v1_list();
     // Every unit accepted but one whole file.
     let last = a
         .review

@@ -177,7 +177,7 @@ fn work_repo() -> FixtureRepo {
 fn work(repo: &FixtureRepo, agent: bool) -> Driver {
     let r = build_review(&repo.path(), &BuildOptions::default()).unwrap();
     assert_eq!(r.units.len(), 2, "{:?}", r.units);
-    Driver::start(r, Config::default(), agent, false)
+    Driver::start(r, Config::default(), agent)
 }
 
 /// The repo's review with `total` flagged with a note and `fee` accepted.

@@ -1,4 +1,5 @@
-//! Full-frame render tests for the Slim list at several terminal sizes:
+//! Full-frame render tests for the queue, listed by file, at several
+//! terminal sizes:
 //! unit rows under their file's name inside their level's box, always-on
 //! preview placement, overlays, mouse.
 
@@ -20,7 +21,7 @@ use teer::config::Config;
 use teer::keymap::{Action, Keymap};
 use teer::review::model::{Decision, Review, SessionRef};
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, Effect, Overlay, Screen, Target};
+use teer::tui::app::{App, Effect, Grouping, Overlay, Screen, Target};
 use teer::tui::ui;
 
 const API: &str = "from checkout import charge_order\n\n\ndef handle_checkout(request):\n    return charge_order(request.order)\n\n\ndef main():\n    handle_checkout(parse())\n";
@@ -73,9 +74,11 @@ async fn app() -> (App, FixtureRepo) {
     review.base = "a1b2c3d4e5f6".into();
     review.agent_session = Some(session());
     let mut app = App::new(review, Config::default(), Keymap::default());
-    app.start(true, None, Vec::new(), Some(session()), false);
-    app.open_v1_list();
-    assert_eq!(app.screen, Screen::Slim);
+    app.start(true, None, Vec::new(), Some(session()));
+    assert_eq!(app.screen, Screen::Queue);
+    // Listed by file (`zf`): each file's units under its name.
+    app.grouping = Grouping::File;
+    app.rebuild_order();
     (app, repo)
 }
 
@@ -369,7 +372,7 @@ async fn rows_start_with_border_and_gutter_and_the_footer_has_no_marks() {
 }
 
 #[tokio::test]
-async fn help_lists_the_list_keys_and_the_style_legend() {
+async fn help_lists_the_queue_keys_and_the_legend() {
     for (w, h) in [(80u16, 24u16), (120, 40)] {
         let (mut app, _r) = app().await;
         app.on_action(Action::HelpOpen);
@@ -395,13 +398,22 @@ async fn help_lists_the_list_keys_and_the_style_legend() {
             assert!(!s.contains(gone), "{w}x{h} still lists {gone:?}\n{s}");
         }
     }
-    // The legend goes under the keys when there is room for it.
+    // The legend goes under the keys when there is room for it: the
+    // queue's glyphs and states; v1's resolutions are gone.
     let (mut app, _r) = app().await;
     app.on_action(Action::HelpOpen);
     let s = text(&grid(&app, 120, 40));
-    for want in ["legend", "accepted", "removed", "flagged", "needs fix"] {
+    for want in [
+        "legend",
+        "accepted for you",
+        "pending",
+        "flagged",
+        "disputed",
+        "has a note",
+    ] {
         assert!(s.contains(want), "120x40 missing {want:?}\n{s}");
     }
+    assert!(!s.contains("needs fix"), "120x40\n{s}");
 }
 
 #[tokio::test]

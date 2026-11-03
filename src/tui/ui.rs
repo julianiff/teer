@@ -1,4 +1,4 @@
-//! Drawing: header, footer buttons, and each screen.
+//! Drawing: header, bottom bar, and each screen.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -7,15 +7,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
-use super::app::{App, Grouping, JumpKind, Overlay, Screen, Target};
-use super::diff::Notes;
+use super::app::{App, JumpKind, Overlay, Screen, Target};
 use super::select;
 use super::slim;
-use super::swipe::Dir;
 use crate::git::WORKTREE;
 use crate::keymap::{Action, Trigger};
 use crate::review::attention::Level;
-use crate::review::model::Decision;
 use crate::util::{sanitize, truncate, wrap};
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -35,11 +32,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     match app.screen {
         Screen::Queue => super::queue::draw(f, app, body),
         Screen::Unit => super::unit::draw(f, app, body),
-        Screen::Slim => draw_slim(f, app, body),
-        Screen::Swipe => draw_swipe(f, app, body),
-        Screen::Flagged => super::flagged::draw_flagged(f, app, body),
     }
-    draw_footer(f, app, footer);
+    draw_bar(f, app, footer);
     // Over an overlay a drag selects only what the overlay says it holds.
     if app.overlay != Overlay::None {
         app.text_areas.borrow_mut().clear();
@@ -47,7 +41,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     match &app.overlay {
         Overlay::ConfirmReset => draw_confirm_reset(f, app),
         Overlay::Help => draw_help(f, app),
-        // On the v2 screens a note is typed in the bottom bar.
+        // A note is typed in the bottom bar, except from the notes view.
         Overlay::Note { .. } if typed_note(app).is_some() => {}
         Overlay::Note { id, text, .. } => crate::tui::notes::draw_editor(f, app, id, text),
         Overlay::Notes { sel } => crate::tui::notes::draw_view(f, app, *sel),
@@ -66,36 +60,14 @@ pub fn draw(f: &mut Frame, app: &App) {
             "Web search sends generic queries (never your code) to external services. Continue?"
                 .into(),
         ),
-        Overlay::ConfirmAcceptFile { file, ids } => {
-            let what = sanitize(&file.display().to_string());
-            let units = if ids.len() == 1 { "unit" } else { "units" };
-            let n = ids.len();
-            // Listed by unit, only the file's units in the cursor's box.
-            let text = match app.grouping {
-                Grouping::File => format!("Accept {n} pending {units} in \"{what}\"?"),
-                Grouping::Unit => {
-                    format!("Accept {n} pending {units} of \"{what}\" in this box?")
-                }
-            };
-            draw_confirm(f, app, text)
-        }
-        Overlay::ConfirmFlagFile { file, ids } => {
-            let what = sanitize(&file.display().to_string());
-            let n = ids.len();
-            let units = if n == 1 { "unit" } else { "units" };
-            draw_confirm(f, app, format!("Flag {n} pending {units} in \"{what}\"?"))
-        }
         Overlay::Finish { .. } => super::finish::draw(f, app),
         Overlay::Jump { kind, query, sel } => draw_jump(f, app, kind, query, *sel),
         Overlay::Commits { sel, unit } => super::commits::draw_commits(f, app, *sel, *unit),
-        Overlay::Ask => super::ask::draw_ask(f, app),
         Overlay::None => {}
     }
-    // What is on the screen, to copy from; then the selection marked on it,
-    // unless the drag is a swipe.
+    // What is on the screen, to copy from; then the selection marked on it.
     app.shown.borrow_mut().clone_from(f.buffer_mut());
-    let swiping = app.screen == Screen::Swipe && app.swipe.drag.sideways();
-    if let Some(s) = app.selection.filter(|s| s.moved() && !swiping) {
+    if let Some(s) = app.selection.filter(|s| s.moved()) {
         select::paint(f.buffer_mut(), &s);
     }
 }
@@ -130,9 +102,6 @@ pub(super) mod fixed {
     /// Move in a list while typing its query.
     pub const ARROW_UP: &str = "↑";
     pub const ARROW_DOWN: &str = "↓";
-    /// Scroll the Ask view while typing a question.
-    pub const PAGE_DOWN: &str = "pgdn";
-    pub const PAGE_UP: &str = "pgup";
     /// Asks the last question again.
     pub const RETRY: &str = "^r";
     /// Moves the focus from the question to the links.
@@ -224,12 +193,6 @@ fn fit(spans: Vec<Span<'static>>, w: usize) -> Vec<Span<'static>> {
     out
 }
 
-/// The screens of v2: the queue and the unit view. They share the bottom
-/// bar ([`draw_bar`]).
-fn v2_screen(app: &App) -> bool {
-    matches!(app.screen, Screen::Queue | Screen::Unit)
-}
-
 /// The summary of the whole change the queue's header shows under what is
 /// reviewed, on one line; `None` while there is none.
 fn summary_line(app: &App) -> Option<String> {
@@ -277,16 +240,6 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             t.muted(),
         ));
     }
-    // The v2 bottom bar counts the flagged units.
-    let flagged = app.flagged_units().len();
-    if flagged > 0 && !v2_screen(app) {
-        let text = if app.screen == Screen::Flagged {
-            format!("Flagged ({flagged})  ")
-        } else {
-            format!("{flagged} flagged  ")
-        };
-        right.push(Span::styled(text, t.badge_investigate()));
-    }
     // The status on the right is never cut and keeps a gap before it.
     let rw: usize = right.iter().map(|s| s.content.width()).sum();
     let budget = (area.width as usize).saturating_sub(if rw > 0 { rw + 2 } else { 0 });
@@ -295,90 +248,6 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let mut line = vec![Span::styled(title, t.bold()), Span::raw(" ".repeat(pad))];
     line.extend(right);
     f.render_widget(Paragraph::new(Line::from(line)), area);
-}
-
-/// Footer buttons of the v1 screens, highest priority first (the footer
-/// drops from the end). Accepting and `:e!` are deliberately absent: they
-/// work everywhere but are listed only in the help overlay. The v2 screens
-/// have none (see [`draw_bar`]).
-fn buttons_for(app: &App) -> Vec<(Target, String, &'static str)> {
-    let k = |a: Action| app.keys.label(a);
-    let b = |a: Action, label: &'static str| (Target::Action(a), k(a), label);
-    let mut v = match app.screen {
-        Screen::Queue | Screen::Unit => return Vec::new(),
-        Screen::Slim => {
-            let mut v = vec![
-                b(Action::GotoEditor, "open in editor"),
-                b(Action::V1Swipe, "swipe"),
-                b(Action::HelpOpen, "help"),
-            ];
-            // Only a flagged unit opens, for now.
-            if app
-                .selected()
-                .is_some_and(|u| u.decision == Decision::Investigate)
-            {
-                v.push(b(Action::ViewOpen, "open"));
-            }
-            v.push(b(Action::DecideFlag, "flag"));
-            v.push(b(Action::AskOpen, "ask"));
-            v
-        }
-        // The tiles name the keys that ask, so the footer doesn't repeat them.
-        Screen::Flagged => vec![
-            b(Action::V1ResolveOk, "ok"),
-            b(Action::V1ResolveFix, "needs fix"),
-            (
-                Target::Action(Action::V1NextTile),
-                format!("{} {}", k(Action::V1PrevTile), k(Action::V1NextTile)),
-                "tile",
-            ),
-            b(
-                Action::V1Zoom,
-                if app.flagged.zoom { "unzoom" } else { "zoom" },
-            ),
-            b(Action::V1DiveRerun, "ask again"),
-            b(Action::AskOpen, "chat"),
-            b(Action::GotoBrowser, "browser"),
-            b(Action::ViewBack, "back"),
-            b(Action::HelpOpen, "help"),
-        ],
-        Screen::Swipe if app.swipe_current().is_none() => vec![
-            b(Action::MoveUp, "previous"),
-            b(Action::HistoryUndo, "undo"),
-            b(Action::ViewBack, "back"),
-        ],
-        Screen::Swipe => vec![
-            b(Action::DecideAccept, "accept · next"),
-            b(Action::MoveUp, "previous"),
-            b(Action::DecideFlag, "flag"),
-            b(Action::HistoryUndo, "undo"),
-            b(Action::ViewBack, "back"),
-            // After the way back: when narrow, it is dropped first, and a
-            // cut box still offers it in its last row.
-            b(Action::GotoEditor, "open in editor"),
-        ],
-    };
-    // Only while the detail area is cut (it was drawn just before).
-    if app.detail_max_scroll.get() > 0 {
-        v.push((
-            Target::Action(Action::ScrollHalfDown),
-            format!("{} {}", k(Action::ScrollHalfDown), k(Action::ScrollHalfUp)),
-            "scroll",
-        ));
-    }
-    // The notes last: when narrow, they are dropped first.
-    let on_unit = match app.screen {
-        Screen::Slim => app.selected().is_some(),
-        Screen::Swipe => app.swipe_current().is_some(),
-        Screen::Flagged | Screen::Queue | Screen::Unit => false,
-    };
-    if on_unit {
-        v.push(b(Action::NoteEdit, "note"));
-    }
-    if app.screen == Screen::Slim && !crate::notes::noted(&app.review).is_empty() {
-        v.push(b(Action::ToolNotes, "notes"));
-    }
-    v
 }
 
 /// The buttons while a visual selection is on: what applies to it, and the
@@ -390,62 +259,6 @@ fn visual_buttons(app: &App) -> Vec<(Target, String, &'static str)> {
         b(Action::DecideFlag, "flag"),
         b(Action::ViewBack, "leave"),
     ]
-}
-
-/// The bottom bar: on the v2 screens [`draw_bar`]; on the others the
-/// command line while one is typed, the keys that can follow while a
-/// sequence waits, else the buttons (after `-- VISUAL --` in visual mode)
-/// and the status on the right.
-fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
-    if v2_screen(app) {
-        draw_bar(f, app, area);
-        return;
-    }
-    let w = area.width as usize;
-    if let Some(text) = app.keys.command_line() {
-        f.render_widget(Paragraph::new(command_bar(app, text, w)), area);
-        return;
-    }
-    if let Some(typed) = app.keys.pending() {
-        f.render_widget(Paragraph::new(pending_bar(app, &typed, w)), area);
-        return;
-    }
-    let t = &app.theme;
-    let (lead, buttons, status) = match app.visual {
-        Some(anchor) => {
-            let n = anchor.abs_diff(app.sel) + 1;
-            let status = if app.status.is_empty() {
-                format!("{n} unit{} ", if n == 1 { "" } else { "s" })
-            } else {
-                app.status.clone()
-            };
-            (
-                Span::styled(" -- VISUAL -- ", t.bold()),
-                visual_buttons(app),
-                status,
-            )
-        }
-        None => (Span::raw(""), buttons_for(app), app.status.clone()),
-    };
-    let lead_w = lead.content.width().min(w);
-    let keys: Vec<(String, &str)> = buttons.iter().map(|(_, k, l)| (k.clone(), *l)).collect();
-    let (line, widths) = bar_line(t, &keys, &status, w - lead_w, true);
-    let mut x = area.x + lead_w as u16;
-    for ((tgt, ..), bw) in buttons.into_iter().zip(widths) {
-        target(app, Rect::new(x, area.y, bw as u16, 1), tgt);
-        x += bw as u16 + 1;
-    }
-    let mut spans = vec![lead];
-    spans.extend(line.spans);
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-/// The bottom bar while a sequence or a count waits: what was typed, then
-/// each key that can follow and what it does, cut at `w`.
-fn pending_bar(app: &App, typed: &str, w: usize) -> Line<'static> {
-    let mut spans = vec![Span::raw(" ")];
-    spans.extend(pending_spans(app, typed));
-    Line::from(fit(spans, w))
 }
 
 /// What was typed of a sequence or count, then each key that can follow
@@ -462,14 +275,6 @@ fn pending_spans(app: &App, typed: &str) -> Vec<Span<'static>> {
         spans.push(Span::raw(format!(" {}", a.describe())));
     }
     spans
-}
-
-/// The bottom bar while a command is typed: `:`, the text and the cursor,
-/// then the commands it can still become.
-fn command_bar(app: &App, text: &str, w: usize) -> Line<'static> {
-    let mut spans = vec![Span::raw(" ")];
-    spans.extend(command_spans(app, text));
-    Line::from(fit(spans, w))
 }
 
 /// `:`, the command typed so far and the cursor, then the commands it can
@@ -500,7 +305,7 @@ fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.content.width()).sum()
 }
 
-/// What the v2 bar says first: `4 pending · 1 flagged · 37 accepted`
+/// What the bar says first: `4 pending · 1 flagged · 37 accepted`
 /// (units accepted for you are accepted), or once nothing is pending
 /// `Nothing pending. :w to finish` and what is flagged and accepted, if
 /// anything. With it, which span names the finish key, to click.
@@ -536,9 +341,9 @@ fn count_spans(app: &App) -> (Vec<Span<'static>>, Option<usize>) {
     (spans, Some(1))
 }
 
-/// The note being typed in the v2 bar: the unit's id and the text so far.
-/// `None` when no note is typed, on the v1 screens, and from the notes view
-/// (which keeps its editor).
+/// The note being typed in the bar: the unit's id and the text so far.
+/// `None` when no note is typed, and from the notes view (which keeps its
+/// editor).
 fn typed_note(app: &App) -> Option<(&str, &str)> {
     match &app.overlay {
         Overlay::Note {
@@ -546,12 +351,12 @@ fn typed_note(app: &App) -> Option<(&str, &str)> {
             text,
             back: None,
             ..
-        } if v2_screen(app) => Some((id, text)),
+        } => Some((id, text)),
         _ => None,
     }
 }
 
-/// The bottom bar of the v2 screens (the queue, the unit view, and under
+/// The bottom bar of the screens (the queue, the unit view, and under
 /// the `:w` sheet): the counts ([`count_spans`]), then the sequence or
 /// count that waits and what can follow, the command being typed, or
 /// `-- VISUAL --` and what applies to the selection; the status on the
@@ -571,13 +376,9 @@ fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
         (command_spans(app, text), text.width() + 2, None)
     } else if let Some(typed) = app.keys.pending() {
         (pending_spans(app, &typed), typed.width(), None)
-    } else if let Some(anchor) = app.visual {
+    } else if let Some(rows) = app.visual_rows() {
         let lead = "-- VISUAL --";
-        (
-            vec![Span::styled(lead, t.bold())],
-            lead.width(),
-            Some(anchor),
-        )
+        (vec![Span::styled(lead, t.bold())], lead.width(), Some(rows))
     } else {
         (Vec::new(), 0, None)
     };
@@ -595,10 +396,10 @@ fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
         None
     };
     left.extend(mode);
-    if let Some(anchor) = visual {
+    if let Some(rows) = visual {
         // What applies to the selection, as buttons, and how many units it
         // holds, unless the status says something.
-        let n = anchor.abs_diff(app.sel) + 1;
+        let n = rows.count();
         let status = if app.status.is_empty() {
             format!("{n} unit{} ", if n == 1 { "" } else { "s" })
         } else {
@@ -671,7 +472,7 @@ fn finish_target(app: &App, area: Rect, left: &[Span], i: Option<usize>) {
 /// Most cells of a unit's name the note line shows.
 const NOTE_LINE_NAME: usize = 24;
 
-/// The note line at the bottom (`f`, `i` on a v2 screen): which unit, the
+/// The note line at the bottom (`f`, `i`): which unit, the
 /// text with the cursor after it and its end in view, and on the right
 /// what enter and esc do.
 fn draw_note_line(f: &mut Frame, app: &App, area: Rect, id: &str, text: &str) {
@@ -816,9 +617,9 @@ pub(super) fn banner(f: &mut Frame, app: &App, area: Rect) -> Rect {
 /// A list with no unit to decide: the muted rows that still say what
 /// changed (files teer can't show, units accepted for you), or that there
 /// is nothing to review.
-pub(super) fn draw_empty(f: &mut Frame, app: &App, area: Rect, flavor: slim::Flavor) {
+pub(super) fn draw_empty(f: &mut Frame, app: &App, area: Rect) {
     text_area(app, area, 0);
-    let rows = slim::build_rows(app, area.width, true, flavor);
+    let rows = slim::build_queue(app, area.width, true);
     if !rows.lines.is_empty() {
         f.render_widget(Paragraph::new(rows.lines), area);
         return;
@@ -828,23 +629,6 @@ pub(super) fn draw_empty(f: &mut Frame, app: &App, area: Rect, flavor: slim::Fla
         Paragraph::new(Line::styled(msg, app.theme.muted())).wrap(Wrap { trim: true }),
         pad(area, 1, 1),
     );
-}
-
-fn draw_slim(f: &mut Frame, app: &App, area: Rect) {
-    let area = banner(f, app, area);
-    if app.order.is_empty() {
-        draw_empty(f, app, area, slim::Flavor::List);
-        return;
-    }
-    let (list, pane) = crate::tui::preview::layout_of(app, area);
-    let h = list.height as usize;
-    // The blank lines between boxes and files cost rows: only when the list
-    // has room for them.
-    let rows = slim::build_with(app, list.width, h >= slim::PADDING_MIN_ROWS);
-    draw_rows(f, app, list, &rows);
-    if let Some((rect, kind)) = pane {
-        crate::tui::preview::draw_preview(f, app, rect, kind);
-    }
 }
 
 /// `rows` in `list`, scrolled so the unit under the cursor is in view, each
@@ -902,273 +686,6 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
     )
 }
 
-/// Cells between the swipe card's border and its text, on each side.
-const CARD_PAD: u16 = 2;
-
-fn draw_swipe(f: &mut Frame, app: &App, area: Rect) {
-    use crate::review::model::Decision;
-    let t = &app.theme;
-    let Some(id) = app.swipe_current() else {
-        draw_swipe_summary(f, app, area);
-        return;
-    };
-    let Some(u) = app.review.unit(id) else { return };
-    let a = app.assessment(&u.id).cloned();
-    let level = a.as_ref().map(|a| a.level).unwrap_or(Level::Routine);
-    // A card with code is wider, so the lines aren't cut as soon, but keeps
-    // a few cells on each side to follow a drag.
-    let code = crate::tui::diff::shows(app, u);
-    let card_w = if code {
-        100.min(area.width.saturating_sub(8)).max(76)
-    } else {
-        76
-    }
-    .min(area.width);
-    // Text width inside the borders and the padding.
-    let w = card_w.saturating_sub(2 + 2 * CARD_PAD) as usize;
-    let title = format!("{} {}", level.icon(), level.title());
-    // A symbol says which file it is in; a whole file is named already.
-    let mut name = vec![Span::styled(slim::row_name(u), t.bold())];
-    if u.kind != crate::review::model::UnitKind::File {
-        name.push(Span::styled(
-            format!("  {}", slim::file_name(&u.file)),
-            t.muted(),
-        ));
-    }
-    let mut lines = vec![
-        Line::styled(
-            title,
-            slim::level_style(app, level).add_modifier(Modifier::BOLD),
-        ),
-        Line::from(name),
-    ];
-    // The commits that changed it, by subject.
-    let subjects: Vec<&str> = app
-        .review
-        .commits_of(u)
-        .iter()
-        .map(|c| c.subject.as_str())
-        .collect();
-    if !subjects.is_empty() {
-        lines.push(Line::styled(truncate(&subjects.join(" · "), w), t.muted()));
-    }
-    let checks = crate::tui::preview::check_lines(app, u, w, 0, false);
-    if !checks.is_empty() {
-        lines.push(Line::default());
-        lines.extend(checks);
-    }
-    lines.push(Line::default());
-    // What the agent wrote sits behind a bar. A routine card says it in one
-    // sentence; the others write their statements into the code change.
-    let notes = if level == Level::Routine {
-        Notes::Off
-    } else {
-        Notes::Inline
-    };
-    let boxed = code && crate::tui::diff::box_rows(app, u, w as u16, notes) > 0;
-    let said = if level == Level::Routine {
-        let mut said = u.clone();
-        if said.summary.is_none() {
-            said.summary = u.changes.first().map(|c| c.statement.clone());
-        }
-        crate::tui::preview::agent_lines(app, &said, w.saturating_sub(2), false, 0)
-    } else {
-        crate::tui::preview::agent_lines(app, u, w.saturating_sub(2), !boxed, 0)
-    };
-    if said.is_empty() {
-        let note = slim::prep_note(app, u).unwrap_or_default();
-        lines.extend(
-            wrap(&note, w)
-                .into_iter()
-                .map(|l| Line::styled(l, t.muted())),
-        );
-    }
-    lines.extend(said);
-    // The reviewer's note, here when there is no code box to put it under.
-    let card = if boxed {
-        Vec::new()
-    } else {
-        crate::tui::notes::card(app, u, w)
-    };
-    if !card.is_empty() {
-        lines.push(Line::default());
-        lines.extend(card);
-    }
-    // Answers to questions asked about it, so they are seen.
-    let asked = crate::tui::ask::note_lines(app, &u.id, w);
-    if !asked.is_empty() {
-        lines.push(Line::default());
-        lines.extend(asked);
-    }
-    // The tallest card: two rows under it for the accept button and air.
-    let max_h = area.height.saturating_sub(2).max(8);
-    let code_rows = if boxed {
-        // A blank line, then the box, and the note under it.
-        1 + crate::tui::diff::box_rows(app, u, w as u16, notes)
-            + crate::tui::notes::card(app, u, w).len()
-    } else {
-        0
-    };
-    let total = lines.len() + code_rows;
-    // The card grows with how much there is to judge, and with its code;
-    // past the terminal's height its code scrolls.
-    let floor = match level {
-        Level::Attention => 26,
-        Level::Look => 14,
-        _ => 10,
-    };
-    let wanted = if code || level == Level::Attention {
-        // Borders and the state line with a blank row above it.
-        floor.max((total + 4).min(u16::MAX as usize) as u16)
-    } else {
-        floor
-    };
-    let base = centered(area, card_w, wanted.min(max_h));
-    app.swipe_card.set(base);
-    // Follow the finger while swiping.
-    let drag = app.swipe.drag;
-    let drag = if drag.sideways() {
-        drag
-    } else {
-        Default::default()
-    };
-    let dx = drag.dx.clamp(
-        -(base.x as i32),
-        (area.width as i32) - (base.x + base.width) as i32,
-    );
-    let dy = drag.dy.clamp(
-        -((base.y - area.y) as i32),
-        (area.y + area.height) as i32 - (base.y + base.height) as i32,
-    );
-    let card = Rect::new(
-        (base.x as i32 + dx) as u16,
-        (base.y as i32 + dy) as u16,
-        base.width,
-        base.height,
-    );
-    let tint = match drag.preview(base) {
-        Some(Dir::Right) => Style::new().fg(t.added),
-        Some(Dir::Left) => Style::new().fg(t.removed),
-        None if drag.dragging() && drag.dx > 0 => {
-            Style::new().fg(t.added).add_modifier(Modifier::DIM)
-        }
-        None if drag.dragging() && drag.dx < 0 => {
-            Style::new().fg(t.removed).add_modifier(Modifier::DIM)
-        }
-        None => t.muted(),
-    };
-    let total = app.swipe.cards.len();
-    let (_, flagged, _) = app.decision_counts();
-    let counter = format!(" {} of {} ", app.swipe.cursor + 1, total);
-    let label = match drag.preview(base) {
-        Some(Dir::Right) => " accept ",
-        Some(Dir::Left) => " investigate ",
-        None => "",
-    };
-    let block = Block::new()
-        .borders(Borders::ALL)
-        .border_type(ratatui::widgets::BorderType::Rounded)
-        .border_style(tint)
-        .padding(ratatui::widgets::Padding::horizontal(CARD_PAD))
-        .title(Span::styled(counter, t.muted()))
-        .title_bottom(Line::styled(label, tint.add_modifier(Modifier::BOLD)).right_aligned());
-    f.render_widget(Clear, card);
-    let inner = block.inner(card);
-    f.render_widget(block, card);
-
-    // Where this card stands, so going back shows what was decided.
-    let (state, state_style) = match u.decision {
-        Decision::Accepted => ("✓ accepted", t.ok()),
-        Decision::Investigate => ("⚑ flagged", t.bad()),
-        Decision::Pending => ("not reviewed yet", t.muted()),
-    };
-    let mut foot_line = vec![Span::styled(state, state_style)];
-    if flagged > 0 {
-        foot_line.push(Span::styled(format!("  ·  {flagged} flagged"), t.muted()));
-    }
-    let [content, _, foot] = Layout::vertical([
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(inner);
-    text_area(app, inner, 0);
-    let h = content.height as usize;
-    let min_box = crate::tui::preview::MIN_BOX_ROWS;
-    if boxed && h > min_box {
-        // The head stays put; the code change takes the rest and scrolls.
-        let head_h = lines.len().min(h - min_box);
-        let air = u16::from(h >= lines.len() + 1 + min_box);
-        let [top, _, code_area] = Layout::vertical([
-            Constraint::Length(head_h as u16),
-            Constraint::Length(air),
-            Constraint::Min(0),
-        ])
-        .areas(content);
-        lines.truncate(head_h);
-        f.render_widget(Paragraph::new(lines), top);
-        crate::tui::notes::draw_box(f, app, code_area, u, notes);
-    } else {
-        let blocks = lines.into_iter().map(|l| vec![l]).collect();
-        let lines = crate::tui::preview::scrolled(app, blocks, w, h, 0, false);
-        f.render_widget(Paragraph::new(lines), content);
-    }
-    f.render_widget(Paragraph::new(Line::from(foot_line)), foot);
-
-    // The accept button sits under the card's bottom-right corner, outside
-    // the card so a click on it isn't taken for the start of a drag.
-    let key = app.keys.label(Action::DecideAccept);
-    let text = format!(" accept [{key}] → ");
-    let bw = text.width() as u16;
-    let by = base.y + base.height;
-    if by < area.y + area.height && bw <= base.width {
-        let r = Rect::new(base.x + base.width - bw, by, bw, 1);
-        f.render_widget(Paragraph::new(Span::styled(text, t.accept_button())), r);
-        target(app, r, Target::Action(Action::DecideAccept));
-    }
-}
-
-fn draw_swipe_summary(f: &mut Frame, app: &App, area: Rect) {
-    let t = &app.theme;
-    let (acc, flagged, pending) = app.decision_counts();
-    // The flagged units open from the list, which the footer leads back to.
-    let mut lines = vec![
-        Line::styled("All changes triaged", t.bold()),
-        Line::default(),
-        Line::from(vec![
-            Span::styled(format!("{acc}"), t.ok()),
-            Span::raw(" accepted"),
-        ]),
-        Line::from(vec![
-            Span::styled(format!("{flagged}"), t.bad()),
-            Span::raw(" flagged"),
-        ]),
-    ];
-    if pending > 0 {
-        lines.push(Line::from(vec![
-            Span::styled(format!("{pending}"), t.bold()),
-            Span::raw(" not reviewed"),
-        ]));
-    }
-    lines.push(Line::default());
-    if app.swipe.cards.is_empty() {
-        lines.push(Line::styled("Nothing needs a look.", t.muted()));
-    } else {
-        lines.push(Line::from(vec![
-            Span::styled(app.keys.label(Action::MoveUp), t.accent()),
-            Span::styled(" back to the last card", t.muted()),
-        ]));
-    }
-    let box_ = centered(area, 56, lines.len() as u16 + 4);
-    let block = Block::new()
-        .borders(Borders::ALL)
-        .border_type(ratatui::widgets::BorderType::Rounded)
-        .border_style(t.muted());
-    let inner = pad(block.inner(box_), 2, 1);
-    f.render_widget(block, box_);
-    f.render_widget(Paragraph::new(lines), inner);
-}
-
 /// `:e!`: "Reset all 42 decisions? y/n", one per unit; yes resets them and
 /// re-runs the review.
 fn draw_confirm_reset(f: &mut Frame, app: &App) {
@@ -1214,147 +731,6 @@ fn modal(f: &mut Frame, app: &App, p: Paragraph, w: u16, rows: u16, border: Styl
     inner
 }
 
-/// The actions the list handles, in the order the help lists them.
-const LIST: &[Action] = &[
-    Action::MoveDown,
-    Action::MoveUp,
-    Action::MoveFirst,
-    Action::MoveLast,
-    Action::MoveNextPending,
-    Action::MovePrevPending,
-    Action::MoveNextFile,
-    Action::MovePrevFile,
-    Action::MoveNextHunk,
-    Action::MovePrevHunk,
-    Action::ScrollHalfDown,
-    Action::ScrollHalfUp,
-    Action::ScrollPageDown,
-    Action::ScrollPageUp,
-    Action::DecideAccept,
-    Action::DecideFlag,
-    Action::DecideAcceptFile,
-    Action::DecideFlagFile,
-    Action::NoteEdit,
-    Action::VisualStart,
-    Action::HistoryUndo,
-    Action::HistoryRedo,
-    Action::HistoryRepeat,
-    Action::ViewOpen,
-    Action::ViewBack,
-    Action::ViewClose,
-    Action::AskOpen,
-    Action::ToggleAutoAccepted,
-    Action::V1Swipe,
-    Action::ToggleByFile,
-    Action::HelpOpen,
-    Action::FindUnit,
-    Action::GotoDefinition,
-    Action::GotoCallers,
-    Action::GotoEditor,
-    Action::GotoBrowser,
-    Action::ToolTests,
-    Action::ToolRunOldNew,
-    Action::ToolDiagram,
-    Action::V1Recommend,
-    Action::V1Disagree,
-    Action::V1InterpretTests,
-    Action::ToolHistory,
-    Action::ToolNotes,
-    Action::ToolSettings,
-    Action::FinishOpen,
-    Action::ReviewRerun,
-    Action::ReviewReset,
-];
-
-/// The actions the swipe screen handles.
-const SWIPE: &[Action] = &[
-    Action::MoveUp,
-    Action::MoveNextHunk,
-    Action::MovePrevHunk,
-    Action::ScrollHalfDown,
-    Action::ScrollHalfUp,
-    Action::ScrollPageDown,
-    Action::ScrollPageUp,
-    Action::DecideAccept,
-    Action::DecideFlag,
-    Action::NoteEdit,
-    Action::HistoryUndo,
-    Action::HistoryRedo,
-    Action::HistoryRepeat,
-    Action::ViewBack,
-    Action::ViewClose,
-    Action::AskOpen,
-    Action::ToggleAutoAccepted,
-    Action::V1Swipe,
-    Action::HelpOpen,
-    Action::FindUnit,
-    Action::GotoDefinition,
-    Action::GotoCallers,
-    Action::GotoEditor,
-    Action::GotoBrowser,
-    Action::ToolTests,
-    Action::ToolRunOldNew,
-    Action::ToolDiagram,
-    Action::V1Recommend,
-    Action::V1Disagree,
-    Action::V1InterpretTests,
-    Action::ToolHistory,
-    Action::ToolNotes,
-    Action::ToolSettings,
-    Action::FinishOpen,
-    Action::ReviewRerun,
-    Action::ReviewReset,
-];
-
-/// The actions the Flagged screen handles.
-const FLAGGED: &[Action] = &[
-    Action::MoveDown,
-    Action::MoveUp,
-    Action::MoveFirst,
-    Action::MoveLast,
-    Action::MoveNextHunk,
-    Action::MovePrevHunk,
-    Action::ScrollHalfDown,
-    Action::ScrollHalfUp,
-    Action::ScrollPageDown,
-    Action::ScrollPageUp,
-    Action::V1NextTile,
-    Action::V1PrevTile,
-    Action::DecideAccept,
-    Action::DecideFlag,
-    Action::NoteEdit,
-    Action::V1ResolveOk,
-    Action::V1ResolveFix,
-    Action::HistoryUndo,
-    Action::HistoryRedo,
-    Action::HistoryRepeat,
-    Action::ViewOpen,
-    Action::ViewBack,
-    Action::ViewClose,
-    Action::AskOpen,
-    Action::V1Zoom,
-    Action::ToggleAutoAccepted,
-    Action::HelpOpen,
-    Action::FindUnit,
-    Action::GotoDefinition,
-    Action::GotoCallers,
-    Action::GotoEditor,
-    Action::GotoBrowser,
-    Action::ToolTests,
-    Action::ToolRunOldNew,
-    Action::ToolDiagram,
-    Action::V1Recommend,
-    Action::V1Disagree,
-    Action::V1InterpretTests,
-    Action::V1DiveRerun,
-    Action::ToolHistory,
-    Action::ToolNotes,
-    Action::ToolSettings,
-    Action::FinishOpen,
-    Action::ReviewRerun,
-    Action::ReviewReset,
-];
-
 /// The actions the notes view handles.
 const NOTES: &[Action] = &[
     Action::MoveDown,
@@ -1368,8 +744,7 @@ const NOTES: &[Action] = &[
     Action::ViewClose,
     Action::HelpOpen,
     Action::FinishYank,
-    Action::V1NotesToAgent,
-    Action::V1NotesPost,
+    Action::FinishOpen,
 ];
 
 /// The actions the commits view handles.
@@ -1395,16 +770,6 @@ const JUMP: &[Action] = &[
     Action::ViewClose,
 ];
 
-/// The actions the Ask view handles while the keys move between links.
-const ASK: &[Action] = &[
-    Action::MoveDown,
-    Action::MoveUp,
-    Action::ViewOpen,
-    Action::ViewBack,
-    Action::V1NextTile,
-    Action::ViewClose,
-];
-
 /// The panel the help is about, if any: the one it was opened over
 /// ([`App::help_over`]), else the one open. Its name and the actions it
 /// handles.
@@ -1418,7 +783,6 @@ fn help_panel(app: &App) -> Option<(&'static str, &'static [Action])> {
         Overlay::Commits { .. } => Some(("commits", COMMITS)),
         Overlay::Jump { .. } => Some(("jump list", JUMP)),
         Overlay::Finish { .. } => Some(("finish", super::finish::ACTIONS)),
-        Overlay::Ask => Some(("ask", ASK)),
         _ => None,
     }
 }
@@ -1431,9 +795,6 @@ fn screen_actions(app: &App) -> &'static [Action] {
         None => match app.screen {
             Screen::Queue => super::queue::ACTIONS,
             Screen::Unit => super::unit::ACTIONS,
-            Screen::Slim => LIST,
-            Screen::Swipe => SWIPE,
-            Screen::Flagged => FLAGGED,
         },
     }
 }
@@ -1445,9 +806,6 @@ fn screen_name(app: &App) -> &'static str {
         None => match app.screen {
             Screen::Queue => "queue",
             Screen::Unit => "unit",
-            Screen::Slim => "list",
-            Screen::Swipe => "swipe",
-            Screen::Flagged => "Flagged",
         },
     }
 }
@@ -1463,17 +821,13 @@ fn group_of(a: Action) -> usize {
     match a {
         MoveDown | MoveUp | MoveFirst | MoveLast | MoveNextPending | MovePrevPending
         | MoveNextHunk | MovePrevHunk | MoveNextFile | MovePrevFile | ScrollHalfDown
-        | ScrollHalfUp | ScrollPageDown | ScrollPageUp | FindUnit | ViewBack | V1NextTile
-        | V1PrevTile => 0,
+        | ScrollHalfUp | ScrollPageDown | ScrollPageUp | FindUnit | ViewBack => 0,
         DecideAccept | DecideFlag | NoteEdit | DecideAcceptFile | DecideFlagFile | VisualStart
-        | HistoryUndo | HistoryRedo | HistoryRepeat | NoteDelete | V1ResolveOk | V1ResolveFix => 1,
+        | HistoryUndo | HistoryRedo | HistoryRepeat | NoteDelete => 1,
         ViewOpen | AskOpen | GotoDefinition | GotoCallers | GotoEditor | GotoBrowser
-        | ToolTests | ToolRunOldNew | ToolDiagram | V1Zoom | V1Recommend | V1Disagree
-        | V1InterpretTests | V1DiveRerun => 2,
-        ToggleAutoAccepted | ToggleByFile | ToolHistory | ToolNotes | ToolSettings | HelpOpen
-        | V1Swipe => 3,
-        FinishOpen | FinishYank | ReviewRerun | ReviewReset | ViewClose | V1NotesToAgent
-        | V1NotesPost => 4,
+        | ToolTests | ToolRunOldNew | ToolDiagram => 2,
+        ToggleAutoAccepted | ToggleByFile | ToolHistory | ToolNotes | ToolSettings | HelpOpen => 3,
+        FinishOpen | FinishYank | ReviewRerun | ReviewReset | ViewClose => 4,
     }
 }
 
@@ -1486,17 +840,12 @@ const PAIRS: &[(Action, Action)] = &[
     (Action::MoveNextHunk, Action::MovePrevHunk),
     (Action::ScrollHalfDown, Action::ScrollHalfUp),
     (Action::ScrollPageDown, Action::ScrollPageUp),
-    (Action::V1NextTile, Action::V1PrevTile),
     (Action::DecideAccept, Action::DecideFlag),
     (Action::DecideAcceptFile, Action::DecideFlagFile),
-    (Action::V1ResolveOk, Action::V1ResolveFix),
     (Action::HistoryUndo, Action::HistoryRedo),
     (Action::ViewOpen, Action::ViewBack),
     (Action::GotoDefinition, Action::GotoCallers),
 ];
-
-/// What the help says after an action the v2 screens will drop.
-const V1_SUFFIX: &str = " (until v2)";
 
 /// Two descriptions on one row, the words they share said once:
 /// `move down / up`, `next / previous file`.
@@ -1530,12 +879,10 @@ fn joined(a: &str, b: &str) -> String {
     out
 }
 
-/// One row of the help: the keys, what they do, and whether the v2 screens
-/// will drop it.
+/// One row of the help: the keys and what they do.
 struct HelpRow {
     keys: String,
     what: String,
-    v1: bool,
 }
 
 /// What `a` does where the help was opened: the finish sheet's `i` writes
@@ -1550,7 +897,6 @@ fn describe(app: &App, a: Action) -> &'static str {
 /// The help's rows for `actions`, by group: each group's name and its
 /// rows, pairs on one row, unbound actions left out.
 fn help_groups(app: &App, actions: &[Action]) -> Vec<(&'static str, Vec<HelpRow>)> {
-    let v1 = |a: Action| a.id().starts_with("v1.");
     let mut groups: Vec<(&'static str, Vec<HelpRow>)> =
         GROUPS.iter().map(|g| (*g, Vec::new())).collect();
     for &a in actions {
@@ -1574,12 +920,10 @@ fn help_groups(app: &App, actions: &[Action]) -> Vec<(&'static str, Vec<HelpRow>
             Some(b) => HelpRow {
                 keys: format!("{keys} {}", app.keys.labels(b)),
                 what: joined(describe(app, a), describe(app, b)),
-                v1: v1(a) || v1(b),
             },
             None => HelpRow {
                 keys,
                 what: describe(app, a).to_string(),
-                v1: v1(a),
             },
         };
         groups[group_of(a)].1.push(row);
@@ -1647,7 +991,7 @@ fn draw_help(f: &mut Frame, app: &App) {
     let what_w = groups
         .iter()
         .flat_map(|(_, rows)| rows)
-        .map(|r| r.what.width() + if r.v1 { V1_SUFFIX.width() } else { 0 })
+        .map(|r| r.what.width())
         .max()
         .unwrap_or(0);
     let natural = key_w + 2 + what_w;
@@ -1764,19 +1108,14 @@ fn help_line(app: &App, l: &HelpLine, key_w: usize, w: usize) -> Line<'static> {
         HelpLine::Row(r) => {
             let keys = format!("{:>key_w$}  ", r.keys);
             let room = w.saturating_sub(keys.width());
-            let mut spans = vec![Span::styled(keys, t.accent())];
             let what = truncate(&r.what, room);
-            let left = room.saturating_sub(what.width());
-            spans.push(Span::raw(what));
-            if r.v1 && left > 0 {
-                spans.push(Span::styled(truncate(V1_SUFFIX, left), t.muted()));
-            }
-            Line::from(spans)
+            Line::from(vec![Span::styled(keys, t.accent()), Span::raw(what)])
         }
     }
 }
 
-/// What the list's styles and icons mean, for the help.
+/// What the queue's glyphs and the states at the end of its rows mean, for
+/// the help (the unit view's title shows the same).
 fn help_legend(app: &App) -> Vec<Line<'static>> {
     let t = &app.theme;
     let level = |l: Level, what: &'static str| {
@@ -1785,56 +1124,28 @@ fn help_legend(app: &App) -> Vec<Line<'static>> {
             Span::raw(format!(" {what}  ")),
         ]
     };
-    if app.screen == Screen::Queue {
-        // The queue's glyphs, and the states at the end of its rows.
-        return vec![
-            Line::from(
-                [Span::styled("legend  ", t.muted())]
-                    .into_iter()
-                    .chain(level(Level::Attention, "close look"))
-                    .chain(level(Level::Look, "worth a look"))
-                    .chain(level(Level::Routine, "routine"))
-                    .chain(level(Level::Same, "accepted for you"))
-                    .collect::<Vec<_>>(),
-            ),
-            Line::from(vec![
-                Span::raw(" ".repeat(8)),
-                Span::styled("pending", t.muted()),
-                Span::raw("  "),
-                Span::styled("accepted", t.accepted_state()),
-                Span::raw("  "),
-                Span::styled("flagged", t.flagged_row()),
-                Span::styled(" · “note”  ", t.muted()),
-                Span::styled("⚠", t.risk(crate::review::model::Risk::Medium)),
-                Span::raw(" disputed  "),
-                Span::styled("✎", t.accent()),
-                Span::raw(" has a note"),
-            ]),
-        ];
-    }
     vec![
-        Line::from(vec![
-            Span::styled("legend  ", t.muted()),
-            Span::styled("accepted", t.accepted_row()),
-            Span::raw("  "),
-            Span::styled("removed", Style::new().add_modifier(Modifier::CROSSED_OUT)),
-            Span::raw("  "),
-            Span::styled("flagged", t.flagged_row()),
-        ]),
         Line::from(
-            [Span::raw(" ".repeat(8))]
+            [Span::styled("legend  ", t.muted())]
                 .into_iter()
                 .chain(level(Level::Attention, "close look"))
                 .chain(level(Level::Look, "worth a look"))
                 .chain(level(Level::Routine, "routine"))
+                .chain(level(Level::Same, "accepted for you"))
                 .collect::<Vec<_>>(),
         ),
         Line::from(vec![
             Span::raw(" ".repeat(8)),
-            Span::styled("●", t.ok()),
-            Span::raw(" ok  "),
-            Span::styled("✗", t.needs_fix()),
-            Span::raw(" needs fix"),
+            Span::styled("pending", t.muted()),
+            Span::raw("  "),
+            Span::styled("accepted", t.accepted_state()),
+            Span::raw("  "),
+            Span::styled("flagged", t.flagged_row()),
+            Span::styled(" · “note”  ", t.muted()),
+            Span::styled("⚠", t.risk(crate::review::model::Risk::Medium)),
+            Span::raw(" disputed  "),
+            Span::styled("✎", t.accent()),
+            Span::raw(" has a note"),
         ]),
     ]
 }
@@ -2023,8 +1334,6 @@ mod tests {
             (fixed::ESC, Edit::Cancel),
             (fixed::ARROW_UP, Edit::Up),
             (fixed::ARROW_DOWN, Edit::Down),
-            (fixed::PAGE_UP, Edit::PageUp),
-            (fixed::PAGE_DOWN, Edit::PageDown),
             (fixed::RETRY, Edit::Retry),
             (fixed::TAB, Edit::Tab),
         ] {
@@ -2057,7 +1366,14 @@ mod tests {
 
     #[test]
     fn every_action_is_on_some_screen_once() {
-        let tables = [LIST, SWIPE, FLAGGED, NOTES, COMMITS, JUMP, ASK];
+        let tables = [
+            super::super::queue::ACTIONS,
+            super::super::unit::ACTIONS,
+            super::super::finish::ACTIONS,
+            NOTES,
+            COMMITS,
+            JUMP,
+        ];
         for a in Action::all() {
             assert!(
                 tables.iter().any(|t| t.contains(&a)),

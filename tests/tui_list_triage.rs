@@ -1,5 +1,4 @@
-//! Triage in place in the queue (the v1 list shares it): decisions, jumps,
-//! undo.
+//! Triage in place in the queue: decisions, jumps, undo.
 //! Driven through key events on a synthetic review (no repo, no agent).
 
 mod common;
@@ -206,41 +205,38 @@ fn units_that_leave_the_list_are_not_decided_after_a_rebuild() {
 }
 
 #[test]
-fn undo_history_is_shared_between_the_list_and_swipe() {
+fn undo_history_is_shared_between_the_queue_and_the_unit_view() {
     let mut a = app(6);
-    // Swipe is on the v1 screens (`--swipe`).
-    a.app.open_v1_list();
-    a.keys("a"); // list: u0 accepted
+    a.keys("a"); // queue: u0 accepted
     assert_eq!(a.undo_steps(), 1);
 
-    a.keys("s");
-    assert_eq!(a.screen(), Screen::Swipe);
-    // Swipe starts on the first card not accepted.
-    assert_ne!(a.app.swipe_current().map(String::as_str), Some("u0"));
+    a.keys("l");
+    assert_eq!(a.screen(), Screen::Unit);
     a.keys("a");
     assert_eq!(count(&a, Decision::Accepted), 2);
     assert_eq!(a.undo_steps(), 2, "the review's history holds both");
     a.keys("u");
     assert_eq!(count(&a, Decision::Accepted), 1);
 
-    // Back on the list, decisions made there are undoable and swipe sees them.
-    a.keys("<esc>");
-    assert_eq!(a.screen(), Screen::Slim);
+    // Back in the queue, decisions made there are undoable too.
+    a.keys("h");
+    assert_eq!(a.screen(), Screen::Queue);
     a.keys("f<esc>");
     assert_eq!(count(&a, Decision::Investigate), 1);
     a.keys("u");
     assert_eq!(count(&a, Decision::Investigate), 0);
-    // The list's first accept is still in the history.
+    // The queue's first accept is still in the history.
     a.keys("u");
     assert_eq!(count(&a, Decision::Accepted), 0);
 }
 
 #[test]
-fn list_decisions_are_undone_one_step_at_a_time_from_swipe_too() {
+fn queue_decisions_are_undone_one_step_at_a_time_from_the_unit_view_too() {
     let mut a = app(6);
     a.keys("aaa");
     assert_eq!(a.undo_steps(), 3);
-    a.app.screen = Screen::Swipe;
+    a.keys("l");
+    assert_eq!(a.screen(), Screen::Unit);
     a.keys("u");
     assert_eq!(a.undo_steps(), 2);
     assert_eq!(count(&a, Decision::Accepted), 2);

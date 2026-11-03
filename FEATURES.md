@@ -159,9 +159,9 @@ flag what's wrong, say in the note what should change, then `:w` `enter`:
 3. units whose code changed are pending again, on top of their level, with your note kept and marked "code changed since this note". the rest keep your decision.
 4. the cursor lands on the first changed unit, and the bar says how many changed: "3 units changed by Claude Code".
 
-on a note marked changed, `a` accepts and archives the note, `f` keeps the flag and edits it, `i` edits it without deciding.
+on a note marked changed, `a` accepts and archives the note, `f` keeps the flag and edits it, `i` edits it without deciding. on a branch the agent doesn't have to commit: a branch review covers the branch's commits and whatever isn't committed yet.
 
-**notes teer doesn't hand over** — a model api has no session to take them, so `:w` `enter` copies the notes, with what to do, for you to paste into your agent; `y` copies them too. teer then waits, with the queue on screen and read-only, and reviews again once your files have been quiet for 5 seconds (`quiet_seconds` under `[fix_loop]`). `q` stops waiting.
+**notes teer doesn't hand over** — a model api has no session to take them, so `:w` `enter` copies the notes, with what to do, for you to paste into your agent; `y` copies them too. teer then waits, with the queue on screen and read-only (no deciding, no `:w`), and reviews again once your files have been quiet for 5 seconds (`quiet_seconds` under `[fix_loop]`). `q` stops waiting.
 
 **`:e`** reviews again now and keeps your decisions; on a pull request it fetches the head first, so a pushed fix shows up. **`:e!`** asks "Reset all 42 decisions? y/n", then reviews again with every unit pending, and decides afresh which ones are accepted for you.
 

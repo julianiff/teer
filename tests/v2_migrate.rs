@@ -150,7 +150,6 @@ fn group_places(screen: &str) -> Vec<Option<(usize, usize)>> {
 // ---- M1 ------------------------------------------------------------------------------
 
 #[test]
-#[ignore = "until the v1 screens are removed"]
 fn v1_surface_removed() {
     // `--swipe` is gone.
     let sb = Sandbox::new();

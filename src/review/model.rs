@@ -346,8 +346,8 @@ pub enum AcceptedBy {
     Reviewer,
 }
 
-/// The kinds of question about a flagged unit on the Flagged screen. "Dive"
-/// names the agent side; the screen itself is `Screen::Flagged`.
+/// The kinds of question about a unit the unit view asks the agent. "Dive"
+/// names the agent side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DiveKind {
     /// What should be done about the change, ranked.
@@ -362,13 +362,6 @@ pub enum DiveKind {
     Disagree,
     /// Which existing tests cover the unit, and dangerous cases none does.
     Tests,
-}
-
-/// How a flagged unit was settled after looking into it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Resolution {
-    Ok,
-    NeedsFix,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -438,7 +431,7 @@ pub struct TestSearch {
     pub total: usize,
 }
 
-/// The Tests tile: the tests teer found, then, once asked, the agent's
+/// The Tests panel: the tests teer found, then, once asked, the agent's
 /// reading of them: what covers the unit and what dangerous cases nothing does.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Coverage {
@@ -793,15 +786,11 @@ impl Checks {
     }
 }
 
-/// Everything learned about a flagged unit on the Flagged screen.
+/// Everything learned about a unit in the unit view: the agent's answers
+/// and the reviewer's note.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dive {
     pub results: BTreeMap<DiveKind, DiveResult>,
-    /// The questions in the order the reviewer asked them: the order of the
-    /// Flagged screen's report.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub asked: Vec<DiveKind>,
-    pub resolution: Option<Resolution>,
     /// The reviewer's note on the unit's whole change (`m`): for the agent,
     /// the clipboard, or the PR review.
     pub note: String,
@@ -879,7 +868,7 @@ pub struct Unit {
     /// Why a unit has no behavior change, found from the code (no agent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nbc_reason: Option<String>,
-    /// Flagged-screen answers, resolution and note for a flagged unit.
+    /// The agent's answers about the unit and the reviewer's note.
     #[serde(default)]
     pub dive: Dive,
     /// Dive questions currently in flight. Not persisted.
@@ -1072,7 +1061,6 @@ mod tests {
                 coverage: None,
             },
         );
-        u.dive.resolution = Some(Resolution::NeedsFix);
         u.dive.note = "n".into();
         u.dive_pending.insert(DiveKind::Visualize);
         let back: Unit = serde_json::from_str(&serde_json::to_string(&u).unwrap()).unwrap();

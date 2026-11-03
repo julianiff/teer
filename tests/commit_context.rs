@@ -658,8 +658,7 @@ mod view {
         for (w, h) in [(1u16, 1u16), (20, 8), (40, 10), (60, 20), (80, 24)] {
             render(&app, w, h);
         }
-        // The v1 list's help (the queue's lists `queue::ACTIONS`: Q-draw).
-        app.open_v1_list();
+        // The queue's help.
         app.overlay = Overlay::Help;
         let s = text(&render(&app, 80, 24));
         assert!(s.contains("␣c  commits and PR description"), "{s}");
@@ -690,12 +689,10 @@ mod preview {
     }
 
     #[test]
-    fn the_preview_and_the_card_name_the_commits_that_touched_the_unit() {
+    fn the_preview_and_the_unit_view_name_the_commits_that_touched_the_unit() {
         let (r, _repo) = pr_review(None);
         let short: Vec<String> = r.intent.commits.iter().map(|c| c.short.clone()).collect();
         let mut app = App::new(r, Config::default(), Keymap::default());
-        // The v1 list's preview (`--swipe`); the queue's is tests/v2_queue.rs.
-        app.open_v1_list();
         select(&mut app, "g");
         let s = text(&render(&app, 180, 30));
         let want = format!(
@@ -715,22 +712,12 @@ mod preview {
             "{s}"
         );
 
-        // The swipe card too.
-        app.enter_swipe();
-        assert_eq!(app.screen, Screen::Swipe);
-        while app
-            .review
-            .unit(app.swipe_current().unwrap())
-            .unwrap()
-            .symbol
-            != "g"
-        {
-            app.swipe.cursor += 1;
-        }
-        // By subject alone, with no label and no hash.
-        let s = text(&render(&app, 120, 40));
-        assert!(s.contains("Change g, drop old · fixup! Change g"), "{s}");
-        assert!(!s.contains("commits:") && !s.contains(&short[1]), "{s}");
+        // The unit view too, under why it has its level.
+        select(&mut app, "g");
+        app.on_action(teer::keymap::Action::ViewOpen);
+        assert_eq!(app.screen, Screen::Unit);
+        let s = text(&render(&app, 180, 40));
+        assert!(s.contains(&want), "{s}");
     }
 
     #[test]
@@ -913,8 +900,8 @@ mod agent {
         let back: Review = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(unit(&back, "g").checks.unmentioned, Some(g));
 
-        // The preview, the card and the Flagged screen say it as a reason
-        // (under "Why this level" but on the card).
+        // The queue's preview and the unit view say it as a reason, under
+        // "Why this level".
         let want = "· Not mentioned in the commits or PR description: Also triples the result.";
         let text = |app: &App, w, h| {
             let t = render(app, w, h);
@@ -923,8 +910,6 @@ mod agent {
         let gi = r.units.iter().position(|u| u.symbol == "g").unwrap();
         r.units[gi].decision = Decision::Investigate;
         let mut app = App::new(r, Config::default(), Keymap::default());
-        // The v1 screens (`--swipe`): the list's preview, swipe, Flagged.
-        app.open_v1_list();
         app.sel = app.order.iter().position(|&i| i == gi).unwrap();
         assert!(
             text(&app, 160, 30).contains(want),
@@ -933,26 +918,11 @@ mod agent {
         );
         assert!(text(&app, 160, 30).contains("Why this level"));
         assert!(!text(&app, 160, 30).contains('≠'));
-        app.enter_swipe();
-        while app
-            .review
-            .unit(app.swipe_current().unwrap())
-            .unwrap()
-            .symbol
-            != "g"
-        {
-            app.swipe.cursor += 1;
-        }
-        let card = text(&app, 120, 40);
-        assert!(card.contains(want), "{card}");
-        app.screen = Screen::Slim;
         app.on_action(teer::keymap::Action::ViewOpen);
-        assert_eq!(app.screen, Screen::Flagged);
-        assert!(
-            text(&app, 140, 40).contains(want),
-            "{}",
-            text(&app, 140, 40)
-        );
+        assert_eq!(app.screen, Screen::Unit);
+        let unit_view = text(&app, 160, 40);
+        assert!(unit_view.contains(want), "{unit_view}");
+        assert!(!unit_view.contains('≠'), "{unit_view}");
     }
 }
 
@@ -1018,7 +988,7 @@ mod summary {
             build: BuildOptions::default(),
             tools: Default::default(),
         };
-        let mut effects = app.start(true, None, Vec::new(), Some(session), false);
+        let mut effects = app.start(true, None, Vec::new(), Some(session));
         assert!(
             !effects.contains(&Effect::Summarize),
             "nothing described yet"
@@ -1075,13 +1045,13 @@ mod summary {
         assert!(again.intent.summary.is_some());
         let mut next = App::new(again, Config::default(), Keymap::default());
         let s = SessionRef::fresh("mock", next.review.repo_root.clone());
-        let effects = next.start(true, None, Vec::new(), Some(s.clone()), false);
+        let effects = next.start(true, None, Vec::new(), Some(s.clone()));
         assert!(!effects.contains(&Effect::Summarize), "{effects:?}");
         // Described in an earlier run but never summed up: asked on start.
         let mut bare = app.review.clone();
         bare.intent.summary = None;
         let mut next = App::new(bare, Config::default(), Keymap::default());
-        let effects = next.start(true, None, Vec::new(), Some(s), false);
+        let effects = next.start(true, None, Vec::new(), Some(s));
         assert!(effects.contains(&Effect::Summarize), "{effects:?}");
     }
 

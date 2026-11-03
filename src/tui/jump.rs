@@ -101,12 +101,11 @@ impl App {
     }
 
     /// Close the list and go to unit `i` (an index into `review.units`):
-    /// in the unit view when it is open, on the Flagged screen when it is
-    /// flagged there, else in the list.
+    /// in the unit view when it is open, else in the queue.
     fn jump_to(&mut self, i: usize) -> Vec<Effect> {
         let id = self.review.units[i].id.clone();
         self.overlay = Overlay::None;
-        self.go_to_unit(&id, true).unwrap_or_default()
+        self.go_to_unit(&id).unwrap_or_default()
     }
 
     fn items_for(&self, kind: &JumpKind, query: &str) -> Vec<usize> {
@@ -291,10 +290,6 @@ mod tests {
             .collect()
     }
 
-    fn index(a: &App, id: &str) -> usize {
-        a.review.units.iter().position(|u| u.id == id).unwrap()
-    }
-
     fn selected(a: &App) -> String {
         a.selected_id().unwrap()
     }
@@ -422,36 +417,6 @@ mod tests {
         });
         press(&mut a, "jl");
         assert_eq!(selected(&a), "checkout.rs::pay");
-    }
-
-    #[test]
-    fn going_from_flagged_stays_there_for_a_flagged_unit() {
-        let mut a = shop();
-        for id in ["app.rs::refund", "checkout.rs::pay"] {
-            a.review.unit_mut(id).unwrap().decision = Decision::Investigate;
-        }
-        a.screen = Screen::Flagged;
-        a.return_to.push(Screen::Slim);
-        let flagged: Vec<String> = a.flagged_units().iter().map(|u| u.id.clone()).collect();
-        let first = flagged[0].clone();
-        let other = flagged[1].clone();
-        a.flagged.sel = 0;
-        // A flagged unit: selected on the Flagged screen.
-        a.open_jump(JumpKind::Find);
-        let i = index(&a, &other);
-        if let Overlay::Jump { query, .. } = &mut a.overlay {
-            *query = a.review.units[i].symbol.clone();
-        }
-        press(&mut a, "<cr>");
-        assert_eq!(a.screen, Screen::Flagged);
-        assert_eq!(a.flagged_unit_id().as_deref(), Some(other.as_str()));
-        assert_ne!(first, other);
-        // Not flagged: back to the list, selected there.
-        a.open_jump(JumpKind::Find);
-        press(&mut a, "cart<cr>");
-        assert_eq!(a.screen, Screen::Slim);
-        assert_eq!(a.overlay, Overlay::None);
-        assert_eq!(selected(&a), "cart.rs::add");
     }
 
     #[test]

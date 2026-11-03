@@ -20,12 +20,14 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::run::{ConfigFile, Fakes, GithubPr, Session, launch, model, repo, wrote_session};
-use serde_json::Value;
+use serde_json::{Value, json};
+use teer::agent::mock::MockAdapter;
 use teer::config::{Config, Provider};
 use teer::keymap::Action;
-use teer::review::model::{Decision, Unit};
+use teer::review::model::{Decision, DiveKind, Unit};
+use teer::review::prepare::PrepareEvent;
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{Effect, Overlay, Screen};
+use teer::tui::app::{AppEvent, Effect, Overlay, Screen};
 
 use Decision::{Accepted as A, Investigate as F, Pending as P};
 
@@ -589,4 +591,126 @@ async fn rerun_on_a_pr_fetches_its_head_again() {
     assert_eq!(s.app.review.head, new_head);
     assert_eq!(s.decision("tax"), P);
     assert!(marked_changed(unit(&s, "tax")));
+}
+
+// ---- Answers on their way when a re-run lands ---------------------------------------
+
+/// A model that says which code it was shown: "the fixed code" when a
+/// unit's code is `SHIP_FIXED`'s, "the first code" else; in each
+/// description's summary and in the recommendation.
+fn says_which_code() -> MockAdapter {
+    fn seen(code: &str) -> &'static str {
+        if code.contains("w * 5") {
+            "the fixed code"
+        } else {
+            "the first code"
+        }
+    }
+    MockAdapter::new(|prompt, schema| {
+        if schema["properties"].get("units").is_some() {
+            let units: Vec<Value> = prompt
+                .split("### Unit ")
+                .skip(1)
+                .map(|section| {
+                    let id = section.lines().next().unwrap_or_default().trim();
+                    let line = section
+                        .lines()
+                        .find_map(|l| l.strip_prefix("new lines: "))
+                        .and_then(|r| r.split('-').next())
+                        .and_then(|n| n.trim().parse::<u32>().ok())
+                        .unwrap_or(1);
+                    json!({
+                        "id": id,
+                        "summary": format!("Saw {}.", seen(section)),
+                        "changes": [{
+                            "marker": "changed",
+                            "statement": "It returns something else now.",
+                            "risk": "low",
+                            "evidence": [{"side": "new", "line": line}],
+                        }],
+                    })
+                })
+                .collect();
+            return Ok(json!({ "units": units }));
+        }
+        if prompt.starts_with("DIVE:Recommend") {
+            return Ok(json!({ "text": format!("About {}.", seen(prompt)), "sources": [] }));
+        }
+        anyhow::bail!("no answer for this prompt")
+    })
+}
+
+/// Descriptions and recommendations are on their way when a re-run lands:
+/// those about code the re-run changed are dropped, and the unit is asked
+/// again about the code it has now; those about code that stayed are kept.
+#[tokio::test]
+async fn answers_about_code_a_rerun_changed_are_dropped() {
+    let repo = shop();
+    let fakes = Fakes::new();
+    let cfg = Config {
+        second_opinion: false,
+        ..Config::default()
+    };
+    let review = build_review(&repo.path(), &BuildOptions::default()).unwrap();
+    let mut s = Session::start(review, cfg, Some(says_which_code()), None, fakes.tools());
+    let recommended: Vec<String> = s.seen(|e| match e {
+        Effect::Dive {
+            unit_id,
+            kind: DiveKind::Recommend,
+            ..
+        } => Some(unit_id.clone()),
+        _ => None,
+    });
+    let ship = s.id("ship");
+    assert!(recommended.contains(&ship), "{recommended:?}");
+    let kept = recommended.iter().find(|id| **id != ship).unwrap().clone();
+    // The answers about the first code are on their way when `ship`
+    // changes and the re-run lands; they arrive after the re-run's own.
+    let first = s.hold().await;
+    assert!(s.events.is_empty(), "{:?}", s.events);
+    let prepared = |id: &str| {
+        first
+            .iter()
+            .any(|e| matches!(e, AppEvent::Prep(PrepareEvent::Ready { id: i, .. }) if i == id))
+    };
+    assert!(prepared(&ship), "{first:?}");
+    repo.write("ship.py", SHIP_FIXED);
+    let new = build_review(&repo.path(), &BuildOptions::default()).unwrap();
+    let effects = s.app.on_app_event(AppEvent::Rerun(Ok(Box::new(new))));
+    s.run(effects);
+    s.settle().await;
+    assert_eq!(
+        unit(&s, "ship").summary.as_deref(),
+        Some("Saw the fixed code.")
+    );
+    s.deliver(first);
+
+    let ship_unit = unit(&s, "ship");
+    assert_eq!(ship_unit.summary.as_deref(), Some("Saw the fixed code."));
+    assert!(
+        !ship_unit.dive.results.contains_key(&DiveKind::Recommend),
+        "the recommendation about the first code is dropped"
+    );
+    assert!(ship_unit.dive_pending.is_empty());
+    let kept = s.app.review.unit(&kept).unwrap();
+    assert_eq!(
+        kept.dive.results[&DiveKind::Recommend].text,
+        "About the first code.",
+        "its code is the same"
+    );
+    // Opened, `ship` is asked again, about the code it has now.
+    s.go_to("ship");
+    let asked = s.keys("l");
+    assert!(
+        asked.iter().any(|e| matches!(
+            e,
+            Effect::Dive { unit_id, kind: DiveKind::Recommend, .. } if *unit_id == ship
+        )),
+        "{asked:?}"
+    );
+    s.settle().await;
+    assert_eq!(
+        unit(&s, "ship").dive.results[&DiveKind::Recommend].text,
+        "About the fixed code."
+    );
 }

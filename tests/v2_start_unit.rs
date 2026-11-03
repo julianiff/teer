@@ -202,7 +202,7 @@ fn a_detached_head_is_reviewed_only_when_the_base_lacks_it() {
 fn base_chain_flag_then_pr_base_then_origin_head_then_main_or_master() {
     let r = feature();
     let p = r.path();
-    // --base wins, gh isn't asked, and it reviews the commits even with changes.
+    // --base wins, gh isn't asked, and it reviews the branch even with changes.
     r.write("scratch.py", "z = 3\n");
     let asked = |what| -> Option<String> { panic!("asked gh for {what}") };
     assert_eq!(

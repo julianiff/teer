@@ -31,7 +31,7 @@ fn nothing_to_review(branch: &str) -> String {
 
 /// Flags `teer --help` shows after Phase 2, and the ones it hides but takes.
 const VISIBLE_FLAGS: [&str; 3] = ["--base", "--no-agent", "--json"];
-const HIDDEN_FLAGS: [&str; 2] = ["--swipe", "--session"];
+const HIDDEN_FLAGS: [&str; 1] = ["--session"];
 
 // ---- Fixtures --------------------------------------------------------------
 
@@ -549,13 +549,12 @@ fn visible_and_hidden_flags() {
 
     // Hidden, still taken.
     repo.write("shop.py", SHOP_V1);
-    for args in [
-        &["--swipe", "--json", "--no-agent"][..],
-        &["--session", "0f3c2a", "--json", "--no-agent"][..],
-    ] {
-        let v = sb.json(&repo.path(), args);
-        assert_eq!(files(&v), vec!["shop.py"], "{args:?}");
-    }
+    let args = ["--session", "0f3c2a", "--json", "--no-agent"];
+    let v = sb.json(&repo.path(), &args);
+    assert_eq!(files(&v), vec!["shop.py"], "{args:?}");
+    // Gone with the v1 screens.
+    let out = sb.run(&repo.path(), &["--swipe", "--json", "--no-agent"]);
+    assert!(!out.status.success());
 }
 
 #[test]

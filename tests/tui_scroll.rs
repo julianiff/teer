@@ -1,6 +1,6 @@
-//! Scrolling the detail areas (the list preview, the swipe card, the open
-//! tab on the Flagged screen) with the keys and the wheel, and the layout
-//! that gives the code change the room the list doesn't need.
+//! Scrolling the detail areas (the queue's preview, the unit view's text
+//! and the panel under it) with the keys and the wheel, and the layout that
+//! gives the code change the room the queue doesn't need.
 
 mod common;
 
@@ -13,9 +13,10 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use teer::config::Config;
 use teer::keymap::{Action, KeySpec, Keymap};
-use teer::review::model::{Cite, Coverage, CoveringTest, Decision, DiveKind, DiveResult, Review};
+use teer::review::model::{Cite, Coverage, CoveringTest, DiveKind, DiveResult, Review, SessionRef};
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, Overlay, Pane, Screen, Target, pane_key};
+use teer::tui::app::{App, Grouping, Overlay, Screen, Target};
+use teer::tui::unit::Panel;
 use teer::tui::{preview, ui};
 
 /// A function whose code change is far longer than any pane (every one of
@@ -42,10 +43,13 @@ fn review_of(old: &str, new: &str) -> (Review, FixtureRepo) {
     (review, repo)
 }
 
+/// The queue on `review`, listed by file (`zf`): the file's name above its
+/// units.
 fn app_with(review: Review, keys: Keymap) -> App {
     let mut app = App::new(review, Config::default(), keys);
-    app.start(false, None, Vec::new(), None, false);
-    app.open_v1_list();
+    app.start(false, None, Vec::new(), None);
+    app.grouping = Grouping::File;
+    app.rebuild_order();
     app
 }
 
@@ -260,35 +264,6 @@ fn the_wheel_scrolls_the_pane_under_it_and_moves_the_selection_over_the_list() {
 }
 
 #[test]
-fn the_footer_offers_scrolling_only_while_something_is_cut_and_fits_at_80() {
-    let (mut app, _repo) = app();
-    let footer = |app: &App, w, h| screen(app, w, h).last().unwrap().clone();
-    assert!(footer(&app, 100, 30).contains("^d ^u scroll"));
-    // At 80 columns it fits after the other buttons, which all stay.
-    let f = footer(&app, 80, 24);
-    assert!(f.contains("f flag   K ask   ^d ^u scroll"), "{f}");
-    let step = half(&app);
-    // Clicking it scrolls.
-    let r = app
-        .targets
-        .borrow()
-        .iter()
-        .find(|(_, t)| *t == Target::Action(Action::ScrollHalfDown))
-        .map(|(r, _)| *r)
-        .unwrap();
-    app.on_event(Event::Mouse(MouseEvent {
-        kind: MouseEventKind::Up(crossterm::event::MouseButton::Left),
-        column: r.x + 1,
-        row: r.y,
-        modifiers: KeyModifiers::NONE,
-    }));
-    assert_eq!(app.detail_offset(), step);
-    // A unit whose change fits shows no scroll button.
-    key(&mut app, 'j');
-    assert!(!footer(&app, 100, 30).contains("scroll"));
-}
-
-#[test]
 fn help_lists_the_scroll_keys() {
     let (mut app, _repo) = app();
     app.on_action(Action::HelpOpen);
@@ -339,7 +314,7 @@ fn the_scroll_keys_can_be_rebound() {
 
 // ---- Layout ---------------------------------------------------------------
 
-/// One unit with a line too wide for 35% of a 120-column terminal.
+/// One unit with a line too wide for 45% of a 120-column terminal.
 fn one_unit() -> (App, FixtureRepo) {
     let old = "def only(x):\n    return x\n";
     let new = "def only(x):\n    return compute_total(x, discount=0.1, currency=\"EUR\")\n";
@@ -382,7 +357,7 @@ fn beside_a_one_unit_list_the_code_change_gets_the_width() {
 }
 
 #[test]
-fn a_wide_list_is_capped_at_35_percent() {
+fn a_wide_list_is_capped_at_45_percent() {
     let (old, new) = sources();
     let long = "a_function_name_long_enough_to_want_most_of_a_wide_terminal_for_itself";
     let (review, _repo) = review_of(
@@ -391,7 +366,7 @@ fn a_wide_list_is_capped_at_35_percent() {
     );
     let app = app_with(review, Keymap::default());
     let (list, p) = layout(&app, 120, 40);
-    assert_eq!((list.width, p.x, p.width), (42, 42, 78));
+    assert_eq!((list.width, p.x, p.width), (54, 54, 66));
     // Up to the cap, the list is just as wide as its rows need.
     let (list, _) = layout(&app, 240, 40);
     let lines = screen(&app, 240, 40);
@@ -436,193 +411,17 @@ fn below_a_short_list_the_pane_takes_the_free_rows() {
     assert!(list.height >= 3 && p.height >= 5, "{list:?} {p:?}");
 }
 
-// ---- Swipe ----------------------------------------------------------------
+// ---- Unit view --------------------------------------------------------------
 
-#[test]
-fn the_swipe_card_scrolls_and_starts_over_on_the_next_card() {
-    let (mut app, _repo) = app();
-    key(&mut app, 's');
-    assert_eq!(app.screen, Screen::Swipe);
-    let (w, h) = (90, 24);
-    let card = screen(&app, w, h);
-    let text = card.join("\n");
-    assert!(has(&card, MORE), "{text}");
-    assert!(!has(&card, "above"), "{text}");
-    let step = half(&app);
-    keys(&mut app, "<c-d>");
-    assert_eq!(app.detail_offset(), step);
-    let after = screen(&app, w, h);
-    assert!(has(&after, ABOVE), "{}", after.join("\n"));
-    // The wheel anywhere on the screen scrolls the card too, a few lines.
-    wheel(&mut app, true, 1, 1);
-    assert_eq!(app.detail_offset(), step + 3);
-    wheel(&mut app, false, 1, 1);
-    assert_eq!(app.detail_offset(), step);
-    // Scrolling decides nothing.
-    assert_eq!(app.swipe.cursor, 0);
-    assert_eq!(app.review.units[0].decision, Decision::Pending);
-    for _ in 0..40 {
-        keys(&mut app, "<c-d>");
-    }
-    let end = screen(&app, w, h);
-    assert!(
-        has(&end, "return a29") && !has(&end, "more lines"),
-        "{}",
-        end.join("\n")
-    );
-    // The next card starts at the top, and so does the way back.
-    key(&mut app, 'a');
-    assert_eq!(app.swipe.cursor, 1);
-    screen(&app, w, h);
-    assert_eq!(app.detail_offset(), 0);
-    keys(&mut app, "<c-d>");
-    key(&mut app, 'k');
-    assert_eq!(app.swipe.cursor, 0);
-    let back = screen(&app, w, h);
-    assert!(
-        has(&back, "long_one") && !has(&back, "above"),
-        "{}",
-        back.join("\n")
-    );
-}
-
-// ---- Flagged ----------------------------------------------------------------
-
-/// Both units flagged, the Flagged screen open on `long_one`, with a
-/// Recommend answer of 40 lines.
-fn flagged() -> (App, FixtureRepo) {
+/// `long_one` open in the unit view with an agent; its recommendation is an
+/// answer of 40 lines and its Tests answer 25 covering tests.
+fn unit_view() -> (App, FixtureRepo) {
     let (mut app, repo) = app();
-    for u in &mut app.review.units {
-        u.decision = Decision::Investigate;
-    }
+    app.has_agent = true;
+    app.review.agent_session = Some(SessionRef::default());
     let answer: Vec<String> = (1..=40)
         .map(|i| format!("step {i} of the answer"))
         .collect();
-    app.review.units[0].dive.results.insert(
-        DiveKind::Recommend,
-        DiveResult {
-            text: answer.join("\n"),
-            ..Default::default()
-        },
-    );
-    // `l` opens Flagged on the selected unit, long_one.
-    key(&mut app, 'l');
-    assert_eq!(app.screen, Screen::Flagged);
-    assert_eq!(app.flagged_unit().unwrap().symbol, "long_one");
-    (app, repo)
-}
-
-const ANSWER_MORE: &str = "more lines · ^d scroll";
-
-/// How far the selected Flagged unit's tile `pane` is scrolled.
-fn tile_offset(app: &App, pane: Pane) -> usize {
-    let id = app.flagged_unit_id().unwrap();
-    app.pane_scroll
-        .borrow()
-        .get(&pane_key(&id, pane))
-        .copied()
-        .unwrap_or(0)
-}
-
-const RECOMMEND: Pane = Pane::Answer(DiveKind::Recommend);
-
-#[test]
-fn a_long_answer_on_the_flagged_screen_scrolls_to_its_end() {
-    let (mut app, _repo) = flagged();
-    let (w, h) = (100, 30);
-    // The answer has the focus; zoomed, it is alone on the screen.
-    assert_eq!(app.flagged.pane, RECOMMEND);
-    keys(&mut app, "zz");
-    let first = screen(&app, w, h);
-    let text = first.join("\n");
-    assert!(has(&first, "step 1 of the answer"), "{text}");
-    assert!(!has(&first, "step 40 of the answer"), "{text}");
-    // An answer is not code: the hint doesn't offer the editor.
-    let hint = first
-        .iter()
-        .find(|l| l.contains(ANSWER_MORE))
-        .unwrap_or_else(|| panic!("{text}"));
-    assert!(!hint.contains("editor"), "{hint}");
-    // The unit and the tile's title stay; the answer scrolls under them.
-    let step = half(&app);
-    keys(&mut app, "<c-d>");
-    let after = screen(&app, w, h);
-    let text = after.join("\n");
-    assert!(
-        has(&after, &format!("… {step} lines above · ^u scroll up")),
-        "{text}"
-    );
-    assert!(
-        !has(&after, &format!("step {step} of the answer"))
-            && has(&after, &format!("step {} of", step + 1)),
-        "{text}"
-    );
-    assert!(
-        has(&after, "╭ ␣w Recommend ✓") && has(&after, " long_one "),
-        "{text}"
-    );
-    for _ in 0..20 {
-        keys(&mut app, "<c-d>");
-    }
-    let end = screen(&app, w, h);
-    assert!(has(&end, "step 40 of the answer"), "{}", end.join("\n"));
-    assert!(!has(&end, ANSWER_MORE), "{}", end.join("\n"));
-}
-
-#[test]
-fn each_tile_keeps_its_own_scroll() {
-    let (mut app, _repo) = flagged();
-    let (w, h) = (100, 30);
-    screen(&app, w, h);
-    let answer_step = half(&app);
-    keys(&mut app, "<c-d>");
-    assert_eq!(tile_offset(&app, RECOMMEND), answer_step);
-    // The code is cut too; ^d scrolls the tile in focus only.
-    press(&mut app, KeyCode::Left);
-    assert_eq!(app.flagged.pane, Pane::Code);
-    let code = screen(&app, w, h);
-    assert!(
-        code.iter()
-            .any(|l| l.starts_with("│ … 44 more lines · ^d scroll")),
-        "{}",
-        code.join("\n")
-    );
-    let code_step = half(&app);
-    keys(&mut app, "<c-d>");
-    screen(&app, w, h);
-    assert_eq!(tile_offset(&app, Pane::Code), code_step);
-    assert_eq!(tile_offset(&app, RECOMMEND), answer_step);
-    // Another unit starts at the top; coming back, where it was left.
-    key(&mut app, 'j');
-    assert_eq!(app.flagged_unit().unwrap().symbol, "short_one");
-    screen(&app, w, h);
-    assert_eq!(tile_offset(&app, Pane::Code), 0);
-    key(&mut app, 'k');
-    assert_eq!(tile_offset(&app, RECOMMEND), answer_step);
-    let back = screen(&app, w, h);
-    assert!(!has(&back, "step 1 of the answer"), "{}", back.join("\n"));
-}
-
-#[test]
-fn the_wheel_scrolls_the_tile_under_it_and_moves_over_the_header() {
-    let (mut app, _repo) = flagged();
-    let (w, h) = (100, 30);
-    screen(&app, w, h);
-    // Over the code tile, at the left: it gets the focus and scrolls.
-    wheel(&mut app, true, 5, 20);
-    assert_eq!(app.flagged.pane, Pane::Code);
-    assert_eq!(tile_offset(&app, Pane::Code), 3);
-    assert_eq!(tile_offset(&app, RECOMMEND), 0);
-    assert_eq!(app.flagged_unit().unwrap().symbol, "long_one");
-    // Over the unit's header row: the next flagged unit.
-    screen(&app, w, h);
-    wheel(&mut app, true, 5, 1);
-    assert_eq!(app.flagged_unit().unwrap().symbol, "short_one");
-}
-
-#[test]
-fn the_tests_tab_scrolls_too() {
-    let (mut app, _repo) = flagged();
     let covered = (1..=25)
         .map(|i| CoveringTest {
             name: format!("test_case_{i}"),
@@ -634,8 +433,15 @@ fn the_tests_tab_scrolls_too() {
             checks: format!("checks result {i}"),
         })
         .collect();
-    let id = app.flagged_unit_id().unwrap();
+    let id = app.selected_id().unwrap();
     let u = app.review.unit_mut(&id).unwrap();
+    u.dive.results.insert(
+        DiveKind::Recommend,
+        DiveResult {
+            text: answer.join("\n"),
+            ..Default::default()
+        },
+    );
     u.dive.results.insert(
         DiveKind::Tests,
         DiveResult {
@@ -648,18 +454,125 @@ fn the_tests_tab_scrolls_too() {
             ..Default::default()
         },
     );
-    keys(&mut app, "<space>t");
-    assert_eq!(app.flagged.pane, Pane::Answer(DiveKind::Tests));
-    keys(&mut app, "zz");
+    key(&mut app, 'l');
+    assert_eq!(app.screen, Screen::Unit);
+    assert_eq!(app.unit.id, id);
+    (app, repo)
+}
+
+/// Where target `t` was last drawn.
+fn target_rect(app: &App, t: Target) -> Rect {
+    app.targets
+        .borrow()
+        .iter()
+        .find(|(_, x)| *x == t)
+        .map(|(r, _)| *r)
+        .unwrap()
+}
+
+#[test]
+fn a_long_recommendation_in_the_unit_view_scrolls_to_its_end() {
+    let (mut app, _repo) = unit_view();
     let (w, h) = (100, 30);
     let first = screen(&app, w, h);
-    assert!(has(&first, "25 tests cover it") && has(&first, ANSWER_MORE));
+    let text = first.join("\n");
+    assert!(has(&first, " long_one "), "{text}");
+    assert!(!has(&first, "step 40 of the answer"), "{text}");
+    // `^d` scrolls the text half its rows; the title row stays.
+    let step = half(&app);
+    keys(&mut app, "<c-d>");
+    assert_eq!(app.detail_offset(), step);
+    let mut seen = screen(&app, w, h);
+    assert!(has(&seen, " long_one "));
+    for _ in 0..40 {
+        keys(&mut app, "<c-d>");
+        seen.extend(screen(&app, w, h));
+    }
+    assert!(has(&seen, "What to do about it"), "{}", seen.join("\n"));
+    let end = screen(&app, w, h);
+    let text = end.join("\n");
+    assert!(has(&end, "step 40 of the answer"), "{text}");
+    assert!(has(&end, ABOVE), "{text}");
+    assert!(!has(&end, "more lines"), "{text}");
+    let max = app.detail_offset();
+    assert!(max > 0);
+    keys(&mut app, "<c-d>");
+    assert_eq!(app.detail_offset(), max, "^d stops at the end");
+    // Back up to the top.
+    for _ in 0..40 {
+        keys(&mut app, "<c-u>");
+    }
+    assert_eq!(app.detail_offset(), 0);
+    assert_eq!(screen(&app, w, h), first);
+}
+
+#[test]
+fn the_text_and_the_panel_under_it_scroll_apart() {
+    let (mut app, _repo) = unit_view();
+    let (w, h) = (100, 30);
+    screen(&app, w, h);
+    let text_step = half(&app);
+    keys(&mut app, "<c-d>");
+    assert_eq!(app.detail_offset(), text_step);
+    // With a panel open, ^d scrolls the panel and the text stays.
+    keys(&mut app, "<space>t");
+    assert_eq!(app.unit.panel, Some(Panel::Tool(DiveKind::Tests)));
+    screen(&app, w, h);
+    let panel_step = half(&app);
+    keys(&mut app, "<c-d>");
+    screen(&app, w, h);
+    assert_eq!(app.unit.panel_offset.get(), panel_step);
+    assert_eq!(app.detail_offset(), text_step);
+    // Closing the panel gives the keys back to the text.
+    keys(&mut app, "<space>t");
+    assert_eq!(app.unit.panel, None);
+    screen(&app, w, h);
+    keys(&mut app, "<c-u>");
+    assert_eq!(app.detail_offset(), 0);
+    // Another unit starts at the top.
+    keys(&mut app, "<c-d>");
+    keys(&mut app, "n");
+    assert_eq!(app.unit.id, "calc.py::short_one");
+    screen(&app, w, h);
+    assert_eq!(app.detail_offset(), 0);
+}
+
+#[test]
+fn the_wheel_scrolls_the_text_or_the_panel_under_it() {
+    let (mut app, _repo) = unit_view();
+    let (w, h) = (100, 30);
+    keys(&mut app, "<space>t");
+    screen(&app, w, h);
+    let panel = target_rect(&app, Target::Panel);
+    let text = target_rect(&app, Target::Detail);
+    // Over the panel: the panel, three lines.
+    wheel(&mut app, true, panel.x + 5, panel.y + panel.height / 2);
+    assert_eq!(app.unit.panel_offset.get(), 3);
+    assert_eq!(app.detail_offset(), 0);
+    // Over the text above it: the text.
+    screen(&app, w, h);
+    wheel(&mut app, true, text.x + 5, text.y + 1);
+    assert_eq!(app.detail_offset(), 3);
+    assert_eq!(app.unit.panel_offset.get(), 3);
+    wheel(&mut app, false, text.x + 5, text.y + 1);
+    assert_eq!(app.detail_offset(), 0);
+    // The wheel moves to no other unit.
+    assert_eq!(app.unit.id, "calc.py::long_one");
+}
+
+#[test]
+fn the_tests_panel_scrolls_to_its_end() {
+    let (mut app, _repo) = unit_view();
+    keys(&mut app, "<space>t");
+    assert_eq!(app.unit.panel, Some(Panel::Tool(DiveKind::Tests)));
+    let (w, h) = (100, 30);
+    let first = screen(&app, w, h);
+    assert!(has(&first, "25 tests cover it"), "{}", first.join("\n"));
     assert!(!has(&first, "test_case_25"), "{}", first.join("\n"));
     for _ in 0..30 {
         keys(&mut app, "<c-d>");
     }
     let end = screen(&app, w, h);
     assert!(has(&end, "test_case_25"), "{}", end.join("\n"));
-    assert!(!has(&end, ANSWER_MORE), "{}", end.join("\n"));
     assert_eq!(app.overlay, Overlay::None);
 }

@@ -1,6 +1,6 @@
 //! The code change of a unit that changes behavior, as a compact diff in
-//! a box of its own: in the list preview, on the swipe card and on the
-//! Flagged screen. Built from the old and new contents stored in the
+//! a box of its own: in the queue's preview, the unit view and its
+//! panels. Built from the old and new contents stored in the
 //! review, so drawing never runs git. Changed lines keep [`CONTEXT`]
 //! unchanged lines around them; longer unchanged runs between changes
 //! fold into one gap row. Line numbers are those of the new file, where
@@ -401,7 +401,7 @@ pub fn listing(
 /// What the code change shows of the agent's statements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Notes {
-    /// Nothing: the statements aren't drawn (a routine swipe card), and
+    /// Nothing: the statements aren't drawn, and
     /// every change shows.
     Off,
     /// Each statement written into the code under the last row it cites,

@@ -227,27 +227,27 @@ impl Driver {
 
 impl Driver {
     /// `review` under `cfg`, opened as `teer --no-agent` opens it:
-    /// [`App::new`], then [`App::start`] without an agent and without
-    /// `--swipe`. What `start` returned is in [`Driver::effects`].
+    /// [`App::new`], then [`App::start`] without an agent. What `start`
+    /// returned is in [`Driver::effects`].
     pub fn open(review: Review, cfg: Config) -> Driver {
-        Driver::start(review, cfg, false, false)
+        Driver::start(review, cfg, false)
     }
 
     /// As [`Driver::open`], with an agent set up: a fresh session in the
     /// review's repo, as `teer` runs one when no session wrote the change.
     pub fn open_with_agent(review: Review, cfg: Config) -> Driver {
-        Driver::start(review, cfg, true, false)
+        Driver::start(review, cfg, true)
     }
 
     /// `review` under `cfg`, started the way the runtime starts it
-    /// (`tui::run`): `agent` is whether an agent is set up, `swipe` is
-    /// `--swipe`. Teer's data and config point at a temp dir.
-    pub fn start(review: Review, cfg: Config, agent: bool, swipe: bool) -> Driver {
+    /// (`tui::run`): `agent` is whether an agent is set up. Teer's data and
+    /// config point at a temp dir.
+    pub fn start(review: Review, cfg: Config, agent: bool) -> Driver {
         super::isolate_env();
         let mut app = App::new(review, cfg, Keymap::default());
         let session = SessionRef::fresh("mock", app.review.repo_root.clone());
         let note = (!agent).then(|| teer::cli::NO_AGENT.to_string());
-        let effects = app.start(agent, note, Vec::new(), Some(session), swipe);
+        let effects = app.start(agent, note, Vec::new(), Some(session));
         Driver { app, effects }
     }
 

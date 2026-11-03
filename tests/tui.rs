@@ -1,4 +1,4 @@
-//! Slim view, reset, editor, swipe mode.
+//! The queue, the unit view's code, reset, the editor.
 //! Rendered screens are snapshot tested; behavior runs through the app's
 //! event handlers and the runtime with a mocked agent.
 
@@ -19,7 +19,7 @@ use teer::config::Config;
 use teer::keymap::Keymap;
 use teer::review::model::{Decision, Review, SessionRef};
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, AppEvent, Effect, Overlay, Screen};
+use teer::tui::app::{App, AppEvent, Effect, Grouping, Overlay, Screen};
 use teer::tui::ui;
 
 const API: &str = "from checkout import charge_order\n\n\ndef handle_checkout(request):\n    return charge_order(request.order)\n\n\ndef main():\n    handle_checkout(parse())\n";
@@ -106,14 +106,18 @@ async fn fixture_review() -> (Review, FixtureRepo) {
 
 fn app_for(review: Review, cfg: Config) -> App {
     let mut app = App::new(review, cfg, Keymap::default());
-    let effects = app.start(true, None, Vec::new(), Some(session()), false);
+    let effects = app.start(true, None, Vec::new(), Some(session()));
     assert!(
         !effects.iter().any(|e| matches!(e, Effect::Prepare(_))),
         "already prepared: {effects:?}"
     );
-    // These are the v1 screens (`--swipe`): the list, swipe, Flagged.
-    app.open_v1_list();
     app
+}
+
+/// The queue listed by file (`zf`): each file's name above its units.
+fn by_file(app: &mut App) {
+    app.grouping = Grouping::File;
+    app.rebuild_order();
 }
 
 fn render(app: &App, w: u16, h: u16) -> Terminal<TestBackend> {
@@ -149,18 +153,18 @@ fn ctrl(app: &mut App, c: char) -> Vec<Effect> {
     )))
 }
 
-// ---- M3: slim view -----------------------------------------------------
+// ---- M3: the queue -----------------------------------------------------
 
 #[tokio::test]
-async fn slim_view_snapshot() {
+async fn queue_snapshot() {
     let (review, _repo) = fixture_review().await;
     let app = app_for(review, Config::default());
-    assert_eq!(app.screen, Screen::Slim);
-    insta::assert_snapshot!("slim", render(&app, 90, 30).backend());
+    assert_eq!(app.screen, Screen::Queue);
+    insta::assert_snapshot!("queue", render(&app, 90, 30).backend());
 }
 
 #[tokio::test]
-async fn slim_navigation() {
+async fn queue_navigation() {
     let (review, _repo) = fixture_review().await;
     let mut app = app_for(review, Config::default());
     let n = app.order.len();
@@ -168,14 +172,14 @@ async fn slim_navigation() {
     assert_eq!(app.sel, 1);
     key(&mut app, 'G');
     assert_eq!(app.sel, n - 1);
-    // The file's name is no stop: the first row is its first unit.
+    // The box's title is no stop: the first row is its first unit.
     v2::press(&mut app, "gg");
     assert_eq!(app.sel, 0);
     key(&mut app, 'k');
     assert_eq!(app.sel, 0);
 
     select(&mut app, "old_helper");
-    insta::assert_snapshot!("slim_worth_a_look", render(&app, 90, 30).backend());
+    insta::assert_snapshot!("queue_worth_a_look", render(&app, 90, 30).backend());
     assert_eq!(key(&mut app, 'q'), vec![Effect::Save, Effect::Quit]);
 }
 
@@ -242,83 +246,6 @@ async fn rerun_keeps_decisions_for_unchanged_units() {
     );
 }
 
-// ---- M7: swipe mode ----------------------------------------------------
-
-#[tokio::test]
-async fn swipe_card_snapshot_and_keys() {
-    let (review, _repo) = fixture_review().await;
-    let mut app = app_for(review, Config::default());
-    key(&mut app, 's');
-    assert_eq!(app.screen, Screen::Swipe);
-    let first = app.swipe_current().cloned().unwrap();
-    // The close looks come first.
-    assert_eq!(app.review.unit(&first).unwrap().symbol, "charge_order");
-    insta::assert_snapshot!("swipe_card", render(&app, 90, 26).backend());
-
-    // Accept.
-    key(&mut app, 'a');
-    assert_eq!(
-        app.review.unit(&first).unwrap().decision,
-        Decision::Accepted
-    );
-    // j does nothing: there's no down.
-    let second = app.swipe_current().cloned().unwrap();
-    // Every change carries its code, a card worth a look too.
-    assert_eq!(app.review.unit(&second).unwrap().symbol, "old_helper");
-    let card = format!("{}", render(&app, 90, 26).backend());
-    assert!(card.contains("code change"), "{card}");
-    assert!(card.contains("- def old_helper"), "{card}");
-    key(&mut app, 'j');
-    code(&mut app, KeyCode::Down);
-    assert_eq!(app.swipe_current(), Some(&second));
-    // k goes back a card and decides nothing; ↑ too.
-    key(&mut app, 'k');
-    assert_eq!(app.swipe_current(), Some(&first));
-    code(&mut app, KeyCode::Up);
-    assert_eq!(app.swipe_current(), Some(&first));
-    key(&mut app, 'a');
-    assert_eq!(app.swipe_current(), Some(&second));
-    assert_eq!(
-        app.review.unit(&second).unwrap().decision,
-        Decision::Pending
-    );
-    // f flags the card for a closer look and moves on (no note line in
-    // swipe); undo brings it back.
-    key(&mut app, 'f');
-    assert_eq!(app.overlay, Overlay::None);
-    assert_ne!(app.swipe_current(), Some(&second));
-    assert_eq!(
-        app.review.unit(&second).unwrap().decision,
-        Decision::Investigate
-    );
-    key(&mut app, 'u');
-    assert_eq!(app.swipe_current(), Some(&second));
-    assert_eq!(
-        app.review.unit(&second).unwrap().decision,
-        Decision::Pending
-    );
-    // ← no longer flags: it moves between the Flagged screen's tiles.
-    code(&mut app, KeyCode::Left);
-    assert_eq!(
-        app.review.unit(&second).unwrap().decision,
-        Decision::Pending
-    );
-    assert_eq!(app.swipe_current(), Some(&second));
-    key(&mut app, 'f');
-    assert_eq!(
-        app.review.unit(&second).unwrap().decision,
-        Decision::Investigate
-    );
-    assert_ne!(app.swipe_current(), Some(&second));
-    assert_eq!(app.overlay, Overlay::None);
-    assert_eq!(app.screen, Screen::Swipe);
-
-    while app.swipe_current().is_some() {
-        key(&mut app, 'a');
-    }
-    insta::assert_snapshot!("swipe_summary", render(&app, 90, 20).backend());
-}
-
 /// `charge_order` with statements citing what they say: the added check
 /// (new 9-10), the saved payment (new 12), the dropped receipt (old 10),
 /// and a second opinion that agrees.
@@ -352,145 +279,42 @@ async fn statements_sit_in_the_code_under_the_rows_they_cite() {
     let (mut review, _repo) = fixture_review().await;
     cited(&mut review);
     let mut app = app_for(review, Config::default());
-    key(&mut app, 's');
+    select(&mut app, "charge_order");
+    // In the unit view, the whole change with every statement in it.
+    key(&mut app, 'l');
+    assert_eq!(app.screen, Screen::Unit);
     let card = format!("{}", render(&app, 80, 24).backend());
-    insta::assert_snapshot!("swipe_card_cites", card);
+    insta::assert_snapshot!("unit_view_cites", card);
     // What the agent wrote sits behind a bar, under a label naming who.
-    assert!(card.contains("│  ┃ agent (haiku, sonnet) "), "{card}");
+    assert!(card.contains("\" ┃ agent (haiku, sonnet) "), "{card}");
     assert!(
-        card.contains("│  ┃ Changes how orders are charged."),
+        card.contains("\" ┃ Changes how orders are charged."),
         "{card}"
     );
     // Each statement sits in a card under the last row it cites, and
     // nothing else marks those rows; the removed row has its old line
     // number, the one the statement cites.
     for row in [
-        "│   9 +     if order.currency not in SUPPORTED:",
-        "│  10 +         raise ValueError(\"unsupported currency\")",
-        "│     ╭──────",
-        "│     │ Rejects unsupported currencies. 2 callers don't handle it. │",
-        "│  11       result = pay(order)",
+        "\"   9 +     if order.currency not in SUPPORTED:",
+        "\"  10 +         raise ValueError(\"unsupported currency\")",
+        "\"     ╭──────",
+        "\"     │ Rejects unsupported currencies. 2 callers don't handle it. │",
+        "\"  11       result = pay(order)",
+        "\"  10 -     send_receipt(order)",
+        "\"     │ No longer sends the receipt email. │",
     ] {
         assert!(card.contains(row), "{row}:\n{card}");
     }
-    // Further down, scrolling, the removed row and the other two cards.
+    // Further down, scrolling, the third card.
     let mut seen = card;
     for _ in 0..10 {
         ctrl(&mut app, 'd');
         seen.push_str(&format!("{}", render(&app, 80, 24).backend()));
     }
-    for row in [
-        "│  10 -     send_receipt(order)",
-        "│     │ No longer sends the receipt email. │",
-        "│     │ Saves the payment on the order",
-    ] {
-        assert!(seen.contains(row), "{row}:\n{seen}");
-    }
-}
-
-#[tokio::test]
-async fn the_card_names_the_file_of_a_symbol_not_its_path() {
-    let (mut review, _repo) = fixture_review().await;
-    let long = PathBuf::from("application/module/MediaDistribution/Contract/Data/checkout.py");
-    for f in review.files.iter_mut().filter(|f| f.path == *"checkout.py") {
-        f.path = long.clone();
-    }
-    for u in review.units.iter_mut().filter(|u| u.file == *"checkout.py") {
-        u.file = long.clone();
-    }
-    let mut app = app_for(review, Config::default());
-    key(&mut app, 's');
-    let card = format!("{}", render(&app, 80, 24).backend());
-    let rows: Vec<&str> = card.lines().collect();
-    let head = rows
-        .iter()
-        .position(|l| l.contains("Needs a close look"))
-        .unwrap();
-    assert!(!rows[head].contains("checkout.py"), "{}", rows[head]);
-    let name = rows[head + 1];
-    assert!(name.contains("charge_order  checkout.py"), "{name}");
-    assert!(!card.contains("Contract/"), "{card}");
-}
-
-#[tokio::test]
-async fn dragging_the_card_swipes() {
-    let (review, _repo) = fixture_review().await;
-    let mut app = app_for(review, Config::default());
-    key(&mut app, 's');
-    render(&app, 90, 26);
-    let card = app.swipe_card.get();
-    let first = app.swipe_current().cloned().unwrap();
-    let (x, y) = (card.x + card.width / 2, card.y + card.height / 2);
-    let m = |kind, column, row| {
-        Event::Mouse(MouseEvent {
-            kind,
-            column,
-            row,
-            modifiers: KeyModifiers::NONE,
-        })
-    };
-
-    // A short drag does nothing.
-    app.on_event(m(MouseEventKind::Down(MouseButton::Left), x, y));
-    app.on_event(m(MouseEventKind::Drag(MouseButton::Left), x + 5, y));
-    app.on_event(m(MouseEventKind::Up(MouseButton::Left), x + 5, y));
-    assert_eq!(app.swipe_current(), Some(&first));
-
-    // Past a third of the width: accept. The card follows the drag, tinted.
-    app.on_event(m(MouseEventKind::Down(MouseButton::Left), x, y));
-    app.on_event(m(
-        MouseEventKind::Drag(MouseButton::Left),
-        x + card.width / 3 + 1,
-        y,
-    ));
-    insta::assert_snapshot!("swipe_dragging", render(&app, 90, 26).backend());
-    app.on_event(m(
-        MouseEventKind::Up(MouseButton::Left),
-        x + card.width / 3 + 1,
-        y,
-    ));
-    assert_eq!(
-        app.review.unit(&first).unwrap().decision,
-        Decision::Accepted
+    assert!(
+        seen.contains("\"     │ Saves the payment on the order"),
+        "{seen}"
     );
-}
-
-#[tokio::test]
-async fn dragging_left_investigates_and_vertical_drags_are_ignored() {
-    let (review, _repo) = fixture_review().await;
-    let mut app = app_for(review, Config::default());
-    key(&mut app, 's');
-    render(&app, 90, 26);
-    let card = app.swipe_card.get();
-    let first = app.swipe_current().cloned().unwrap();
-    let (x, y) = (card.x + card.width / 2, card.y + card.height / 2);
-    let m = |kind, column, row| {
-        Event::Mouse(MouseEvent {
-            kind,
-            column,
-            row,
-            modifiers: KeyModifiers::NONE,
-        })
-    };
-    // Dragging up (or down) the whole card does nothing.
-    for dy in [-(card.height as i32 / 2 - 1), card.height as i32 / 2 - 1] {
-        let ty = (y as i32 + dy) as u16;
-        app.on_event(m(MouseEventKind::Down(MouseButton::Left), x, y));
-        app.on_event(m(MouseEventKind::Drag(MouseButton::Left), x, ty));
-        app.on_event(m(MouseEventKind::Up(MouseButton::Left), x, ty));
-        assert_eq!(app.swipe_current(), Some(&first));
-        assert_eq!(app.review.unit(&first).unwrap().decision, Decision::Pending);
-    }
-    // Past a third of the width to the left: investigate.
-    let tx = x - (card.width / 3 + 1);
-    app.on_event(m(MouseEventKind::Down(MouseButton::Left), x, y));
-    app.on_event(m(MouseEventKind::Drag(MouseButton::Left), tx, y));
-    app.on_event(m(MouseEventKind::Up(MouseButton::Left), tx, y));
-    assert_eq!(
-        app.review.unit(&first).unwrap().decision,
-        Decision::Investigate
-    );
-    assert_ne!(app.swipe_current(), Some(&first));
 }
 
 // ---- M8: large reviews and startup ----------------------------------
@@ -512,7 +336,7 @@ async fn large_reviews_prepare_close_looks_first_and_the_rest_per_file() {
         ..Config::default()
     };
     let mut app = App::new(review, cfg, Keymap::default());
-    let effects = app.start(true, None, Vec::new(), Some(session()), false);
+    let effects = app.start(true, None, Vec::new(), Some(session()));
     // Straight into the queue: there is no file overview any more.
     assert_eq!(app.screen, Screen::Queue);
     let asked = |effects: &[Effect]| -> Vec<String> {
@@ -576,7 +400,7 @@ async fn starts_on_the_review_without_asking_for_a_session() {
     }
     let mut app = App::new(fresh, Config::default(), Keymap::default());
     let s = SessionRef::fresh("claude", "/work/shop".into());
-    let effects = app.start(true, None, Vec::new(), Some(s.clone()), false);
+    let effects = app.start(true, None, Vec::new(), Some(s.clone()));
     assert_eq!(app.screen, Screen::Queue);
     assert_eq!(app.review.agent_session, Some(s));
     assert!(
@@ -594,13 +418,10 @@ async fn starts_on_the_review_without_asking_for_a_session() {
         Some("Claude Code ('claude') isn't on your PATH.".into()),
         Vec::new(),
         None,
-        false,
     );
     assert!(effects.is_empty());
     assert_eq!(app.screen, Screen::Queue);
     assert!(app.review.agent_session.is_none());
-    // The v1 list says why (the queue's drawing: tests/v2_queue.rs).
-    app.open_v1_list();
     let screen = format!("{}", render(&app, 90, 12).backend());
     assert!(screen.contains("isn't on your PATH"), "{screen}");
 }
@@ -709,9 +530,10 @@ async fn facts_raise_the_level_even_when_the_agent_says_low_risk() {
 }
 
 #[tokio::test]
-async fn the_list_has_one_line_per_unit_and_code_in_every_preview() {
+async fn the_queue_has_one_line_per_unit_and_code_in_every_preview() {
     let (review, _repo) = fixture_review().await;
     let mut app = app_for(review, Config::default());
+    by_file(&mut app);
     for symbol in ["new_helper", "old_helper", "charge_order"] {
         select(&mut app, symbol);
         let list = format!("{}", render(&app, 100, 30).backend());
@@ -729,8 +551,8 @@ async fn the_list_has_one_line_per_unit_and_code_in_every_preview() {
             assert!(code_rows.is_empty(), "{symbol}:\n{list}");
         }
         // Each listed unit has exactly one row (inside its box, its level's
-        // icon under the file's name), just its name; the preview pane below
-        // says where it is.
+        // icon under the file's name), its name and state; listed by file,
+        // the preview pane below says where it is.
         let rows: Vec<&str> = list
             .lines()
             .filter(|l| l.starts_with("\"│"))
@@ -752,17 +574,25 @@ async fn the_list_has_one_line_per_unit_and_code_in_every_preview() {
 }
 
 #[tokio::test]
-async fn flagged_only_keys_do_nothing_in_the_list() {
+async fn the_flagged_screens_old_keys_do_nothing_in_the_queue() {
     let (review, _repo) = fixture_review().await;
     let mut app = app_for(review, Config::default());
     select(&mut app, "charge_order");
     for keys in [
-        "o", "x", "r", "zz", "gt", "gT", "<tab>", "<s-tab>", "<right>", "<left>",
+        "o", "x", "r", "s", "zz", "gt", "gT", "<tab>", "<s-tab>", "<right>", "<left>", "<space>w",
+        "<space>m", "<space>a",
     ] {
         assert!(v2::press(&mut app, keys).is_empty(), "{keys}");
-        assert_eq!(app.screen, Screen::Slim, "{keys}");
+        assert_eq!(app.screen, Screen::Queue, "{keys}");
         assert_eq!(app.overlay, Overlay::None, "{keys}");
         assert_eq!(app.selected().unwrap().symbol, "charge_order", "{keys}");
+        assert!(
+            app.review
+                .units
+                .iter()
+                .all(|u| u.decision != Decision::Investigate),
+            "{keys}"
+        );
     }
 }
 
@@ -777,36 +607,20 @@ async fn gf_opens_the_unit_in_the_editor_at_its_line() {
         line,
     };
     assert_eq!(v2::press(&mut app, "gf"), vec![want]);
-    // From a swipe card it's the card on top.
-    key(&mut app, 's');
-    let top = app.swipe_current().cloned().unwrap();
-    let (file, line) = {
-        let u = app.review.unit(&top).unwrap();
-        (u.file.clone(), u.display_line())
-    };
-    assert_eq!(v2::press(&mut app, "gf"), vec![Effect::Edit { file, line }]);
 }
 
 #[tokio::test]
 async fn reset_clears_every_decision_after_confirming() {
     let (review, _repo) = fixture_review().await;
     let mut app = app_for(review, Config::default());
-    key(&mut app, 's');
     key(&mut app, 'a');
-    key(&mut app, 'f');
-    key(&mut app, 'k');
+    v2::press(&mut app, "f<esc>");
     assert!(
         app.review
             .units
             .iter()
             .any(|u| u.decision != Decision::Pending)
     );
-    let total = app
-        .review
-        .units
-        .iter()
-        .filter(|u| u.status != teer::review::model::UnitStatus::NoBehaviorChange)
-        .count();
 
     // esc cancels.
     assert!(v2::press(&mut app, ":e!<cr>").is_empty());
@@ -821,9 +635,8 @@ async fn reset_clears_every_decision_after_confirming() {
             .any(|u| u.decision != Decision::Pending)
     );
 
-    // enter resets: nothing is looked at, the swipe stack is full again;
-    // units with no behavior change are accepted for you again. Then the
-    // review re-runs (Phase 7).
+    // enter resets: nothing is looked at; units with no behavior change are
+    // accepted for you again. Then the review re-runs (Phase 7).
     v2::press(&mut app, ":e!<cr>");
     assert_eq!(
         code(&mut app, KeyCode::Enter),
@@ -836,42 +649,6 @@ async fn reset_clears_every_decision_after_confirming() {
             assert_eq!(u.decision, Decision::Pending, "{}", u.id);
         }
     }
-    assert_eq!(app.swipe.cards.len(), total);
-    assert_eq!(app.swipe.cursor, 0);
-}
-
-#[tokio::test]
-async fn the_accept_button_sits_bottom_right_and_is_clickable() {
-    let (review, _repo) = fixture_review().await;
-    let mut app = app_for(review, Config::default());
-    key(&mut app, 's');
-    let screen = format!("{}", render(&app, 90, 26).backend());
-    assert!(screen.contains("accept [a]"), "{screen}");
-    let first = app.swipe_current().cloned().unwrap();
-    let card = app.swipe_card.get();
-    let (rect, _) = *app
-        .targets
-        .borrow()
-        .iter()
-        .find(|(_, t)| *t == teer::tui::app::Target::Action(teer::keymap::Action::DecideAccept))
-        .expect("accept button");
-    // Under the card, at its right edge.
-    assert_eq!(rect.y, card.y + card.height);
-    assert_eq!(rect.x + rect.width, card.x + card.width);
-    let m = |kind| {
-        Event::Mouse(MouseEvent {
-            kind,
-            column: rect.x + 2,
-            row: rect.y,
-            modifiers: KeyModifiers::NONE,
-        })
-    };
-    app.on_event(m(MouseEventKind::Down(MouseButton::Left)));
-    app.on_event(m(MouseEventKind::Up(MouseButton::Left)));
-    assert_eq!(
-        app.review.unit(&first).unwrap().decision,
-        Decision::Accepted
-    );
 }
 
 fn symbols(app: &App) -> Vec<String> {
@@ -884,7 +661,8 @@ fn symbols(app: &App) -> Vec<String> {
 #[tokio::test]
 async fn the_file_sits_in_its_most_critical_box_with_its_units_most_critical_first() {
     let (review, _repo) = fixture_review().await;
-    let app = app_for(review, Config::default());
+    let mut app = app_for(review, Config::default());
+    by_file(&mut app);
     let backend = render(&app, 90, 30);
     let text = format!("{}", backend.backend());
     let at = |needle: &str| {
@@ -908,7 +686,6 @@ async fn the_file_sits_in_its_most_critical_box_with_its_units_most_critical_fir
     // Start on the file's first unit: its close look.
     assert_eq!(app.selected().unwrap().symbol, "charge_order");
     // `za` lists them last in the file, behind their icon.
-    let mut app = app;
     v2::press(&mut app, "za");
     let text = format!("{}", render(&app, 90, 30).backend());
     assert!(
@@ -964,131 +741,13 @@ async fn deciding_does_not_move_units_and_pending_jumps_skip_decided() {
     }
 }
 
-#[tokio::test]
-async fn swipe_cards_go_most_attention_first_then_in_list_order() {
-    let (review, _repo) = fixture_review().await;
-    let mut app = app_for(review, Config::default());
-    key(&mut app, 's');
-    let cards: Vec<String> = app.swipe.cards.clone();
-    let mut list: Vec<usize> = app
-        .order
+fn decision_of(app: &App, symbol: &str) -> Decision {
+    app.review
+        .units
         .iter()
-        .copied()
-        .filter(|&i| {
-            app.review.units[i].status != teer::review::model::UnitStatus::NoBehaviorChange
-        })
-        .collect();
-    list.sort_by_key(|&i| std::cmp::Reverse(app.level_of(i).level));
-    let list: Vec<String> = list
-        .into_iter()
-        .map(|i| app.review.units[i].id.clone())
-        .collect();
-    assert_eq!(cards, list);
-    let names: Vec<String> = cards
-        .iter()
-        .map(|id| app.review.unit(id).unwrap().symbol.clone())
-        .collect();
-    assert_eq!(
-        names,
-        vec!["charge_order", "old_helper", "new_helper", "Cart::add"]
-    );
-}
-
-#[tokio::test]
-async fn entering_swipe_keeps_only_flagged_and_pending_cards_starting_on_the_first() {
-    let (review, _repo) = fixture_review().await;
-    let mut app = app_for(review, Config::default());
-    let all: Vec<String> = {
-        key(&mut app, 's');
-        app.swipe.cards.clone()
-    };
-    assert_eq!(all.len(), 4);
-    code(&mut app, KeyCode::Esc);
-    assert_eq!(app.screen, Screen::Slim);
-    app.review.unit_mut(&all[0]).unwrap().decision = Decision::Investigate;
-    app.review.unit_mut(&all[1]).unwrap().decision = Decision::Accepted;
-    app.review.unit_mut(&all[3]).unwrap().decision = Decision::Accepted;
-    key(&mut app, 's');
-    // List order, accepted ones dropped; the flagged first card is shown again.
-    assert_eq!(app.swipe.cards, vec![all[0].clone(), all[2].clone()]);
-    assert_eq!(app.swipe.cursor, 0);
-    assert_eq!(app.swipe_current(), Some(&all[0]));
-    let text = screen_text(&app);
-    assert!(text.contains("1 of 2"), "{text}");
-    assert!(text.contains("⚑ flagged"), "{text}");
-}
-
-#[tokio::test]
-async fn accepted_cards_stay_for_the_session_and_are_dropped_on_re_entry() {
-    let mut app = swipe_app().await;
-    let first = app.swipe_current().cloned().unwrap();
-    key(&mut app, 'a');
-    assert_eq!(app.swipe.cards.len(), 4);
-    key(&mut app, 'k');
-    assert_eq!(app.swipe_current(), Some(&first));
-    assert!(screen_text(&app).contains("✓ accepted"));
-    code(&mut app, KeyCode::Esc);
-    key(&mut app, 's');
-    assert_eq!(app.swipe.cards.len(), 3);
-    assert!(!app.swipe.cards.contains(&first));
-    assert!(screen_text(&app).contains("1 of 3"));
-}
-
-#[tokio::test]
-async fn all_accepted_opens_on_the_summary_and_says_nothing_needs_a_look() {
-    let (review, _repo) = fixture_review().await;
-    let mut app = app_for(review, Config::default());
-    for u in &mut app.review.units {
-        u.decision = Decision::Accepted;
-    }
-    key(&mut app, 's');
-    assert!(app.swipe.cards.is_empty());
-    assert!(app.swipe_current().is_none());
-    let text = screen_text(&app);
-    assert!(text.contains("All changes triaged"), "{text}");
-    assert!(text.contains("Nothing needs a look"), "{text}");
-    // The 3 units with no behavior change count, accepted for you.
-    assert!(text.contains("7 accepted"), "{text}");
-    // With a flagged unit left over the deck is not empty; the summary
-    // after it counts it (Flagged opens from the list, not from swipe).
-    let id = app.review.units[0].id.clone();
-    app.review.unit_mut(&id).unwrap().decision = Decision::Investigate;
-    code(&mut app, KeyCode::Esc);
-    key(&mut app, 's');
-    assert_eq!(app.swipe.cards.len(), 1);
-    key(&mut app, 'f');
-    let text = screen_text(&app);
-    assert!(text.contains("1 flagged"), "{text}");
-    assert!(!text.contains("press"), "{text}");
-}
-
-#[tokio::test]
-async fn reset_in_swipe_brings_every_card_back() {
-    let (review, _repo) = fixture_review().await;
-    let mut app = app_for(review, Config::default());
-    for u in &mut app.review.units {
-        u.decision = Decision::Accepted;
-    }
-    app.review.units[0].decision = Decision::Pending;
-    key(&mut app, 's');
-    assert_eq!(app.swipe.cards.len(), 1);
-    v2::press(&mut app, ":e!<cr>");
-    key(&mut app, 'y');
-    assert_eq!(app.swipe.cards.len(), 4);
-    assert_eq!(app.swipe.cursor, 0);
-}
-
-// ---- Swipe: previous card, state badge, re-deciding --------------------
-
-async fn swipe_app() -> App {
-    let (review, _repo) = fixture_review().await;
-    let mut app = app_for(review, Config::default());
-    key(&mut app, 's');
-    app
-}
-
-fn decision_of(app: &App, id: &str) -> Decision {
-    app.review.unit(id).unwrap().decision
+        .find(|u| u.symbol == symbol)
+        .unwrap()
+        .decision
 }
 
 fn screen_text(app: &App) -> String {
@@ -1096,185 +755,59 @@ fn screen_text(app: &App) -> String {
 }
 
 #[tokio::test]
-async fn a_accepts_and_advances() {
-    let mut app = swipe_app().await;
-    let first = app.swipe_current().cloned().unwrap();
-    key(&mut app, 'a');
-    assert_eq!(decision_of(&app, &first), Decision::Accepted);
-    assert_eq!(app.swipe.cursor, 1);
-    assert_ne!(app.swipe_current(), Some(&first));
-    // The counter follows: second card of four.
-    assert!(screen_text(&app).contains("2 of 4"));
-}
-
-#[tokio::test]
-async fn k_goes_back_and_the_card_shows_its_state() {
-    let mut app = swipe_app().await;
-    let first = app.swipe_current().cloned().unwrap();
-    assert!(screen_text(&app).contains("not reviewed yet"));
-    key(&mut app, 'a');
-    key(&mut app, 'k');
-    assert_eq!(app.swipe_current(), Some(&first));
-    // Going back changes no decision.
-    assert_eq!(decision_of(&app, &first), Decision::Accepted);
-    let text = screen_text(&app);
-    assert!(text.contains("✓ accepted"), "{text}");
-    assert!(text.contains("1 of 4"), "{text}");
-    insta::assert_snapshot!("swipe_card_accepted", render(&app, 90, 26).backend());
-    // A flagged card says so too.
-    key(&mut app, 'f');
-    key(&mut app, 'k');
-    assert!(screen_text(&app).contains("⚑ flagged"));
-    // a still accepts a card that is shown again, and advances.
-    key(&mut app, 'a');
-    assert_eq!(decision_of(&app, &first), Decision::Accepted);
-    assert_eq!(app.swipe.cursor, 1);
-}
-
-#[tokio::test]
-async fn k_on_the_first_card_does_nothing() {
-    let mut app = swipe_app().await;
-    let first = app.swipe_current().cloned().unwrap();
-    key(&mut app, 'k');
-    assert_eq!(app.swipe_current(), Some(&first));
-    assert_eq!(decision_of(&app, &first), Decision::Pending);
-    assert_eq!(app.screen, Screen::Swipe);
-}
-
-#[tokio::test]
-async fn k_from_the_summary_returns_to_the_last_card() {
-    let mut app = swipe_app().await;
-    let last = app.swipe.cards.last().cloned().unwrap();
-    while app.swipe_current().is_some() {
-        key(&mut app, 'a');
+async fn all_accepted_says_nothing_is_pending_and_counts_units_accepted_for_you() {
+    let (review, _repo) = fixture_review().await;
+    let mut app = app_for(review, Config::default());
+    for u in &mut app.review.units {
+        u.decision = Decision::Accepted;
     }
-    // Accepting the last card says how to finish, without a popup.
-    assert_eq!(app.overlay, Overlay::None);
-    assert!(app.status.contains(":w finishes"), "{}", app.status);
-    assert!(screen_text(&app).contains("All changes triaged"));
-    key(&mut app, 'k');
-    assert_eq!(app.swipe_current(), Some(&last));
-    assert!(screen_text(&app).contains("4 of 4"));
-    assert_eq!(decision_of(&app, &last), Decision::Accepted);
+    let text = screen_text(&app);
+    assert!(text.contains("Nothing pending. :w to finish"), "{text}");
+    // The 3 units with no behavior change count, accepted for you.
+    assert!(text.contains("7 accepted"), "{text}");
+    // A flagged unit left over is counted too.
+    app.review.units[0].decision = Decision::Investigate;
+    let text = screen_text(&app);
+    assert!(text.contains("Nothing pending. :w to finish"), "{text}");
+    assert!(text.contains("1 flagged"), "{text}");
 }
 
 #[tokio::test]
-async fn re_deciding_a_card_overrides_it() {
-    let mut app = swipe_app().await;
-    let first = app.swipe_current().cloned().unwrap();
+async fn re_deciding_a_unit_overrides_it() {
+    let (review, _repo) = fixture_review().await;
+    let mut app = app_for(review, Config::default());
+    assert_eq!(app.selected().unwrap().symbol, "charge_order");
     key(&mut app, 'a');
     key(&mut app, 'k');
-    key(&mut app, 'f');
-    assert_eq!(decision_of(&app, &first), Decision::Investigate);
+    v2::press(&mut app, "f<esc>");
+    assert_eq!(decision_of(&app, "charge_order"), Decision::Investigate);
     assert_eq!(
         app.decision_counts(),
         (3, 1, 3),
         "the 3 accepted for you count"
     );
-    key(&mut app, 'k');
-    key(&mut app, 'a');
-    assert_eq!(decision_of(&app, &first), Decision::Accepted);
+    v2::press(&mut app, "gga");
+    assert_eq!(decision_of(&app, "charge_order"), Decision::Accepted);
     assert_eq!(app.decision_counts(), (4, 0, 3));
 }
 
 #[tokio::test]
 async fn undo_restores_the_previous_decision_and_the_cursor() {
-    let mut app = swipe_app().await;
-    let first = app.swipe_current().cloned().unwrap();
-    key(&mut app, 'a'); // first accepted
-    key(&mut app, 'a'); // second accepted
-    key(&mut app, 'k');
-    key(&mut app, 'k'); // back on first
-    key(&mut app, 'f'); // first accepted -> flagged, cursor on second
-    assert_eq!(app.swipe.cursor, 1);
+    let (review, _repo) = fixture_review().await;
+    let mut app = app_for(review, Config::default());
+    key(&mut app, 'a'); // charge_order accepted
+    key(&mut app, 'a'); // old_helper accepted
+    v2::press(&mut app, "gg");
+    v2::press(&mut app, "f<esc>"); // charge_order accepted -> flagged
+    assert_eq!(decision_of(&app, "charge_order"), Decision::Investigate);
+    assert_eq!(app.selected().unwrap().symbol, "new_helper");
     key(&mut app, 'u');
     // The earlier decision comes back (not "pending") and so does the cursor.
-    assert_eq!(decision_of(&app, &first), Decision::Accepted);
-    assert_eq!(app.swipe_current(), Some(&first));
+    assert_eq!(decision_of(&app, "charge_order"), Decision::Accepted);
+    assert_eq!(app.selected().unwrap().symbol, "charge_order");
     key(&mut app, 'u');
-    assert_eq!(app.swipe.cursor, 1);
-    assert_eq!(
-        decision_of(&app, &app.swipe.cards[1].clone()),
-        Decision::Pending
-    );
-}
-
-#[tokio::test]
-async fn f_flags_and_k_goes_back_without_deciding() {
-    let mut app = swipe_app().await;
-    let ids = app.swipe.cards.clone();
-    key(&mut app, 'f');
-    key(&mut app, 'f');
-    assert_eq!(decision_of(&app, &ids[0]), Decision::Investigate);
-    assert_eq!(decision_of(&app, &ids[1]), Decision::Investigate);
-    // k moves back without deciding anything.
-    key(&mut app, 'k');
-    assert_eq!(app.swipe.cursor, 1);
-    assert_eq!(decision_of(&app, &ids[2]), Decision::Pending);
-    assert_eq!(
-        app.decision_counts(),
-        (3, 2, 2),
-        "the 3 accepted for you count"
-    );
-    // h goes back to the list, deciding nothing.
-    key(&mut app, 'h');
-    assert_eq!(app.screen, Screen::Slim);
-    assert_eq!(app.decision_counts(), (3, 2, 2));
-
-    // In the list, f flags too, and h no longer does.
-    let (review, _repo) = fixture_review().await;
-    let mut list = app_for(review, Config::default());
-    let id = list.selected_id().unwrap();
-    key(&mut list, 'h');
-    assert_eq!(decision_of(&list, &id), Decision::Pending);
-    v2::press(&mut list, "f<esc>");
-    assert_eq!(decision_of(&list, &id), Decision::Investigate);
-}
-
-#[tokio::test]
-async fn the_swipe_footer_shows_next_previous_and_flag() {
-    let mut app = swipe_app().await;
-    let text = screen_text(&app);
-    for hint in ["a accept · next", "k previous", "f flag", "u undo"] {
-        assert!(text.contains(hint), "{hint} missing:\n{text}");
-    }
-    // Wide enough for everything: the buttons are clickable.
-    let ids = app.swipe.cards.clone();
-    let footer_y = 25;
-    let find_footer = |app: &App, a| {
-        app.targets
-            .borrow()
-            .iter()
-            .rev()
-            .find(|(r, t)| *t == teer::tui::app::Target::Action(a) && r.y == footer_y)
-            .map(|(r, _)| *r)
-            .unwrap()
-    };
-    let press = |app: &mut App, r: ratatui::layout::Rect| {
-        for kind in [
-            MouseEventKind::Down(MouseButton::Left),
-            MouseEventKind::Up(MouseButton::Left),
-        ] {
-            app.on_event(Event::Mouse(MouseEvent {
-                kind,
-                column: r.x + 1,
-                row: r.y,
-                modifiers: KeyModifiers::NONE,
-            }));
-        }
-    };
-    let r = find_footer(&app, teer::keymap::Action::DecideAccept);
-    press(&mut app, r);
-    assert_eq!(decision_of(&app, &ids[0]), Decision::Accepted);
-    assert_eq!(app.swipe.cursor, 1);
-    render(&app, 90, 26);
-    let r = find_footer(&app, teer::keymap::Action::MoveUp);
-    press(&mut app, r);
-    assert_eq!(app.swipe.cursor, 0);
-    render(&app, 90, 26);
-    let r = find_footer(&app, teer::keymap::Action::DecideFlag);
-    press(&mut app, r);
-    assert_eq!(decision_of(&app, &ids[0]), Decision::Investigate);
+    assert_eq!(decision_of(&app, "old_helper"), Decision::Pending);
+    assert_eq!(app.selected().unwrap().symbol, "old_helper");
 }
 
 #[tokio::test]

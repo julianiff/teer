@@ -1,4 +1,4 @@
-//! Stress and edge tests for the slim review list. None of these may panic,
+//! Stress and edge tests for the queue. None of these may panic,
 //! and the selected row must stay visible when it fits.
 
 mod common;
@@ -13,7 +13,7 @@ use teer::keymap::{Action, Keymap, Trigger};
 use teer::review::model::{
     Change, Decision, Marker, Prep, Range, Review, Risk, Unit, UnitKind, UnitStatus,
 };
-use teer::tui::app::{App, Overlay};
+use teer::tui::app::{App, Grouping, Overlay, Screen};
 use teer::tui::{slim, ui};
 
 fn unit(i: usize) -> Unit {
@@ -75,9 +75,10 @@ fn app_of(units: Vec<Unit>) -> App {
         branch: None,
         cursor: None,
     };
-    // The v1 list (`--swipe`, until Phase 8).
+    // The queue listed by file (`zf`): file names as labels too.
     let mut app = App::new(review, Config::default(), Keymap::default());
-    app.open_v1_list();
+    app.grouping = Grouping::File;
+    app.rebuild_order();
     app
 }
 
@@ -125,7 +126,7 @@ fn render_all_sizes(app: &App) {
     for &(w, h) in SIZES {
         render(app, w, h);
         // The list builder itself, at every width including degenerate ones.
-        let rows = slim::build(app, w);
+        let rows = slim::build_queue(app, w, true);
         assert_eq!(rows.spans.len(), app.order.len());
         assert_eq!(rows.lines.len(), rows.owner.len());
     }
@@ -175,7 +176,7 @@ fn empty_review_renders_and_handles_every_key() {
         common::v2::press(&mut a, &keys);
         render(&a, 80, 24);
         a.overlay = Overlay::None;
-        a.screen = teer::tui::app::Screen::Slim;
+        a.screen = Screen::Queue;
     }
     for code in [
         KeyCode::Down,
@@ -306,7 +307,7 @@ fn very_long_and_wide_unicode_names() {
         render_all_sizes(&a);
         for w in [40u16, 41, 45, 60, 71, 80] {
             // Every line, file rows and blank lines included, is exactly the width.
-            let rows = slim::build(&a, w);
+            let rows = slim::build_queue(&a, w, true);
             for l in &rows.lines {
                 assert_eq!(l.width(), w as usize, "width {w}");
             }
@@ -354,7 +355,7 @@ fn every_unit_is_one_line_at_any_width() {
     let mut a = app(5);
     a.sel = 2;
     for w in [39u16, 40, 80, 500] {
-        let rows = slim::build(&a, w);
+        let rows = slim::build_queue(&a, w, true);
         for &(s, e) in &rows.spans {
             assert_eq!(e - s, 1, "width {w}");
         }
@@ -604,7 +605,7 @@ fn control_characters_and_newlines_keep_rows_on_one_line() {
     for sel in 0..a.order.len() {
         a.sel = sel;
         for w in [40u16, 60, 80, 120] {
-            let rows = slim::build(&a, w);
+            let rows = slim::build_queue(&a, w, true);
             for &(s, e) in &rows.spans {
                 for l in &rows.lines[s..e] {
                     let joined: String = l.spans.iter().map(|x| x.content.to_string()).collect();
@@ -621,18 +622,8 @@ fn control_characters_and_newlines_keep_rows_on_one_line() {
 }
 
 #[test]
-fn flag_button_and_help_show_f_and_k_is_up() {
+fn help_shows_f_and_k_is_up() {
     let mut a = app(3);
-    let footer = |a: &App| {
-        let t = render(a, 100, 10);
-        text(&t)
-            .lines()
-            .rev()
-            .find(|l| l.contains("flag"))
-            .unwrap()
-            .to_string()
-    };
-    assert!(footer(&a).contains("f flag"), "{}", footer(&a));
     a.overlay = Overlay::Help;
     let help = text(&render(&a, 100, 40));
     assert!(help.contains("a  f") || help.contains("a f"), "{help}");

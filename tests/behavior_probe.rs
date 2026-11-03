@@ -247,15 +247,16 @@ print("TEER_CASE " + json.dumps({{"case": "small", "output": attempt(lambda: ope
 }
 
 #[tokio::test]
-async fn leader_r_on_the_flagged_screen_runs_the_probe_and_shows_the_table() {
+async fn leader_r_in_the_unit_view_runs_the_probe_and_shows_the_table() {
     use common::v2::press;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use teer::config::Config;
     use teer::keymap::Keymap;
-    use teer::review::model::{Decision, DiveKind};
+    use teer::review::model::DiveKind;
     use teer::tui::Runtime;
     use teer::tui::app::{App, Effect, Screen};
+    use teer::tui::unit::Panel;
 
     if !has_python() {
         return;
@@ -263,20 +264,18 @@ async fn leader_r_on_the_flagged_screen_runs_the_probe_and_shows_the_table() {
     isolate_env();
     let (_r, mut review) = repo();
     review.agent_session = Some(SessionRef::fresh("mock", review.repo_root.clone()));
-    for u in review.units.iter_mut().filter(|u| u.symbol == "discount") {
-        u.decision = Decision::Investigate;
-    }
     let mut app = App::new(review, Config::default(), Keymap::default());
-    // The Flagged screen is v1's (`--swipe`), entered from the v1 list.
-    app.open_v1_list();
+    app.has_agent = true;
     app.sel = app
         .order
         .iter()
         .position(|&i| app.review.units[i].symbol == "discount")
         .unwrap();
     press(&mut app, "l");
-    assert_eq!(app.screen, Screen::Flagged);
+    assert_eq!(app.screen, Screen::Unit);
+    let id = app.unit.id.clone();
     let effects = press(&mut app, "<space>r");
+    assert_eq!(app.unit.panel, Some(Panel::Tool(DiveKind::Behavior)));
     assert!(
         matches!(
             &effects[..],
@@ -287,8 +286,6 @@ async fn leader_r_on_the_flagged_screen_runs_the_probe_and_shows_the_table() {
         ),
         "{effects:?}"
     );
-    // Zoomed, its tile is as wide as the screen.
-    press(&mut app, "zz");
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let m = MockAdapter::new(|_, _| Ok(plan(PROBE)));
     let rt = Runtime {
@@ -314,7 +311,7 @@ async fn leader_r_on_the_flagged_screen_runs_the_probe_and_shows_the_table() {
         if let Some(said) = said.filter(|_| !saw_progress) {
             saw_progress = true;
             app.on_app_event(ev);
-            // The tile says what is happening while it runs.
+            // The panel says what is happening while it runs.
             let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
             t.draw(|f| teer::tui::ui::draw(f, &app)).unwrap();
             let buf = t.backend().buffer().clone();
@@ -334,13 +331,13 @@ async fn leader_r_on_the_flagged_screen_runs_the_probe_and_shows_the_table() {
         app.progress.is_empty(),
         "progress is cleared with the answer"
     );
-    let u = app.flagged_unit().unwrap();
-    assert!(u.dive_pending.is_empty());
+    let u = app.review.unit(&id).unwrap();
+    assert!(!u.dive_pending.contains(&DiveKind::Behavior));
     assert!(u.dive.results[&DiveKind::Behavior].behavior.is_some());
-    let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    let mut t = Terminal::new(TestBackend::new(120, 60)).unwrap();
     t.draw(|f| teer::tui::ui::draw(f, &app)).unwrap();
     let buf = t.backend().buffer().clone();
-    let text: String = (0..40)
+    let text: String = (0..60)
         .map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n")
         .collect();
     assert!(text.contains("2 behave differently"), "{text}");

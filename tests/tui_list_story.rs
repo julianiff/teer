@@ -1,4 +1,4 @@
-//! Story order in the list: inside a file, units that call each other stay
+//! Story order in the queue: inside a file, units that call each other stay
 //! together, the caller first, callees indented under it with `↳`.
 //! `order = "line"` keeps line order.
 
@@ -11,7 +11,7 @@ use ratatui::backend::TestBackend;
 use teer::config::{Config, Order};
 use teer::keymap::Keymap;
 use teer::review::model::{Decision, Prep, Range, Review, Unit, UnitKind, UnitStatus};
-use teer::tui::app::App;
+use teer::tui::app::{App, Grouping};
 use teer::tui::ui;
 
 /// A routine unit `name` at `line` of `file`, with the units it calls and is
@@ -79,9 +79,10 @@ fn app_of(units: Vec<Unit>, cfg: Config) -> App {
         branch: None,
         cursor: None,
     };
-    // The v1 list (`--swipe`, until Phase 8).
+    // The queue listed by file (`zf`): each file's units under its name.
     let mut app = App::new(review, cfg, Keymap::default());
-    app.open_v1_list();
+    app.grouping = Grouping::File;
+    app.rebuild_order();
     app
 }
 

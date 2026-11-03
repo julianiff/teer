@@ -10,9 +10,10 @@ use std::path::PathBuf;
 
 use common::v2::{Driver, review, unit, units};
 use teer::keymap::Keymap;
-use teer::review::model::{Decision, Review, Unit, UnitStatus};
+use teer::review::model::{Change, Decision, Marker, Prep, Review, Risk, Unit, UnitStatus};
+use teer::review::prepare::PrepareEvent;
 use teer::review::store;
-use teer::tui::app::{Effect, Grouping, Overlay, Screen};
+use teer::tui::app::{AppEvent, Effect, Grouping, Overlay, Screen};
 
 use Decision::{Accepted as A, Investigate as F, Pending as P};
 
@@ -304,6 +305,67 @@ fn visual_f_puts_one_note_on_every_selected_unit() {
     assert_eq!(*d.overlay(), Overlay::None);
 }
 
+/// The list moves under a selection (a description comes in and raises a
+/// unit to ▲, listed first): the selection keeps its units, and `a`
+/// decides those, not the rows they were on.
+#[test]
+fn a_selection_keeps_its_units_when_a_description_moves_the_list() {
+    let mut all = units(6);
+    for u in &mut all {
+        u.prep = Prep::Pending;
+    }
+    let mut d = Driver::of(all);
+    d.select(0);
+    d.keys("Vj");
+    assert_eq!((d.id_at(0), d.id_at(1)), ("u0".into(), "u1".into()));
+    d.app.on_app_event(AppEvent::Prep(PrepareEvent::Ready {
+        id: "u5".into(),
+        fingerprint: "fp5".into(),
+        changes: vec![Change {
+            marker: Marker::Changed,
+            statement: "It charges twice.".into(),
+            evidence: Vec::new(),
+            risk: Risk::High,
+        }],
+        summary: None,
+        cost: None,
+        unmentioned: None,
+        dropped: Vec::new(),
+        checking: false,
+    }));
+    assert_eq!(d.id_at(0), "u5", "▲ first");
+    assert_eq!(d.selected().as_deref(), Some("u1"));
+    assert_eq!(d.app.visual_rows(), Some(1..=2));
+    let bar = d.bar(140, 30);
+    assert!(bar.contains("2 units"), "{bar}");
+    d.keys("a");
+    assert_eq!(d.decision_of("u0"), A);
+    assert_eq!(d.decision_of("u1"), A);
+    assert_eq!(d.decision_of("u5"), P, "never selected");
+    assert_eq!(d.app.review.history.undo.len(), 1);
+}
+
+/// A unit the selection started on that is no longer listed (accepted for
+/// you, hidden) ends the selection.
+#[test]
+fn a_selection_whose_first_unit_leaves_the_list_ends() {
+    let mut d = Driver::new(6);
+    d.select(1);
+    d.keys("Vj");
+    d.app.review.unit_mut("u1").unwrap().status = UnitStatus::NoBehaviorChange;
+    d.app.rebuild_order();
+    let listed = |d: &Driver, id: &str| d.app.order.iter().any(|&i| d.app.review.units[i].id == id);
+    assert!(!listed(&d, "u1"), "accepted for you, hidden");
+    assert_eq!(d.app.visual, None);
+    d.keys("a");
+    assert_eq!(
+        d.decision_of("u2"),
+        A,
+        "a decides the unit under the cursor"
+    );
+    assert_eq!(d.decision_of("u3"), P);
+}
+
 // ---- Undo and redo --------------------------------------------------------------
 
 #[test]
@@ -356,8 +418,9 @@ fn the_queue_has_no_needs_fix() {
     d.keys("fx<cr>");
     d.select(0);
     d.keys("xo");
+    let saved = serde_json::to_string(&d.app.review).unwrap();
+    assert!(!saved.contains("\"resolution\""), "{saved}");
     let u0 = d.app.review.unit("u0").unwrap();
-    assert_eq!(u0.dive.resolution, None);
     assert_eq!(u0.decision, F);
     assert_eq!(u0.dive.note, "x", "a flag with a note is what goes out");
 }

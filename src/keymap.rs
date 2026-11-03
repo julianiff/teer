@@ -35,8 +35,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
 
 /// Everything a key can ask for. The id ([`Action::id`]) is what
-/// `config.toml` rebinds; `v1.*` actions keep the old screens usable until
-/// Phase 8 removes them.
+/// `config.toml` rebinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
     MoveDown,
@@ -88,31 +87,6 @@ pub enum Action {
     HelpOpen,
     /// Delete the selected note (notes panel only).
     NoteDelete,
-    /// Hand the notes to Claude Code or Codex (notes panel only; `:w` takes
-    /// over in Phase 6).
-    V1NotesToAgent,
-    /// Post the notes on the pull request (notes panel only; `:w` takes over
-    /// in Phase 6).
-    V1NotesPost,
-    /// The swipe screen.
-    V1Swipe,
-    /// Focus the next or previous tile of the Flagged screen.
-    V1NextTile,
-    V1PrevTile,
-    /// The tile in focus fills the screen, or no longer does.
-    V1Zoom,
-    /// The Recommend tile (the unit view's "what to do" from Phase 5).
-    V1Recommend,
-    /// The second model's opinion tile.
-    V1Disagree,
-    /// The agent reads the tests the search found.
-    V1InterpretTests,
-    /// Resolution of a flagged unit (gone in Phase 8: a flag and its note
-    /// say it).
-    V1ResolveOk,
-    V1ResolveFix,
-    /// Ask the tile in focus again.
-    V1DiveRerun,
 }
 
 /// The default table: each action, its id and its default keys in Neovim
@@ -309,68 +283,6 @@ const TABLE: &[(Action, &str, &[&str], &str)] = &[
     ),
     (Action::HelpOpen, "help.open", &["?"], "keys"),
     (Action::NoteDelete, "note.delete", &["d"], "delete the note"),
-    (
-        Action::V1NotesToAgent,
-        "v1.notes_to_agent",
-        &["c"],
-        "hand the notes to the agent",
-    ),
-    (
-        Action::V1NotesPost,
-        "v1.notes_post",
-        &["p"],
-        "post the notes on the PR",
-    ),
-    (
-        Action::V1Swipe,
-        "v1.swipe",
-        &["s"],
-        "swipe through the cards",
-    ),
-    (
-        Action::V1NextTile,
-        "v1.next_tile",
-        &["gt", "<tab>", "<right>"],
-        "next tile",
-    ),
-    (
-        Action::V1PrevTile,
-        "v1.prev_tile",
-        &["gT", "<s-tab>", "<left>"],
-        "previous tile",
-    ),
-    (Action::V1Zoom, "v1.zoom", &["zz"], "zoom the tile"),
-    (
-        Action::V1Recommend,
-        "v1.recommend",
-        &["<space>w"],
-        "what to do",
-    ),
-    (
-        Action::V1Disagree,
-        "v1.disagree",
-        &["<space>m"],
-        "second model",
-    ),
-    (
-        Action::V1InterpretTests,
-        "v1.interpret_tests",
-        &["<space>a"],
-        "agent reads the tests",
-    ),
-    (Action::V1ResolveOk, "v1.resolve_ok", &["o"], "resolved: ok"),
-    (
-        Action::V1ResolveFix,
-        "v1.resolve_fix",
-        &["x"],
-        "resolved: needs fix",
-    ),
-    (
-        Action::V1DiveRerun,
-        "v1.dive_rerun",
-        &["r"],
-        "ask the tile again",
-    ),
 ];
 
 impl Action {
@@ -413,18 +325,12 @@ impl Action {
     /// Takes you somewhere: what `g` sequences may do.
     fn moves(self) -> bool {
         let id = self.id();
-        id.starts_with("move.")
-            || id.starts_with("goto.")
-            || matches!(self, Action::V1NextTile | Action::V1PrevTile)
+        id.starts_with("move.") || id.starts_with("goto.")
     }
 
     /// Opens something: what `<space>` sequences may do.
     fn opens(self) -> bool {
         self.id().starts_with("tool.")
-            || matches!(
-                self,
-                Action::V1Recommend | Action::V1Disagree | Action::V1InterpretTests
-            )
     }
 
     /// Finishes or restarts: what `:` commands may do.
@@ -737,7 +643,7 @@ pub enum Edit {
     Down,
     PageUp,
     PageDown,
-    /// Moves the focus out of the text (the Ask view's links).
+    /// Moves the focus out of the text (the ask panel's links).
     Tab,
     BackTab,
     /// Asks the last question again.
@@ -1465,7 +1371,7 @@ mod tests {
         let ctrl_upper = KeyEvent::new(KeyCode::Char('D'), KeyModifiers::CONTROL);
         assert_eq!(km.feed(&ctrl_upper, now), ran(Action::ScrollHalfDown, None));
         let backtab = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
-        assert_eq!(km.feed(&backtab, now), ran(Action::V1PrevTile, None));
+        assert_eq!(km.edit(&backtab), Edit::BackTab);
     }
 
     #[test]
