@@ -215,16 +215,16 @@ Overlays, text inputs, the setup screen and the PR picker match `KeyCode` litera
 
 ## 8. Tests
 
-- **Running:** `cargo test` (the full run takes over 10 minutes, so run it in the background), `cargo clippy --all-targets`, `cargo fmt --check`. Seven live tests (`tests/live_*.rs`) are `#[ignore]` and need real agents. **CI runs no tests**: `.github/workflows/release.yml` only builds releases.
-- **Layout:** 40 files in `tests/`, plus unit tests inline in `src/` under `#[cfg(test)]`. The helpers are in `tests/common/mod.rs`:
+- **Running:** `cargo test` (about 45 s: the unit tests in `src/` take 1 s, the integration binary about 40 s), or `cargo nextest run` (each test in its own process, with per-test times; a test is reported as slow at 30 s and stopped at 2 min, see `.config/nextest.toml`; about 85 s on a Mac whose security software checks every process start). Run a part by module path: `cargo test --test it pr::` or `cargo nextest run pr::`. Also `cargo clippy --all-targets` and `cargo fmt --check`. Seven live tests (`tests/it/live_*.rs`) are `#[ignore]` and need real agents. **CI runs no tests**: `.github/workflows/release.yml` only builds releases.
+- **Layout:** one integration test binary: each file in `tests/it/` is a module of `tests/it/main.rs`, whose `layout` test fails when a file has no `mod` line or a test file sits directly in `tests/` (cargo would build it as a binary of its own, and every new binary is linked and checked by the OS again). Unit tests are inline in `src/` under `#[cfg(test)]`. The tests share one process under `cargo test`, so process-wide settings (environment variables) are set only by the helpers in `tests/it/common/`, never by a test file. The helpers are in `tests/it/common/mod.rs`:
   - `Repo` makes a real git repo in a temp dir.
   - `isolate_env` points `TEER_DATA_DIR`, `TEER_CONFIG` and `TEER_GH` at a temp dir.
   - `teer_bin()` is the built binary.
   - There are language fixtures.
 - **How the UI is tested, in three ways:**
   1. **Key replay on `App`:** build an `App`, call `on_key(KeyEvent)`, and assert the state and the returned `Effect`s. Effects are data, so nothing runs (`tests/tui*.rs`, `app.rs` tests from `:3326`).
-  2. **Render snapshots:** ratatui `TestBackend` with `insta`; 13 snapshots in `tests/snapshots/`.
-  3. **Binary end to end:** `teer_bin()` with fake `gh` and `claude` scripts (`tests/pr.rs`, `commit_flow.rs`, `approve_pr.rs`).
+  2. **Render snapshots:** ratatui `TestBackend` with `insta`; the snapshots are in `tests/it/snapshots/`.
+  3. **Binary end to end:** `teer_bin()` with fake `gh` and `claude` scripts (`tests/it/pr.rs`, `commit_flow.rs`, `approve_pr.rs`).
 
   `MockAdapter` scripts every model answer and records the prompts. There is no pty-level harness; earlier live checks used a hand-run Python pty driver.
 
@@ -352,7 +352,7 @@ The plan says to stop and ask when it conflicts with the code. Each question has
 
 Added at your request: once Phase 8 is done, every requirement below gets an integration test. Each phase still writes its own tests first, as the plan says. Phase 9 adds the cross-cutting suite and makes sure each row is covered.
 
-**Harness** (built at the start of Phase 9, in `tests/common/v2.rs`):
+**Harness** (built at the start of Phase 9, in `tests/it/common/v2.rs`):
 - `Driver` builds a review from a fixture repo (real git in a temp dir) and runs `App` with `MockAdapter`.
 - `.keys("3a:w<cr>")` takes Neovim notation, turns it into `KeyEvent`s and feeds them in.
 - It executes the returned `Effect`s against the fakes:

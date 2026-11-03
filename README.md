@@ -118,8 +118,11 @@ cd teer
 cargo build --release
 
 cargo test                   # unit, fixture-repo and tui snapshot tests
+cargo nextest run            # the same, each test in its own process, with timings
 cargo clippy --all-targets
 ```
+
+the integration tests are one binary: each file in `tests/it/` is a module of `tests/it/main.rs`. run a part of them by module path, e.g. `cargo test --test it pr::`.
 
 tests that need a real agent are ignored by default; each one says how to run it. the `claude` and `codex` command lines are in [`src/agent/commands.rs`](src/agent/commands.rs), the model api client in [`src/agent/api.rs`](src/agent/api.rs), the prompts in [`src/review/prompts.rs`](src/review/prompts.rs).
 
