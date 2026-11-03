@@ -301,7 +301,8 @@ fn shift_k_asks_about_the_unit_on_show_and_shows_the_answer() {
         }),
         [Effect::Save]
     );
-    let text = panel(&a, 120, 120);
+    // Wide enough for the tile beside the text to hold the links whole.
+    let text = panel(&a, 160, 120);
     // The conversation is the unit's: where the answer is noted goes unsaid.
     assert!(!text.contains("noted on"), "{text}");
     assert!(
@@ -498,6 +499,10 @@ fn without_an_agent_or_when_it_fails_the_question_says_why() {
         result: Err("boom".into()),
     });
     assert!(panel(&a, 120, 40).contains("✗ boom · ^r asks again"));
+    // esc stops typing, the tile stays; esc again closes it.
+    code(&mut a, KeyCode::Esc);
+    assert_eq!(a.unit.panel, Some(Panel::Ask));
+    assert!(!a.unit.typing);
     code(&mut a, KeyCode::Esc);
     assert_eq!(a.unit.panel, None);
     assert_eq!(a.screen, Screen::Unit);
@@ -573,9 +578,11 @@ fn the_conversation_stays_with_the_unit_and_follow_ups_get_it() {
     assert!(p.contains("## The unit they are looking at"), "{p}");
     assert!(p.contains("def charge_order(order):"), "{p}");
 
-    // esc closes the panel, h goes back to the queue; the conversation is
-    // there when the panel opens on the unit again.
+    // esc stops typing, h closes the tile, h again goes back to the queue;
+    // the conversation is there when the tile opens on the unit again.
     code(&mut a, KeyCode::Esc);
+    assert_eq!(a.unit.panel, Some(Panel::Ask));
+    code(&mut a, KeyCode::Char('h'));
     assert_eq!(a.unit.panel, None);
     code(&mut a, KeyCode::Char('h'));
     assert_eq!(a.screen, Screen::Queue);
@@ -586,6 +593,7 @@ fn the_conversation_stays_with_the_unit_and_follow_ups_get_it() {
     // The queue's preview notes the answer on the unit.
     code(&mut a, KeyCode::Esc);
     code(&mut a, KeyCode::Char('h'));
+    code(&mut a, KeyCode::Char('h'));
     assert!(screen(&a, 120, 50).contains("╭ ? does it charge twice? q"));
 }
 
@@ -595,16 +603,20 @@ fn a_question_left_unasked_waits_for_the_next_time() {
     let mut a = app(review);
     ask_on(&mut a, CHARGE);
     typed(&mut a, "x");
-    // esc closes the panel; the question typed so far waits.
+    // esc stops typing and h closes the tile; the question typed so far
+    // waits.
     code(&mut a, KeyCode::Esc);
+    code(&mut a, KeyCode::Char('h'));
     assert_eq!(a.unit.panel, None);
     assert!(a.review.questions.is_empty());
     code(&mut a, KeyCode::Char('K'));
     assert!(a.unit.typing);
     assert_eq!(a.ask.draft, "x");
     code(&mut a, KeyCode::Backspace);
-    // Not typing, q leaves the unit view, not teer.
+    // Not typing, q closes the tile, then leaves the unit view, not teer.
     code(&mut a, KeyCode::Esc);
+    assert!(!code(&mut a, KeyCode::Char('q')).contains(&Effect::Quit));
+    assert_eq!((a.screen, a.unit.panel), (Screen::Unit, None));
     assert!(!code(&mut a, KeyCode::Char('q')).contains(&Effect::Quit));
     assert_eq!(a.screen, Screen::Queue);
 }

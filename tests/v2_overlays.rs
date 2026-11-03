@@ -474,6 +474,9 @@ fn letters_typed_in_the_ask_panel_go_into_the_question() {
     assert_eq!((a.screen, a.unit.panel), (Screen::Unit, Some(Panel::Ask)));
     press(&mut a, "<bs><esc>");
     assert_eq!(a.ask.draft, "jkq ");
+    assert_eq!((a.screen, a.unit.panel), (Screen::Unit, Some(Panel::Ask)));
+    assert!(!a.unit.typing);
+    press(&mut a, "<esc>");
     assert_eq!((a.screen, a.unit.panel), (Screen::Unit, None));
     // In the unit view, `K` opens it there and keeps the draft.
     press(&mut a, "K?");

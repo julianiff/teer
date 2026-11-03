@@ -105,6 +105,7 @@ fn a_prefix_shows_each_key_that_can_follow() {
         ),
         "{line}"
     );
+    // The tile keys do nothing here.
     assert!(!line.contains("next tile"), "{line}");
     // Cut to a narrow terminal: the counts give way first.
     let narrow = bar(&app, 30);
@@ -116,6 +117,17 @@ fn a_prefix_shows_each_key_that_can_follow() {
     let line = bar(&app, 200);
     assert!(
         line.contains("␣  t tests that cover this unit · r run old and new"),
+        "{line}"
+    );
+
+    // In the unit view: its tiles too.
+    let (mut app, _repo) = self::app();
+    let id = app.selected_id().unwrap();
+    app.open_unit(id);
+    feed(&mut app, "g");
+    let line = bar(&app, 240);
+    assert!(
+        line.contains("g first unit · t next tile · T previous tile"),
         "{line}"
     );
 }

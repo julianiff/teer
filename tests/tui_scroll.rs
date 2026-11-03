@@ -507,23 +507,24 @@ fn a_long_recommendation_in_the_unit_view_scrolls_to_its_end() {
 }
 
 #[test]
-fn the_text_and_the_panel_under_it_scroll_apart() {
+fn the_text_and_the_tile_beside_it_scroll_apart() {
     let (mut app, _repo) = unit_view();
     let (w, h) = (100, 30);
     screen(&app, w, h);
     let text_step = half(&app);
     keys(&mut app, "<c-d>");
     assert_eq!(app.detail_offset(), text_step);
-    // With a panel open, ^d scrolls the panel and the text stays.
+    // With a tile open (in focus), ^d scrolls the tile and the text stays.
     keys(&mut app, "<space>t");
     assert_eq!(app.unit.panel, Some(Panel::Tool(DiveKind::Tests)));
     screen(&app, w, h);
     let panel_step = half(&app);
     keys(&mut app, "<c-d>");
     screen(&app, w, h);
-    assert_eq!(app.unit.panel_offset.get(), panel_step);
+    let tests = Panel::Tool(DiveKind::Tests);
+    assert_eq!(app.unit.tile_offset(tests), panel_step);
     assert_eq!(app.detail_offset(), text_step);
-    // Closing the panel gives the keys back to the text.
+    // Closing the tile gives the keys back to the text.
     keys(&mut app, "<space>t");
     assert_eq!(app.unit.panel, None);
     screen(&app, w, h);
@@ -538,22 +539,23 @@ fn the_text_and_the_panel_under_it_scroll_apart() {
 }
 
 #[test]
-fn the_wheel_scrolls_the_text_or_the_panel_under_it() {
+fn the_wheel_scrolls_the_text_or_the_tile_beside_it() {
     let (mut app, _repo) = unit_view();
     let (w, h) = (100, 30);
     keys(&mut app, "<space>t");
     screen(&app, w, h);
-    let panel = target_rect(&app, Target::Panel);
+    let tests = Panel::Tool(DiveKind::Tests);
+    let panel = target_rect(&app, Target::Panel(tests));
     let text = target_rect(&app, Target::Detail);
-    // Over the panel: the panel, three lines.
+    // Over the tile: the tile, three lines.
     wheel(&mut app, true, panel.x + 5, panel.y + panel.height / 2);
-    assert_eq!(app.unit.panel_offset.get(), 3);
+    assert_eq!(app.unit.tile_offset(tests), 3);
     assert_eq!(app.detail_offset(), 0);
-    // Over the text above it: the text.
+    // Over the text beside it: the text.
     screen(&app, w, h);
     wheel(&mut app, true, text.x + 5, text.y + 1);
     assert_eq!(app.detail_offset(), 3);
-    assert_eq!(app.unit.panel_offset.get(), 3);
+    assert_eq!(app.unit.tile_offset(tests), 3);
     wheel(&mut app, false, text.x + 5, text.y + 1);
     assert_eq!(app.detail_offset(), 0);
     // The wheel moves to no other unit.

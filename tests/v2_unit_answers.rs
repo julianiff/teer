@@ -204,7 +204,7 @@ fn the_behavior_panel_lists_surprises_first_with_both_sides() {
     open(&mut a, "u0");
     // Answered: the panel opens on the answer and asks nothing.
     assert!(press(&mut a, "<space>r").is_empty());
-    let out = screen(&a, 120, 60);
+    let out = screen(&a, 200, 60);
     assert!(
         out.contains("3 cases ran before and after the change: 2 behave differently"),
         "{out}"
@@ -276,8 +276,8 @@ fn tiny_sizes_never_panic() {
         (90, 10),
         (40, 3),
     ];
-    // No panel, the picture's, the ask panel.
-    for panel in [None, Some("<space>v"), Some("K")] {
+    // No tile, the picture's, the ask tile, and three tiles at once.
+    for panel in [None, Some("<space>v"), Some("K"), Some("<space>v<space>tK")] {
         if let Some(keys) = panel {
             press(&mut a, keys);
         }
@@ -299,7 +299,11 @@ fn tiny_sizes_never_panic() {
             }
             a.overlay = Overlay::None;
         }
-        if panel.is_some() {
+        // esc stops typing, then closes one tile at a time.
+        for _ in 0..4 {
+            if a.unit.tiles.is_empty() {
+                break;
+            }
             press(&mut a, "<esc>");
         }
         assert_eq!((a.screen, a.unit.panel), (Screen::Unit, None));

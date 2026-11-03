@@ -3,20 +3,23 @@
 //! reviewer asks.
 //!
 //! One text scrolls under a title row: "Why this level", "What changed"
-//! (the summary, then the diff with each statement under the lines it
-//! cites; `]c` `[c` jump between hunks), "What to do about it" (the
-//! recommendation, asked for when the unit opens and prefetched for the
-//! units that come next) and "Second model" (only when it disputes the
+//! (the summary, then the diff in its box with each statement under the
+//! lines it cites; `]c` `[c` jump between hunks), "What to do about it"
+//! (the recommendation, asked for when the unit opens and prefetched for
+//! the units that come next) and "Second model" (only when it disputes the
 //! description). Without an agent the last two are left out.
 //!
-//! Under it one panel opens at a time: `K` asks about the unit (the
-//! conversation is kept with it), `<space>t` `<space>r` `<space>v` show the
-//! tests, old against new and the diagram, and `gd` shows what the unit
-//! calls outside the review, read-only. Deciding here moves on to the next
-//! pending unit and stays in the view; `h` goes back to the queue.
+//! Beside it tiles open, tmux style, each added to the ones open: `K` asks
+//! about the unit (the conversation is kept with it), `<space>t`
+//! `<space>r` `<space>v` show the tests, old against new and the diagram,
+//! and `gd` shows what the unit calls outside the review, read-only. The
+//! text takes a tall column on the left (on top when narrow), the tiles the
+//! rest. `tab` and `shift+tab` move the focus, `zz` zooms the tile in
+//! focus, `h` closes it. Deciding here moves on to the next pending unit
+//! and stays in the view; `h` on the text goes back to the queue.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crossterm::event::KeyEvent;
 use ratatui::Frame;
@@ -44,6 +47,9 @@ pub const ACTIONS: &[Action] = &[
     Action::MovePrevHunk,
     Action::MoveNextFile,
     Action::MovePrevFile,
+    Action::MoveNextTile,
+    Action::MovePrevTile,
+    Action::ToggleZoom,
     Action::MoveDown,
     Action::MoveUp,
     Action::MoveFirst,
@@ -91,8 +97,13 @@ const OUTSIDE_MOST: usize = 8;
 /// Largest file `gd` reads a definition from.
 const OUTSIDE_BYTES: usize = 512 * 1024;
 
-/// What is open under the unit's text, one at a time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// From this width the text sits beside the tiles, else above them.
+const SIDE_BY_SIDE: u16 = 90;
+/// Two tiles share a row once each gets this many columns.
+const TILE_W: u16 = 48;
+
+/// A tile beside the unit's text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Panel {
     /// `K`: the conversation about the unit and the question being typed.
     Ask,
@@ -101,6 +112,14 @@ pub enum Panel {
     Tool(DiveKind),
     /// `gd`: what the unit calls outside the review, read-only.
     Outside,
+}
+
+/// How far a tile is scrolled, how far it can, and its rows, as last drawn.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TileScroll {
+    pub offset: usize,
+    pub max: usize,
+    pub rows: usize,
 }
 
 /// The unit view's state.
@@ -114,10 +133,15 @@ pub struct UnitView {
     /// or the one moving or deciding here went on to. A unit gone to to
     /// look (`gd`, `gr`, a link, `/`) leaves it.
     pub home: String,
+    /// The tiles open beside the text, in the order they opened.
+    pub tiles: Vec<Panel>,
+    /// The tile in focus; `None` is the unit's text.
     pub panel: Option<Panel>,
-    /// Keys go into the ask panel's question; otherwise, while it is
-    /// open, to its links ([`App::ask_links`], the one in focus in
-    /// `App::ask.link`).
+    /// The tile in focus fills the view (`zz`).
+    pub zoom: bool,
+    /// Keys go into the ask tile's question; else, with a link in focus
+    /// (`App::ask.link`), to the links ([`App::ask_links`]); else, with the
+    /// ask tile in focus, to the view as on any tile.
     pub typing: bool,
     /// The definitions `gd` found outside the review.
     pub outside: Vec<Shown>,
@@ -127,10 +151,9 @@ pub struct UnitView {
     /// How far the text can scroll and its rows, as last drawn.
     pub text_max: Cell<usize>,
     pub text_rows: Cell<usize>,
-    /// How far a tool panel is scrolled, how far it can, and its rows.
-    pub panel_offset: Cell<usize>,
-    pub panel_max: Cell<usize>,
-    pub panel_rows: Cell<usize>,
+    /// Each tile's scroll but the ask tile's (that is the conversation's,
+    /// `App::ask.chat_scroll`).
+    pub scroll: RefCell<HashMap<Panel, TileScroll>>,
     /// Asked this session whether questions may use the web (Q7).
     pub web_asked: bool,
     /// The question waiting for that answer, by index.
@@ -139,10 +162,17 @@ pub struct UnitView {
     pub read_tests: HashSet<String>,
 }
 
+impl UnitView {
+    /// Where tile `p` is scrolled to.
+    pub fn tile_offset(&self, p: Panel) -> usize {
+        self.scroll.borrow().get(&p).map_or(0, |s| s.offset)
+    }
+}
+
 // ---- Drawing -----------------------------------------------------------
 
-/// Draw the unit view into `area`: the title row, the text, and the panel
-/// open under it.
+/// Draw the unit view into `area`: the title row, the text, and the tiles
+/// open beside it.
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
     if area.width < 4 || area.height == 0 {
@@ -169,22 +199,64 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(title_line(app, u, title.width as usize)),
         title,
     );
-    let panel = app.unit.panel.filter(|_| body.height >= 8);
-    let (text, under) = match panel {
-        Some(p) => {
-            let share = if p == Panel::Ask { 55 } else { 50 };
-            let h = (u32::from(body.height) * share / 100) as u16;
-            let h = h.max(6).min(body.height.saturating_sub(3));
-            let [text, under] =
-                Layout::vertical([Constraint::Min(0), Constraint::Length(h)]).areas(body);
-            (text, Some((p, under)))
+    let tiles = &app.unit.tiles;
+    let focus = app.unit.panel.filter(|p| tiles.contains(p));
+    // Zoomed, or no room for more than one: what has the focus alone.
+    let alone = tiles.is_empty() || app.unit.zoom || body.width < 40 || body.height < 8;
+    if alone {
+        match focus {
+            Some(p) => draw_tile(f, app, u, p, body, true),
+            None => draw_text(f, app, u, body, true),
         }
-        None => (body, None),
-    };
-    draw_text(f, app, u, text, under.is_none());
-    if let Some((p, r)) = under {
-        draw_panel(f, app, u, p, r);
+        return;
     }
+    let (text, cells) = tile_areas(tiles, body);
+    draw_text(f, app, u, text, focus.is_none());
+    for (p, r) in cells {
+        draw_tile(f, app, u, p, r, focus == Some(p));
+    }
+}
+
+/// Where the text and each tile go in `area`. The text takes a tall
+/// column on the left, [`SIDE_BY_SIDE`] wide or more (on top otherwise):
+/// half the room beside one column of tiles (above one tile), two fifths
+/// beside two (above more).
+/// The tiles fill the rest in the order they opened, two to a row where
+/// each gets [`TILE_W`] columns; the ask tile has a row of its own, twice
+/// as tall as the others.
+fn tile_areas(tiles: &[Panel], area: Rect) -> (Rect, Vec<(Panel, Rect)>) {
+    let side = area.width >= SIDE_BY_SIDE;
+    let two = side && tiles.len() > 1 && area.width * 3 / 5 >= 2 * TILE_W;
+    let split = if two || (!side && tiles.len() > 1) {
+        [Constraint::Ratio(2, 5), Constraint::Ratio(3, 5)]
+    } else {
+        [Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]
+    };
+    let [text, rest] = if side {
+        Layout::horizontal(split).areas(area)
+    } else {
+        Layout::vertical(split).areas(area)
+    };
+    let mut rows: Vec<Vec<Panel>> = Vec::new();
+    for &p in tiles {
+        match rows.last_mut() {
+            Some(row) if two && row.len() == 1 && p != Panel::Ask && row[0] != Panel::Ask => {
+                row.push(p);
+            }
+            _ => rows.push(vec![p]),
+        }
+    }
+    let heights = rows
+        .iter()
+        .map(|r| Constraint::Fill(if r[0] == Panel::Ask { 2 } else { 1 }));
+    let row_areas = Layout::vertical(heights).split(rest);
+    let mut out = Vec::new();
+    for (row, r) in rows.iter().zip(row_areas.iter()) {
+        let cells =
+            Layout::horizontal(vec![Constraint::Ratio(1, row.len() as u32); row.len()]).split(*r);
+        out.extend(row.iter().copied().zip(cells.iter().copied()));
+    }
+    (text, out)
 }
 
 /// The title row: the level's icon, the name and where it is, and on the
@@ -233,11 +305,13 @@ fn heading(app: &App, text: &str) -> Line<'static> {
     Line::styled(format!(" {text}"), app.theme.bold())
 }
 
-/// The heading of what the agent wrote: the heading, then who wrote it.
-fn heading_by(app: &App, text: &str, by: String) -> Line<'static> {
+/// The heading of what the agent wrote: the heading, then who wrote it,
+/// cut to fit `w` cells.
+fn heading_by(app: &App, text: &str, by: String, w: usize) -> Line<'static> {
+    let room = w.saturating_sub(text.width() + 3);
     Line::from(vec![
         Span::styled(format!(" {text}"), app.theme.bold()),
-        Span::styled(format!("  {by}"), app.theme.muted()),
+        Span::styled(format!("  {}", truncate(&by, room)), app.theme.muted()),
     ])
 }
 
@@ -278,13 +352,13 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<u
     why.extend(preview::commits_line(app, u, w, 1));
     add(&mut blocks, why);
 
-    // What changed: the summary, then the diff with the statements in it.
-    let code = diff::code_change_of(app, u, w.saturating_sub(1), diff::Notes::Full);
-    let mut head = vec![Span::styled(" What changed", t.bold())];
-    if !code.blocks.is_empty() {
-        head.extend(diff::counts(app, code.added, code.removed));
-    }
-    add(&mut blocks, vec![Line::default(), Line::from(head)]);
+    // What changed: the summary, then the diff in its box (one cell in,
+    // borders and a cell of padding on each side) with the statements in it.
+    let code = diff::code_change_of(app, u, w.saturating_sub(4), diff::Notes::Full);
+    add(
+        &mut blocks,
+        vec![Line::default(), heading(app, "What changed")],
+    );
     let mut said = preview::agent_lines(app, u, w.saturating_sub(2), code.blocks.is_empty(), 1);
     if u.prep != Prep::Ready && u.summary.is_none() && u.nbc_reason.is_none() {
         said.extend(slim::statement_lines(app, u, w, 1));
@@ -292,7 +366,8 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<u
     add(&mut blocks, said);
     let mut hunks = Vec::new();
     if !code.blocks.is_empty() {
-        add(&mut blocks, vec![Line::default()]);
+        let top = code_edge(app, w, Some(diff::counts(app, code.added, code.removed)));
+        add(&mut blocks, vec![Line::default(), top]);
         let mut at: usize = blocks.iter().map(Vec::len).sum();
         let mut starts = Vec::with_capacity(code.blocks.len());
         for b in &code.blocks {
@@ -307,8 +382,9 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<u
         blocks.extend(
             code.blocks
                 .into_iter()
-                .map(|b| b.into_iter().map(indented).collect()),
+                .map(|b| b.into_iter().map(|l| code_row(app, l, w)).collect()),
         );
+        add(&mut blocks, vec![code_edge(app, w, None)]);
     }
     let card = super::notes::card(app, u, w.saturating_sub(1));
     if !card.is_empty() {
@@ -324,6 +400,7 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<u
                 app,
                 "What to do about it",
                 answers::answer_label(app, u, rec),
+                w,
             )
         } else {
             heading(app, "What to do about it")
@@ -334,7 +411,7 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<u
             let by = answers::answer_label(app, u, DiveKind::Disagree);
             add(
                 &mut blocks,
-                vec![Line::default(), heading_by(app, "Second model", by)],
+                vec![Line::default(), heading_by(app, "Second model", by, w)],
             );
             add(&mut blocks, answers::disagree_lines(app, u, w));
         }
@@ -342,8 +419,45 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<u
     (blocks, hunks)
 }
 
+/// The code box's edge `w` cells wide, one cell in: the top one titled
+/// `code change` with `counts` on the right, as the queue's box is (see
+/// [`diff::draw_box`]), or with none the bottom one.
+fn code_edge(app: &App, w: usize, counts: Option<Vec<Span<'static>>>) -> Line<'static> {
+    let border = app.theme.text();
+    let Some(counts) = counts else {
+        return Line::from(vec![
+            Span::raw(" "),
+            Span::styled(format!("╰{}╯", "─".repeat(w.saturating_sub(2))), border),
+        ]);
+    };
+    let title = Span::styled(diff::TITLE, app.theme.bold());
+    let used = 2 + title.width() + counts.iter().map(Span::width).sum::<usize>();
+    let mut spans = vec![Span::raw(" "), Span::styled("╭", border), title];
+    spans.push(Span::styled("─".repeat(w.saturating_sub(used)), border));
+    spans.extend(counts);
+    spans.push(Span::styled("╮", border));
+    Line::from(spans)
+}
+
+/// Row `l` of the code change inside its box `w` cells wide, one cell in:
+/// a border and a cell of padding on each side.
+fn code_row(app: &App, l: Line<'static>, w: usize) -> Line<'static> {
+    let border = app.theme.text();
+    let room = w.saturating_sub(4);
+    let used = l.width();
+    let base = l.style;
+    let mut spans = vec![Span::raw(" "), Span::styled("│ ", border)];
+    spans.extend(l.spans.into_iter().map(|s| {
+        let style = base.patch(s.style);
+        s.style(style)
+    }));
+    spans.push(Span::raw(" ".repeat(room.saturating_sub(used))));
+    spans.push(Span::styled(" │", border));
+    Line::from(spans)
+}
+
 /// The unit's text in `area`, scrolled where it was left. With `focus`
-/// (no panel open) the scroll keys and the footer go by it.
+/// the scroll keys and the footer go by it.
 fn draw_text(f: &mut Frame, app: &App, u: &Unit, area: Rect, focus: bool) {
     if area.width < 4 || area.height == 0 {
         return;
@@ -364,15 +478,16 @@ fn draw_text(f: &mut Frame, app: &App, u: &Unit, area: Rect, focus: bool) {
     f.render_widget(Paragraph::new(s.lines), area);
 }
 
-/// The panel `p` in `area`: a rounded border in the accent, its name on
-/// top, its keys at the bottom.
-fn draw_panel(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect) {
+/// Tile `p` in `area`: a rounded border (in the accent with the `focus`),
+/// its name on top, and with the focus its keys at the bottom.
+fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bool) {
     let t = &app.theme;
     if area.width < 12 || area.height < 3 {
         return;
     }
-    app.targets.borrow_mut().push((area, Target::Panel));
+    app.targets.borrow_mut().push((area, Target::Panel(p)));
     let k = |a: Action| app.keys.label(a);
+    let next = format!("{} next", k(Action::MoveNextTile));
     let (title, keys) = match p {
         Panel::Ask => {
             let mut title = vec![
@@ -388,20 +503,26 @@ fn draw_panel(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect) {
             }
             let keys = if app.ask.link.is_some() {
                 format!(
-                    " {} {} links · {} open · {} type · {} close ",
+                    " {} {} links · {} open · {} type · {} done ",
                     k(Action::MoveDown),
                     k(Action::MoveUp),
                     k(Action::ViewOpen),
                     k(Action::NoteEdit),
                     k(Action::ViewBack)
                 )
-            } else {
+            } else if app.unit.typing {
                 format!(
-                    " {} ask · {} links · {} again · {} close ",
+                    " {} ask · {} links · {} again · {} done ",
                     super::ui::fixed::ENTER,
                     super::ui::fixed::TAB,
                     super::ui::fixed::RETRY,
                     super::ui::fixed::ESC
+                )
+            } else {
+                format!(
+                    " {} type · {next} · {} close ",
+                    k(Action::AskOpen),
+                    k(Action::ViewBack)
                 )
             };
             (Line::from(title), keys)
@@ -415,7 +536,7 @@ fn draw_panel(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect) {
             if answers::pending(u, kind) {
                 title.push(Span::styled(format!("{} ", app.spinner()), t.muted()));
             }
-            let mut keys = format!(" {} close ", k(Action::ViewBack));
+            let mut keys = format!(" {next} · {} close ", k(Action::ViewBack));
             if kind == DiveKind::Visualize {
                 keys = format!(" {} browser ·{keys}", k(Action::GotoBrowser));
             }
@@ -426,14 +547,16 @@ fn draw_panel(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect) {
                 Span::styled(format!(" {}", k(Action::GotoDefinition)), t.accent()),
                 Span::styled(" What it calls outside the review ", t.bold()),
             ]),
-            format!(" read-only · {} close ", k(Action::ViewBack)),
+            format!(" read-only · {next} · {} close ", k(Action::ViewBack)),
         ),
     };
-    let block = Block::bordered()
+    let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(t.accent())
-        .title(title)
-        .title_bottom(Line::styled(keys, t.muted()).right_aligned());
+        .border_style(if focus { t.accent() } else { t.muted() })
+        .title(title);
+    if focus {
+        block = block.title_bottom(Line::styled(keys, t.muted()).right_aligned());
+    }
     let inner = block.inner(area);
     f.render_widget(block, area);
     let inner = Rect::new(
@@ -447,17 +570,19 @@ fn draw_panel(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect) {
     }
     super::ui::text_area(app, inner, 0);
     match p {
-        Panel::Ask => draw_ask(f, app, u, inner),
+        Panel::Ask => draw_ask(f, app, u, inner, focus),
         Panel::Tool(DiveKind::Visualize)
             if answers::draw_picture(f, app, u, inner, inner.width as usize) =>
         {
-            app.detail_max_scroll.set(0);
-            app.detail_rows.set(inner.height as usize);
+            if focus {
+                app.detail_max_scroll.set(0);
+                app.detail_rows.set(inner.height as usize);
+            }
         }
         Panel::Tool(kind) => {
             let w = inner.width as usize;
             let lines = answers::section_body(app, u, kind, w);
-            draw_scrolled(f, app, lines, inner);
+            draw_scrolled(f, app, p, lines, inner, focus);
         }
         Panel::Outside => {
             let w = inner.width as usize;
@@ -468,29 +593,45 @@ fn draw_panel(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect) {
                 }
                 lines.extend(ask::code_box(app, s, false, w));
             }
-            draw_scrolled(f, app, lines, inner);
+            draw_scrolled(f, app, p, lines, inner, focus);
         }
     }
 }
 
-/// `lines` in `area`, from the panel's scroll on; the scroll keys go by it.
-fn draw_scrolled(f: &mut Frame, app: &App, lines: Vec<Line<'static>>, area: Rect) {
+/// `lines` in `area`, from tile `p`'s scroll on; with the `focus` the
+/// scroll keys go by it.
+fn draw_scrolled(
+    f: &mut Frame,
+    app: &App,
+    p: Panel,
+    lines: Vec<Line<'static>>,
+    area: Rect,
+    focus: bool,
+) {
     let w = area.width as usize;
     let h = area.height as usize;
     let blocks = lines.into_iter().map(|l| vec![l]).collect();
-    let s = preview::scroll_rows(app, blocks, w, h, 0, false, app.unit.panel_offset.get());
-    app.unit.panel_offset.set(s.offset);
-    app.unit.panel_max.set(s.max);
-    app.unit.panel_rows.set(h);
-    app.detail_max_scroll.set(s.max);
-    app.detail_rows.set(h);
+    let at = app.unit.tile_offset(p);
+    let s = preview::scroll_rows(app, blocks, w, h, 0, false, at);
+    app.unit.scroll.borrow_mut().insert(
+        p,
+        TileScroll {
+            offset: s.offset,
+            max: s.max,
+            rows: h,
+        },
+    );
+    if focus {
+        app.detail_max_scroll.set(s.max);
+        app.detail_rows.set(h);
+    }
     f.render_widget(Paragraph::new(s.lines), area);
 }
 
-/// The ask panel: the conversation about `u` (or, before the first
+/// The ask tile: the conversation about `u` (or, before the first
 /// question, what to ask and the tools that bring more light), a rule, and
-/// the question being typed.
-fn draw_ask(f: &mut Frame, app: &App, u: &Unit, area: Rect) {
+/// the question being typed. With the `focus` the scroll keys go by it.
+fn draw_ask(f: &mut Frame, app: &App, u: &Unit, area: Rect, focus: bool) {
     let t = &app.theme;
     let w = area.width as usize;
     let [talk, rule, input] = Layout::vertical([
@@ -524,10 +665,12 @@ fn draw_ask(f: &mut Frame, app: &App, u: &Unit, area: Rect) {
             },
         );
     }
-    app.detail_rows.set(talk.height as usize);
-    app.detail_max_scroll.set(app.ask.chat_max.get());
+    if focus {
+        app.detail_rows.set(talk.height as usize);
+        app.detail_max_scroll.set(app.ask.chat_max.get());
+    }
     f.render_widget(Paragraph::new(Line::styled("─".repeat(w), t.muted())), rule);
-    let typing = app.ask.link.is_none();
+    let typing = focus && app.unit.typing && app.ask.link.is_none();
     f.render_widget(
         Paragraph::new(ask::input_line(app, " › ", &app.ask.draft, typing, w)),
         input,
@@ -589,7 +732,7 @@ so a question can follow on from the last answer. The conversation is kept with 
 
 impl App {
     /// Open the unit view on unit `id` (from the queue: `l`, `enter`; in
-    /// the view, a unit gone to to look), with no panel open. Its
+    /// the view, a unit gone to to look), with no tile open. Its
     /// recommendation is asked for unless it has one, and so is the next
     /// pending unit's.
     pub fn open_unit(&mut self, id: String) -> Vec<Effect> {
@@ -602,7 +745,7 @@ impl App {
             self.screen = Screen::Unit;
         }
         let home = std::mem::take(&mut self.unit.home);
-        self.close_panel();
+        self.close_tiles();
         let effects = self.show_unit(id);
         if !entering {
             self.unit.home = home;
@@ -666,7 +809,7 @@ impl App {
     /// next pending unit need (see [`App::open_unit`]).
     fn show_unit(&mut self, id: String) -> Vec<Effect> {
         if id != self.unit.id {
-            self.close_panel();
+            self.close_tiles();
             self.unit.outside.clear();
         }
         self.unit.id = id.clone();
@@ -688,44 +831,101 @@ impl App {
         effects
     }
 
-    /// Close the panel; the conversation stays with the unit.
-    fn close_panel(&mut self) {
-        self.unit.panel = None;
+    /// Close every tile, the focus back on the text; the conversation stays
+    /// with the unit.
+    fn close_tiles(&mut self) {
+        self.unit.tiles.clear();
+        self.unit.scroll.borrow_mut().clear();
+        self.unit.zoom = false;
+        self.focus_tile(None);
+        self.ask.chat_scroll.set(None);
+    }
+
+    /// Give tile `p` the focus (`None`: the text); typing in the ask tile
+    /// stops.
+    fn focus_tile(&mut self, p: Option<Panel>) {
+        self.unit.panel = p;
         self.unit.typing = false;
         self.ask.link = None;
-        self.ask.chat_scroll.set(None);
-        self.unit.panel_offset.set(0);
     }
 
-    /// Open `p` under the text, the scroll at its top.
-    fn open_panel(&mut self, p: Panel) {
-        self.close_panel();
-        self.unit.panel = Some(p);
-    }
-
-    /// `K`: the ask panel, typing, at the end of the conversation.
-    pub(super) fn open_ask_panel(&mut self) {
-        if self.unit.panel != Some(Panel::Ask) {
-            self.open_panel(Panel::Ask);
+    /// Open tile `p` after the ones open, its scroll at the top, and give it
+    /// the focus; open already, it only gets the focus. A zoom ends, so it
+    /// shows.
+    fn open_tile(&mut self, p: Panel) {
+        if !self.unit.tiles.contains(&p) {
+            self.unit.tiles.push(p);
+            self.unit.scroll.borrow_mut().remove(&p);
+            if p == Panel::Ask {
+                self.ask.chat_scroll.set(None);
+            }
         }
+        self.unit.zoom = false;
+        self.focus_tile(Some(p));
+    }
+
+    /// Close tile `p`; the focus goes to the tile opened before it, else
+    /// to the text.
+    fn close_tile(&mut self, p: Panel) {
+        let Some(i) = self.unit.tiles.iter().position(|&t| t == p) else {
+            return;
+        };
+        self.unit.tiles.remove(i);
+        self.unit.scroll.borrow_mut().remove(&p);
+        if self.unit.tiles.is_empty() {
+            self.unit.zoom = false;
+        }
+        if self.unit.panel == Some(p) {
+            let before = i.checked_sub(1).map(|j| self.unit.tiles[j]);
+            self.focus_tile(before);
+        }
+    }
+
+    /// `tab` (`shift+tab`): the focus on the next (previous) tile, the text
+    /// first, `times` over.
+    fn tile_step(&mut self, forward: bool, times: usize) {
+        let mut ring: Vec<Option<Panel>> = vec![None];
+        ring.extend(self.unit.tiles.iter().copied().map(Some));
+        let n = ring.len();
+        if n == 1 {
+            return;
+        }
+        let i = ring.iter().position(|&p| p == self.unit.panel).unwrap_or(0);
+        let step = times.max(1) % n;
+        let to = if forward {
+            (i + step) % n
+        } else {
+            (i + n - step) % n
+        };
+        self.focus_tile(ring[to]);
+    }
+
+    /// `K`: the ask tile, typing, at the end of the conversation.
+    pub(super) fn open_ask_panel(&mut self) {
+        self.open_tile(Panel::Ask);
         self.unit.typing = true;
-        self.ask.link = None;
         self.ask.chat_scroll.set(None);
     }
 
-    /// Whether the ask panel takes the keys: it is open and nothing is
-    /// over it.
-    pub(super) fn unit_panel_has_keys(&self) -> bool {
+    /// Is the ask tile in focus, with nothing over it?
+    pub(super) fn unit_ask_focused(&self) -> bool {
         self.screen == Screen::Unit
             && self.overlay == Overlay::None
             && self.unit.panel == Some(Panel::Ask)
     }
 
-    /// Keys of the ask panel. Typing, a text input ([`Keymap::edit`]):
+    /// Whether the ask tile takes the keys: it is in focus, typing or on
+    /// its links.
+    pub(super) fn unit_panel_has_keys(&self) -> bool {
+        self.unit_ask_focused() && (self.unit.typing || self.ask.link.is_some())
+    }
+
+    /// Keys of the ask tile. Typing, a text input ([`Keymap::edit`]):
     /// letters go into the question, `enter` asks it, `ctrl+r` asks the
     /// last again, `tab` (`shift+tab`) moves to the first (last) link,
-    /// `↑ ↓` and the page keys scroll, `esc` closes the panel. On the links
-    /// see [`App::unit_link_key`].
+    /// `↑ ↓` and the page keys scroll, `esc` stops typing (the tile keeps
+    /// the focus, and the view's keys work again). On the links see
+    /// [`App::unit_link_key`].
     ///
     /// [`Keymap::edit`]: crate::keymap::Keymap::edit
     pub(super) fn unit_panel_key(&mut self, k: KeyEvent) -> Vec<Effect> {
@@ -734,7 +934,7 @@ impl App {
         }
         let page = self.detail_rows.get().saturating_sub(2).max(1) as isize;
         match self.keys.edit(&k) {
-            Edit::Cancel => self.close_panel(),
+            Edit::Cancel => self.unit.typing = false,
             Edit::Submit => return self.unit_send(),
             Edit::Tab => {
                 // The newest answer's first link.
@@ -764,13 +964,14 @@ impl App {
         Vec::new()
     }
 
-    /// Keys on the ask panel's links (link `i` in focus), a panel
+    /// Keys on the ask tile's links (link `i` in focus), a panel
     /// ([`App::panel_action`]): `tab` and `j` move to the next, `shift+tab`
     /// and `k` to the one before (`tab` past the last, or `shift+tab`
     /// before the first, back to the question; `tab` and `shift+tab` are
     /// the question's own keys, [`Keymap::edit`]), `view.open` follows one
     /// (a unit opens here, code in the editor), `i` or `K` types again,
-    /// `h`/`esc`/`q` close the panel; the scroll keys scroll.
+    /// `h`/`esc`/`q` leave the links (the tile keeps the focus), `gt` `gT`
+    /// move to another tile and `zz` zooms; the scroll keys scroll.
     ///
     /// [`Keymap::edit`]: crate::keymap::Keymap::edit
     fn unit_link_key(&mut self, i: usize, k: &KeyEvent) -> Vec<Effect> {
@@ -792,7 +993,11 @@ impl App {
                 Some(Action::MoveFirst) => self.ask.link = Some(0),
                 Some(Action::MoveLast) => self.ask.link = Some(last),
                 Some(Action::ViewOpen) => return self.follow_ask_link(i),
-                Some(Action::ViewBack | Action::ViewClose) => self.close_panel(),
+                Some(Action::ViewBack | Action::ViewClose) => self.ask.link = None,
+                Some(a @ (Action::MoveNextTile | Action::MovePrevTile)) => {
+                    self.tile_step(a == Action::MoveNextTile, 1);
+                }
+                Some(Action::ToggleZoom) => self.toggle_zoom(),
                 Some(Action::ScrollPageDown | Action::ScrollHalfDown) => {
                     return self.chat_scroll(page);
                 }
@@ -870,8 +1075,17 @@ impl App {
             Action::MoveUp => return self.unit_scroll(-(times as isize)),
             Action::MoveFirst => return self.unit_scroll(isize::MIN / 2),
             Action::MoveLast => return self.unit_scroll(isize::MAX / 2),
-            Action::ViewBack | Action::ViewClose if self.unit.panel.is_some() => self.close_panel(),
-            Action::ViewBack | Action::ViewClose => self.unit_back(),
+            Action::MoveNextTile | Action::MovePrevTile => {
+                self.tile_step(a == Action::MoveNextTile, times);
+            }
+            Action::ToggleZoom => self.toggle_zoom(),
+            // A zoom ends first, then the tile in focus closes; on the text,
+            // back to the queue.
+            Action::ViewBack | Action::ViewClose if self.unit.zoom => self.unit.zoom = false,
+            Action::ViewBack | Action::ViewClose => match self.unit.panel {
+                Some(p) => self.close_tile(p),
+                None => self.unit_back(),
+            },
             _ => {}
         }
         Vec::new()
@@ -881,7 +1095,7 @@ impl App {
     /// cursor on the row the view was opened on, or moved on to (see
     /// [`UnitView::home`]).
     fn unit_back(&mut self) {
-        self.close_panel();
+        self.close_tiles();
         if let Some(p) = self.position_of(&self.unit.home.clone()) {
             self.sel = p;
         }
@@ -962,33 +1176,43 @@ impl App {
         self.show_unit(first.to_string())
     }
 
-    /// Scroll with the keys: the panel while one is open (the ask panel's
+    /// Scroll with the keys: the tile in focus (the ask tile's
     /// conversation), else the text.
     pub(super) fn unit_scroll(&mut self, by: isize) -> Vec<Effect> {
-        match self.unit.panel {
+        self.unit_wheel(self.unit.panel, by)
+    }
+
+    /// Scroll tile `over` (the text with none) by `by`: the wheel scrolls
+    /// what it is over, in focus or not.
+    pub(super) fn unit_wheel(&mut self, over: Option<Panel>, by: isize) -> Vec<Effect> {
+        match over.filter(|p| self.unit.tiles.contains(p)) {
             Some(Panel::Ask) => return self.chat_scroll(by),
-            Some(_) => self.scroll_panel(by),
+            Some(p) => self.scroll_tile(p, by),
             None => self.scroll_text(by),
         }
         Vec::new()
     }
 
-    /// Scroll with the wheel: the panel when over it, else the text.
-    pub(super) fn unit_wheel(&mut self, panel: bool, by: isize) -> Vec<Effect> {
-        match self.unit.panel {
-            Some(Panel::Ask) if panel => return self.chat_scroll(by),
-            Some(_) if panel => self.scroll_panel(by),
-            _ => self.scroll_text(by),
+    /// A click on tile `p` (`None`: the text) gives it the focus; on the
+    /// ask tile, typing.
+    pub(super) fn unit_click_tile(&mut self, p: Option<Panel>) {
+        if p.is_some_and(|p| !self.unit.tiles.contains(&p)) {
+            return;
         }
-        Vec::new()
+        self.focus_tile(p);
+        if p == Some(Panel::Ask) {
+            self.unit.typing = true;
+        }
     }
 
-    /// A click on the panel: the ask panel types.
-    pub(super) fn unit_click_panel(&mut self) {
-        if self.unit.panel == Some(Panel::Ask) {
-            self.unit.typing = true;
-            self.ask.link = None;
+    /// `zz`: the tile in focus (or the text) fills the view, or no longer
+    /// does; with no tile open there is nothing to zoom.
+    fn toggle_zoom(&mut self) {
+        if self.unit.tiles.is_empty() {
+            self.status = "Nothing to zoom: no tile is open beside the text.".into();
+            return;
         }
+        self.unit.zoom = !self.unit.zoom;
     }
 
     fn scroll_text(&mut self, by: isize) {
@@ -999,14 +1223,10 @@ impl App {
         self.detail_scroll.borrow_mut().1 = to;
     }
 
-    fn scroll_panel(&mut self, by: isize) {
-        let to = self
-            .unit
-            .panel_offset
-            .get()
-            .saturating_add_signed(by)
-            .min(self.unit.panel_max.get());
-        self.unit.panel_offset.set(to);
+    fn scroll_tile(&mut self, p: Panel, by: isize) {
+        let mut scroll = self.unit.scroll.borrow_mut();
+        let s = scroll.entry(p).or_default();
+        s.offset = s.offset.saturating_add_signed(by).min(s.max);
     }
 
     /// `]c` (`[c`): scroll the text to the `times`-th hunk below (above)
@@ -1047,10 +1267,11 @@ impl App {
         self.detail_scroll.borrow_mut().1 = to;
     }
 
-    /// A leader tool (`<space>t` `<space>r` `<space>v`): its panel opens
-    /// (again the same key closes it) and its answer is asked for unless it
-    /// has one. After teer's test search, the agent reads the tests on its
-    /// own when there is one (Q6).
+    /// A leader tool (`<space>t` `<space>r` `<space>v`): its tile opens
+    /// beside the ones open and its answer is asked for unless it has one.
+    /// Open already, the same key gives it the focus, and in focus closes
+    /// it. After teer's test search, the agent reads the tests on its own
+    /// when there is one (Q6).
     pub(super) fn unit_tool(&mut self, a: Action) -> Vec<Effect> {
         let id = self.unit.id.clone();
         if self.review.unit(&id).is_none() {
@@ -1059,8 +1280,13 @@ impl App {
         let Some(kind) = tool_kind(a) else {
             return Vec::new();
         };
-        if self.unit.panel == Some(Panel::Tool(kind)) {
-            self.close_panel();
+        let tile = Panel::Tool(kind);
+        if self.unit.panel == Some(tile) {
+            self.close_tile(tile);
+            return Vec::new();
+        }
+        if self.unit.tiles.contains(&tile) {
+            self.focus_tile(Some(tile));
             return Vec::new();
         }
         if kind != DiveKind::Tests && !self.can_ask() {
@@ -1068,7 +1294,7 @@ impl App {
             self.status = format!("No agent: {name} needs one (`teer setup` picks it).");
             return Vec::new();
         }
-        self.open_panel(Panel::Tool(kind));
+        self.open_tile(tile);
         if kind != DiveKind::Tests {
             return self.dive_on(&id, kind);
         }
@@ -1106,14 +1332,14 @@ impl App {
     }
 
     /// `gd` in the unit view: the jump list of what the unit calls in the
-    /// review (Q5), and what it calls outside the review, read-only in the
-    /// panel.
+    /// review (Q5), and what it calls outside the review, read-only in a
+    /// tile.
     pub(super) fn unit_goto_definition(&mut self) -> Vec<Effect> {
         let id = self.unit.id.clone();
         let outside = self.outside_definitions(&id);
         let found = !outside.is_empty();
         if found {
-            self.open_panel(Panel::Outside);
+            self.open_tile(Panel::Outside);
             self.unit.outside = outside;
         }
         let effects = self.open_jump(JumpKind::Definition { of: id.clone() });
@@ -1368,5 +1594,152 @@ mod tests {
         let moved = a.unit.id.clone();
         press(&mut a, "h");
         assert_eq!(a.selected_id(), Some(moved));
+    }
+
+    const TESTS: Panel = Panel::Tool(DiveKind::Tests);
+    const RUN: Panel = Panel::Tool(DiveKind::Behavior);
+
+    #[test]
+    fn each_tool_adds_a_tile_and_the_focus_goes_round_them() {
+        let mut a = app();
+        let id = a.selected_id().unwrap();
+        a.open_unit(id);
+        press(&mut a, "<space>t<space>r");
+        assert_eq!(a.unit.tiles, [TESTS, RUN]);
+        assert_eq!(a.unit.panel, Some(RUN));
+        // The text first, then the tiles in the order they opened.
+        press(&mut a, "<tab>");
+        assert_eq!(a.unit.panel, None);
+        press(&mut a, "<tab>");
+        assert_eq!(a.unit.panel, Some(TESTS));
+        press(&mut a, "gT");
+        assert_eq!(a.unit.panel, None);
+        press(&mut a, "<s-tab>");
+        assert_eq!(a.unit.panel, Some(RUN));
+        // An open tile's key gives it the focus; in focus, closes it.
+        press(&mut a, "<space>t");
+        assert_eq!((a.unit.panel, a.unit.tiles.len()), (Some(TESTS), 2));
+        press(&mut a, "<space>t");
+        assert_eq!(a.unit.tiles, [RUN]);
+        assert_eq!(a.unit.panel, None);
+    }
+
+    #[test]
+    fn h_closes_the_tile_in_focus_then_goes_back() {
+        let mut a = app();
+        let id = a.selected_id().unwrap();
+        let from = a.screen;
+        a.open_unit(id);
+        press(&mut a, "<space>t<space>r");
+        // The one opened before it gets the focus.
+        press(&mut a, "h");
+        assert_eq!(
+            (a.unit.tiles.clone(), a.unit.panel),
+            (vec![TESTS], Some(TESTS))
+        );
+        press(&mut a, "h");
+        assert_eq!((a.unit.tiles.len(), a.unit.panel), (0, None));
+        assert_eq!(a.screen, Screen::Unit);
+        press(&mut a, "h");
+        assert_eq!(a.screen, from);
+    }
+
+    #[test]
+    fn zz_zooms_what_has_the_focus_and_h_ends_the_zoom_first() {
+        let mut a = app();
+        let id = a.selected_id().unwrap();
+        a.open_unit(id);
+        press(&mut a, "zz");
+        assert!(!a.unit.zoom);
+        assert!(a.status.starts_with("Nothing to zoom"), "{}", a.status);
+        press(&mut a, "<space>t");
+        let side = render(&a, 120, 30);
+        assert!(
+            side.contains("Tests") && side.contains("Why this level"),
+            "{side}"
+        );
+        press(&mut a, "zz");
+        let zoomed = render(&a, 120, 30);
+        assert!(zoomed.contains("Tests"), "{zoomed}");
+        assert!(!zoomed.contains("Why this level"), "{zoomed}");
+        press(&mut a, "h");
+        assert!(!a.unit.zoom);
+        assert_eq!(a.unit.panel, Some(TESTS));
+        // A tile opening ends a zoom, so it shows.
+        press(&mut a, "zz<space>r");
+        assert!(!a.unit.zoom);
+    }
+
+    #[test]
+    fn esc_stops_typing_and_the_ask_tile_stays_open() {
+        let mut a = app();
+        let id = a.selected_id().unwrap();
+        a.open_unit(id);
+        press(&mut a, "<space>tK");
+        assert_eq!(a.unit.tiles, [TESTS, Panel::Ask]);
+        press(&mut a, "x<esc>");
+        assert_eq!(a.ask.draft, "x");
+        assert_eq!(a.unit.panel, Some(Panel::Ask));
+        assert!(!a.unit.typing);
+        // The view's keys work again: tab moves on, i types again.
+        press(&mut a, "<tab>");
+        assert_eq!(a.unit.panel, None);
+        press(&mut a, "<s-tab>i");
+        assert!(a.unit.typing);
+        press(&mut a, "y");
+        assert_eq!(a.ask.draft, "xy");
+    }
+
+    #[test]
+    fn the_text_beside_its_tiles_wide_and_above_them_narrow() {
+        let wide = Rect::new(0, 0, 120, 30);
+        let (text, cells) = tile_areas(&[TESTS], wide);
+        assert_eq!((text.width, cells[0].1.x), (60, 60));
+        assert_eq!(cells[0].1.height, 30);
+        // Two tiles stack in one column beside the text.
+        let (text, cells) = tile_areas(&[TESTS, RUN], wide);
+        assert_eq!(text.width, 60);
+        assert_eq!(cells[0].1.x, cells[1].1.x);
+        assert!(cells[0].1.y < cells[1].1.y);
+        // Room for two to a row: they share it; the ask tile has its own,
+        // twice as tall.
+        let room = Rect::new(0, 0, 200, 30);
+        let (text, cells) = tile_areas(&[TESTS, RUN, Panel::Ask], room);
+        assert_eq!(text.width, 80);
+        assert_eq!(cells[0].1.y, cells[1].1.y);
+        assert!(cells[0].1.x < cells[1].1.x);
+        assert_eq!(cells[2].1.width, 120);
+        assert_eq!(cells[2].1.height, 2 * cells[0].1.height);
+        // Narrow: the text on top.
+        let (text, cells) = tile_areas(&[TESTS], Rect::new(0, 0, 80, 30));
+        assert_eq!((text.width, text.height), (80, 15));
+        assert_eq!((cells[0].1.y, cells[0].1.width), (15, 80));
+    }
+
+    #[test]
+    fn the_diff_is_in_a_box_titled_like_the_queues() {
+        let mut a = app();
+        let id = a.selected_id().unwrap();
+        a.open_unit(id);
+        let text = render(&a, 100, 50);
+        let rows: Vec<&str> = text.lines().collect();
+        let top = rows
+            .iter()
+            .position(|r| r.contains("╭ code change"))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(rows[top].trim_end().ends_with("+2 −2 ╮"), "{text}");
+        assert!(rows[top + 1].starts_with(" │ "), "{text}");
+        assert!(rows[top + 1].trim_end().ends_with('│'), "{text}");
+        let bottom = rows.iter().position(|r| r.contains('╰')).unwrap();
+        assert!(bottom > top + 2, "{text}");
+        // Every row in between is boxed, the right edge in one column.
+        let edge = rows[top].chars().count() - rows[top].trim_end().chars().count();
+        for r in &rows[top..=bottom] {
+            assert_eq!(
+                r.chars().count() - r.trim_end().chars().count(),
+                edge,
+                "{text}"
+            );
+        }
     }
 }

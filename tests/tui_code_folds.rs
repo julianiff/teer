@@ -128,8 +128,8 @@ async fn the_unit_view_shows_the_whole_change_with_the_statement_in_it() {
     press(&mut app, KeyCode::Char('l'));
     assert_eq!(app.screen, Screen::Unit);
     let out = screen(&app);
-    // Every change shows, the one no statement cites too; nothing is left
-    // out.
+    // Every change shows, the one no statement cites too; only unchanged
+    // lines between hunks fold.
     for shown in [
         "   4 + audit(order)",
         "  26 + charge_twice(order)",
@@ -137,7 +137,6 @@ async fn the_unit_view_shows_the_whole_change_with_the_statement_in_it() {
     ] {
         assert!(out.contains(shown), "{shown}\n{out}");
     }
-    assert!(!out.contains("│ ... "), "{out}");
     assert!(
         out.contains("│ Charges the order a second time. │"),
         "{out}"

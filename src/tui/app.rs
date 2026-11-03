@@ -406,9 +406,9 @@ pub enum Target {
     /// The detail area (the queue's preview, the unit view's text): the
     /// wheel scrolls it, a click does nothing.
     Detail,
-    /// The panel under the unit view's text: the wheel scrolls it, a click
-    /// on the ask panel types.
-    Panel,
+    /// A tile beside the unit view's text: the wheel scrolls it, a click
+    /// gives it the focus (on the ask tile, typing).
+    Panel(super::unit::Panel),
     /// A link in the ask panel, by index into [`App::ask_links`].
     AskLink(usize),
     /// A key named on screen (`esc close`): a click presses it.
@@ -1167,6 +1167,11 @@ impl App {
             }
             Action::GotoEditor => return self.edit(),
             Action::GotoBrowser => return self.open_visual(),
+            // On the ask tile, `i` types the question.
+            Action::NoteEdit if self.unit_ask_focused() => {
+                self.open_ask_panel();
+                return Vec::new();
+            }
             Action::NoteEdit => {
                 match self.current_unit().map(|u| u.id.clone()) {
                     Some(id) => self.edit_note(id, None),
@@ -2466,9 +2471,13 @@ impl App {
                 let by = if down { SCROLL_STEP } else { -SCROLL_STEP };
                 let hit = self.hit(m.column, m.row);
                 if self.screen == Screen::Unit {
-                    // A link is in the ask panel.
-                    let panel = matches!(hit, Some(Target::Panel | Target::AskLink(_)));
-                    return self.unit_wheel(panel, by);
+                    // A link is in the ask tile.
+                    let over = match hit {
+                        Some(Target::Panel(p)) => Some(p),
+                        Some(Target::AskLink(_)) => Some(super::unit::Panel::Ask),
+                        _ => None,
+                    };
+                    return self.unit_wheel(over, by);
                 }
                 if hit == Some(Target::Detail) {
                     return self.scroll_detail(by);
@@ -2497,8 +2506,12 @@ impl App {
                     Some(Target::Action(a)) => self.run_action(a, None),
                     Some(Target::Unit(pos)) => self.move_sel(pos),
                     Some(Target::AskLink(i)) => self.follow_ask_link(i),
-                    Some(Target::Panel) => {
-                        self.unit_click_panel();
+                    Some(Target::Panel(p)) => {
+                        self.unit_click_tile(Some(p));
+                        Vec::new()
+                    }
+                    Some(Target::Detail) if self.screen == Screen::Unit => {
+                        self.unit_click_tile(None);
                         Vec::new()
                     }
                     Some(Target::Detail) | None => Vec::new(),

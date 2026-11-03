@@ -124,8 +124,9 @@ fn ready(app: &App, id: &str, kind: DiveKind, text: &str) -> AppEvent {
     })
 }
 
+/// Wide enough for a tile beside the text to hold its lines whole.
 fn text(app: &App) -> String {
-    screen(app, 120, 50)
+    screen(app, 160, 50)
 }
 
 /// What the payments module has; `checkout.py` calls `pay` from it.
@@ -497,7 +498,10 @@ async fn ask_panel_lifecycle() {
     let t = text(&app);
     assert!(t.contains("› what happens on a bad currency? aqh"), "{t}");
     assert!(t.contains("› and when pay fails?"), "{t}");
-    // esc closes it; h goes back to the queue on the unit's row.
+    // esc stops typing and a second closes it; h goes back to the queue on
+    // the unit's row.
+    press(&mut app, "<esc>");
+    assert_eq!(app.unit.panel, Some(Panel::Ask));
     press(&mut app, "<esc>");
     assert_eq!(app.unit.panel, None);
     assert_eq!(app.screen, Screen::Unit);
@@ -653,7 +657,7 @@ fn leader_panels_and_gx() {
     );
     assert!(text(&app).contains("No test calls it"));
 
-    // One panel at a time: run old and new takes its place.
+    // Tiles add up: run old and new opens beside the tests.
     let effects = press(&mut app, "<space>r");
     assert!(matches!(
         &effects[..],
@@ -663,7 +667,7 @@ fn leader_panels_and_gx() {
         }]
     ));
     assert_eq!(app.unit.panel, Some(Panel::Tool(DiveKind::Behavior)));
-    assert!(!text(&app).contains("␣t Tests"));
+    assert!(text(&app).contains("␣t Tests"));
 
     // The diagram; gx before there is one says so, after opens it.
     let effects = press(&mut app, "<space>v");
@@ -699,9 +703,17 @@ fn leader_panels_and_gx() {
             unit_id: CHARGE.into()
         }]
     );
-    // The same key again closes its panel.
+    // The same key again closes its tile; the focus goes to the one
+    // opened before it.
     press(&mut app, "<space>v");
-    assert_eq!(app.unit.panel, None);
+    assert_eq!(
+        app.unit.tiles,
+        [
+            Panel::Tool(DiveKind::Tests),
+            Panel::Tool(DiveKind::Behavior)
+        ]
+    );
+    assert_eq!(app.unit.panel, Some(Panel::Tool(DiveKind::Behavior)));
 }
 
 // ---- U7: deciding here ----------------------------------------------------------------
@@ -803,6 +815,7 @@ fn k_from_the_queue_opens_the_unit_asking() {
     assert_eq!(app.unit.id, id);
     assert_eq!(app.unit.panel, Some(Panel::Ask));
     assert!(recommends(&effects).len() <= 2);
-    press(&mut app, "<esc>h");
+    // esc stops typing, h closes the tile, h again goes back.
+    press(&mut app, "<esc>hh");
     assert_eq!(app.screen, Screen::Queue);
 }

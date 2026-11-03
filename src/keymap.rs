@@ -48,6 +48,10 @@ pub enum Action {
     MovePrevHunk,
     MoveNextFile,
     MovePrevFile,
+    /// The unit view's tiles: the next (previous) one gets the focus, the
+    /// unit's own text among them.
+    MoveNextTile,
+    MovePrevTile,
     ScrollHalfDown,
     ScrollHalfUp,
     ScrollPageDown,
@@ -73,6 +77,8 @@ pub enum Action {
     /// The queue by level (each unit under its own) or by file (each file
     /// in the box of its most critical unit).
     ToggleByFile,
+    /// The unit view's tile in focus fills it, or no longer does.
+    ToggleZoom,
     ToolTests,
     ToolRunOldNew,
     ToolDiagram,
@@ -126,6 +132,18 @@ const TABLE: &[(Action, &str, &[&str], &str)] = &[
         "move.prev_file",
         &["[f"],
         "previous file",
+    ),
+    (
+        Action::MoveNextTile,
+        "move.next_tile",
+        &["<tab>", "gt"],
+        "next tile",
+    ),
+    (
+        Action::MovePrevTile,
+        "move.prev_tile",
+        &["<s-tab>", "gT"],
+        "previous tile",
     ),
     (
         Action::ScrollHalfDown,
@@ -229,6 +247,12 @@ const TABLE: &[(Action, &str, &[&str], &str)] = &[
         "toggle.by_file",
         &["zf"],
         "list by file or by level",
+    ),
+    (
+        Action::ToggleZoom,
+        "toggle.zoom",
+        &["zz"],
+        "zoom the tile in focus",
     ),
     (
         Action::ToolTests,

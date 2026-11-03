@@ -92,7 +92,7 @@ one queue replaces the list, swipe and the flagged screen, `:w` replaces the fin
 | `c` tests · `a` the agent reads them | `<space>t`, the agent reads them on its own |
 | `t` behavior · `v` visualize · `b` browser | `<space>r` · `<space>v` · `gx` |
 | `o` · `f` resolve | gone: a flag and its note say it |
-| `tab` `z` `r` tiles, zoom, ask again | one panel at a time under the unit |
+| `tab` `z` `r` tiles, zoom, ask again | `tab` `zz` in the unit view; asking again is `<c-r>` while typing |
 | `/` ask and chat | `K`; `/` finds a unit |
 | `m` note · `N` all notes | `i` · `<space>n` |
 | `c` `a` `p` hand over, commit, approve, post | `:w` |

@@ -498,7 +498,11 @@ fn shift_k_opens_ask() {
     d.keys("K");
     assert_eq!(d.screen(), Screen::Unit);
     assert_eq!(d.app.unit.panel, Some(Panel::Ask));
-    // In the unit view: the ask panel, typing.
+    // In the unit view: the ask tile, typing; esc stops typing, a second
+    // esc closes the tile.
+    d.keys("<esc>");
+    assert_eq!(d.app.unit.panel, Some(Panel::Ask));
+    assert!(!d.app.unit.typing);
     d.keys("<esc>");
     assert_eq!(d.app.unit.panel, None);
     d.keys("K");
@@ -738,14 +742,46 @@ fn keys_of_the_notes_view_do_nothing_on_the_list() {
     }
 }
 
+// ---- The unit view's tiles ------------------------------------------------------
+
+#[test]
+fn tile_keys_move_the_focus_and_zoom_in_the_unit_view_only() {
+    let mut d = Driver::new(3);
+    d.app.has_agent = true;
+    d.app.review.agent_session = Some(teer::review::model::SessionRef::default());
+    d.app.cfg.dive_web = false;
+    // In the queue they do nothing.
+    for keys in ["<tab>", "gt", "<s-tab>", "gT", "zz"] {
+        assert!(d.keys(keys).is_empty(), "{keys}");
+        assert_eq!((d.screen(), d.sel()), (Screen::Queue, 0), "{keys}");
+    }
+    d.keys("<space>t<space>r");
+    assert_eq!(d.screen(), Screen::Unit);
+    let tests = Panel::Tool(DiveKind::Tests);
+    let run = Panel::Tool(DiveKind::Behavior);
+    assert_eq!(d.app.unit.tiles, [tests, run]);
+    for (keys, focus) in [
+        ("<tab>", None),
+        ("gt", Some(tests)),
+        ("<s-tab>", None),
+        ("gT", Some(run)),
+    ] {
+        d.keys(keys);
+        assert_eq!(d.app.unit.panel, focus, "{keys}");
+    }
+    d.keys("zz");
+    assert!(d.app.unit.zoom);
+    d.keys("zz");
+    assert!(!d.app.unit.zoom);
+}
+
 // ---- The old screens' keys ------------------------------------------------------
 
 #[test]
 fn the_v1_screens_keys_do_nothing_in_the_queue_or_the_unit_view() {
-    // Swipe, the Flagged screen's tiles, zoom, resolutions, ask again.
-    for keys in [
-        "s", "gt", "gT", "<tab>", "<s-tab>", "<right>", "<left>", "zz", "o", "x", "r",
-    ] {
+    // Swipe, the Flagged screen's arrow keys, resolutions, ask again. Its
+    // tile keys (`tab` `gt` `zz`) are the unit view's again.
+    for keys in ["s", "<right>", "<left>", "o", "x", "r"] {
         let mut d = Driver::new(3);
         d.select(1);
         assert!(d.keys(keys).is_empty(), "{keys}");

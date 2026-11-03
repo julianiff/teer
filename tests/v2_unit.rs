@@ -487,7 +487,10 @@ fn ask_panel_lifecycle() {
     assert_eq!(d.app.review.questions[second].unit.as_deref(), Some("u0"));
     assert!(ask_panel_open(&d));
 
-    // Esc closes it; the conversation is kept with the unit.
+    // Esc stops typing, a second one closes it; the conversation is kept
+    // with the unit.
+    d.keys("<esc>");
+    assert!(ask_panel_open(&d) && !d.app.unit.typing);
     d.keys("<esc>");
     assert!(!ask_panel_open(&d));
     assert_eq!(d.screen(), Screen::Unit);
@@ -621,7 +624,7 @@ fn leader_panels_and_gx() {
     );
     assert!(d.render(140, 60).contains("test_alpha_charges_once"));
 
-    // Run old and new: one panel at a time.
+    // Run old and new: a tile of its own, beside the tests'.
     let effects = d.keys("<space>r");
     assert_eq!(asked(&effects, DiveKind::Behavior), ["u0"], "{effects:?}");
     answer(
@@ -635,7 +638,7 @@ fn leader_panels_and_gx() {
         screen.contains("Old and new agree on every input."),
         "{screen}"
     );
-    assert!(!screen.contains("test_alpha_charges_once"), "{screen}");
+    assert!(screen.contains("test_alpha_charges_once"), "{screen}");
 
     // The diagram, and `gx` opens it in the browser.
     let effects = d.keys("<space>v");
@@ -657,7 +660,15 @@ fn leader_panels_and_gx() {
     }));
     let screen = d.render(140, 60);
     assert!(screen.contains("Orders flow to the payment."), "{screen}");
-    assert!(!screen.contains("Old and new agree"), "{screen}");
+    assert!(screen.contains("Old and new agree"), "{screen}");
+    assert_eq!(
+        d.app.unit.tiles,
+        [
+            Panel::Tool(DiveKind::Tests),
+            Panel::Tool(DiveKind::Behavior),
+            Panel::Tool(DiveKind::Visualize)
+        ]
+    );
     assert_eq!(
         d.keys("gx"),
         vec![Effect::OpenVisual {

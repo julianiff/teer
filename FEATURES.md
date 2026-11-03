@@ -104,17 +104,17 @@ moving: `n` `N` go to the next and previous pending unit, `]f` `[f` to the next 
 
 1. **title** — level, file, unit, where it stands.
 2. **why this level** — the rule that set it and the [reasons](#reasons).
-3. **what changed** — the summary, then the diff with each statement under the lines it cites. `]c` `[c` jump between hunks.
+3. **what changed** — the summary, then the diff in its box with each statement under the lines it cites. `]c` `[c` jump between hunks.
 4. **what to do about it** — the agent's recommendation, asked for when the unit opens. teer asks ahead for the first three pending `▲` and `◆` units when the queue opens, and for the next pending unit whenever you open one.
 5. **second model** — its verdict on every statement, only when it disputes one.
 
 with `--no-agent`, 4 and 5 are left out.
 
-one panel opens under the text at a time; the same key closes it:
+each of these opens a tile, tmux style, next to the ones already open: the text keeps a tall column on the left (on top in a narrow terminal), the tiles share the rest in the order you opened them. the new tile gets the focus, and the scroll keys go to whatever has it. `tab` `shift+tab` (`gt` `gT`) move the focus, the text among the tiles; `zz` zooms what has it; `h` closes it. the same key on an open tile gives it the focus, and in focus closes it:
 
 | | |
 | --- | --- |
-| `K` | ask anything; "this" is the unit (from the queue, `K` opens it first). while the agent works you see each step it takes (the file it reads, what it searches), then the answer as it's written (claude code and model apis; codex shows the steps and the answer once done). the answer brings the code it talks about and the units it relates to: `tab` moves to them, `enter` opens one. follow-ups stay in the panel; the conversation is kept with the unit |
+| `K` | ask anything; "this" is the unit (from the queue, `K` opens it first). while the agent works you see each step it takes (the file it reads, what it searches), then the answer as it's written (claude code and model apis; codex shows the steps and the answer once done). the answer brings the code it talks about and the units it relates to: `tab` moves to them, `enter` opens one. follow-ups stay in the tile; the conversation is kept with the unit. `esc` stops typing and leaves the tile open; `K` or `i` types again |
 | `<space>t` | the tests that reach the unit, found by teer at once without an agent. with one, the agent then reads them: what each checks, and the dangerous cases none covers |
 | `<space>r` | old and new side by side: the agent writes a small program, teer runs it before and after the change in a sandbox, then checks the statements against the runs and whether your tests notice the change. macos only |
 | `<space>v` | what talks to the unit and what the change adds or removes, as a diagram in the terminal (kitty, ghostty, iterm2, sixel). `gx` opens it in the browser |
@@ -122,7 +122,7 @@ one panel opens under the text at a time; the same key closes it:
 | `gr` | what calls the unit, to jump to |
 | `gf` | your editor, at the unit's first changed line |
 
-`a` `f` `A` `F` `u` `.` work as in the queue; after `a` or `f` the next pending unit opens here. `n` `N` move without deciding. `h` goes back to the queue, on the unit you were looking at.
+`a` `f` `A` `F` `u` `.` work as in the queue; after `a` or `f` the next pending unit opens here. `n` `N` move without deciding, and close the tiles. `h` on the text goes back to the queue, on the unit you were looking at.
 
 like statements, every claim in the recommendation and the tools must cite real lines. what doesn't is dropped and logged to `teer.log`.
 
@@ -189,6 +189,8 @@ keys follow neovim, and a key does the same on every screen. a prefix (`g`, `]`,
 | `[c` | `move.prev_hunk` | previous hunk |
 | `]f` | `move.next_file` | next file |
 | `[f` | `move.prev_file` | previous file |
+| `<tab>` `gt` | `move.next_tile` | next tile |
+| `<s-tab>` `gT` | `move.prev_tile` | previous tile |
 | `<c-d>` | `scroll.half_down` | scroll half a page down |
 | `<c-u>` | `scroll.half_up` | scroll half a page up |
 | `<pagedown>` | `scroll.page_down` | scroll a page down |
@@ -212,6 +214,7 @@ keys follow neovim, and a key does the same on every screen. a prefix (`g`, `]`,
 | `gx` | `goto.browser` | open the picture in the browser |
 | `za` | `toggle.auto_accepted` | show units accepted for you |
 | `zf` | `toggle.by_file` | list by file or by level |
+| `zz` | `toggle.zoom` | zoom the tile in focus |
 | `<space>t` | `tool.tests` | tests that cover this unit |
 | `<space>r` | `tool.run_old_new` | run old and new |
 | `<space>v` | `tool.diagram` | diagram of the change |
@@ -226,7 +229,7 @@ keys follow neovim, and a key does the same on every screen. a prefix (`g`, `]`,
 | `?` | `help.open` | keys |
 | `d` | `note.delete` | delete the note |
 
-most keys work in the queue and the unit view alike. `]c` `[c` and `gx` are the unit view's, `V` `za` `zf` the queue's; `y` works on the `:w` sheet and in the notes, `d` in the notes. `?` shows the keys of the screen you're on, as you bound them.
+most keys work in the queue and the unit view alike. `]c` `[c` `gx`, the tile keys and `zz` are the unit view's, `V` `za` `zf` the queue's; `y` works on the `:w` sheet and in the notes, `d` in the notes. `?` shows the keys of the screen you're on, as you bound them.
 
 typing a note, a question or a message, `enter` saves, `esc` cancels and `<c-u>` clears the line. a yes/no question takes `y` or `enter` for yes, any other key for no. `<c-c>` quits from anywhere, saved.
 

@@ -795,10 +795,8 @@ fn the_keys_are_in_the_help_overlay_and_the_legend_shows_when_it_fits() {
     f.overlay = Overlay::Help;
     let out = text(&f, 100, 40);
     assert!(out.contains("keys · unit"), "{out}");
-    assert!(
-        !out.contains("zoom the tile") && !out.contains("resolved: ok"),
-        "{out}"
-    );
+    assert!(!out.contains("resolved: ok"), "{out}");
+    assert!(out.contains("zoom the tile in focus"), "{out}");
     // The footer has no file button.
     a.overlay = Overlay::None;
     let out = text(&a, 120, 30);

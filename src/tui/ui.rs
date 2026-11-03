@@ -262,14 +262,26 @@ fn visual_buttons(app: &App) -> Vec<(Target, String, &'static str)> {
 }
 
 /// What was typed of a sequence or count, then each key that can follow
-/// and what it does.
+/// and what it does; the tile keys only in the unit view, the one place
+/// they do anything.
 fn pending_spans(app: &App, typed: &str) -> Vec<Span<'static>> {
     let t = &app.theme;
     let mut spans = vec![Span::styled(
         typed.to_string(),
         t.accent().add_modifier(Modifier::BOLD),
     )];
-    for (i, (rest, a)) in app.keys.hint().into_iter().enumerate() {
+    const TILES: [Action; 3] = [
+        Action::MoveNextTile,
+        Action::MovePrevTile,
+        Action::ToggleZoom,
+    ];
+    let unit = app.screen == Screen::Unit && help_panel(app).is_none();
+    let follow = app
+        .keys
+        .hint()
+        .into_iter()
+        .filter(|(_, a)| unit || !TILES.contains(a));
+    for (i, (rest, a)) in follow.enumerate() {
         spans.push(Span::styled(if i == 0 { "  " } else { " · " }, t.muted()));
         spans.push(Span::styled(rest, t.accent()));
         spans.push(Span::raw(format!(" {}", a.describe())));
@@ -815,7 +827,8 @@ const GROUPS: [&str; 5] = ["Move", "Decide", "Look closer", "More", "Finish"];
 
 /// Which of [`GROUPS`] `a` is listed under: moving through the review,
 /// deciding on it, looking closer at a unit (its view, asking, going to
-/// code, the tools under it), the rest of what opens, and finishing.
+/// code, the tools beside it and moving between them), the rest of what
+/// opens, and finishing.
 fn group_of(a: Action) -> usize {
     use Action::*;
     match a {
@@ -825,7 +838,7 @@ fn group_of(a: Action) -> usize {
         DecideAccept | DecideFlag | NoteEdit | DecideAcceptFile | DecideFlagFile | VisualStart
         | HistoryUndo | HistoryRedo | HistoryRepeat | NoteDelete => 1,
         ViewOpen | AskOpen | GotoDefinition | GotoCallers | GotoEditor | GotoBrowser
-        | ToolTests | ToolRunOldNew | ToolDiagram => 2,
+        | ToolTests | ToolRunOldNew | ToolDiagram | MoveNextTile | MovePrevTile | ToggleZoom => 2,
         ToggleAutoAccepted | ToggleByFile | ToolHistory | ToolNotes | ToolSettings | HelpOpen => 3,
         FinishOpen | FinishYank | ReviewRerun | ReviewReset | ViewClose => 4,
     }
@@ -845,6 +858,7 @@ const PAIRS: &[(Action, Action)] = &[
     (Action::HistoryUndo, Action::HistoryRedo),
     (Action::ViewOpen, Action::ViewBack),
     (Action::GotoDefinition, Action::GotoCallers),
+    (Action::MoveNextTile, Action::MovePrevTile),
 ];
 
 /// Two descriptions on one row, the words they share said once:

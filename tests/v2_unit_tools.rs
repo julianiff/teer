@@ -160,8 +160,9 @@ fn screen(app: &App, w: u16, h: u16) -> Terminal<TestBackend> {
     t
 }
 
+/// Wide enough for a tile beside the text to hold its lines whole.
 fn screen_text(app: &App) -> String {
-    text_at(app, 120, 40)
+    text_at(app, 160, 40)
 }
 
 fn text_at(app: &App, w: u16, h: u16) -> String {
@@ -465,7 +466,7 @@ async fn with_images_the_panel_shows_the_picture_instead_of_the_list() {
     assert!(screen_text(&f.app).contains(PLACEHOLDER));
 
     // Too little room for a picture: the list again.
-    let small = text_at(&f.app, 120, 14);
+    let small = text_at(&f.app, 160, 10);
     assert!(!small.contains(PLACEHOLDER), "{small}");
     assert!(small.contains("─calls→"), "{small}");
 
@@ -569,7 +570,7 @@ async fn leader_t_lists_the_found_tests_and_the_agent_reads_them() {
     };
     open(&mut f, &charge).await;
     let app = &mut f.app;
-    let text = |app: &App| text_at(app, 120, 50);
+    let text = |app: &App| text_at(app, 160, 50);
 
     let effects = keys(app, "<space>t");
     assert_eq!(app.unit.panel, Some(Panel::Tool(DiveKind::Tests)));

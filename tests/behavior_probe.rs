@@ -334,11 +334,12 @@ async fn leader_r_in_the_unit_view_runs_the_probe_and_shows_the_table() {
     let u = app.review.unit(&id).unwrap();
     assert!(!u.dive_pending.contains(&DiveKind::Behavior));
     assert!(u.dive.results[&DiveKind::Behavior].behavior.is_some());
-    let mut t = Terminal::new(TestBackend::new(120, 60)).unwrap();
+    // Wide enough for the tile beside the text to hold the summary whole.
+    let mut t = Terminal::new(TestBackend::new(200, 60)).unwrap();
     t.draw(|f| teer::tui::ui::draw(f, &app)).unwrap();
     let buf = t.backend().buffer().clone();
     let text: String = (0..60)
-        .map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n")
+        .map(|y| (0..200).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n")
         .collect();
     assert!(text.contains("2 behave differently"), "{text}");
     assert!(text.contains("! neg"), "{text}");

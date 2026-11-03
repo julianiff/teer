@@ -291,17 +291,17 @@ async fn statements_sit_in_the_code_under_the_rows_they_cite() {
         card.contains("\" ┃ Changes how orders are charged."),
         "{card}"
     );
-    // Each statement sits in a card under the last row it cites, and
-    // nothing else marks those rows; the removed row has its old line
-    // number, the one the statement cites.
+    // Each statement sits in a card under the last row it cites, inside
+    // the code's box, and nothing else marks those rows; the removed row
+    // has its old line number, the one the statement cites.
     for row in [
-        "\"   9 +     if order.currency not in SUPPORTED:",
-        "\"  10 +         raise ValueError(\"unsupported currency\")",
-        "\"     ╭──────",
-        "\"     │ Rejects unsupported currencies. 2 callers don't handle it. │",
-        "\"  11       result = pay(order)",
-        "\"  10 -     send_receipt(order)",
-        "\"     │ No longer sends the receipt email. │",
+        "\" │   9 +     if order.currency not in SUPPORTED:",
+        "\" │  10 +         raise ValueError(\"unsupported currency\")",
+        "\" │     ╭──────",
+        "\" │     │ Rejects unsupported currencies. 2 callers don't handle it. │",
+        "\" │  11       result = pay(order)",
+        "\" │  10 -     send_receipt(order)",
+        "\" │     │ No longer sends the receipt email. │",
     ] {
         assert!(card.contains(row), "{row}:\n{card}");
     }
@@ -312,7 +312,7 @@ async fn statements_sit_in_the_code_under_the_rows_they_cite() {
         seen.push_str(&format!("{}", render(&app, 80, 24).backend()));
     }
     assert!(
-        seen.contains("\"     │ Saves the payment on the order"),
+        seen.contains("\" │     │ Saves the payment on the order"),
         "{seen}"
     );
 }
