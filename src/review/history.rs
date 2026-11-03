@@ -70,15 +70,6 @@ impl History {
         self.redo.clear();
     }
 
-    /// Add `notes` to the step on top of the undo stack: the flag whose note
-    /// line wrote them. Notes that change nothing are left out.
-    pub fn add_notes(&mut self, notes: Vec<NoteChange>) {
-        if let Some(step) = self.undo.last_mut() {
-            step.notes
-                .extend(notes.into_iter().filter(|n| n.before != n.after));
-        }
-    }
-
     /// The step to take back: put each change's `before` back, last first.
     pub fn undo(&mut self) -> Option<Step> {
         let step = self.undo.pop()?;
@@ -187,16 +178,17 @@ mod tests {
     }
 
     #[test]
-    fn notes_join_the_last_step_and_go_with_it() {
+    fn a_steps_notes_round_trip_and_go_with_it() {
+        // Accepting a unit can put its note away (the note on changed
+        // code): the note change is part of the step.
         let mut h = History::default();
-        h.add_notes(vec![noted("a", Note::default(), note("x"))]);
-        assert!(h.is_empty(), "no step to join");
-        h.record(step("a", Decision::Pending, Decision::Investigate));
-        h.add_notes(vec![
-            noted("a", Note::default(), note("x")),
+        let mut s = step("a", Decision::Pending, Decision::Accepted);
+        s.notes = vec![
+            noted("a", note("x"), Note::default()),
             noted("b", note("same"), note("same")),
-        ]);
-        assert_eq!(h.undo[0].notes, [noted("a", Note::default(), note("x"))]);
+        ];
+        h.record(s);
+        assert_eq!(h.undo[0].notes, [noted("a", note("x"), Note::default())]);
         let json = serde_json::to_string(&h).unwrap();
         assert_eq!(serde_json::from_str::<History>(&json).unwrap(), h);
         h.retain_units(|id| id != "a");

@@ -1,22 +1,24 @@
 //! The unit view (v2 Phase 5): any unit, with why it has its level, what
-//! changed, what to do about it and the second model, answered before the
-//! reviewer asks.
+//! changed and the second model; the agent's advice when asked.
 //!
 //! One text scrolls under a title row: "Why this level", "What changed"
 //! (the summary, then the diff in its box with each statement under the
-//! lines it cites; `]c` `[c` jump between hunks), "What to do about it"
-//! (the recommendation, asked for when the unit opens and prefetched for
-//! the units that come next) and "Second model" (only when it disputes the
-//! description). Without an agent the last two are left out.
+//! lines it cites; `]c` `[c` jump between hunks) and "Second model" (only
+//! when it disputes the description, and only with an agent).
 //!
-//! Beside it tiles open, tmux style, each added to the ones open: `K` asks
-//! about the unit (the conversation is kept with it), `<space>t`
-//! `<space>r` `<space>v` show the tests, old against new and the diagram,
-//! and `gd` shows what the unit calls outside the review, read-only. The
-//! text takes a tall column on the left (on top when narrow), the tiles the
-//! rest. `tab` and `shift+tab` move the focus, `zz` zooms the tile in
-//! focus, `h` closes it. Deciding here moves on to the next pending unit
-//! and stays in the view; `h` on the text goes back to the queue.
+//! Beside it tiles open, tmux style. "Advice" is open as the unit opens,
+//! when there is an agent, and says which key asks the agent what to do
+//! about the unit (`<space>a`, or `enter` on it): nothing is asked before.
+//! The rest are added to the ones open: `K` asks about the unit
+//! (the conversation is kept with it), `<space>t` `<space>r` `<space>v`
+//! show the tests (teer's search; the tile then asks whether the agent
+//! reads them), old against new and the diagram, and `gd` shows what the
+//! unit calls outside the review, read-only. Under them the keys tile says
+//! what can be done here. The text takes a tall column on the left (on top
+//! when narrow), the tiles the rest. `tab` and `shift+tab` move the focus,
+//! `zz` zooms the tile in focus, `h` closes it. Deciding here moves on to
+//! the next pending unit and stays in the view; `h` on the text goes back
+//! to the queue.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -24,6 +26,7 @@ use std::collections::{HashMap, HashSet};
 use crossterm::event::KeyEvent;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 use unicode_width::UnicodeWidthStr;
@@ -34,7 +37,6 @@ use super::app::{
 };
 use super::{ask, diff, preview, slim};
 use crate::keymap::{Action, Edit};
-use crate::review::dive::DiveEvent;
 use crate::review::model::{AcceptedBy, Cite, Decision, DiveKind, Prep, Shown, Unit};
 use crate::util::{truncate, wrap};
 
@@ -73,11 +75,13 @@ pub const ACTIONS: &[Action] = &[
     Action::GotoCallers,
     Action::GotoEditor,
     Action::GotoBrowser,
+    Action::ToolAdvice,
     Action::ToolTests,
     Action::ToolRunOldNew,
     Action::ToolDiagram,
     Action::ToolHistory,
     Action::ToolNotes,
+    Action::ToolFlagged,
     Action::ToolSettings,
     Action::HelpOpen,
     Action::FinishOpen,
@@ -86,9 +90,67 @@ pub const ACTIONS: &[Action] = &[
     Action::ViewClose,
 ];
 
-/// Pending units the recommendation is asked for when the queue opens:
-/// the first of those that need a close look or are worth one.
-pub const PREFETCH: usize = 3;
+/// An item of the keys tile: the actions it stands for (the keys of all
+/// of them shown, the first one run on a click) and a word or two for it.
+type KeyItem = (&'static [Action], &'static str);
+
+/// What the keys tile lists, by group.
+const KEY_GROUPS: &[(&str, &[KeyItem])] = &[
+    (
+        "Decide",
+        &[
+            (&[Action::DecideAccept], "accept"),
+            (&[Action::DecideFlag], "flag"),
+            (&[Action::NoteEdit], "note"),
+            (&[Action::HistoryUndo], "undo"),
+        ],
+    ),
+    (
+        "Look closer",
+        &[
+            (&[Action::ToolAdvice], "advice"),
+            (&[Action::AskOpen], "ask"),
+            (&[Action::ToolTests], "tests"),
+            (&[Action::ToolRunOldNew], "old vs new"),
+            (&[Action::ToolDiagram], "diagram"),
+            (&[Action::GotoDefinition], "calls"),
+            (&[Action::GotoCallers], "callers"),
+            (&[Action::GotoEditor], "editor"),
+            (&[Action::ToolFlagged], "all flagged"),
+        ],
+    ),
+    (
+        "Move",
+        &[
+            (
+                &[Action::MoveNextPending, Action::MovePrevPending],
+                "pending",
+            ),
+            (&[Action::MoveNextHunk, Action::MovePrevHunk], "hunks"),
+            (&[Action::MoveNextTile], "tiles"),
+            (&[Action::ToggleZoom], "zoom"),
+            (&[Action::ViewBack], "back"),
+        ],
+    ),
+    (
+        "Finish",
+        &[
+            (&[Action::FinishOpen], "finish"),
+            (&[Action::HelpOpen], "every key"),
+        ],
+    ),
+];
+
+/// Blanks between two items of the keys tile.
+const KEY_GAP: usize = 2;
+
+/// Items of the keys tile that need an agent.
+const AGENT_KEYS: [Action; 4] = [
+    Action::ToolAdvice,
+    Action::AskOpen,
+    Action::ToolRunOldNew,
+    Action::ToolDiagram,
+];
 
 /// Most lines of one definition `gd` shows from outside the review.
 const OUTSIDE_LINES: usize = 60;
@@ -105,6 +167,8 @@ const TILE_W: u16 = 48;
 /// A tile beside the unit's text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Panel {
+    /// What the agent says to do about the unit: open as the unit opens.
+    Recommend,
     /// `K`: the conversation about the unit and the question being typed.
     Ask,
     /// A leader tool's answer: the tests (`Tests`), old against new
@@ -158,8 +222,6 @@ pub struct UnitView {
     pub web_asked: bool,
     /// The question waiting for that answer, by index.
     pub web_question: Option<usize>,
-    /// Units whose tests the agent reads once teer's search is done (Q6).
-    pub read_tests: HashSet<String>,
 }
 
 impl UnitView {
@@ -202,7 +264,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let tiles = &app.unit.tiles;
     let focus = app.unit.panel.filter(|p| tiles.contains(p));
     // Zoomed, or no room for more than one: what has the focus alone.
-    let alone = tiles.is_empty() || app.unit.zoom || body.width < 40 || body.height < 8;
+    let alone = app.unit.zoom || body.width < 40 || body.height < 8;
     if alone {
         match focus {
             Some(p) => draw_tile(f, app, u, p, body, true),
@@ -210,21 +272,38 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         }
         return;
     }
-    let (text, cells) = tile_areas(tiles, body);
+    let keys_h = |w: u16, room: u16| keys_height(app, w).min(room / 2);
+    let (text, cells, keys) = if tiles.is_empty() {
+        // The keys tile under the text.
+        let [text, keys] = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(keys_h(body.width, body.height)),
+        ])
+        .areas(body);
+        (text, Vec::new(), keys)
+    } else {
+        tile_areas(tiles, body, keys_h)
+    };
     draw_text(f, app, u, text, focus.is_none());
     for (p, r) in cells {
         draw_tile(f, app, u, p, r, focus == Some(p));
     }
+    draw_keys(f, app, keys);
 }
 
-/// Where the text and each tile go in `area`. The text takes a tall
-/// column on the left, [`SIDE_BY_SIDE`] wide or more (on top otherwise):
-/// half the room beside one column of tiles (above one tile), two fifths
-/// beside two (above more).
+/// Where the text, each tile and the keys tile go in `area`. The text
+/// takes a tall column on the left, [`SIDE_BY_SIDE`] wide or more (on top
+/// otherwise): half the room beside one column of tiles (above one tile),
+/// two fifths beside two (above more).
 /// The tiles fill the rest in the order they opened, two to a row where
 /// each gets [`TILE_W`] columns; the ask tile has a row of its own, twice
-/// as tall as the others.
-fn tile_areas(tiles: &[Panel], area: Rect) -> (Rect, Vec<(Panel, Rect)>) {
+/// as tall as the others. The keys tile is under them, as tall as
+/// `keys_h` says for the width and the room.
+fn tile_areas(
+    tiles: &[Panel],
+    area: Rect,
+    keys_h: impl Fn(u16, u16) -> u16,
+) -> (Rect, Vec<(Panel, Rect)>, Rect) {
     let side = area.width >= SIDE_BY_SIDE;
     let two = side && tiles.len() > 1 && area.width * 3 / 5 >= 2 * TILE_W;
     let split = if two || (!side && tiles.len() > 1) {
@@ -237,6 +316,11 @@ fn tile_areas(tiles: &[Panel], area: Rect) -> (Rect, Vec<(Panel, Rect)>) {
     } else {
         Layout::vertical(split).areas(area)
     };
+    let [rest, keys] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(keys_h(rest.width, rest.height)),
+    ])
+    .areas(rest);
     let mut rows: Vec<Vec<Panel>> = Vec::new();
     for &p in tiles {
         match rows.last_mut() {
@@ -256,7 +340,7 @@ fn tile_areas(tiles: &[Panel], area: Rect) -> (Rect, Vec<(Panel, Rect)>) {
             Layout::horizontal(vec![Constraint::Ratio(1, row.len() as u32); row.len()]).split(*r);
         out.extend(row.iter().copied().zip(cells.iter().copied()));
     }
-    (text, out)
+    (text, out, keys)
 }
 
 /// The title row: the level's icon, the name and where it is, and on the
@@ -392,29 +476,14 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<u
         add(&mut blocks, card.into_iter().map(indented).collect());
     }
 
-    // What the agent says to do, and the second model when it disputes.
-    if app.can_ask() {
-        let rec = DiveKind::Recommend;
-        let head = if u.dive.results.contains_key(&rec) {
-            heading_by(
-                app,
-                "What to do about it",
-                answers::answer_label(app, u, rec),
-                w,
-            )
-        } else {
-            heading(app, "What to do about it")
-        };
-        add(&mut blocks, vec![Line::default(), head]);
-        add(&mut blocks, answers::section_body(app, u, rec, w));
-        if disputed(app, u) {
-            let by = answers::answer_label(app, u, DiveKind::Disagree);
-            add(
-                &mut blocks,
-                vec![Line::default(), heading_by(app, "Second model", by, w)],
-            );
-            add(&mut blocks, answers::disagree_lines(app, u, w));
-        }
+    // The second model, when it disputes the description.
+    if app.can_ask() && disputed(app, u) {
+        let by = answers::answer_label(app, u, DiveKind::Disagree);
+        add(
+            &mut blocks,
+            vec![Line::default(), heading_by(app, "Second model", by, w)],
+        );
+        add(&mut blocks, answers::disagree_lines(app, u, w));
     }
     (blocks, hunks)
 }
@@ -422,27 +491,53 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<u
 /// The code box's edge `w` cells wide, one cell in: the top one titled
 /// `code change` with `counts` on the right, as the queue's box is (see
 /// [`diff::draw_box`]), or with none the bottom one.
-fn code_edge(app: &App, w: usize, counts: Option<Vec<Span<'static>>>) -> Line<'static> {
+pub(super) fn code_edge(app: &App, w: usize, counts: Option<Vec<Span<'static>>>) -> Line<'static> {
     let border = app.theme.text();
-    let Some(counts) = counts else {
-        return Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!("╰{}╯", "─".repeat(w.saturating_sub(2))), border),
-        ]);
-    };
-    let title = Span::styled(diff::TITLE, app.theme.bold());
-    let used = 2 + title.width() + counts.iter().map(Span::width).sum::<usize>();
-    let mut spans = vec![Span::raw(" "), Span::styled("╭", border), title];
-    spans.push(Span::styled("─".repeat(w.saturating_sub(used)), border));
-    spans.extend(counts);
-    spans.push(Span::styled("╮", border));
-    Line::from(spans)
+    match counts {
+        Some(counts) => {
+            let title = vec![Span::styled(diff::TITLE, app.theme.bold())];
+            box_top(w, title, counts, border)
+        }
+        None => box_bottom(w, border),
+    }
 }
 
 /// Row `l` of the code change inside its box `w` cells wide, one cell in:
 /// a border and a cell of padding on each side.
-fn code_row(app: &App, l: Line<'static>, w: usize) -> Line<'static> {
-    let border = app.theme.text();
+pub(super) fn code_row(app: &App, l: Line<'static>, w: usize) -> Line<'static> {
+    box_row(l, w, app.theme.text())
+}
+
+/// A box's top edge `w` cells wide, one cell in, drawn in `border`:
+/// `title` on the left and `right` on the right.
+pub(super) fn box_top(
+    w: usize,
+    title: Vec<Span<'static>>,
+    right: Vec<Span<'static>>,
+    border: Style,
+) -> Line<'static> {
+    let used = 2
+        + title.iter().map(Span::width).sum::<usize>()
+        + right.iter().map(Span::width).sum::<usize>();
+    let mut spans = vec![Span::raw(" "), Span::styled("╭", border)];
+    spans.extend(title);
+    spans.push(Span::styled("─".repeat(w.saturating_sub(used)), border));
+    spans.extend(right);
+    spans.push(Span::styled("╮", border));
+    Line::from(spans)
+}
+
+/// A box's bottom edge `w` cells wide, one cell in, drawn in `border`.
+pub(super) fn box_bottom(w: usize, border: Style) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(" "),
+        Span::styled(format!("╰{}╯", "─".repeat(w.saturating_sub(2))), border),
+    ])
+}
+
+/// Row `l` inside a box `w` cells wide, one cell in, drawn in `border`: a
+/// border and a cell of padding on each side.
+pub(super) fn box_row(l: Line<'static>, w: usize, border: Style) -> Line<'static> {
     let room = w.saturating_sub(4);
     let used = l.width();
     let base = l.style;
@@ -489,6 +584,20 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
     let k = |a: Action| app.keys.label(a);
     let next = format!("{} next", k(Action::MoveNextTile));
     let (title, keys) = match p {
+        Panel::Recommend => {
+            let mut title = vec![
+                Span::styled(format!(" {}", k(Action::ToolAdvice)), t.accent()),
+                Span::styled(format!(" {} ", answers::ADVICE), t.bold()),
+            ];
+            if answers::pending(u, DiveKind::Recommend) {
+                title.push(Span::styled(format!("{} ", app.spinner()), t.muted()));
+            }
+            let mut keys = format!(" {next} · {} close ", k(Action::ViewBack));
+            if answers::may_advise(app, u) {
+                keys = format!(" {} ask ·{keys}", k(Action::ViewOpen));
+            }
+            (Line::from(title), keys)
+        }
         Panel::Ask => {
             let mut title = vec![
                 Span::styled(format!(" {}", k(Action::AskOpen)), t.accent()),
@@ -540,6 +649,18 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
             if kind == DiveKind::Visualize {
                 keys = format!(" {} browser ·{keys}", k(Action::GotoBrowser));
             }
+            if kind == DiveKind::Tests && answers::may_read_tests(app, u) {
+                let none = (u.dive.results.get(&kind))
+                    .and_then(|r| r.coverage.as_ref())
+                    .and_then(|c| c.search.as_ref())
+                    .is_some_and(|s| s.total == 0);
+                let what = if none {
+                    "agent looks"
+                } else {
+                    "agent reads them"
+                };
+                keys = format!(" {} {what} ·{keys}", k(Action::ViewOpen));
+            }
             (Line::from(title), keys)
         }
         Panel::Outside => (
@@ -554,8 +675,17 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
         .border_type(BorderType::Rounded)
         .border_style(if focus { t.accent() } else { t.muted() })
         .title(title);
+    let keys_w = if focus { keys.width() } else { 0 };
     if focus {
         block = block.title_bottom(Line::styled(keys, t.muted()).right_aligned());
+    }
+    // Who gave the advice.
+    if p == Panel::Recommend && u.dive.results.contains_key(&DiveKind::Recommend) {
+        let by = answers::answer_label(app, u, DiveKind::Recommend);
+        let room = (area.width as usize).saturating_sub(keys_w + 6);
+        block = block.title_bottom(
+            Line::styled(format!(" {} ", truncate(&by, room)), t.muted()).left_aligned(),
+        );
     }
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -570,6 +700,19 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
     }
     super::ui::text_area(app, inner, 0);
     match p {
+        Panel::Recommend => {
+            let w = inner.width as usize;
+            let lines = answers::section_body(app, u, DiveKind::Recommend, w);
+            draw_scrolled(f, app, p, lines, inner, focus);
+            // A click on the question asks.
+            if answers::may_advise(app, u)
+                && let Some(r) = super::select::find(f.buffer_mut(), inner, answers::ASK_ADVICE)
+            {
+                let row = Rect::new(inner.x, r.y, inner.width, 1);
+                let to = Target::Action(Action::ToolAdvice);
+                app.targets.borrow_mut().push((row, to));
+            }
+        }
         Panel::Ask => draw_ask(f, app, u, inner, focus),
         Panel::Tool(DiveKind::Visualize)
             if answers::draw_picture(f, app, u, inner, inner.width as usize) =>
@@ -583,6 +726,16 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
             let w = inner.width as usize;
             let lines = answers::section_body(app, u, kind, w);
             draw_scrolled(f, app, p, lines, inner, focus);
+            // A click on the question has the agent read the tests.
+            if kind == DiveKind::Tests
+                && answers::may_read_tests(app, u)
+                && let Some(r) = [answers::READ_TESTS, answers::LOOK_TESTS]
+                    .iter()
+                    .find_map(|q| super::select::find(f.buffer_mut(), inner, q))
+            {
+                let row = Rect::new(inner.x, r.y, inner.width, 1);
+                app.targets.borrow_mut().push((row, Target::ReadTests));
+            }
         }
         Panel::Outside => {
             let w = inner.width as usize;
@@ -626,6 +779,115 @@ fn draw_scrolled(
         app.detail_rows.set(h);
     }
     f.render_widget(Paragraph::new(s.lines), area);
+}
+
+/// Where an item of the keys tile is: its line, column and width, and the
+/// action a click on it runs.
+struct KeyAt {
+    line: usize,
+    x: usize,
+    w: usize,
+    action: Action,
+}
+
+/// The keys tile's lines `w` cells wide: each group's name, then its
+/// items (`key what`) wrapped after it; and where each item is (line,
+/// column, width) with the action a click on it runs. Without an agent
+/// the items that need one are left out, and so is an item whose key was
+/// unbound.
+fn keys_lines(app: &App, w: usize) -> (Vec<Line<'static>>, Vec<KeyAt>) {
+    let t = &app.theme;
+    let label_w = KEY_GROUPS.iter().map(|g| g.0.width()).max().unwrap_or(0) + 2;
+    // Too narrow for the names in a column of their own: none.
+    let label_w = if w >= label_w + 24 { label_w } else { 0 };
+    let mut lines = Vec::new();
+    let mut at = Vec::new();
+    for (name, items) in KEY_GROUPS {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        if label_w > 0 {
+            spans.push(Span::styled(format!("{name:<label_w$}"), t.muted()));
+        }
+        let mut x = label_w;
+        let mut first = true;
+        for (actions, what) in *items {
+            if !app.can_ask() && actions.iter().any(|a| AGENT_KEYS.contains(a)) {
+                continue;
+            }
+            let keys: Vec<String> = actions.iter().map(|&a| app.keys.label(a)).collect();
+            if keys.iter().any(String::is_empty) {
+                continue;
+            }
+            let keys = keys.join(" ");
+            let item_w = keys.width() + 1 + what.width();
+            let sep = if first { 0 } else { KEY_GAP };
+            if !first && x + sep + item_w > w {
+                lines.push(Line::from(std::mem::take(&mut spans)));
+                spans.push(Span::raw(" ".repeat(label_w)));
+                x = label_w;
+                first = true;
+            }
+            if !first {
+                spans.push(Span::raw(" ".repeat(KEY_GAP)));
+                x += KEY_GAP;
+            }
+            at.push(KeyAt {
+                line: lines.len(),
+                x,
+                w: item_w,
+                action: actions[0],
+            });
+            spans.push(Span::styled(keys, t.accent()));
+            spans.push(Span::raw(format!(" {what}")));
+            x += item_w;
+            first = false;
+        }
+        if !first {
+            lines.push(Line::from(spans));
+        }
+    }
+    (lines, at)
+}
+
+/// Rows the keys tile takes `w` columns wide, borders included.
+fn keys_height(app: &App, w: u16) -> u16 {
+    let inner = (w as usize).saturating_sub(4);
+    let rows = keys_lines(app, inner).0.len() + 2;
+    rows.min(u16::MAX as usize) as u16
+}
+
+/// The keys tile in `area`: what can be done in the unit view, by group,
+/// each item a click away. It never takes the focus; cut short, `?` lists
+/// every key.
+fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    if area.width < 12 || area.height < 3 {
+        return;
+    }
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(t.muted())
+        .title(Span::styled(" Keys ", t.bold()));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let inner = Rect::new(
+        inner.x + 1,
+        inner.y,
+        inner.width.saturating_sub(2),
+        inner.height,
+    );
+    if inner.width < 4 || inner.height == 0 {
+        return;
+    }
+    super::ui::text_area(app, inner, 0);
+    let (lines, at) = keys_lines(app, inner.width as usize);
+    let shown = (inner.height as usize).min(lines.len());
+    let mut targets = app.targets.borrow_mut();
+    for k in at.into_iter().filter(|k| k.line < shown) {
+        let w = (k.w as u16).min(inner.width.saturating_sub(k.x as u16));
+        let r = Rect::new(inner.x + k.x as u16, inner.y + k.line as u16, w, 1);
+        targets.push((r, Target::Action(k.action)));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 /// The ask tile: the conversation about `u` (or, before the first
@@ -732,15 +994,18 @@ so a question can follow on from the last answer. The conversation is kept with 
 
 impl App {
     /// Open the unit view on unit `id` (from the queue: `l`, `enter`; in
-    /// the view, a unit gone to to look), with no tile open. Its
-    /// recommendation is asked for unless it has one, and so is the next
-    /// pending unit's.
+    /// the view, a unit gone to to look), with only the advice tile open.
     pub fn open_unit(&mut self, id: String) -> Vec<Effect> {
         if self.review.unit(&id).is_none() {
             return Vec::new();
         }
         let entering = self.screen != Screen::Unit;
         if entering {
+            // From the flagged list opened from here: back there, then on
+            // back to where this view was opened from.
+            if self.screen == Screen::Flagged && self.flagged.from == Some(Screen::Unit) {
+                self.flagged.from = self.unit.from;
+            }
             self.unit.from = Some(self.screen);
             self.screen = Screen::Unit;
         }
@@ -754,7 +1019,8 @@ impl App {
     }
 
     /// The unit the view shows: the one whose note is being written while
-    /// the note line is open (`f` moved on already), else the one on show.
+    /// the note line is open (from the notes view it may be another), else
+    /// the one on show.
     pub fn unit_on_show(&self) -> Option<&Unit> {
         if let Overlay::Note { id, .. } = &self.overlay
             && let Some(u) = self.review.unit(id)
@@ -775,42 +1041,15 @@ impl App {
         self.cfg.dive_web && self.review.pr.is_none() && !self.dive_web_ok && !self.unit.web_asked
     }
 
-    /// When the queue opens: ask for the recommendation of the first
-    /// [`PREFETCH`] pending units that need a close look or are worth one,
-    /// in queue order. Nothing without an agent.
-    pub(super) fn prefetch_start(&mut self) -> Vec<Effect> {
-        use crate::review::attention::Level;
-        if !self.can_ask() {
-            return Vec::new();
-        }
-        let ids: Vec<String> = self
-            .order
-            .iter()
-            .filter(|&&i| {
-                let u = &self.review.units[i];
-                u.decision == Decision::Pending && self.shown_level(i) >= Level::Look
-            })
-            .take(PREFETCH)
-            .map(|&i| self.review.units[i].id.clone())
-            .collect();
-        ids.iter().flat_map(|id| self.recommend(id)).collect()
-    }
-
-    /// Ask for unit `id`'s recommendation unless it has one (kept with the
-    /// unit while its code stays the same) or it is on its way.
-    fn recommend(&mut self, id: &str) -> Vec<Effect> {
-        if !self.can_ask() {
-            return Vec::new();
-        }
-        self.dive_on(id, DiveKind::Recommend)
-    }
-
-    /// Show unit `id`, the queue's cursor on it; ask for what it and the
-    /// next pending unit need (see [`App::open_unit`]).
+    /// Show unit `id`, the queue's cursor on it, the advice tile open (with
+    /// an agent). Nothing is asked: the tile says which key asks.
     fn show_unit(&mut self, id: String) -> Vec<Effect> {
         if id != self.unit.id {
             self.close_tiles();
             self.unit.outside.clear();
+        }
+        if self.can_ask() && !self.unit.tiles.contains(&Panel::Recommend) {
+            self.unit.tiles.insert(0, Panel::Recommend);
         }
         self.unit.id = id.clone();
         self.unit.home = id.clone();
@@ -820,13 +1059,6 @@ impl App {
             && p != self.sel
         {
             effects.extend(self.move_sel(p));
-        }
-        effects.extend(self.recommend(&id));
-        let next = pos
-            .and_then(|p| self.next_pending_pos(p))
-            .map(|p| self.review.units[self.order[p]].id.clone());
-        if let Some(next) = next {
-            effects.extend(self.recommend(&next));
         }
         effects
     }
@@ -865,7 +1097,8 @@ impl App {
     }
 
     /// Close tile `p`; the focus goes to the tile opened before it, else
-    /// to the text.
+    /// to the text. The advice tile, open from the start, never
+    /// gets it this way: `h` again goes on to the text, then back.
     fn close_tile(&mut self, p: Panel) {
         let Some(i) = self.unit.tiles.iter().position(|&t| t == p) else {
             return;
@@ -876,7 +1109,11 @@ impl App {
             self.unit.zoom = false;
         }
         if self.unit.panel == Some(p) {
-            let before = i.checked_sub(1).map(|j| self.unit.tiles[j]);
+            let before = self.unit.tiles[..i]
+                .iter()
+                .rev()
+                .copied()
+                .find(|&t| t != Panel::Recommend);
             self.focus_tile(before);
         }
     }
@@ -1079,6 +1316,14 @@ impl App {
                 self.tile_step(a == Action::MoveNextTile, times);
             }
             Action::ToggleZoom => self.toggle_zoom(),
+            // On the advice tile, the agent is asked.
+            Action::ViewOpen if self.unit.panel == Some(Panel::Recommend) => {
+                return self.ask_advice();
+            }
+            // On the Tests tile, the agent reads what teer found.
+            Action::ViewOpen if self.unit.panel == Some(Panel::Tool(DiveKind::Tests)) => {
+                return self.read_tests();
+            }
             // A zoom ends first, then the tile in focus closes; on the text,
             // back to the queue.
             Action::ViewBack | Action::ViewClose if self.unit.zoom => self.unit.zoom = false,
@@ -1128,9 +1373,6 @@ impl App {
                     Decision::Accepted
                 };
                 self.decide_ids(std::slice::from_ref(&id), d);
-                if flag {
-                    self.edit_note(id.clone(), None);
-                }
                 vec![Effect::Save]
             }
         };
@@ -1206,12 +1448,9 @@ impl App {
     }
 
     /// `zz`: the tile in focus (or the text) fills the view, or no longer
-    /// does; with no tile open there is nothing to zoom.
+    /// does. The keys tile is always beside the text, so there is always
+    /// something to hide.
     fn toggle_zoom(&mut self) {
-        if self.unit.tiles.is_empty() {
-            self.status = "Nothing to zoom: no tile is open beside the text.".into();
-            return;
-        }
         self.unit.zoom = !self.unit.zoom;
     }
 
@@ -1267,15 +1506,18 @@ impl App {
         self.detail_scroll.borrow_mut().1 = to;
     }
 
-    /// A leader tool (`<space>t` `<space>r` `<space>v`): its tile opens
+    /// A leader tool (`<space>a` `<space>t` `<space>r` `<space>v`): its tile opens
     /// beside the ones open and its answer is asked for unless it has one.
     /// Open already, the same key gives it the focus, and in focus closes
-    /// it. After teer's test search, the agent reads the tests on its own
-    /// when there is one (Q6).
+    /// it. `<space>t` runs only teer's test search; the tile then asks
+    /// whether the agent reads what it found ([`App::read_tests`]).
     pub(super) fn unit_tool(&mut self, a: Action) -> Vec<Effect> {
         let id = self.unit.id.clone();
         if self.review.unit(&id).is_none() {
             return Vec::new();
+        }
+        if a == Action::ToolAdvice {
+            return self.toggle_advice();
         }
         let Some(kind) = tool_kind(a) else {
             return Vec::new();
@@ -1295,40 +1537,64 @@ impl App {
             return Vec::new();
         }
         self.open_tile(tile);
-        if kind != DiveKind::Tests {
-            return self.dive_on(&id, kind);
-        }
-        let u = self.review.unit(&id).expect("checked above");
-        let coverage = u.dive.results.get(&kind).and_then(|r| r.coverage.as_ref());
-        let read = coverage.is_some_and(|c| c.judged);
-        let found = coverage.is_some_and(|c| c.search.is_some());
-        let busy = u.dive_pending.contains(&kind);
-        if !self.can_ask() || read || busy {
-            return self.dive_on(&id, kind);
-        }
-        if found {
-            return self.interpret_tests_on(&id);
-        }
-        self.unit.read_tests.insert(id.clone());
         self.dive_on(&id, kind)
     }
 
-    /// teer's test search came back for a unit whose tests the agent is
-    /// to read: have it read them.
-    pub(super) fn unit_tests_found(&mut self, ev: &DiveEvent) -> Vec<Effect> {
-        let DiveEvent::Ready {
-            id,
-            kind: DiveKind::Tests,
-            coverage: Some(c),
-            ..
-        } = ev
-        else {
-            return Vec::new();
-        };
-        if c.judged || !self.unit.read_tests.remove(id) || !self.can_ask() {
+    /// `<space>a`: the advice tile, asked when it hasn't been. In focus
+    /// with an answer (or one on its way), the same key closes it.
+    fn toggle_advice(&mut self) -> Vec<Effect> {
+        let tile = Panel::Recommend;
+        if self.unit.panel == Some(tile)
+            && self
+                .review
+                .unit(&self.unit.id)
+                .is_some_and(|u| !answers::may_advise(self, u))
+        {
+            self.close_tile(tile);
             return Vec::new();
         }
-        self.interpret_tests_on(id)
+        self.ask_advice()
+    }
+
+    /// Ask the agent for advice on the unit on show: what to do about it.
+    /// The advice tile opens first, in focus; answered already or on its
+    /// way, nothing more is asked.
+    pub(super) fn ask_advice(&mut self) -> Vec<Effect> {
+        if !self.can_ask() {
+            self.status = "No agent: advice needs one (`teer setup` picks it).".into();
+            return Vec::new();
+        }
+        let tile = Panel::Recommend;
+        if !self.unit.tiles.contains(&tile) {
+            self.unit.tiles.insert(0, tile);
+            self.unit.scroll.borrow_mut().remove(&tile);
+        }
+        self.unit.zoom = false;
+        self.focus_tile(Some(tile));
+        let id = self.unit.id.clone();
+        self.dive_on(&id, DiveKind::Recommend)
+    }
+
+    /// The Tests tile's question answered yes (`enter` on it, or a click):
+    /// the agent reads what teer's search found for the unit on show.
+    pub(super) fn read_tests(&mut self) -> Vec<Effect> {
+        let tile = Panel::Tool(DiveKind::Tests);
+        if !self.unit.tiles.contains(&tile) {
+            return Vec::new();
+        }
+        self.focus_tile(Some(tile));
+        let id = self.unit.id.clone();
+        let Some(u) = self.review.unit(&id) else {
+            return Vec::new();
+        };
+        if !answers::may_read_tests(self, u) {
+            if !self.can_ask() {
+                self.status =
+                    "No agent: reading the tests needs one (`teer setup` picks it).".into();
+            }
+            return Vec::new();
+        }
+        self.interpret_tests_on(&id)
     }
 
     /// `gd` in the unit view: the jump list of what the unit calls in the
@@ -1514,15 +1780,25 @@ mod tests {
     }
 
     #[test]
-    fn opening_asks_for_its_recommendation_and_the_next_ones_once() {
+    fn opening_asks_nothing_space_a_or_enter_on_the_tile_asks_once() {
         let mut a = app();
         let id = a.selected_id().unwrap();
         let effects = a.open_unit(id.clone());
         assert_eq!(a.screen, Screen::Unit);
-        let next = a.review.units[a.order[a.sel + 1]].id.clone();
-        assert_eq!(recommends(&effects), [id.clone(), next]);
-        // On their way, or answered: not asked again.
-        assert!(recommends(&a.open_unit(id)).is_empty());
+        assert!(recommends(&effects).is_empty(), "nothing before asked");
+        assert!(a.review.unit(&id).unwrap().dive_pending.is_empty());
+        assert_eq!(recommends(&press(&mut a, "<space>a")), vec![id.clone()]);
+        assert_eq!(a.unit.panel, Some(REC));
+        // On its way: not asked again; the key closes the tile.
+        assert!(recommends(&press(&mut a, "<space>a")).is_empty());
+        assert!(!a.unit.tiles.contains(&REC));
+        // `enter` on the tile asks the next unit's.
+        press(&mut a, "n");
+        let next = a.unit.id.clone();
+        assert_ne!(next, id);
+        press(&mut a, "<tab>");
+        assert_eq!(a.unit.panel, Some(REC));
+        assert_eq!(recommends(&press(&mut a, "<cr>")), [next]);
     }
 
     #[test]
@@ -1531,7 +1807,7 @@ mod tests {
         let id = a.selected_id().unwrap();
         a.open_unit(id);
         let text = render(&a, 100, 50);
-        for s in [preview::WHY_HEADING, "What changed", "What to do about it"] {
+        for s in [preview::WHY_HEADING, "What changed", "Advice"] {
             assert!(text.contains(s), "{s}:\n{text}");
         }
         assert!(!text.contains("Second model"), "{text}");
@@ -1599,28 +1875,32 @@ mod tests {
     const TESTS: Panel = Panel::Tool(DiveKind::Tests);
     const RUN: Panel = Panel::Tool(DiveKind::Behavior);
 
+    const REC: Panel = Panel::Recommend;
+
     #[test]
     fn each_tool_adds_a_tile_and_the_focus_goes_round_them() {
         let mut a = app();
         let id = a.selected_id().unwrap();
         a.open_unit(id);
         press(&mut a, "<space>t<space>r");
-        assert_eq!(a.unit.tiles, [TESTS, RUN]);
+        assert_eq!(a.unit.tiles, [REC, TESTS, RUN]);
         assert_eq!(a.unit.panel, Some(RUN));
         // The text first, then the tiles in the order they opened.
         press(&mut a, "<tab>");
         assert_eq!(a.unit.panel, None);
         press(&mut a, "<tab>");
+        assert_eq!(a.unit.panel, Some(REC));
+        press(&mut a, "<tab>");
         assert_eq!(a.unit.panel, Some(TESTS));
-        press(&mut a, "gT");
+        press(&mut a, "gTgT");
         assert_eq!(a.unit.panel, None);
         press(&mut a, "<s-tab>");
         assert_eq!(a.unit.panel, Some(RUN));
         // An open tile's key gives it the focus; in focus, closes it.
         press(&mut a, "<space>t");
-        assert_eq!((a.unit.panel, a.unit.tiles.len()), (Some(TESTS), 2));
+        assert_eq!((a.unit.panel, a.unit.tiles.len()), (Some(TESTS), 3));
         press(&mut a, "<space>t");
-        assert_eq!(a.unit.tiles, [RUN]);
+        assert_eq!(a.unit.tiles, [REC, RUN]);
         assert_eq!(a.unit.panel, None);
     }
 
@@ -1635,13 +1915,20 @@ mod tests {
         press(&mut a, "h");
         assert_eq!(
             (a.unit.tiles.clone(), a.unit.panel),
-            (vec![TESTS], Some(TESTS))
+            (vec![REC, TESTS], Some(TESTS))
         );
+        // Not what to do about it, open from the start: the text.
         press(&mut a, "h");
-        assert_eq!((a.unit.tiles.len(), a.unit.panel), (0, None));
+        assert_eq!((a.unit.tiles.clone(), a.unit.panel), (vec![REC], None));
         assert_eq!(a.screen, Screen::Unit);
         press(&mut a, "h");
         assert_eq!(a.screen, from);
+        // In focus, it closes as any tile does; the next unit opens it again.
+        a.open_unit(a.selected_id().unwrap());
+        press(&mut a, "<tab>h");
+        assert!(a.unit.tiles.is_empty());
+        press(&mut a, "n");
+        assert_eq!(a.unit.tiles, [REC]);
     }
 
     #[test]
@@ -1649,9 +1936,14 @@ mod tests {
         let mut a = app();
         let id = a.selected_id().unwrap();
         a.open_unit(id);
+        // The text, with what to do about it beside it.
+        press(&mut a, "zz");
+        assert!(a.unit.zoom);
+        let zoomed = render(&a, 120, 30);
+        assert!(zoomed.contains("Why this level"), "{zoomed}");
+        assert!(!zoomed.contains("Advice"), "{zoomed}");
         press(&mut a, "zz");
         assert!(!a.unit.zoom);
-        assert!(a.status.starts_with("Nothing to zoom"), "{}", a.status);
         press(&mut a, "<space>t");
         let side = render(&a, 120, 30);
         assert!(
@@ -1676,7 +1968,7 @@ mod tests {
         let id = a.selected_id().unwrap();
         a.open_unit(id);
         press(&mut a, "<space>tK");
-        assert_eq!(a.unit.tiles, [TESTS, Panel::Ask]);
+        assert_eq!(a.unit.tiles, [REC, TESTS, Panel::Ask]);
         press(&mut a, "x<esc>");
         assert_eq!(a.ask.draft, "x");
         assert_eq!(a.unit.panel, Some(Panel::Ask));
@@ -1692,28 +1984,259 @@ mod tests {
 
     #[test]
     fn the_text_beside_its_tiles_wide_and_above_them_narrow() {
+        let none = |_: u16, _: u16| 0;
         let wide = Rect::new(0, 0, 120, 30);
-        let (text, cells) = tile_areas(&[TESTS], wide);
+        let (text, cells, _) = tile_areas(&[TESTS], wide, none);
         assert_eq!((text.width, cells[0].1.x), (60, 60));
         assert_eq!(cells[0].1.height, 30);
         // Two tiles stack in one column beside the text.
-        let (text, cells) = tile_areas(&[TESTS, RUN], wide);
+        let (text, cells, _) = tile_areas(&[TESTS, RUN], wide, none);
         assert_eq!(text.width, 60);
         assert_eq!(cells[0].1.x, cells[1].1.x);
         assert!(cells[0].1.y < cells[1].1.y);
         // Room for two to a row: they share it; the ask tile has its own,
         // twice as tall.
         let room = Rect::new(0, 0, 200, 30);
-        let (text, cells) = tile_areas(&[TESTS, RUN, Panel::Ask], room);
+        let (text, cells, _) = tile_areas(&[TESTS, RUN, Panel::Ask], room, none);
         assert_eq!(text.width, 80);
         assert_eq!(cells[0].1.y, cells[1].1.y);
         assert!(cells[0].1.x < cells[1].1.x);
         assert_eq!(cells[2].1.width, 120);
         assert_eq!(cells[2].1.height, 2 * cells[0].1.height);
         // Narrow: the text on top.
-        let (text, cells) = tile_areas(&[TESTS], Rect::new(0, 0, 80, 30));
+        let (text, cells, _) = tile_areas(&[TESTS], Rect::new(0, 0, 80, 30), none);
         assert_eq!((text.width, text.height), (80, 15));
         assert_eq!((cells[0].1.y, cells[0].1.width), (15, 80));
+        // The keys tile under the tiles, as tall as it says.
+        let (text, cells, keys) = tile_areas(&[REC, TESTS], wide, |w, _| w / 10);
+        assert_eq!((keys.x, keys.width, keys.height), (60, 60, 6));
+        assert_eq!(keys.bottom(), 30);
+        assert_eq!(cells[1].1.bottom(), keys.y);
+        assert_eq!(text.height, 30);
+    }
+
+    #[test]
+    fn the_advice_tile_is_open_from_the_start_beside_the_keys_and_waits() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let mut a = app();
+        let id = a.selected_id().unwrap();
+        a.open_unit(id);
+        assert_eq!((a.unit.tiles.clone(), a.unit.panel), (vec![REC], None));
+        let text = render(&a, 120, 40);
+        let rows: Vec<&str> = text.lines().collect();
+        // The tile beside the text, saying which key asks.
+        let head = rows
+            .iter()
+            .position(|r| r.contains("╭ ␣a Advice"))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(rows[head].find("╭ ␣a").unwrap() >= 58, "{text}");
+        assert!(
+            text.contains("␣a ask the agent what to do about it:"),
+            "{text}"
+        );
+        assert!(!text.contains("asking the agent"), "{text}");
+        assert!(text.contains("␣a advice"), "in the keys tile:\n{text}");
+        // The keys tile under it: what can be done here.
+        let keys = rows.iter().position(|r| r.contains("╭ Keys")).unwrap();
+        assert!(keys > head, "{text}");
+        for item in [
+            "a accept",
+            "f flag",
+            "K ask",
+            "␣t tests",
+            "n N pending",
+            "]c [c hunks",
+            "? every key",
+        ] {
+            assert!(text.contains(item), "{item}:\n{text}");
+        }
+        // A click on the question asks.
+        let (row, line) = rows
+            .iter()
+            .enumerate()
+            .find(|(_, l)| l.contains("ask the agent what"))
+            .unwrap();
+        let col = line[..line.find("ask the agent").unwrap()].chars().count() as u16;
+        let mut effects = Vec::new();
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            effects.extend(a.on_mouse(MouseEvent {
+                kind,
+                column: col,
+                row: row as u16,
+                modifiers: KeyModifiers::NONE,
+            }));
+        }
+        assert_eq!(recommends(&effects), [a.unit.id.clone()]);
+        let text = render(&a, 120, 40);
+        assert!(text.contains("asking the agent"), "{text}");
+        // Answered: who wrote it on its bottom edge.
+        let u = a.review.unit_mut(&a.unit.id.clone()).unwrap();
+        u.dive_pending.remove(&DiveKind::Recommend);
+        u.dive.results.insert(
+            DiveKind::Recommend,
+            crate::review::model::DiveResult {
+                text: "Keep the retry, log the failure.".into(),
+                ..Default::default()
+            },
+        );
+        let text = render(&a, 120, 40);
+        assert!(text.contains("Keep the retry, log the failure."), "{text}");
+        assert!(text.contains("╰ agent ("), "{text}");
+    }
+
+    #[test]
+    fn a_click_on_a_key_in_the_keys_tile_runs_it() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let mut a = app();
+        let id = a.selected_id().unwrap();
+        a.open_unit(id);
+        let text = render(&a, 120, 40);
+        let (row, line) = text
+            .lines()
+            .enumerate()
+            .find(|(_, l)| l.contains("␣t tests"))
+            .unwrap_or_else(|| panic!("{text}"));
+        let col = line[..line.find("␣t tests").unwrap()].chars().count() as u16;
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            a.on_mouse(MouseEvent {
+                kind,
+                column: col + 1,
+                row: row as u16,
+                modifiers: KeyModifiers::NONE,
+            });
+        }
+        assert_eq!(a.unit.panel, Some(TESTS));
+    }
+
+    #[test]
+    fn without_an_agent_no_recommendation_and_only_the_keys_that_work() {
+        let mut a = app();
+        a.has_agent = false;
+        a.review.agent_session = None;
+        let id = a.selected_id().unwrap();
+        a.open_unit(id);
+        assert!(a.unit.tiles.is_empty());
+        let text = render(&a, 120, 40);
+        assert!(!text.contains("Advice"), "{text}");
+        assert!(text.contains("╭ Keys"), "{text}");
+        assert!(text.contains("␣t tests"), "{text}");
+        assert!(!text.contains("K ask"), "{text}");
+    }
+
+    /// Unit `id`'s tests as teer's search found them, not yet read.
+    fn found(a: &mut App, id: &str, total: usize) {
+        use crate::review::model::{Coverage, FoundTest, Reach, TestSearch};
+        let tests = (0..total)
+            .map(|k| FoundTest {
+                name: format!("test_{k}"),
+                cite: Cite {
+                    file: PathBuf::from("tests/t.rs"),
+                    start: 1,
+                    end: 2,
+                },
+                reach: Reach::Names,
+            })
+            .collect();
+        let u = a.review.unit_mut(id).unwrap();
+        u.dive_pending.remove(&DiveKind::Tests);
+        u.dive.results.insert(
+            DiveKind::Tests,
+            crate::review::model::DiveResult {
+                coverage: Some(Coverage::found(TestSearch { tests, total })),
+                ..Default::default()
+            },
+        );
+    }
+
+    fn reads_tests(effects: &[Effect]) -> bool {
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::InterpretTests { .. }))
+    }
+
+    #[test]
+    fn space_t_only_searches_then_asks_whether_the_agent_reads_them() {
+        let mut a = app();
+        let id = a.selected_id().unwrap();
+        a.open_unit(id.clone());
+        let effects = press(&mut a, "<space>t");
+        assert!(!reads_tests(&effects), "{effects:?}");
+        found(&mut a, &id, 2);
+        let text = render(&a, 120, 40);
+        assert!(text.contains("2 tests reach it"), "{text}");
+        assert!(text.contains("l/⏎ the agent reads them"), "{text}");
+        assert!(
+            text.contains("l agent reads them"),
+            "the tile's keys:\n{text}"
+        );
+        // Closed and opened again: still only asks.
+        let effects = press(&mut a, "<space>t<space>t");
+        assert!(!reads_tests(&effects), "{effects:?}");
+        // Yes: the agent reads them, once.
+        let effects = press(&mut a, "<cr>");
+        assert!(reads_tests(&effects), "{effects:?}");
+        assert!(!reads_tests(&press(&mut a, "<cr>")));
+        let text = render(&a, 120, 40);
+        assert!(!text.contains("the agent reads them:"), "{text}");
+        assert!(text.contains("asking the agent"), "{text}");
+    }
+
+    #[test]
+    fn with_no_test_found_it_asks_whether_the_agent_looks_and_a_click_says_yes() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let mut a = app();
+        let id = a.selected_id().unwrap();
+        a.open_unit(id.clone());
+        press(&mut a, "<space>t");
+        found(&mut a, &id, 0);
+        let text = render(&a, 120, 40);
+        assert!(text.contains("l agent looks ·"), "the tile's keys:\n{text}");
+        // The focus elsewhere: the click still asks.
+        press(&mut a, "<tab>");
+        let text = render(&a, 120, 40);
+        let (row, line) = text
+            .lines()
+            .enumerate()
+            .find(|(_, l)| l.contains(answers::LOOK_TESTS))
+            .unwrap_or_else(|| panic!("{text}"));
+        let col = line[..line.find(answers::LOOK_TESTS).unwrap()]
+            .chars()
+            .count() as u16;
+        let mut effects = Vec::new();
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            effects.extend(a.on_mouse(MouseEvent {
+                kind,
+                column: col + 2,
+                row: row as u16,
+                modifiers: KeyModifiers::NONE,
+            }));
+        }
+        assert!(reads_tests(&effects), "{effects:?}");
+        assert_eq!(a.unit.panel, Some(TESTS));
+    }
+
+    #[test]
+    fn without_an_agent_the_tests_tile_asks_nothing() {
+        let mut a = app();
+        a.has_agent = false;
+        a.review.agent_session = None;
+        let id = a.selected_id().unwrap();
+        a.open_unit(id.clone());
+        press(&mut a, "<space>t");
+        found(&mut a, &id, 1);
+        let text = render(&a, 120, 40);
+        assert!(text.contains("1 test reaches it"), "{text}");
+        assert!(!text.contains("the agent reads them"), "{text}");
+        assert!(!reads_tests(&press(&mut a, "<cr>")));
     }
 
     #[test]
@@ -1721,6 +2244,8 @@ mod tests {
         let mut a = app();
         let id = a.selected_id().unwrap();
         a.open_unit(id);
+        // The text alone.
+        press(&mut a, "zz");
         let text = render(&a, 100, 50);
         let rows: Vec<&str> = text.lines().collect();
         let top = rows

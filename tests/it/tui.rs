@@ -283,6 +283,10 @@ async fn statements_sit_in_the_code_under_the_rows_they_cite() {
     // In the unit view, the whole change with every statement in it.
     key(&mut app, 'l');
     assert_eq!(app.screen, Screen::Unit);
+    // The text alone.
+    app.on_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+    app.on_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+    assert!(app.unit.zoom);
     let card = format!("{}", render(&app, 80, 24).backend());
     insta::assert_snapshot!("unit_view_cites", card);
     // What the agent wrote sits behind a bar, under a label naming who.
@@ -580,7 +584,7 @@ async fn the_flagged_screens_old_keys_do_nothing_in_the_queue() {
     select(&mut app, "charge_order");
     for keys in [
         "o", "x", "r", "s", "zz", "gt", "gT", "<tab>", "<s-tab>", "<right>", "<left>", "<space>w",
-        "<space>m", "<space>a",
+        "<space>m",
     ] {
         assert!(v2::press(&mut app, keys).is_empty(), "{keys}");
         assert_eq!(app.screen, Screen::Queue, "{keys}");

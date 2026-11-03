@@ -1,5 +1,5 @@
-//! The agent's answers about a unit, as the unit view shows them: what to
-//! do about it, the second model, and the tools' panels (the tests, old
+//! The agent's answers about a unit, as the unit view shows them: the
+//! advice, the second model, and the tools' panels (the tests, old
 //! against new, the diagram). (The agent questions keep the `Dive*` names:
 //! `DiveKind`, `DiveEvent`.) Everything the agent wrote is untrusted and
 //! drawn as plain text.
@@ -34,7 +34,7 @@ pub(super) const TOOLS: [(DiveKind, Action, &str, &str); 3] = [
         DiveKind::Tests,
         Action::ToolTests,
         "Tests",
-        "the tests that reach it, found at once; the agent can read them",
+        "the tests that reach it, found at once; then the agent may read them",
     ),
     (
         DiveKind::Behavior,
@@ -49,6 +49,37 @@ pub(super) const TOOLS: [(DiveKind, Action, &str, &str); 3] = [
         "a picture of what it talks to and what changes",
     ),
 ];
+
+/// The advice tile's name.
+pub(super) const ADVICE: &str = "Advice";
+/// The advice tile's question, after its key, until the agent is asked.
+pub(super) const ASK_ADVICE: &str = "ask the agent what to do about it";
+
+/// May the agent be asked for advice on `u`: there is an agent, and it
+/// hasn't answered and isn't answering.
+pub(super) fn may_advise(app: &App, u: &Unit) -> bool {
+    let kind = DiveKind::Recommend;
+    app.can_ask() && !u.dive.results.contains_key(&kind) && !pending(u, kind)
+}
+
+/// The Tests tile's question, after its key, when teer found tests.
+pub(super) const READ_TESTS: &str = "the agent reads them";
+/// The same, when teer found none.
+pub(super) const LOOK_TESTS: &str = "the agent looks for tests itself";
+
+/// May the agent read what teer's test search found for `u`: there is an
+/// agent, the search is done, and the agent hasn't read it or isn't
+/// reading it.
+pub(super) fn may_read_tests(app: &App, u: &Unit) -> bool {
+    let kind = DiveKind::Tests;
+    let searched = u
+        .dive
+        .results
+        .get(&kind)
+        .and_then(|r| r.coverage.as_ref())
+        .is_some_and(|c| c.search.is_some() && !c.judged);
+    app.can_ask() && searched && !pending(u, kind)
+}
 
 /// The first row of what brings more light into a unit.
 pub(super) const MENU: &str = "Not sure yet? Bring more light into it:";
@@ -349,8 +380,10 @@ fn found_lines(app: &App, f: &FoundTest, w: usize) -> Vec<Line<'static>> {
 }
 
 /// The Tests panel before the agent has read anything: what teer's search
-/// found, nearest first. (The agent reads them on its own.)
-fn found_only(app: &App, s: &TestSearch, w: usize) -> Vec<Line<'static>> {
+/// found, nearest first. With `ask`, under the count, the question whether
+/// the agent reads them: what each checks and the dangerous cases none
+/// covers (or, with none found, whether it looks for tests itself).
+fn found_only(app: &App, s: &TestSearch, w: usize, ask: bool) -> Vec<Line<'static>> {
     let t = &app.theme;
     let head = match s.total {
         0 => "No test calls it, calls a caller, or names it.".to_string(),
@@ -361,6 +394,23 @@ fn found_only(app: &App, s: &TestSearch, w: usize) -> Vec<Line<'static>> {
         .into_iter()
         .map(|l| Line::styled(format!(" {l}"), t.bold()))
         .collect();
+    if ask {
+        let key = app.keys.labels(Action::ViewOpen);
+        let what = match s.total {
+            0 => LOOK_TESTS.to_string(),
+            _ => format!("{READ_TESTS}: what each checks, and what none covers"),
+        };
+        let room = w.saturating_sub(key.width() + 2);
+        for (k, l) in wrap(&what, room).into_iter().enumerate() {
+            let lead = if k == 0 {
+                Span::styled(format!(" {key} "), t.accent())
+            } else {
+                Span::raw(" ".repeat(key.width() + 2))
+            };
+            lines.push(Line::from(vec![lead, Span::styled(l, t.bold())]));
+        }
+        lines.push(Line::default());
+    }
     for f in &s.tests {
         lines.extend(found_lines(app, f, w));
     }
@@ -374,13 +424,15 @@ fn found_only(app: &App, s: &TestSearch, w: usize) -> Vec<Line<'static>> {
 }
 
 /// The Tests panel. Before the agent has read anything, what teer's search
-/// found ([`found_only`]). After: the tests that cover the unit, what each
-/// checks and where; the dangerous cases no test covers, most dangerous
-/// first; the agent's note; the other tests the search found.
-fn coverage_lines(app: &App, note: &str, c: &Coverage, w: usize) -> Vec<Line<'static>> {
+/// found ([`found_only`], asking with `ask`). After: the tests that cover
+/// the unit, what each checks and where; the dangerous cases no test
+/// covers, most dangerous first; the agent's note; the other tests the
+/// search found.
+fn coverage_lines(app: &App, note: &str, c: &Coverage, w: usize, ask: bool) -> Vec<Line<'static>> {
     let t = &app.theme;
     if !c.judged {
-        return found_only(app, c.search.as_ref().unwrap_or(&TestSearch::default()), w);
+        let none = TestSearch::default();
+        return found_only(app, c.search.as_ref().unwrap_or(&none), w, ask);
     }
     let mut lines = Vec::new();
     let n = c.covered.len();
@@ -536,9 +588,10 @@ pub(super) fn section_body(app: &App, u: &Unit, kind: DiveKind, w: usize) -> Vec
             .map(|v| visual_lines(app, v, w))
             .or_else(|| res.behavior.as_ref().map(|b| behavior_lines(app, u, b, w)))
             .or_else(|| {
+                let ask = kind == DiveKind::Tests && may_read_tests(app, u);
                 res.coverage
                     .as_ref()
-                    .map(|c| coverage_lines(app, &res.text, c, w))
+                    .map(|c| coverage_lines(app, &res.text, c, w, ask))
             });
         if let Some(drawn) = drawn {
             lines = drawn;
@@ -567,6 +620,21 @@ pub(super) fn section_body(app: &App, u: &Unit, kind: DiveKind, w: usize) -> Vec
             let lead = if k == 0 { app.spinner() } else { " " };
             lines.push(Line::styled(format!(" {lead} {l}"), t.muted()));
         }
+    }
+    if lines.is_empty() && kind == DiveKind::Recommend {
+        // Nothing is asked before the reviewer says so.
+        let key = app.keys.label(Action::ToolAdvice);
+        let what = "concrete steps, most important first, each with its reason";
+        let mut first = vec![
+            Span::styled(format!(" {key} "), t.accent()),
+            Span::styled(ASK_ADVICE, t.bold()),
+        ];
+        first.push(Span::styled(":", t.bold()));
+        lines.push(Line::from(first));
+        for l in wrap(what, w.saturating_sub(2)) {
+            lines.push(Line::styled(format!(" {l}"), t.muted()));
+        }
+        return lines;
     }
     if lines.is_empty() {
         // A tool asks again with its key; the rest when the unit opens.

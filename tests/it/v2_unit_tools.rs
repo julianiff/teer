@@ -264,6 +264,8 @@ async fn leader_v_asks_once_without_the_web_and_the_panel_shows_the_picture() {
     assert!(prompt.starts_with("DIVE:Visualize"), "{prompt}");
     assert!(prompt.contains("Code you may cite"), "{prompt}");
 
+    // Zoomed: the tile alone, its lines whole.
+    keys(&mut f.app, "zz");
     let text = screen_text(&f.app);
     for want in [
         "␣v Visualize",
@@ -311,6 +313,7 @@ async fn visualize_panel_snapshot() {
     let u = f.app.review.unit_mut(&id).unwrap();
     let res = u.dive.results.get_mut(&DiveKind::Visualize).unwrap();
     res.visual.as_mut().unwrap().path = PathBuf::from("/data/visuals/r1/checkout.py_charge.html");
+    keys(&mut f.app, "zz");
     insta::assert_snapshot!("unit_visualize", screen(&f.app, 100, 30).backend());
 }
 
@@ -451,6 +454,7 @@ async fn with_images_the_panel_shows_the_picture_instead_of_the_list() {
     let effects = keys(&mut f.app, "<space>v");
     answer(&mut f, &effects).await;
     f.app.pictures = Some(kitty());
+    keys(&mut f.app, "zz");
     let text = screen_text(&f.app);
     assert!(text.contains(PLACEHOLDER), "{text}");
     assert!(
@@ -470,8 +474,8 @@ async fn with_images_the_panel_shows_the_picture_instead_of_the_list() {
     assert!(!small.contains(PLACEHOLDER), "{small}");
     assert!(small.contains("─calls→"), "{small}");
 
-    // The panel closed: no picture.
-    keys(&mut f.app, "<esc>");
+    // The zoom ended and the panel closed: no picture.
+    keys(&mut f.app, "<esc><esc>");
     assert!(!screen_text(&f.app).contains(PLACEHOLDER));
 }
 
@@ -544,7 +548,7 @@ fn tests_responder(prompt: &str, schema: &Value) -> anyhow::Result<Value> {
 }
 
 #[tokio::test]
-async fn leader_t_lists_the_found_tests_and_the_agent_reads_them() {
+async fn leader_t_lists_the_found_tests_and_the_agent_reads_them_when_asked() {
     isolate_env();
     let repo = FixtureRepo::new();
     repo.write("checkout.py", PY_OLD)
@@ -575,10 +579,12 @@ async fn leader_t_lists_the_found_tests_and_the_agent_reads_them() {
     let effects = keys(app, "<space>t");
     assert_eq!(app.unit.panel, Some(Panel::Tool(DiveKind::Tests)));
     assert_eq!(asked(&effects), [(DiveKind::Tests, false)]);
+    // Zoomed: the tile alone, its lines whole.
+    keys(app, "zz");
     assert!(text(app).contains("searching the test files"));
 
     // teer searches by itself, the way the runtime does: no agent. Then the
-    // agent reads what it found, on its own.
+    // tile asks whether the agent reads what it found.
     let unit = app.review.unit(&charge).unwrap().clone();
     let callers = test_search::callers(&app.review, &unit);
     let effects = app.on_app_event(AppEvent::Dive(search_tests(
@@ -586,12 +592,15 @@ async fn leader_t_lists_the_found_tests_and_the_agent_reads_them() {
         &unit,
         &callers,
     )));
-    assert!(
-        effects.contains(&Effect::InterpretTests {
-            unit_id: charge.clone()
-        }),
-        "{effects:?}"
-    );
+    let read = Effect::InterpretTests {
+        unit_id: charge.clone(),
+    };
+    assert!(!effects.contains(&read), "{effects:?}");
+    let screen = text(app);
+    assert!(screen.contains("the agent reads them"), "{screen}");
+    // Yes.
+    let effects = keys(app, "<cr>");
+    assert!(effects.contains(&read), "{effects:?}");
     let screen = text(app);
     assert!(screen.contains("1 test reaches it"), "{screen}");
     assert!(screen.contains("· test_charges_once"), "{screen}");

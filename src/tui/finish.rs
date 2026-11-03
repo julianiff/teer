@@ -435,7 +435,7 @@ impl App {
         self.overlay = Overlay::None;
         let id = self.review.units[self.order[pos]].id.clone();
         match self.screen {
-            Screen::Unit => self.open_unit(id),
+            Screen::Unit | Screen::Flagged => self.open_unit(id),
             Screen::Queue => self.move_sel(pos),
         }
     }

@@ -140,11 +140,11 @@ fn decided(repo: &common::FixtureRepo, cfg: Config, fakes: &Fakes) -> Session {
     assert_eq!(review.units.len(), 4, "{:?}", review.units);
     let mut s = Session::start(review, cfg, None, None, fakes.tools());
     s.go_to("total");
+    s.keys("icharges the fee twice<cr>");
     s.keys("f");
-    s.keys("charges the fee twice<cr>");
     s.go_to("tax");
+    s.keys("irate is wrong<cr>");
     s.keys("f");
-    s.keys("rate is wrong<cr>");
     s.go_to("fee");
     s.keys("a");
     s.go_to("ship");
@@ -208,8 +208,8 @@ async fn hand_off_uses_found_session() {
     let mut s = Session::launched(l, model(&["total"]), fakes.tools());
     s.settle().await;
     s.go_to("total");
+    s.keys("icharges the fee twice<cr>");
     s.keys("f");
-    s.keys("charges the fee twice<cr>");
     s.go_to("fee");
     s.keys("a");
     let prompt = teer::notes::agent_prompt(&s.app.review);
@@ -236,8 +236,8 @@ async fn hand_off_uses_found_session() {
     let mut s = Session::launched(l, model(&["total"]), fakes.tools());
     s.settle().await;
     s.go_to("total");
+    s.keys("icharges the fee twice<cr>");
     s.keys("f");
-    s.keys("charges the fee twice<cr>");
     s.go_to("fee");
     s.keys("a");
     let effects = send(&mut s);
@@ -462,19 +462,14 @@ async fn notes_on_changed_code() {
     assert_eq!(s.decision("tax"), P);
     assert_eq!(s.note("tax"), "rate is wrong still");
 
-    // `f`: flagged, and the note is edited.
+    // `f`: flagged, the note left as it was, on the code it was written on.
     let (_repo, _fakes, mut s) = after_fix().await;
     s.go_to("tax");
     s.keys("f");
-    assert!(
-        matches!(&s.app.overlay, Overlay::Note { text, .. } if text == "rate is wrong"),
-        "prefilled: {:?}",
-        s.app.overlay
-    );
-    s.keys("<c-u>use 0.25<cr>");
+    assert_eq!(s.app.overlay, Overlay::None);
     assert_eq!(s.decision("tax"), F);
-    assert_eq!(s.note("tax"), "use 0.25");
-    assert!(!marked_changed(unit(&s, "tax")), "written on this code");
+    assert_eq!(s.note("tax"), "rate is wrong");
+    assert!(marked_changed(unit(&s, "tax")), "still on the old code");
 
     // `a`: accepted, and the note archived.
     let (_repo, _fakes, mut s) = after_fix().await;
@@ -581,8 +576,8 @@ async fn rerun_on_a_pr_fetches_its_head_again() {
         .expect("a review");
     let mut s = Session::launched(l, model(&[]), fakes.tools());
     assert_eq!(s.app.review.head, pr.head);
+    s.keys("irate is wrong<cr>");
     s.keys("f");
-    s.keys("rate is wrong<cr>");
     assert_eq!(s.decision("tax"), F);
     let new_head = pr.push(&[("tax.py", TAX_FIXED)]);
     s.keys(":e<cr>");
@@ -640,7 +635,7 @@ fn says_which_code() -> MockAdapter {
     })
 }
 
-/// Descriptions and recommendations are on their way when a re-run lands:
+/// Descriptions and advice are on their way when a re-run lands:
 /// those about code the re-run changed are dropped, and the unit is asked
 /// again about the code it has now; those about code that stayed are kept.
 #[tokio::test]
@@ -653,6 +648,13 @@ async fn answers_about_code_a_rerun_changed_are_dropped() {
     };
     let review = build_review(&repo.path(), &BuildOptions::default()).unwrap();
     let mut s = Session::start(review, cfg, Some(says_which_code()), None, fakes.tools());
+    // Advice asked for on `ship` and on one more unit.
+    let other = s.listed().into_iter().find(|n| n != "ship").unwrap();
+    for name in ["ship", other.as_str()] {
+        s.go_to(name);
+        s.keys("<space>a");
+        s.keys("hh");
+    }
     let recommended: Vec<String> = s.seen(|e| match e {
         Effect::Dive {
             unit_id,
@@ -698,9 +700,9 @@ async fn answers_about_code_a_rerun_changed_are_dropped() {
         "About the first code.",
         "its code is the same"
     );
-    // Opened, `ship` is asked again, about the code it has now.
+    // Asked again, about the code it has now.
     s.go_to("ship");
-    let asked = s.keys("l");
+    let asked = s.keys("l<space>a");
     assert!(
         asked.iter().any(|e| matches!(
             e,

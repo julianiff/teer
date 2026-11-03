@@ -1,9 +1,8 @@
 //! Phase 5, the unit view (U1–U7 of `docs/v2-map.md` §11, and the
 //! acceptance scenario "look closer"): any unit opens with why it has its
-//! level, what changed, what to do about it and the second model; the
-//! recommendation is asked for before the reviewer does; `K` asks in a panel
-//! under the diff; go-to, the leader tools, and deciding without leaving the
-//! view. Keys go in as Neovim notation; the agent's answers come in as the
+//! level, what changed and the second model; the advice tile asks the agent
+//! what to do about it only on `<space>a`; `K` asks in a panel under the
+//! diff; go-to, the leader tools, and deciding without leaving the view. Keys go in as Neovim notation; the agent's answers come in as the
 //! `AppEvent`s the runtime would send, so nothing calls a model.
 //!
 //! Names the unit view's code may choose differently are kept in the
@@ -34,11 +33,11 @@ use Decision::{Accepted as A, Investigate as F, Pending as P};
 /// The section headings, top to bottom (plan, Phase 5).
 const WHY: &str = "Why this level";
 const WHAT_CHANGED: &str = "What changed";
-const WHAT_TO_DO: &str = "What to do about it";
+const ADVICE: &str = "Advice";
 const SECOND: &str = "Second model";
 
-/// Units whose recommendation `effects` ask for (today's `Effect::Dive` of
-/// kind Recommend; prefetching may use the same effect).
+/// Units whose advice `effects` ask for (`Effect::Dive` of kind
+/// Recommend).
 fn recommends(effects: &[Effect]) -> Vec<String> {
     asked(effects, DiveKind::Recommend)
 }
@@ -188,11 +187,6 @@ fn closer_looks(d: &Driver) -> Vec<String> {
         .collect()
 }
 
-fn sorted(mut v: Vec<String>) -> Vec<String> {
-    v.sort();
-    v
-}
-
 /// The headings of `want` that `screen` shows, each followed by something
 /// before the next heading or the end.
 fn sections_with_content(screen: &str, want: &[&str]) -> Vec<String> {
@@ -270,14 +264,18 @@ fn sections_and_hunk_jumps() {
         ['▲', '◆', '●'].iter().any(|g| title.contains(*g)),
         "{title}"
     );
-    // The sections in order; the second model only when it disputes.
-    let shown = sections_with_content(&screen, &[WHY, WHAT_CHANGED, WHAT_TO_DO, SECOND]);
-    assert_eq!(shown, [WHY, WHAT_CHANGED, WHAT_TO_DO], "{screen}");
+    // The text's sections in order; the second model only when it
+    // disputes. The advice is a tile of its own, open from the start.
+    let shown = sections_with_content(&screen, &[WHY, WHAT_CHANGED, SECOND]);
+    assert_eq!(shown, [WHY, WHAT_CHANGED], "{screen}");
     let rows: Vec<u16> = shown.iter().map(|h| find(&screen, h).unwrap().1).collect();
     assert!(
         rows.windows(2).all(|w| w[0] < w[1]),
         "top to bottom: {rows:?}"
     );
+    assert_eq!(d.app.unit.tiles, [Panel::Recommend]);
+    let shown = sections_with_content(&screen, &[ADVICE]);
+    assert_eq!(shown, [ADVICE], "{screen}");
 
     let mut r = r;
     let u = r.units.iter_mut().find(|u| u.symbol == "big").unwrap();
@@ -285,8 +283,8 @@ fn sections_and_hunk_jumps() {
     let mut disputed_view = Driver::open_with_agent(r, cfg());
     open(&mut disputed_view, &id);
     let screen = disputed_view.render(140, 200);
-    let shown = sections_with_content(&screen, &[WHY, WHAT_CHANGED, WHAT_TO_DO, SECOND]);
-    assert_eq!(shown, [WHY, WHAT_CHANGED, WHAT_TO_DO, SECOND], "{screen}");
+    let shown = sections_with_content(&screen, &[WHY, WHAT_CHANGED, SECOND]);
+    assert_eq!(shown, [WHY, WHAT_CHANGED, SECOND], "{screen}");
 
     // `]c` and `[c` jump between the hunks.
     let first = |s: &str| s.contains("old_line_0 ") || s.contains("first_hunk_0 ");
@@ -355,23 +353,17 @@ fn mixed() -> Vec<Unit> {
 }
 
 #[test]
-fn prefetch_and_cache() {
+fn advice_on_demand_and_cache() {
     let mut d = Driver::open_with_agent(review(mixed()), cfg());
     let looks = closer_looks(&d);
     assert_eq!(looks.len(), 5, "{looks:?}");
-    // As the queue opens: the first three pending ▲ and ◆.
-    let first = looks[..3].to_vec();
-    assert_eq!(sorted(recommends(&d.effects)), sorted(first.clone()));
-
-    // Opening the third asks for nothing twice, and for the next pending unit.
-    let third = first[2].clone();
-    let pos = d.pos(&third);
-    let next = d.id_at(d.app.next_pending_pos(pos).unwrap());
-    assert!(!first.contains(&next));
+    // Nothing is asked as the queue opens, nor as a unit opens.
+    assert!(recommends(&d.effects).is_empty(), "{:?}", d.effects);
+    let third = looks[2].clone();
     let effects = open(&mut d, &third);
-    assert_eq!(recommends(&effects), vec![next.clone()], "{effects:?}");
-
-    // The answer shows without a key; opened again, it is not asked again.
+    assert!(recommends(&effects).is_empty(), "{effects:?}");
+    // `<space>a` asks, once.
+    assert_eq!(recommends(&d.keys("<space>a")), vec![third.clone()]);
     answer(
         &mut d,
         &third,
@@ -379,27 +371,28 @@ fn prefetch_and_cache() {
         "Add a test for the retry.",
     );
     assert!(d.render(140, 60).contains("Add a test for the retry."));
-    d.keys("h");
+    d.keys("hh");
+    assert_eq!(d.screen(), Screen::Queue);
+    // Opened again: the answer is there, nothing asked.
     let effects = open(&mut d, &third);
     assert!(recommends(&effects).is_empty(), "cached: {effects:?}");
     assert!(d.render(140, 60).contains("Add a test for the retry."));
     d.keys("h");
 
-    // Any unit, routine too, gets its recommendation as it opens.
+    // Any unit, routine too, can be asked about.
     let effects = open(&mut d, "u6");
-    assert!(
-        recommends(&effects).contains(&"u6".to_string()),
-        "{effects:?}"
-    );
+    assert!(recommends(&effects).is_empty(), "{effects:?}");
+    assert_eq!(recommends(&d.keys("<space>a")), vec!["u6".to_string()]);
 }
 
 #[test]
-fn a_recommendation_is_asked_again_once_the_code_changed() {
+fn advice_is_gone_once_the_code_changed_and_the_key_asks_again() {
     let mut d = Driver::open_with_agent(review(mixed()), cfg());
     let id = closer_looks(&d)[0].clone();
     open(&mut d, &id);
+    d.keys("<space>a");
     answer(&mut d, &id, DiveKind::Recommend, "Fine as it is.");
-    d.keys("h");
+    d.keys("hh");
     // The cache is per unit and content hash: a re-run on the same code
     // keeps the answer...
     d.app
@@ -408,12 +401,14 @@ fn a_recommendation_is_asked_again_once_the_code_changed() {
     assert!(!recommends(&effects).contains(&id), "{effects:?}");
     assert!(d.render(140, 60).contains("Fine as it is."));
     d.keys("h");
-    // ...and one after the code changed asks again.
+    // ...and after the code changed it is gone; the key asks again.
     let mut changed = review(mixed());
     changed.unit_mut(&id).unwrap().fingerprint = "changed".into();
     d.app.on_app_event(AppEvent::Rerun(Ok(Box::new(changed))));
     let effects = open(&mut d, &id);
-    assert_eq!(recommends(&effects).first(), Some(&id), "{effects:?}");
+    assert!(recommends(&effects).is_empty(), "{effects:?}");
+    assert!(!d.render(140, 60).contains("Fine as it is."));
+    assert_eq!(recommends(&d.keys("<space>a")), vec![id]);
 }
 
 // ---- U3 ---------------------------------------------------------------------------
@@ -427,9 +422,9 @@ fn no_agent_hides_agent_sections() {
         let effects = open(&mut d, id);
         assert!(effects.is_empty(), "{id}: {effects:?}");
         let screen = d.render(140, 60);
-        let shown = sections_with_content(&screen, &[WHY, WHAT_CHANGED, WHAT_TO_DO, SECOND]);
+        let shown = sections_with_content(&screen, &[WHY, WHAT_CHANGED, ADVICE, SECOND]);
         assert!(shown.contains(&WHAT_CHANGED.to_string()), "{id}:\n{screen}");
-        assert!(!screen.contains(WHAT_TO_DO), "{id}:\n{screen}");
+        assert!(!screen.contains(ADVICE), "{id}:\n{screen}");
         assert!(!screen.contains(SECOND), "{id}:\n{screen}");
         d.keys("h");
     }
@@ -591,7 +586,8 @@ fn leader_panels_and_gx() {
     }
     d.keys("<esc>");
 
-    // Tests: teer's search, then the agent reads it on its own (Q6).
+    // Tests: teer's search only; the tile then asks whether the agent
+    // reads what it found, and `enter` says yes.
     let effects = d.keys("<space>t");
     assert_eq!(asked(&effects, DiveKind::Tests), ["u0"], "{effects:?}");
     let found = TestSearch {
@@ -616,13 +612,15 @@ fn leader_panels_and_gx() {
         behavior: None,
         coverage: Some(Box::new(Coverage::found(found))),
     }));
-    assert!(
-        effects.contains(&Effect::InterpretTests {
-            unit_id: "u0".into()
-        }),
-        "{effects:?}"
-    );
-    assert!(d.render(140, 60).contains("test_alpha_charges_once"));
+    let read = Effect::InterpretTests {
+        unit_id: "u0".into(),
+    };
+    assert!(!effects.contains(&read), "{effects:?}");
+    let screen = d.render(140, 60);
+    assert!(screen.contains("test_alpha_charges_once"), "{screen}");
+    assert!(screen.contains("the agent reads them"), "{screen}");
+    let effects = d.keys("<cr>");
+    assert!(effects.contains(&read), "{effects:?}");
 
     // Run old and new: a tile of its own, beside the tests'.
     let effects = d.keys("<space>r");
@@ -664,6 +662,7 @@ fn leader_panels_and_gx() {
     assert_eq!(
         d.app.unit.tiles,
         [
+            Panel::Recommend,
             Panel::Tool(DiveKind::Tests),
             Panel::Tool(DiveKind::Behavior),
             Panel::Tool(DiveKind::Visualize)
@@ -703,8 +702,8 @@ fn decide_and_advance_in_unit_view() {
     d.keys(".");
     assert_eq!(d.decision_of("u1"), A);
     assert_eq!(on_show(&d).as_deref(), Some("u2"));
+    d.keys("icharges twice<cr>");
     d.keys("f");
-    d.keys("charges twice<cr>");
     assert_eq!(d.decision_of("u2"), F);
     assert_eq!(d.note("u2"), "charges twice");
     assert_eq!(
@@ -738,17 +737,14 @@ fn decide_and_advance_in_unit_view() {
 }
 
 #[test]
-fn shift_f_in_the_unit_view_flags_the_file_with_one_note() {
+fn shift_f_in_the_unit_view_flags_the_file_asking_for_no_note() {
     let units: Vec<Unit> = (0..6).map(|i| leveled(i, None)).collect();
     let mut d = Driver::open(review(units), cfg());
     d.app.review.unit_mut("u5").unwrap().decision = A;
     open(&mut d, "u4");
     d.keys("F");
-    d.keys("same bug<cr>");
+    assert_eq!(*d.overlay(), Overlay::None);
     assert_eq!(d.decisions(), vec![P, P, P, F, F, A]);
-    assert_eq!(d.note("u3"), "same bug");
-    assert_eq!(d.note("u4"), "same bug");
-    assert_eq!(d.note("u5"), "");
     assert_eq!(d.screen(), Screen::Unit);
 }
 
@@ -770,10 +766,10 @@ fn look_closer() {
     assert_eq!(first, "u0");
     let row = d.sel();
 
-    // `l`: the recommendation is there without a key.
-    let mut asked_for = recommends(&d.effects);
-    asked_for.extend(recommends(&d.keys("l")));
-    assert!(asked_for.contains(&first), "{asked_for:?}");
+    // `l`, then `<space>a`: the advice.
+    assert!(recommends(&d.keys("l")).is_empty());
+    let asked_for = recommends(&d.keys("<space>a"));
+    assert_eq!(asked_for, vec![first.clone()]);
     answer(
         &mut d,
         &first,

@@ -184,8 +184,8 @@ fn work(repo: &FixtureRepo, agent: bool) -> Driver {
 fn flagged_work(repo: &FixtureRepo) -> Driver {
     let mut d = work(repo, false);
     by_symbol(&mut d, "total");
+    d.keys("icharges the fee twice<cr>");
     d.keys("f");
-    d.keys("charges the fee twice<cr>");
     by_symbol(&mut d, "fee");
     d.keys("a");
     assert_eq!(counts(&d), (0, 1, 1));
@@ -301,8 +301,8 @@ fn pr_driver(pr: PrInfo) -> Driver {
 fn flagged_pr() -> Driver {
     let mut d = pr_driver(pr_info(7, PathBuf::from("/r"), SHA));
     d.select_id("a.py::f");
+    d.keys("icheck the limit<cr>");
     d.keys("f");
-    d.keys("check the limit<cr>");
     d.select_id("a.py::g");
     d.keys("a");
     assert_eq!(counts(&d), (0, 1, 1));
@@ -611,8 +611,8 @@ fn default_and_alternatives_pr_all_accepted() {
 /// Six units, `u0` flagged with a note, `u1` accepted, four pending.
 fn half_done() -> Driver {
     let mut d = Driver::open(review(common::v2::units(6)), Config::default());
+    d.keys("ifirst note<cr>");
     d.keys("f");
-    d.keys("first note<cr>");
     d.select_id("u1");
     d.keys("a");
     assert_eq!(counts(&d), (4, 1, 1));
@@ -655,11 +655,11 @@ fn sheet_lists_notes() {
     units[0].symbol = "charge_order".into();
     units[2].symbol = "refund_order".into();
     let mut d = Driver::open(review(units), Config::default());
+    d.keys("iit charges twice<cr>");
     d.keys("f");
-    d.keys("it charges twice<cr>");
     d.select_id("u2");
+    d.keys("irefunds the wrong amount<cr>");
     d.keys("f");
-    d.keys("refunds the wrong amount<cr>");
     d.keys("2a");
     finish(&mut d);
     let screen = d.render(140, 40);
@@ -902,10 +902,10 @@ async fn pr_request_changes() {
     let o = Origin::new();
     let fk = fakes("ok");
     let mut d = pr_driver(o.info());
+    d.keys("icheck the limit<cr>");
     d.keys("f");
-    d.keys("check the limit<cr>");
+    d.keys("iand this one<cr>");
     d.keys("f");
-    d.keys("and this one<cr>");
     assert_eq!(counts(&d), (0, 2, 0));
     finish(&mut d);
     let effects = d.keys("<cr>");

@@ -248,6 +248,16 @@ impl Theme {
         }
     }
 
+    /// Behind the flagged unit the flagged list has selected: the bar's
+    /// colour; nothing without colour, where its `▌` marks it.
+    pub fn selected_entry(&self) -> Style {
+        if self.mono() {
+            Style::new()
+        } else {
+            Style::new().bg(self.bar)
+        }
+    }
+
     /// A list row inside the visual selection (`V`): behind the bar's
     /// colour, reversed without colour.
     pub fn visual(&self) -> Style {

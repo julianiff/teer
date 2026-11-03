@@ -116,7 +116,7 @@ fn a_prefix_shows_each_key_that_can_follow() {
     feed(&mut app, "<space>");
     let line = bar(&app, 200);
     assert!(
-        line.contains("␣  t tests that cover this unit · r run old and new"),
+        line.contains("␣  a advice: what to do about the unit · t tests that cover this unit"),
         "{line}"
     );
 

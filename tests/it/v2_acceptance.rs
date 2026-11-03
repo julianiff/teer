@@ -45,7 +45,7 @@ fn removed_warning(name: &str) -> String {
 }
 
 /// The unit view's sections that need an agent, and the ones that don't.
-const AGENT_SECTIONS: [&str; 2] = ["What to do about it", "Second model"];
+const AGENT_SECTIONS: [&str; 2] = ["Advice", "Second model"];
 const CODE_SECTIONS: [&str; 2] = ["Why this level", "What changed"];
 
 // ---- Fixtures --------------------------------------------------------------------------
@@ -186,8 +186,8 @@ async fn agent_changes_one_fix() {
     let mut s = teer(&r.path(), &[], &cfg, &fakes, &["total"]).await;
     // The ▲ comes first.
     assert_eq!(s.selected().as_deref(), Some("total"));
+    s.keys("icharges the fee twice<cr>");
     s.keys("f");
-    s.keys("charges the fee twice<cr>");
     s.keys("2a");
     assert_eq!(s.counts(), (2, 1, 0));
     finish(&mut s).await;
@@ -310,10 +310,10 @@ async fn pr_request_changes() {
     assert_eq!(picked.url, pr.url());
 
     let mut s = teer(&pr.repo.path(), &[&picked.url], &config(), &fakes, &[]).await;
+    s.keys("iwhy 12?<cr>");
     s.keys("f");
-    s.keys("why 12?<cr>");
+    s.keys("ithe rate is wrong<cr>");
     s.keys("f");
-    s.keys("the rate is wrong<cr>");
     assert_eq!(s.counts(), (0, 2, 0));
     finish(&mut s).await;
     s.keys("<cr>");
@@ -345,8 +345,8 @@ async fn look_closer() {
     let mut s = teer(&r.path(), &[], &config(), &fakes, &["total"]).await;
     assert_eq!(s.selected().as_deref(), Some("total"));
     let row = s.app.sel;
-    // `l` on the ▲: the recommendation shows without a key.
-    s.keys("l");
+    // `l` on the ▲, then `<space>a`: the advice.
+    s.keys("l<space>a");
     assert_eq!(s.app.screen, Screen::Unit);
     assert!(
         s.until(Duration::from_secs(10), |s| s
@@ -401,27 +401,20 @@ async fn bulk_and_undo() {
     let listed = s.listed();
     let three = &listed[..3];
     s.keys("Vjjf");
-    s.keys("one note for three<cr>");
     for u in three {
-        assert_eq!((s.decision(u), s.note(u)), (F, "one note for three".into()));
+        assert_eq!(s.decision(u), F, "{u}");
     }
     assert_eq!(s.counts(), (0, 3, 2));
     s.keys("u");
     assert_eq!(s.counts(), (0, 0, 5), "all three undone");
-    for u in three {
-        assert_eq!(s.note(u), "", "{u}");
-    }
     s.keys("<c-r>");
     for u in three {
-        assert_eq!((s.decision(u), s.note(u)), (F, "one note for three".into()));
+        assert_eq!(s.decision(u), F, "{u}");
     }
     // `.` on the next unit (as in Vim, it may take as many units as the
     // selection had: only the next one is checked).
     s.go_to(&listed[3]);
     s.keys(".");
-    if matches!(s.app.overlay, Overlay::Note { .. }) {
-        s.keys("<esc>");
-    }
     assert_eq!(s.decision(&listed[3]), F);
     for u in three {
         assert_eq!(s.decision(u), F, "{u}");
@@ -457,8 +450,8 @@ async fn resume() {
     s.go_to(&listed[0]);
     s.keys("a");
     s.go_to(&listed[1]);
+    s.keys("ilook again<cr>");
     s.keys("f");
-    s.keys("look again<cr>");
     s.go_to(&listed[3]);
     let decisions: Vec<Decision> = listed.iter().map(|u| s.decision(u)).collect();
     s.keys("q");

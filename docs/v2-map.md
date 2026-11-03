@@ -401,15 +401,15 @@ Added at your request: once Phase 8 is done, every requirement below gets an int
 | Q5 | The preview sits right or below by width, with today's content | `v2_queue::preview_side_or_below` |
 | Q6 | The bottom bar shows the counts and the pending prefix or mode | `v2_queue::bottom_bar_counts_and_mode` |
 | Q7 | Auto-advance to the next pending unit; at the end, "Nothing pending. :w to finish" | `v2_queue::auto_advance_through_mixed_states` |
-| Q8 | `f` opens the note line, prefilled; `enter` saves (empty is fine); `esc` keeps the flag | `v2_queue::flag_note_line` |
+| Q8 | `f` flags and asks for no note; `i` opens the note line, prefilled; `enter` saves, `esc` drops the edit | `v2_queue::flag_note_line` |
 | Q9 | "Needs fix" no longer exists | `v2_queue::no_needs_fix_state` |
-| Q10 | `A`/`F` act only on pending units in the file; `F` copies one note to each | `v2_queue::file_actions_skip_decided_units` |
-| Q11 | `f` in visual mode puts the note on every selected unit | `v2_queue::visual_flag_notes_every_unit` |
+| Q10 | `A`/`F` act only on pending units in the file | `v2_queue::file_actions_skip_decided_units` |
+| Q11 | `f` in visual mode flags every selected unit | `v2_queue::visual_flag_flags_every_unit` |
 | Q12 | `3a` accepts this unit and the next two pending | `v2_queue::count_accepts_pending_units` |
 | Q13 | Click selects, drag copies | `v2_queue::mouse_select_and_copy` |
 | Q14 | Decisions, notes, undo and the cursor are saved on every change; `q` and a crash resume | `v2_queue::resume_after_quit_and_crash` |
 | U1 | `l`/`enter` open any unit with title, why, what changed, what to do, second model; `]c` `[c` jump hunks | `v2_unit::sections_and_hunk_jumps` |
-| U2 | The recommendation runs on open; prefetch of 3 ▲/◆ plus the next; cached per unit and hash | `v2_unit::prefetch_and_cache` |
+| U2 | The advice runs only on `<space>a` (or `enter` on its tile), never on open; cached per unit and hash | `v2_unit::advice_on_demand_and_cache` |
 | U3 | `--no-agent` hides sections 4 and 5 and leaves no empty section | `v2_unit::no_agent_hides_agent_sections` |
 | U4 | `K` panel: focused input, streaming, steps, links (`tab`, `enter`), follow-ups, closes on `h`/`esc`, kept per unit | `v2_unit::ask_panel_lifecycle` |
 | U5 | `gd` in and outside the review, `gr`, `gf` (per Q5) | `v2_unit::goto_definition_callers_editor` |

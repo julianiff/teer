@@ -334,7 +334,8 @@ async fn leader_r_in_the_unit_view_runs_the_probe_and_shows_the_table() {
     let u = app.review.unit(&id).unwrap();
     assert!(!u.dive_pending.contains(&DiveKind::Behavior));
     assert!(u.dive.results[&DiveKind::Behavior].behavior.is_some());
-    // Wide enough for the tile beside the text to hold the summary whole.
+    // The tile zoomed, wide enough to hold the summary whole.
+    app.unit.zoom = true;
     let mut t = Terminal::new(TestBackend::new(200, 60)).unwrap();
     t.draw(|f| teer::tui::ui::draw(f, &app)).unwrap();
     let buf = t.backend().buffer().clone();

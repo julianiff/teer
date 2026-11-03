@@ -7,7 +7,7 @@
 1. **split** — teer parses the old and new version of every changed file and lists the units that changed: functions, methods, classes, top-level code. rust, python, typescript, javascript and php are split; any other text file is one whole-file unit. binary, huge and non-utf-8 files are listed as not shown.
 2. **sort** — every unit gets a level from what the code shows. the agent can raise it, never lower it. a unit with no behavior change is accepted for you.
 3. **explain** — a fast model writes a one-line summary and up to three statements per unit. a statement that doesn't cite lines of its unit is dropped. a second model checks every description.
-4. **review** — down the queue, accept (`a`) or flag with a note (`f`). `l` opens any unit to look closer.
+4. **review** — down the queue, accept (`a`) or flag (`f`), and write a note (`i`) where you have something to say. `l` opens any unit to look closer.
 5. **finish** — `:w` reads your decisions and offers one next step: send the notes to your agent, commit, request changes or approve.
 6. **fix loop** — when the agent is done with your notes, teer reviews again on its own and puts only the changed units back.
 
@@ -71,7 +71,7 @@ then two models:
 - **fast model** — describes every unit. quick and cheap: `haiku` by default.
 - **second model** — checks each description: `sonnet` by default. `none` turns the check off.
 
-the recommendation, `K`, the tools and commit messages use the cli's own default model, or the second model with an api.
+the advice, `K`, the tools and commit messages use the cli's own default model, or the second model with an api.
 
 setup also checks what else teer needs: git, gh (and whether it's logged in), your editor and the macos sandbox. before saving, the fast model gives a test answer. api keys never go into the config, only the name of the variable that holds one.
 
@@ -87,12 +87,12 @@ what teer opens on. one box per level, most critical first; in each, units by fi
 
 deciding:
 
-- `a` accepts. `f` flags and opens a note line at the bottom, with the note so far: `enter` saves it (empty is fine), `esc` keeps the flag and drops the edit. both then go to the next pending unit, not the next row. when nothing is pending, the bar says "Nothing pending. :w to finish".
-- `A` and `F` do the same for the pending units of the file under the cursor (listed by level, the ones in its box), never for ones you decided. `F` opens one note line and puts the note on each.
+- `a` accepts, `f` flags; neither asks for anything. both go to the next pending unit, not the next row. when nothing is pending, the bar says "Nothing pending. :w to finish".
+- `A` and `F` do the same for the pending units of the file under the cursor (listed by level, the ones in its box), never for ones you decided.
 - a count decides more: `3a` accepts this unit and the next two pending ones.
-- `V` starts a selection, `j` `k` grow it, `a` or `f` decide every unit in it (a note goes on each), `esc` leaves it.
+- `V` starts a selection, `j` `k` grow it, `a` or `f` decide every unit in it, `esc` leaves it.
 - `u` undoes the last decision, `<c-r>` redoes it, `.` repeats it on the unit under the cursor, with its count. the undo history is saved with the review.
-- `i` edits the note without changing the decision.
+- `i` opens a note line at the bottom, with the note so far, without changing the decision: `enter` saves it (empty is no note), `esc` drops the edit.
 
 moving: `n` `N` go to the next and previous pending unit, `]f` `[f` to the next and previous file, `/` finds a unit by file or name. `zf` lists by file instead: each file in the box of its most critical unit.
 
@@ -105,26 +105,33 @@ moving: `n` `N` go to the next and previous pending unit, `]f` `[f` to the next 
 1. **title** — level, file, unit, where it stands.
 2. **why this level** — the rule that set it and the [reasons](#reasons).
 3. **what changed** — the summary, then the diff in its box with each statement under the lines it cites. `]c` `[c` jump between hunks.
-4. **what to do about it** — the agent's recommendation, asked for when the unit opens. teer asks ahead for the first three pending `▲` and `◆` units when the queue opens, and for the next pending unit whenever you open one.
-5. **second model** — its verdict on every statement, only when it disputes one.
+4. **second model** — its verdict on every statement, only when it disputes one.
 
-with `--no-agent`, 4 and 5 are left out.
+beside the text, two tiles are open from the start:
 
-each of these opens a tile, tmux style, next to the ones already open: the text keeps a tall column on the left (on top in a narrow terminal), the tiles share the rest in the order you opened them. the new tile gets the focus, and the scroll keys go to whatever has it. `tab` `shift+tab` (`gt` `gT`) move the focus, the text among the tiles; `zz` zooms what has it; `h` closes it. the same key on an open tile gives it the focus, and in focus closes it:
+- **advice** — what the agent says to do about the unit: concrete steps, most important first, each with its reason. nothing is asked until you say so: `<space>a` (here or from the queue), `enter` on the tile, or a click on its question. the answer is kept with the unit until its code changes; who wrote it is on the tile's bottom edge.
+- **keys** — what you can do here, by group (decide, look closer, move, finish). click one to run it; `?` lists every key.
+
+with `--no-agent`, the second model and the advice are left out, and so are the keys that need an agent.
+
+each of these opens a tile, tmux style, next to the ones already open: the text keeps a tall column on the left (on top in a narrow terminal), the tiles share the rest in the order you opened them, the keys tile under them. the new tile gets the focus, and the scroll keys go to whatever has it. `tab` `shift+tab` (`gt` `gT`) move the focus, the text among the tiles; `zz` zooms what has it; `h` closes it. the same key on an open tile gives it the focus, and in focus closes it:
 
 | | |
 | --- | --- |
+| `<space>a` | the advice, asked for now (see above). in focus with an answer, closes it |
 | `K` | ask anything; "this" is the unit (from the queue, `K` opens it first). while the agent works you see each step it takes (the file it reads, what it searches), then the answer as it's written (claude code and model apis; codex shows the steps and the answer once done). the answer brings the code it talks about and the units it relates to: `tab` moves to them, `enter` opens one. follow-ups stay in the tile; the conversation is kept with the unit. `esc` stops typing and leaves the tile open; `K` or `i` types again |
-| `<space>t` | the tests that reach the unit, found by teer at once without an agent. with one, the agent then reads them: what each checks, and the dangerous cases none covers |
+| `<space>t` | the tests that reach the unit, found by teer at once without an agent. with one, the tile then asks whether the agent reads them: `enter` (or a click on the question) and it says what each checks, and the dangerous cases none covers. with none found, it offers to look for tests itself |
 | `<space>r` | old and new side by side: the agent writes a small program, teer runs it before and after the change in a sandbox, then checks the statements against the runs and whether your tests notice the change. macos only |
 | `<space>v` | what talks to the unit and what the change adds or removes, as a diagram in the terminal (kitty, ghostty, iterm2, sixel). `gx` opens it in the browser |
 | `gd` | what the unit calls: in the review, a list to jump to; outside it, the definition, read-only |
 | `gr` | what calls the unit, to jump to |
 | `gf` | your editor, at the unit's first changed line |
 
-`a` `f` `A` `F` `u` `.` work as in the queue; after `a` or `f` the next pending unit opens here. `n` `N` move without deciding, and close the tiles. `h` on the text goes back to the queue, on the unit you were looking at.
+`a` `f` `A` `F` `u` `.` work as in the queue; after `a` or `f` the next pending unit opens here. `n` `N` move without deciding, and close the tiles but the advice. `h` on the text goes back to the queue, on the unit you were looking at.
 
-like statements, every claim in the recommendation and the tools must cite real lines. what doesn't is dropped and logged to `teer.log`.
+**flagged units** — `<space>f`, here or in the queue, lists every unit you flagged one after another, each as the queue's preview shows it: why it has its level, the agent's summary, the whole change in its box with the statements written in, your note under it. one is selected, with the `▌` bar and a background behind it. `j` `k` (or `n` `N`) select the next and previous one and scroll it to the top, a click selects one, `]c` `[c` jump from hunk to hunk, `<c-d>` `<c-u>` scroll. `l` or `enter` looks closer at the selected one (`h` comes back), `a` accepts it and it leaves the list, `i` writes its note, `h` or `<space>f` goes back.
+
+like statements, every claim in the advice and the tools must cite real lines. what doesn't is dropped and logged to `teer.log`.
 
 ## finish
 
@@ -215,11 +222,13 @@ keys follow neovim, and a key does the same on every screen. a prefix (`g`, `]`,
 | `za` | `toggle.auto_accepted` | show units accepted for you |
 | `zf` | `toggle.by_file` | list by file or by level |
 | `zz` | `toggle.zoom` | zoom the tile in focus |
+| `<space>a` | `tool.advice` | advice: what to do about the unit |
 | `<space>t` | `tool.tests` | tests that cover this unit |
 | `<space>r` | `tool.run_old_new` | run old and new |
 | `<space>v` | `tool.diagram` | diagram of the change |
 | `<space>c` | `tool.history` | commits and PR description |
 | `<space>n` | `tool.notes` | every note |
+| `<space>f` | `tool.flagged` | flagged units, one after another |
 | `<space>s` | `tool.settings` | settings |
 | `:w` | `finish.open` | finish |
 | `y` | `finish.yank` | copy the notes |
@@ -229,7 +238,7 @@ keys follow neovim, and a key does the same on every screen. a prefix (`g`, `]`,
 | `?` | `help.open` | keys |
 | `d` | `note.delete` | delete the note |
 
-most keys work in the queue and the unit view alike. `]c` `[c` `gx`, the tile keys and `zz` are the unit view's, `V` `za` `zf` the queue's; `y` works on the `:w` sheet and in the notes, `d` in the notes. `?` shows the keys of the screen you're on, as you bound them.
+most keys work in the queue and the unit view alike. `]c` `[c` work in the unit view and the flagged list; `gx`, the tile keys and `zz` are the unit view's, `V` `za` `zf` the queue's; `y` works on the `:w` sheet and in the notes, `d` in the notes. `?` shows the keys of the screen you're on, as you bound them.
 
 typing a note, a question or a message, `enter` saves, `esc` cancels and `<c-u>` clears the line. a yes/no question takes `y` or `enter` for yes, any other key for no. `<c-c>` quits from anywhere, saved.
 
@@ -271,7 +280,7 @@ second_opinion = false
 | `languages` | all five | which ones are split into functions |
 | `concurrency` | `4` | agent requests at once |
 | `large_review` | `150` | above this many units, a file is described when you reach it |
-| `dive_web` | `true` | the recommendation and `K` may search the web, after asking once; never for a pr |
+| `dive_web` | `true` | the advice and `K` may search the web, after asking once; never for a pr |
 | `images` | `true` | draw diagrams in the terminal |
 | `behavior_timeout` | `120` | seconds per old or new run of `<space>r` |
 | `timeoutlen` | `1000` | milliseconds a prefix waits for the next key |
@@ -290,7 +299,7 @@ editor = "zed --wait {file}:{line}"           # zed
 
 ## safety
 
-- **the agent only reads.** claude code runs without shell or write tools, codex in its read-only sandbox, a model api with teer's own list, read and grep, kept inside the repo. only the recommendation and `K` may search the web, and only after you allow it.
+- **the agent only reads.** claude code runs without shell or write tools, codex in its read-only sandbox, a model api with teer's own list, read and grep, kept inside the repo. only the advice and `K` may search the web, and only after you allow it.
 - **the fix loop is your agent.** `:w` opens claude code or codex in your terminal as if you had started it, with its usual permissions. never for a pull request.
 - **pull requests are untrusted.** their own checkout, no web, and the repo's agent instructions (`CLAUDE.md`, `AGENTS.md`, skills, settings) aren't loaded.
 - **code runs only in `<space>r`**, on a separate checkout, in a macos sandbox: no network, no writes outside the checkout, no reads in your home folder beyond the checkout and language toolchains, no keys or tokens in its environment.

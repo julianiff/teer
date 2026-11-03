@@ -230,37 +230,24 @@ fn a_count_accepts_this_unit_and_the_next_pending_ones_in_one_step() {
 }
 
 #[test]
-fn f_flags_advances_and_opens_the_note_line_on_the_flagged_unit() {
+fn f_flags_and_advances_asking_for_no_note() {
     let mut d = Driver::new(6);
     d.keys("f");
     assert_eq!(d.decision(0), F);
     assert_eq!(d.sel(), 1);
-    assert!(
-        matches!(d.overlay(), Overlay::Note { id, .. } if id == "u0"),
-        "{:?}",
-        d.overlay()
-    );
-    d.keys("why<cr>");
-    assert_eq!(d.note("u0"), "why");
     assert_eq!(*d.overlay(), Overlay::None);
-    // Esc keeps the flag, with no note.
-    d.keys("f<esc>");
+    assert_eq!(d.note("u0"), "");
+    d.keys("f");
     assert_eq!(d.decision(1), F);
-    assert_eq!(d.note("u1"), "");
-    assert_eq!(*d.overlay(), Overlay::None);
     assert_eq!(d.sel(), 2);
 }
 
 #[test]
-fn a_count_on_f_flags_several_without_a_note_line() {
+fn a_count_on_f_flags_several() {
     let mut d = Driver::new(6);
     d.keys("2f");
     assert_eq!(d.positions(F), vec![0, 1]);
-    assert_eq!(
-        *d.overlay(),
-        Overlay::None,
-        "no note line for several units"
-    );
+    assert_eq!(*d.overlay(), Overlay::None);
     assert_eq!(d.undo_steps(), 1);
 }
 
@@ -297,12 +284,7 @@ fn shift_f_flags_the_files_pending_units_in_one_step() {
     accept(&mut d, &[1]);
     d.keys("F");
     assert_eq!(d.decisions(), vec![F, A, F, P, P, P]);
-    assert!(
-        matches!(d.overlay(), Overlay::Note { id, also, .. } if id == "u0" && also == &["u2"]),
-        "{:?}",
-        d.overlay()
-    );
-    d.keys("<cr>");
+    assert_eq!(*d.overlay(), Overlay::None);
     assert_eq!(d.undo_steps(), 1);
     d.keys("u");
     assert_eq!(d.decisions(), vec![P, A, P, P, P, P]);
@@ -330,16 +312,11 @@ fn visual_mode_applies_to_selection() {
 }
 
 #[test]
-fn visual_f_flags_the_selection_with_one_note_line() {
-    // The queue opens one line for the selection (Phase 4).
+fn visual_f_flags_the_selection() {
     let mut d = Driver::new(6);
     d.keys("Vjf");
     assert_eq!(d.positions(F), vec![0, 1]);
-    assert!(
-        matches!(d.overlay(), Overlay::Note { id, also, .. } if id == "u0" && also == &["u1"]),
-        "{:?}",
-        d.overlay()
-    );
+    assert_eq!(*d.overlay(), Overlay::None);
     assert_eq!(d.app.visual, None);
 }
 
@@ -627,9 +604,9 @@ fn leader_tools_on_the_queue_open_the_unit_view_with_that_panel() {
 
 #[test]
 fn the_v1_tile_keys_are_gone_from_the_queue_and_the_unit_view() {
-    // v1's tiles: what to do (`␣w`), the second model (`␣m`), the agent
-    // reading the tests (`␣a`); the unit view asks the first two by itself.
-    for keys in ["<space>w", "<space>m", "<space>a"] {
+    // v1's tiles: what to do (`␣w`) and the second model (`␣m`). (`␣a`,
+    // once the agent reading the tests, asks for advice now.)
+    for keys in ["<space>w", "<space>m"] {
         let mut d = Driver::of(units(3).into_iter().map(described).collect());
         d.app.has_agent = true;
         d.app.review.agent_session = Some(teer::review::model::SessionRef::default());
@@ -757,13 +734,17 @@ fn tile_keys_move_the_focus_and_zoom_in_the_unit_view_only() {
     }
     d.keys("<space>t<space>r");
     assert_eq!(d.screen(), Screen::Unit);
+    let rec = Panel::Recommend;
     let tests = Panel::Tool(DiveKind::Tests);
     let run = Panel::Tool(DiveKind::Behavior);
-    assert_eq!(d.app.unit.tiles, [tests, run]);
+    // The advice tile is open from the start.
+    assert_eq!(d.app.unit.tiles, [rec, tests, run]);
     for (keys, focus) in [
         ("<tab>", None),
+        ("gt", Some(rec)),
         ("gt", Some(tests)),
-        ("<s-tab>", None),
+        ("<s-tab>", Some(rec)),
+        ("gT", None),
         ("gT", Some(run)),
     ] {
         d.keys(keys);
@@ -773,6 +754,67 @@ fn tile_keys_move_the_focus_and_zoom_in_the_unit_view_only() {
     assert!(d.app.unit.zoom);
     d.keys("zz");
     assert!(!d.app.unit.zoom);
+}
+
+// ---- Advice -----------------------------------------------------------------------
+
+#[test]
+fn space_a_asks_for_advice_from_the_queue_and_the_unit_view_only_when_pressed() {
+    let mut d = Driver::of(units(3).into_iter().map(described).collect());
+    d.app.has_agent = true;
+    d.app.review.agent_session = Some(teer::review::model::SessionRef::default());
+    let asks = |effects: &[Effect]| {
+        effects
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Effect::Dive {
+                        kind: DiveKind::Recommend,
+                        ..
+                    }
+                )
+            })
+            .count()
+    };
+    assert_eq!(asks(&d.keys("l")), 0, "opening asks nothing");
+    assert_eq!(asks(&d.keys("<space>a")), 1);
+    assert_eq!(d.app.unit.panel, Some(Panel::Recommend));
+    d.keys("hh");
+    assert_eq!(d.screen(), Screen::Queue);
+    // From the queue: the unit view on the next unit, asking.
+    d.keys("j");
+    let next = d.app.selected_id().unwrap();
+    assert_eq!(asks(&d.keys("<space>a")), 1);
+    assert_eq!(d.screen(), Screen::Unit);
+    assert_eq!(d.app.unit.id, next);
+}
+
+// ---- The flagged list -----------------------------------------------------------
+
+#[test]
+fn space_f_opens_the_flagged_list_and_again_goes_back() {
+    let mut d = Driver::new(3);
+    // Nothing flagged: it says so and stays.
+    d.keys("<space>f");
+    assert_eq!(d.screen(), Screen::Queue);
+    assert!(
+        d.status().starts_with("Nothing is flagged yet"),
+        "{}",
+        d.status()
+    );
+    d.select(1);
+    d.keys("f");
+    d.keys("<space>f");
+    assert_eq!(d.screen(), Screen::Flagged);
+    assert_eq!(d.app.flagged.at, d.id_at(1));
+    d.keys("<space>f");
+    assert_eq!(d.screen(), Screen::Queue);
+    // From the unit view, back there.
+    d.keys("l<space>f");
+    assert_eq!(d.screen(), Screen::Flagged);
+    d.keys("<space>f");
+    assert_eq!(d.screen(), Screen::Unit);
 }
 
 // ---- The old screens' keys ------------------------------------------------------
@@ -963,17 +1005,11 @@ fn rebinding_changes_dispatch_and_help() {
 }
 
 #[test]
-fn f_on_a_unit_with_a_note_opens_the_note_line_prefilled() {
-    // Esc keeps the flag and the note as it was.
+fn f_on_a_unit_with_a_note_keeps_it_as_it_was() {
     let mut d = Driver::of(vec![unit(0, "a.rs"), unit(1, "a.rs")]);
     d.app.review.unit_mut("u0").unwrap().dive.note = "old".into();
     d.keys("f");
-    assert!(
-        matches!(d.overlay(), Overlay::Note { id, text, .. } if id == "u0" && text == "old"),
-        "{:?}",
-        d.overlay()
-    );
-    d.keys("<esc>");
+    assert_eq!(*d.overlay(), Overlay::None);
     assert_eq!(d.note("u0"), "old");
     assert_eq!(d.decision_of("u0"), F);
 }

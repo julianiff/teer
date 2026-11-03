@@ -118,10 +118,10 @@ fn code(a: &mut App, c: KeyCode) -> Vec<Effect> {
     a.on_event(Event::Key(KeyEvent::new(c, KeyModifiers::NONE)))
 }
 
-// ---- What to do about it ------------------------------------------------------
+// ---- Advice ---------------------------------------------------------------------
 
 #[test]
-fn the_recommendation_shows_with_its_sources_and_who_wrote_it() {
+fn the_advice_shows_with_its_sources_and_who_wrote_it() {
     let mut a = app(3);
     answer(
         &mut a,
@@ -132,22 +132,27 @@ fn the_recommendation_shows_with_its_sources_and_who_wrote_it() {
             ..result("It rounds the total before tax.")
         },
     );
-    // Answered: opening asks only for the next pending unit's.
+    // Opening asks nothing.
     let effects = open(&mut a, "u0");
-    assert_eq!(asked(&effects), [("u1".into(), DiveKind::Recommend, false)]);
+    assert!(asked(&effects).is_empty(), "{effects:?}");
     let out = screen(&a, 120, 40);
     let at = |s: &str| out.find(s).unwrap_or_else(|| panic!("{s} missing:\n{out}"));
-    // Questions about a unit run on Claude Code's own model.
-    assert!(at("What to do about it  agent (Claude Code's default model)") < at("It rounds"));
+    // In its tile, open from the start; questions about a unit run on
+    // Claude Code's own model, which the tile's bottom edge names.
+    assert_eq!(a.unit.tiles, [Panel::Recommend]);
+    assert!(at("Advice") < at("It rounds"));
     assert!(at("It rounds the total before tax.") < at("Sources"));
+    assert!(at("Sources") < at("agent (Claude Code's default model)"));
     assert!(out.contains("example.com/rounding"), "{out}");
 }
 
 #[test]
 fn what_is_on_its_way_says_so() {
     let mut a = app(2);
-    // Opening asks for the recommendation: its section waits for it.
+    // Opening asks nothing; `<space>a` does, and its tile waits for it.
     let effects = open(&mut a, "u0");
+    assert!(asked(&effects).is_empty(), "{effects:?}");
+    let effects = press(&mut a, "<space>a");
     assert!(asked(&effects).contains(&("u0".into(), DiveKind::Recommend, false)));
     let out = screen(&a, 120, 40);
     assert!(out.contains("asking the agent…"), "{out}");
@@ -204,6 +209,7 @@ fn the_behavior_panel_lists_surprises_first_with_both_sides() {
     open(&mut a, "u0");
     // Answered: the panel opens on the answer and asks nothing.
     assert!(press(&mut a, "<space>r").is_empty());
+    press(&mut a, "zz");
     let out = screen(&a, 200, 60);
     assert!(
         out.contains("3 cases ran before and after the change: 2 behave differently"),
@@ -288,8 +294,6 @@ fn tiny_sizes_never_panic() {
                     id: "u0".into(),
                     text: "hello".into(),
                     back: None,
-                    also: Vec::new(),
-                    joins: None,
                 },
                 Overlay::ConfirmWeb,
                 Overlay::Help,
@@ -299,9 +303,10 @@ fn tiny_sizes_never_panic() {
             }
             a.overlay = Overlay::None;
         }
-        // esc stops typing, then closes one tile at a time.
+        // esc stops typing, then closes one tile at a time, down to what
+        // to do about it, open from the start.
         for _ in 0..4 {
-            if a.unit.tiles.is_empty() {
+            if a.unit.tiles == [Panel::Recommend] {
                 break;
             }
             press(&mut a, "<esc>");
@@ -326,8 +331,6 @@ fn the_note_line_and_the_web_question_draw_in_the_unit_view() {
         id: "u0".into(),
         text: "remember to check rounding".into(),
         back: None,
-        also: Vec::new(),
-        joins: None,
     };
     let out = screen(&a, 80, 24);
     let bar = out.lines().last().unwrap();
@@ -341,8 +344,6 @@ fn the_note_line_and_the_web_question_draw_in_the_unit_view() {
         id: "u0".into(),
         text: format!("{}end", "x".repeat(300)),
         back: None,
-        also: Vec::new(),
-        joins: None,
     };
     let out = screen(&a, 40, 12);
     let bar = out.lines().last().unwrap();
@@ -408,7 +409,7 @@ fn a_tool_goes_out_once_and_an_answer_is_not_asked_again() {
 fn a_failed_answer_clears_the_spinner_and_can_be_asked_again() {
     let mut a = app(2);
     open(&mut a, "u0");
-    press(&mut a, "<space>v");
+    press(&mut a, "<space>a<space>v");
     for kind in [DiveKind::Visualize, DiveKind::Recommend] {
         let fingerprint = a.review.unit("u0").unwrap().fingerprint.clone();
         let fx = a.on_app_event(AppEvent::Dive(DiveEvent::Failed {
@@ -437,36 +438,37 @@ fn a_failed_answer_clears_the_spinner_and_can_be_asked_again() {
     let out = screen(&a, 120, 50);
     assert!(out.contains("No answer. ␣v asks again."), "{out}");
     assert!(
-        out.contains("No answer. Opening the unit again asks again."),
+        out.contains("␣a ask the agent what to do about it:"),
         "{out}"
     );
     assert!(!out.contains("asking the agent"), "{out}");
-    // The tool's key asks again, and so does opening the unit.
+    // The tool's key asks again, and so does the advice's.
     assert!(press(&mut a, "<space>v").is_empty(), "closes");
     assert_eq!(
         press(&mut a, "<space>v"),
         [ask("u0", DiveKind::Visualize, false)]
     );
     press(&mut a, "<esc>h");
-    assert!(asked(&open(&mut a, "u0")).contains(&("u0".into(), DiveKind::Recommend, false)));
+    assert_eq!(
+        asked(&press(&mut a, "<space>a")),
+        [("u0".into(), DiveKind::Recommend, false)]
+    );
 }
 
 #[test]
-fn the_web_goes_to_the_recommendation_once_allowed_and_never_to_the_tools() {
+fn the_web_goes_to_the_advice_once_allowed_and_never_to_the_tools() {
     // Before the reviewer said yes to the ask panel's question: no web.
     let mut a = app(6);
-    let effects = open(&mut a, "u0");
-    assert!(
-        asked(&effects).iter().all(|(_, _, web)| !web),
-        "{effects:?}"
-    );
+    open(&mut a, "u0");
+    let effects = press(&mut a, "<space>a");
+    assert_eq!(asked(&effects), [("u0".into(), DiveKind::Recommend, false)]);
     press(&mut a, "Kwhy?<cr>");
     assert_eq!(a.overlay, Overlay::ConfirmWeb);
     press(&mut a, "y");
     assert!(a.web_allowed());
-    // Then the recommendations use it; the picture never does.
+    // Then the advice uses it; the picture never does.
     press(&mut a, "<esc>");
-    let effects = press(&mut a, "nn");
+    let effects = press(&mut a, "n<space>a");
     let recommend: Vec<_> = asked(&effects)
         .into_iter()
         .filter(|(_, kind, _)| *kind == DiveKind::Recommend)

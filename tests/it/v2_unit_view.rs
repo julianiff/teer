@@ -1,6 +1,7 @@
-//! The unit view (v2 Phase 5): any unit, its sections, the recommendation
-//! asked for on open and prefetched, the `K` panel, go-to, the leader
-//! panels, and deciding without leaving it. Models are the mock adapter.
+//! The unit view (v2 Phase 5): any unit, its sections, the advice asked
+//! for with `<space>a` (never before) and kept, the `K` panel, go-to, the
+//! leader panels, and deciding without leaving it. Models are the mock
+//! adapter.
 
 use crate::common;
 
@@ -23,7 +24,7 @@ use teer::review::model::{
 use teer::review::{BuildOptions, build_review, store};
 use teer::tui::Runtime;
 use teer::tui::app::{App, AppEvent, Effect, JumpKind, Overlay, Screen};
-use teer::tui::unit::{PREFETCH, Panel};
+use teer::tui::unit::Panel;
 
 // ---- Helpers -----------------------------------------------------------
 
@@ -96,17 +97,6 @@ fn queue(app: &App) -> Vec<String> {
     app.order
         .iter()
         .map(|&i| app.review.units[i].id.clone())
-        .collect()
-}
-
-/// The pending units after `id` in queue order.
-fn pending_after(app: &App, id: &str) -> Vec<String> {
-    let ids = queue(app);
-    let at = ids.iter().position(|x| x == id).unwrap();
-    ids[at + 1..]
-        .iter()
-        .filter(|x| app.review.unit(x).unwrap().decision == Decision::Pending)
-        .cloned()
         .collect()
 }
 
@@ -210,9 +200,9 @@ fn sections_and_hunk_jumps() {
     let (mut app, started_with) = started(review, true);
     let effects = app.open_unit(CHARGE.into());
     assert_eq!(app.screen, Screen::Unit);
-    // Its recommendation is on its way: prefetched, or asked on open.
+    // Nothing asked the agent for advice: the tile says which key does.
     let asked = [recommends(&started_with), recommends(&effects)].concat();
-    assert_eq!(asked.iter().filter(|id| *id == CHARGE).count(), 1);
+    assert!(asked.is_empty(), "{asked:?}");
     let text = text(&app);
     let at = |s: &str| {
         text.find(s)
@@ -224,13 +214,15 @@ fn sections_and_hunk_jumps() {
     assert!(title.contains("checkout.py:8-12"), "{text}");
     assert!(title.trim_end().ends_with("pending"), "{text}");
     // The sections in their order; the second model only when it disputes.
+    // The advice is a tile of its own, open from the start.
     assert!(at("Why this level") < at("What changed"));
     assert!(at("What changed") < at("raise ValueError"));
-    assert!(at("raise ValueError") < at("What to do about it"));
-    assert!(text.contains("asking the agent"), "{text}");
+    assert_eq!(app.unit.tiles, [Panel::Recommend]);
+    assert!(at("Advice") < at("ask the agent what to do about it"));
     assert!(!text.contains("Second model"), "{text}");
 
-    // A dispute shows the second model under the recommendation.
+    // A dispute shows the second model in the text; the recommendation
+    // stays in its tile.
     let u = app.review.unit_mut(CHARGE).unwrap();
     u.prep = Prep::Ready;
     u.changes = vec![change(Risk::Low)];
@@ -245,6 +237,7 @@ fn sections_and_hunk_jumps() {
         missed: Vec::new(),
     });
     app.rebuild_order();
+    assert_eq!(recommends(&press(&mut app, "<space>a")), [CHARGE]);
     let answer = ready(&app, CHARGE, DiveKind::Recommend, "Check the currency.");
     app.on_app_event(answer);
     let text = screen(&app, 120, 60);
@@ -267,53 +260,36 @@ fn sections_and_hunk_jumps() {
     assert_eq!(app.status, "No more hunks above.");
 }
 
-// ---- U2: prefetch and cache -------------------------------------------------
+// ---- U2: advice on demand, and kept ------------------------------------------
 
 #[test]
-fn prefetch_and_cache() {
+fn advice_is_asked_for_on_demand_once_and_kept() {
     let (mut app, effects) = started(v2::review(mixed()), true);
-    // The first three pending ▲ and ◆ units in queue order, nothing else.
-    let asked = recommends(&effects);
-    assert_eq!(asked.len(), PREFETCH);
-    let close: Vec<String> = queue(&app)
-        .into_iter()
-        .filter(|id| {
-            let a = app.assessment(id).unwrap();
-            a.level >= teer::review::attention::Level::Look
-        })
-        .take(PREFETCH)
-        .collect();
-    assert_eq!(asked, close);
-    assert!(!asked.contains(&"u2".to_string()), "● is not prefetched");
+    // Nothing is asked before the reviewer says so: not on start, not on
+    // opening a unit.
+    assert!(recommends(&effects).is_empty());
+    let first = queue(&app)[0].clone();
+    assert!(recommends(&app.open_unit(first.clone())).is_empty());
+    assert_eq!(
+        recommends(&press(&mut app, "<space>a")),
+        vec![first.clone()]
+    );
 
-    // Opening one: it is on its way already; only the next pending unit,
-    // if nobody asked yet.
-    let first = asked[0].clone();
-    let next = pending_after(&app, &first)[0].clone();
-    let effects = app.open_unit(first.clone());
-    let want: Vec<String> = if asked.contains(&next) {
-        Vec::new()
-    } else {
-        vec![next.clone()]
-    };
-    assert_eq!(recommends(&effects), want);
-
-    // The answer is kept with the unit and shown.
+    // The answer is kept with the unit and shown; not asked again.
     let answer = ready(&app, &first, DiveKind::Recommend, "Rename it back.");
     app.on_app_event(answer);
     assert!(text(&app).contains("Rename it back."));
     assert!(recommends(&app.open_unit(first.clone())).is_empty());
+    assert!(recommends(&press(&mut app, "<space>a")).is_empty());
 
-    // Saved and run again on the same code: it is still there and not
-    // asked again.
+    // Saved and run again on the same code: it is still there.
     let mut again = v2::review(mixed());
     store::merge_previous(&mut again, &app.review);
-    let (mut app2, effects) = started(again, true);
-    assert!(!recommends(&effects).contains(&first), "cached");
-    assert!(!recommends(&app2.open_unit(first.clone())).contains(&first));
+    let (mut app2, _) = started(again, true);
+    assert!(recommends(&app2.open_unit(first.clone())).is_empty());
     assert!(text(&app2).contains("Rename it back."));
 
-    // The code changed: asked again.
+    // The code changed: the advice is gone, and the key asks again.
     let mut units = mixed();
     units
         .iter_mut()
@@ -322,26 +298,25 @@ fn prefetch_and_cache() {
         .fingerprint = "changed".into();
     let mut changed = v2::review(units);
     store::merge_previous(&mut changed, &app.review);
-    let (_, effects) = started(changed, true);
-    assert!(recommends(&effects).contains(&first));
+    let (mut app3, _) = started(changed, true);
+    app3.open_unit(first.clone());
+    assert!(!text(&app3).contains("Rename it back."));
+    assert_eq!(recommends(&press(&mut app3, "<space>a")), [first]);
 }
 
 #[tokio::test]
-async fn the_mock_agent_answers_what_was_prefetched_and_opening_shows_it() {
+async fn the_mock_agent_answers_the_advice_asked_for() {
     let (_repo, review) = fixture();
-    let (mut app, effects) = started(review, true);
+    let (mut app, _) = started(review, true);
     let mock = MockAdapter::new(responder);
-    let asked = recommends(&effects);
-    assert!(!asked.is_empty() && asked.len() <= PREFETCH);
-    let dives = effects
+    app.open_unit(CHARGE.into());
+    let dives = press(&mut app, "<space>a")
         .into_iter()
         .filter(|e| matches!(e, Effect::Dive { .. }))
         .collect();
     run(&mut app, &mock, dives).await;
     // Never the web before the reviewer allowed it.
     assert!(mock.web_calls.lock().unwrap().iter().all(|w| !w));
-    let effects = app.open_unit(asked[0].clone());
-    assert!(!recommends(&effects).contains(&asked[0]));
     assert!(text(&app).contains("Check the currency before paying."));
 }
 
@@ -361,12 +336,12 @@ fn no_agent_hides_agent_sections() {
         missed: Vec::new(),
     });
     let (mut app, effects) = started(v2::review(units), false);
-    assert!(recommends(&effects).is_empty(), "no prefetch");
+    assert!(recommends(&effects).is_empty());
     let effects = app.open_unit("u0".into());
     assert!(recommends(&effects).is_empty());
     let text = text(&app);
     assert!(text.contains("What changed"), "{text}");
-    assert!(!text.contains("What to do about it"), "{text}");
+    assert!(!text.contains("Advice"), "{text}");
     assert!(!text.contains("Second model"), "{text}");
     // No empty section is left: the text ends with what changed.
     let last = text
@@ -374,7 +349,11 @@ fn no_agent_hides_agent_sections() {
         .skip(3)
         .filter(|l| !l.trim().is_empty())
         .collect::<Vec<_>>();
-    assert!(!last.iter().any(|l| l.trim() == "What to do about it"));
+    assert!(!last.iter().any(|l| l.trim() == "Advice"));
+    // Advice needs an agent and says so.
+    assert!(press(&mut app, "<space>a").is_empty());
+    assert!(app.status.contains("No agent"), "{}", app.status);
+    assert!(!app.unit.tiles.contains(&Panel::Recommend));
     // The tools that need an agent say so; teer's own test search works.
     assert!(press(&mut app, "<space>r").is_empty());
     assert!(app.status.contains("No agent"), "{}", app.status);
@@ -626,7 +605,8 @@ fn leader_panels_and_gx() {
     ] {
         assert!(hint.contains(&a), "{hint:?}");
     }
-    // t: teer's search at once; the agent reads what it found on its own (Q6).
+    // t: teer's search at once; the tile then asks whether the agent reads
+    // what it found (here: looks for tests itself), and `enter` says yes.
     let effects = press(&mut app, "t");
     assert!(matches!(
         &effects[..],
@@ -649,13 +629,15 @@ fn leader_panels_and_gx() {
         coverage: Some(Box::new(Coverage::found(TestSearch::default()))),
     });
     let effects = app.on_app_event(found);
-    assert!(
-        effects.contains(&Effect::InterpretTests {
-            unit_id: CHARGE.into()
-        }),
-        "{effects:?}"
-    );
-    assert!(text(&app).contains("No test calls it"));
+    let read = Effect::InterpretTests {
+        unit_id: CHARGE.into(),
+    };
+    assert!(!effects.contains(&read), "{effects:?}");
+    let t = text(&app);
+    assert!(t.contains("No test calls it"), "{t}");
+    assert!(t.contains("the agent looks for tests itself"), "{t}");
+    let effects = press(&mut app, "<cr>");
+    assert!(effects.contains(&read), "{effects:?}");
 
     // Tiles add up: run old and new opens beside the tests.
     let effects = press(&mut app, "<space>r");
@@ -709,6 +691,7 @@ fn leader_panels_and_gx() {
     assert_eq!(
         app.unit.tiles,
         [
+            Panel::Recommend,
             Panel::Tool(DiveKind::Tests),
             Panel::Tool(DiveKind::Behavior)
         ]
@@ -749,16 +732,15 @@ fn decide_and_advance_in_unit_view() {
     );
     assert_eq!(app.unit.id, ids[1]);
 
-    // f: flagged, the note line on it while the view shows it; then on.
+    // i writes a note on it, f flags it and moves on.
+    press(&mut app, "icheck this<cr>");
+    assert_eq!(app.review.unit(&ids[1]).unwrap().dive.note, "check this");
     press(&mut app, "f");
     assert_eq!(
         app.review.unit(&ids[1]).unwrap().decision,
         Decision::Investigate
     );
-    assert!(matches!(&app.overlay, Overlay::Note { id, .. } if *id == ids[1]));
-    assert_eq!(app.unit_on_show().unwrap().id, ids[1]);
-    press(&mut app, "check this<cr>");
-    assert_eq!(app.review.unit(&ids[1]).unwrap().dive.note, "check this");
+    assert_eq!(app.overlay, Overlay::None);
     assert_eq!(app.unit_on_show().unwrap().id, ids[2]);
 
     // n and N move between pending units without deciding.
@@ -784,10 +766,9 @@ fn decide_and_advance_in_unit_view() {
     }
     assert_eq!(app.unit.id, ids[6]);
     assert_eq!(app.screen, Screen::Unit);
-    // F: the same, flagged, with one note line for them.
+    // F: the same, flagged, asking for no note.
     press(&mut app, "F");
-    assert!(matches!(app.overlay, Overlay::Note { .. }));
-    press(&mut app, "<esc>");
+    assert_eq!(app.overlay, Overlay::None);
     for id in &ids[6..9] {
         assert_eq!(
             app.review.unit(id).unwrap().decision,
@@ -814,7 +795,7 @@ fn k_from_the_queue_opens_the_unit_asking() {
     assert_eq!(app.screen, Screen::Unit);
     assert_eq!(app.unit.id, id);
     assert_eq!(app.unit.panel, Some(Panel::Ask));
-    assert!(recommends(&effects).len() <= 2);
+    assert!(recommends(&effects).is_empty());
     // esc stops typing, h closes the tile, h again goes back.
     press(&mut app, "<esc>hh");
     assert_eq!(app.screen, Screen::Queue);

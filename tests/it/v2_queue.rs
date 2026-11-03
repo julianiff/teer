@@ -384,29 +384,25 @@ fn flag_note_line() {
     d.app.review.unit_mut("u1").unwrap().dive.note = "old note".into();
     d.app.review.unit_mut("u2").unwrap().dive.note = "keep me".into();
 
-    // Empty is fine: flagged, no note.
-    d.keys("f");
-    assert_eq!(note_line(&d), Some(("u0".into(), String::new())));
-    assert_eq!(d.decision_of("u0"), F, "flagged as the line opens");
-    let effects = d.keys("<cr>");
+    // `f` flags and moves on; it asks for no note.
+    let effects = d.keys("f");
     assert!(effects.contains(&Effect::Save), "{effects:?}");
     assert_eq!(note_line(&d), None);
     assert_eq!(d.decision_of("u0"), F);
     assert_eq!(d.note("u0"), "");
 
-    // Prefilled with the note there is; enter saves the edit.
+    // `i` opens the line prefilled with the note there is; enter saves.
     assert_eq!(d.selected().as_deref(), Some("u1"));
-    d.keys("f");
+    d.keys("i");
     assert_eq!(note_line(&d), Some(("u1".into(), "old note".into())));
     d.keys(" and more<cr>");
     assert_eq!(d.note("u1"), "old note and more");
-    assert_eq!(d.decision_of("u1"), F);
+    assert_eq!(d.decision_of("u1"), P, "a note decides nothing");
 
-    // Esc keeps the flag and drops the edit.
-    assert_eq!(d.selected().as_deref(), Some("u2"));
-    d.keys("fchanged<esc>");
+    // Esc drops the edit.
+    d.select_id("u2");
+    d.keys("ichanged<esc>");
     assert_eq!(note_line(&d), None);
-    assert_eq!(d.decision_of("u2"), F);
     assert_eq!(d.note("u2"), "keep me");
 }
 
@@ -415,7 +411,7 @@ fn flag_note_line() {
 #[test]
 fn no_needs_fix_state() {
     let mut d = queue(3);
-    d.keys("ffix the retry<cr>");
+    d.keys("ifix the retry<cr>f");
     let u = d.app.review.unit("u0").unwrap();
     assert_eq!(u.decision, F);
     assert_eq!(u.dive.note, "fix the retry");
@@ -453,15 +449,11 @@ fn file_actions_skip_decided_units() {
     assert_eq!(d.note("u1"), "mine", "a decided unit keeps its note");
     assert_eq!(d.undo_steps(), 1);
 
-    // `F`: one note line, the note copied to each unit it flagged.
+    // `F`: at once too, asking for no note.
     d.select_id("u3");
     d.keys("F");
-    assert!(note_line(&d).is_some(), "{:?}", d.overlay());
-    d.keys("same bug<cr>");
+    assert_eq!(note_line(&d), None);
     assert_eq!(d.decisions(), vec![A, F, A, F, A, F, P, P, P]);
-    assert_eq!(d.note("u3"), "same bug");
-    assert_eq!(d.note("u5"), "same bug");
-    assert_eq!(d.note("u4"), "", "accepted before: left alone");
     assert_eq!(d.note("u1"), "mine");
     assert_eq!(d.undo_steps(), 2);
 
@@ -486,18 +478,12 @@ fn file_actions_skip_decided_units() {
 // ---- Q11 --------------------------------------------------------------------------
 
 #[test]
-fn visual_flag_notes_every_unit() {
+fn visual_flag_flags_every_unit() {
     let mut d = queue(9);
     d.select_id("u1");
     d.keys("Vjjf");
-    assert!(note_line(&d).is_some(), "{:?}", d.overlay());
-    d.keys("one note for all<cr>");
+    assert_eq!(note_line(&d), None, "no note line: `i` writes notes");
     assert_eq!(d.decisions(), vec![P, F, F, F, P, P, P, P, P]);
-    for id in ["u1", "u2", "u3"] {
-        assert_eq!(d.note(id), "one note for all", "{id}");
-    }
-    assert_eq!(d.note("u0"), "");
-    assert_eq!(d.note("u4"), "");
     assert_eq!(d.undo_steps(), 1);
     assert_eq!(d.app.visual, None);
 }
@@ -593,8 +579,8 @@ fn resume_after_quit_and_crash() {
     assert_eq!(d.app.order.len(), 4);
     assert_eq!(symbol(&d), "one");
     keys_saved(&mut d, "a");
+    keys_saved(&mut d, "islow path<cr>");
     keys_saved(&mut d, "f");
-    keys_saved(&mut d, "slow path<cr>");
     assert_eq!(symbol(&d), "three");
     assert_eq!(d.app.review.cursor.as_deref(), d.selected().as_deref());
 
@@ -633,16 +619,12 @@ fn resume_after_quit_and_crash() {
 fn bulk_and_undo() {
     let mut d = queue(9);
     d.keys("Vjjf");
-    d.keys("three of a kind<cr>");
     assert_eq!(d.decisions()[..4], [F, F, F, P]);
-    for id in ["u0", "u1", "u2"] {
-        assert_eq!(d.note(id), "three of a kind", "{id}");
-    }
     d.keys("u");
     assert!(d.decisions().iter().all(|x| *x == P), "{:?}", d.decisions());
     d.keys("<c-r>");
     assert_eq!(d.decisions()[..4], [F, F, F, P]);
-    // `.` on the next unit flags it, with no note line.
+    // `.` on the next unit flags it.
     d.keys("n");
     let next = d.selected().unwrap();
     assert_eq!(d.decision_of(&next), P);

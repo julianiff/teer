@@ -191,7 +191,7 @@ fn reviewed(a: &mut App) {
         press(a, "a");
     }
     select(a, FEE);
-    press(a, "fadd one instead of doubling<cr>");
+    press(a, "iadd one instead of doubling<cr>f");
     assert_eq!(decision(a, FEE), Decision::Investigate);
 }
 
@@ -500,7 +500,7 @@ async fn q_stops_waiting_nothing_reruns_and_colon_e_does_later() {
 async fn a_pull_request_copies_without_waiting() {
     let (o, mut a) = pr_review();
     select(&mut a, FEE);
-    press(&mut a, "fwhy three?<cr>");
+    press(&mut a, "iwhy three?<cr>f");
     let e = press(&mut a, ":w<cr>y");
     assert!(matches!(&e[..], [Effect::Copy { .. }]), "{e:?}");
     assert!(a.waiting.is_none());
@@ -568,15 +568,11 @@ async fn notes_on_changed_code_stay_until_acted_on() {
     assert_eq!(total.decision, Decision::Pending);
     assert_eq!(total.dive.note, "fine now");
     assert!(!total.note_is_stale());
-    // `f` flags it and opens the line on its note.
+    // `f` flags it and leaves the note as it is.
     press(&mut a, "f");
-    assert!(
-        matches!(&a.overlay, Overlay::Note { id, text, .. } if id == TOTAL && text == "fine now"),
-        "{:?}",
-        a.overlay
-    );
-    press(&mut a, "<esc>");
+    assert_eq!(a.overlay, Overlay::None);
     assert_eq!(decision(&a, TOTAL), Decision::Investigate);
+    assert_eq!(a.review.unit(TOTAL).unwrap().dive.note, "fine now");
 }
 
 // ---- L7: `:e` and `:e!` -------------------------------------------------------------

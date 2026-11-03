@@ -18,12 +18,12 @@ https://github.com/user-attachments/assets/4f66d3b0-057e-49b9-8873-3f277a254ea7
 
 **review a code change by what it does, not line by line.**
 
-teer splits a git change into the functions it touches, puts the risky ones on top, and has an agent explain each one, every sentence pinned to the lines that prove it. you accept each one, or flag it with a note. then `:w` hands your notes to your agent and reviews what it changed, commits, or posts your review on the pull request.
+teer splits a git change into the functions it touches, puts the risky ones on top, and has an agent explain each one, every sentence pinned to the lines that prove it. you accept each one, or flag it and say why in a note. then `:w` hands your notes to your agent and reviews what it changed, commits, or posts your review on the pull request.
 
 - **risky first** — every function lands in `▲` close look, `◆` worth a look or `●` routine. facts from the code set the level; the agent can only raise it. what doesn't change behavior is accepted for you.
 - **no claim without its lines** — a fast model explains each function right in the code, a second model checks it. a sentence that can't cite its lines is dropped.
-- **answers before you ask** — open a function and it says why it got its level, what changed and what to do about it. `K` asks anything; its tests, old and new run side by side in a sandbox, or a diagram are a key away.
-- **a fix loop** — `f` flags with a note, `:w` sends the notes to claude code or codex, and once the agent is done teer reviews again, with only the changed functions back in the queue.
+- **answers before you ask** — open a function and it says why it got its level and what changed; `␣a` asks the agent what to do about it, `K` anything else; its tests, old and new run side by side in a sandbox, or a diagram are a key away.
+- **a fix loop** — `f` flags, `i` writes a note, `:w` sends the notes to claude code or codex, and once the agent is done teer reviews again, with only the changed functions back in the queue.
 - **pull requests at arm's length** — `teer <url>` reviews in a checkout of its own. the agent only reads, the repo's agent instructions stay out, nothing is posted until you confirm.
 - **neovim keys** — a key means the same on every screen. counts, `.`, `V`, undo and redo; every key can be rebound.
 - **any agent, or none** — [claude code](https://claude.com/claude-code), [codex](https://developers.openai.com/codex), or a model api with your key (anthropic, openai, openrouter, ollama). `--no-agent` still sorts the change.
@@ -49,13 +49,13 @@ teer pr             # pick one waiting for you
 
 the first start asks which agent and models to use; `teer setup` changes it.
 
-**review what your agent wrote** — `teer` → `a` or `f` down the queue → `l` on a `▲` → `K` to ask → `f` with a note → `:w` `enter` sends the notes to your agent → teer reviews again when it's done → `a` the changed units → `:w` `enter` commits.
+**review what your agent wrote** — `teer` → `a` or `f` down the queue → `l` on a `▲` → `K` to ask → `f` and `i` a note → `:w` `enter` sends the notes to your agent → teer reviews again when it's done → `a` the changed units → `:w` `enter` commits.
 
-**review a teammate's pull request** — `teer pr` → `a` or `f` down the queue → `l`, `K` to ask → `f` to note the problem → `:w` `enter` requests changes, or approves when nothing is flagged.
+**review a teammate's pull request** — `teer pr` → `a` or `f` down the queue → `l`, `K` to ask → `f` and `i` to note the problem → `:w` `enter` requests changes, or approves when nothing is flagged.
 
 | | |
 | --- | --- |
-| `a` · `f` | accept · flag with a note, then on to the next pending unit |
+| `a` · `f` | accept · flag, then on to the next pending unit |
 | `A` · `F` | the same for the file's pending units |
 | `l` · `h` | open the unit · back |
 | `K` | ask about it |
@@ -85,11 +85,11 @@ one queue replaces the list, swipe and the flagged screen, `:w` replaces the fin
 
 | v1 | v2 |
 | --- | --- |
-| `l` · `i` accept · flag | `a` · `f`, which opens the note |
+| `l` · `i` accept · flag | `a` · `f`; `i` writes a note |
 | `s` swipe | the queue: `a` and `f` move on to the next pending unit |
 | `d` the flagged screen | `l` opens any unit |
-| `n` recommend · `x` disagreement | shown in the unit view |
-| `c` tests · `a` the agent reads them | `<space>t`, the agent reads them on its own |
+| `n` recommend · `x` disagreement | `<space>a` advice in the unit view · the disagreement shown there |
+| `c` tests · `a` the agent reads them | `<space>t`, then `enter` lets the agent read them |
 | `t` behavior · `v` visualize · `b` browser | `<space>r` · `<space>v` · `gx` |
 | `o` · `f` resolve | gone: a flag and its note say it |
 | `tab` `z` `r` tiles, zoom, ask again | `tab` `zz` in the unit view; asking again is `<c-r>` while typing |

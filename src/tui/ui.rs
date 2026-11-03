@@ -32,6 +32,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     match app.screen {
         Screen::Queue => super::queue::draw(f, app, body),
         Screen::Unit => super::unit::draw(f, app, body),
+        Screen::Flagged => super::flagged_list::draw(f, app, body),
     }
     draw_bar(f, app, footer);
     // Over an overlay a drag selects only what the overlay says it holds.
@@ -807,6 +808,7 @@ fn screen_actions(app: &App) -> &'static [Action] {
         None => match app.screen {
             Screen::Queue => super::queue::ACTIONS,
             Screen::Unit => super::unit::ACTIONS,
+            Screen::Flagged => super::flagged_list::ACTIONS,
         },
     }
 }
@@ -818,6 +820,7 @@ fn screen_name(app: &App) -> &'static str {
         None => match app.screen {
             Screen::Queue => "queue",
             Screen::Unit => "unit",
+            Screen::Flagged => "flagged units",
         },
     }
 }
@@ -838,7 +841,8 @@ fn group_of(a: Action) -> usize {
         DecideAccept | DecideFlag | NoteEdit | DecideAcceptFile | DecideFlagFile | VisualStart
         | HistoryUndo | HistoryRedo | HistoryRepeat | NoteDelete => 1,
         ViewOpen | AskOpen | GotoDefinition | GotoCallers | GotoEditor | GotoBrowser
-        | ToolTests | ToolRunOldNew | ToolDiagram | MoveNextTile | MovePrevTile | ToggleZoom => 2,
+        | ToolAdvice | ToolTests | ToolRunOldNew | ToolDiagram | ToolFlagged | MoveNextTile
+        | MovePrevTile | ToggleZoom => 2,
         ToggleAutoAccepted | ToggleByFile | ToolHistory | ToolNotes | ToolSettings | HelpOpen => 3,
         FinishOpen | FinishYank | ReviewRerun | ReviewReset | ViewClose => 4,
     }
@@ -904,6 +908,9 @@ struct HelpRow {
 fn describe(app: &App, a: Action) -> &'static str {
     match (help_panel(app), a) {
         (Some(("finish", _)), Action::NoteEdit) => "edit the commit message or summary",
+        (None, a) if app.screen == Screen::Flagged => {
+            super::flagged_list::describe(a).unwrap_or(a.describe())
+        }
         _ => a.describe(),
     }
 }

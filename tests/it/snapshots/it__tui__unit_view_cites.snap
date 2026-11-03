@@ -24,5 +24,5 @@ expression: card
 " │     ╭────────────────────────────────────╮                                 │ "
 " │     │ No longer sends the receipt email. │                                 │ "
 " │     ╰────────────────────────────────────╯                                 │ "
-" … 10 more lines · ^d scroll · gf editor                                        "
+" … 7 more lines · ^d scroll · gf editor                                         "
 " 4 pending · 0 flagged · 3 accepted                                      ? keys "

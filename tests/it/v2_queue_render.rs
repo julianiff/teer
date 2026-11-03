@@ -594,8 +594,6 @@ fn a_note_is_typed_in_the_bar() {
         id: "u0".into(),
         text: "check the retry".into(),
         back: None,
-        also: Vec::new(),
-        joins: None,
     };
     let s = rows(&draw(&app, 120, 30));
     let line = s.last().unwrap();
@@ -619,8 +617,6 @@ fn a_note_is_typed_in_the_bar() {
         id: "u0".into(),
         text: format!("{} the end", "x".repeat(200)),
         back: None,
-        also: Vec::new(),
-        joins: None,
     };
     let line = bar(&app, 80);
     assert!(

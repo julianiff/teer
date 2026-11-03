@@ -79,11 +79,15 @@ pub enum Action {
     ToggleByFile,
     /// The unit view's tile in focus fills it, or no longer does.
     ToggleZoom,
+    /// The agent's advice on the unit: what to do about it.
+    ToolAdvice,
     ToolTests,
     ToolRunOldNew,
     ToolDiagram,
     ToolHistory,
     ToolNotes,
+    /// The flagged units one after another, each with its note and diff.
+    ToolFlagged,
     ToolSettings,
     FinishOpen,
     FinishYank,
@@ -255,6 +259,12 @@ const TABLE: &[(Action, &str, &[&str], &str)] = &[
         "zoom the tile in focus",
     ),
     (
+        Action::ToolAdvice,
+        "tool.advice",
+        &["<space>a"],
+        "advice: what to do about the unit",
+    ),
+    (
         Action::ToolTests,
         "tool.tests",
         &["<space>t"],
@@ -279,6 +289,12 @@ const TABLE: &[(Action, &str, &[&str], &str)] = &[
         "commits and PR description",
     ),
     (Action::ToolNotes, "tool.notes", &["<space>n"], "every note"),
+    (
+        Action::ToolFlagged,
+        "tool.flagged",
+        &["<space>f"],
+        "flagged units, one after another",
+    ),
     (
         Action::ToolSettings,
         "tool.settings",

@@ -142,8 +142,7 @@ async fn the_unit_view_shows_the_whole_change_with_the_statement_in_it() {
         "{out}"
     );
     assert!(!out.contains("~ Charges the order a second time."), "{out}");
-    // The recommendation, asked for as the unit opened, arrives under its
-    // own heading; the code stays as it was.
+    // The advice arrives in its tile; the code stays as it was.
     let units: Vec<(String, String)> = app
         .review
         .units
@@ -166,7 +165,7 @@ async fn the_unit_view_shows_the_whole_change_with_the_statement_in_it() {
     press(&mut app, KeyCode::Char('G'));
     let out = screen(&app);
     assert!(
-        out.contains("What to do about it") && out.contains("Looks fine."),
+        out.contains("Advice") && out.contains("Looks fine."),
         "{out}"
     );
 }

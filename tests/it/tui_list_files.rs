@@ -968,9 +968,9 @@ fn the_selection_stays_visible_with_its_box_title_or_file_name_when_they_fit() {
 
 #[test]
 fn the_overlay_and_padding_never_panic_at_tiny_sizes() {
-    // `F` flags the file and opens one note line for its units.
+    // `i` opens the note line.
     let mut a = app();
-    v2::press(&mut a, "F");
+    v2::press(&mut a, "i");
     assert!(matches!(a.overlay, Overlay::Note { .. }));
     for (w, h) in [
         (0u16, 0u16),

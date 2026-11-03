@@ -413,7 +413,7 @@ fn below_a_short_list_the_pane_takes_the_free_rows() {
 
 // ---- Unit view --------------------------------------------------------------
 
-/// `long_one` open in the unit view with an agent; its recommendation is an
+/// `long_one` open in the unit view with an agent; its advice is an
 /// answer of 40 lines and its Tests answer 25 covering tests.
 fn unit_view() -> (App, FixtureRepo) {
     let (mut app, repo) = app();
@@ -471,39 +471,41 @@ fn target_rect(app: &App, t: Target) -> Rect {
 }
 
 #[test]
-fn a_long_recommendation_in_the_unit_view_scrolls_to_its_end() {
+fn a_long_recommendation_in_its_tile_scrolls_to_its_end() {
     let (mut app, _repo) = unit_view();
     let (w, h) = (100, 30);
     let first = screen(&app, w, h);
     let text = first.join("\n");
     assert!(has(&first, " long_one "), "{text}");
+    assert!(has(&first, "Advice"), "{text}");
+    assert!(has(&first, "step 1 of the answer"), "{text}");
     assert!(!has(&first, "step 40 of the answer"), "{text}");
-    // `^d` scrolls the text half its rows; the title row stays.
+    // Its tile in focus, `^d` scrolls it half its rows; the text stays.
+    keys(&mut app, "<tab>");
+    assert_eq!(app.unit.panel, Some(Panel::Recommend));
+    screen(&app, w, h);
+    let at = |app: &App| app.unit.tile_offset(Panel::Recommend);
     let step = half(&app);
     keys(&mut app, "<c-d>");
-    assert_eq!(app.detail_offset(), step);
-    let mut seen = screen(&app, w, h);
-    assert!(has(&seen, " long_one "));
+    assert_eq!(at(&app), step);
+    assert_eq!(app.detail_offset(), 0);
     for _ in 0..40 {
         keys(&mut app, "<c-d>");
-        seen.extend(screen(&app, w, h));
+        screen(&app, w, h);
     }
-    assert!(has(&seen, "What to do about it"), "{}", seen.join("\n"));
     let end = screen(&app, w, h);
     let text = end.join("\n");
     assert!(has(&end, "step 40 of the answer"), "{text}");
     assert!(has(&end, ABOVE), "{text}");
-    assert!(!has(&end, "more lines"), "{text}");
-    let max = app.detail_offset();
+    let max = at(&app);
     assert!(max > 0);
     keys(&mut app, "<c-d>");
-    assert_eq!(app.detail_offset(), max, "^d stops at the end");
+    assert_eq!(at(&app), max, "^d stops at the end");
     // Back up to the top.
     for _ in 0..40 {
         keys(&mut app, "<c-u>");
     }
-    assert_eq!(app.detail_offset(), 0);
-    assert_eq!(screen(&app, w, h), first);
+    assert_eq!(at(&app), 0);
 }
 
 #[test]
