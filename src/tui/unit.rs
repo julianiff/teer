@@ -1,14 +1,15 @@
 //! The unit view (v2 Phase 5): any unit, with why it has its level, what
 //! changed and the second model; the agent's advice when asked.
 //!
-//! One text scrolls under a title row: "Why this level", "What changed"
+//! One text scrolls under a title row: "Why this level" and "What changed"
 //! (the summary, then the diff in its box with each statement under the
-//! lines it cites; `]c` `[c` jump between hunks) and "Second model" (only
-//! when it disputes the description, and only with an agent).
+//! lines it cites; `]c` `[c` jump between hunks).
 //!
 //! Beside it tiles open, tmux style. "Advice" is open as the unit opens,
 //! when there is an agent, and says which key asks the agent what to do
 //! about the unit (`<space>a`, or `enter` on it): nothing is asked before.
+//! Under the advice it shows the "Second model" when that disputes the
+//! description; with the tile closed, the text shows it at its end.
 //! The rest are added to the ones open: `K` asks about the unit
 //! (the conversation is kept with it), `<space>t` `<space>r` `<space>v`
 //! show the tests (teer's search; the tile then asks whether the agent
@@ -476,16 +477,23 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<u
         add(&mut blocks, card.into_iter().map(indented).collect());
     }
 
-    // The second model, when it disputes the description.
-    if app.can_ask() && disputed(app, u) {
-        let by = answers::answer_label(app, u, DiveKind::Disagree);
-        add(
-            &mut blocks,
-            vec![Line::default(), heading_by(app, "Second model", by, w)],
-        );
-        add(&mut blocks, answers::disagree_lines(app, u, w));
+    // The second model goes in the advice tile; with it closed, here.
+    if !app.unit.tiles.contains(&Panel::Recommend) {
+        add(&mut blocks, second_model_lines(app, u, w));
     }
     (blocks, hunks)
+}
+
+/// The second model `w` cells wide, after a blank line, when it disputes
+/// the description (and there is an agent); else nothing.
+fn second_model_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
+    if !app.can_ask() || !disputed(app, u) {
+        return Vec::new();
+    }
+    let by = answers::answer_label(app, u, DiveKind::Disagree);
+    let mut lines = vec![Line::default(), heading_by(app, "Second model", by, w)];
+    lines.extend(answers::disagree_lines(app, u, w));
+    lines
 }
 
 /// The code box's edge `w` cells wide, one cell in: the top one titled
@@ -702,7 +710,8 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
     match p {
         Panel::Recommend => {
             let w = inner.width as usize;
-            let lines = answers::section_body(app, u, DiveKind::Recommend, w);
+            let mut lines = answers::section_body(app, u, DiveKind::Recommend, w);
+            lines.extend(second_model_lines(app, u, w));
             draw_scrolled(f, app, p, lines, inner, focus);
             // A click on the question asks.
             if answers::may_advise(app, u)

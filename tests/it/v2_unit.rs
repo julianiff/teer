@@ -285,6 +285,18 @@ fn sections_and_hunk_jumps() {
     let screen = disputed_view.render(140, 200);
     let shown = sections_with_content(&screen, &[WHY, WHAT_CHANGED, SECOND]);
     assert_eq!(shown, [WHY, WHAT_CHANGED, SECOND], "{screen}");
+    // The second model is in the advice tile, under the advice; with the
+    // tile closed, at the end of the text.
+    let x = |screen: &str, h: &str| find(screen, h).unwrap().0;
+    let (advice, second) = (
+        find(&screen, ADVICE).unwrap(),
+        find(&screen, SECOND).unwrap(),
+    );
+    assert!(second.0 >= 70 && second.1 > advice.1, "{screen}");
+    disputed_view.keys("<tab>h");
+    assert!(!disputed_view.app.unit.tiles.contains(&Panel::Recommend));
+    let screen = disputed_view.render(140, 200);
+    assert_eq!(x(&screen, SECOND), x(&screen, WHAT_CHANGED), "{screen}");
 
     // `]c` and `[c` jump between the hunks.
     let first = |s: &str| s.contains("old_line_0 ") || s.contains("first_hunk_0 ");

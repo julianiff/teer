@@ -221,8 +221,8 @@ fn sections_and_hunk_jumps() {
     assert!(at("Advice") < at("ask the agent what to do about it"));
     assert!(!text.contains("Second model"), "{text}");
 
-    // A dispute shows the second model in the text; the recommendation
-    // stays in its tile.
+    // A dispute shows the second model in the advice tile, under the
+    // recommendation.
     let u = app.review.unit_mut(CHARGE).unwrap();
     u.prep = Prep::Ready;
     u.changes = vec![change(Risk::Low)];

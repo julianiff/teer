@@ -38,9 +38,37 @@ impl Class {
             "variable" | "property" => Class::Variable,
             "string" | "escape" => Class::String,
             "comment" => Class::Comment,
-            "number" | "constant" => Class::Constant,
+            "number" | "constant" | "boolean" => Class::Constant,
             _ => return None,
         })
+    }
+}
+
+/// A grammar teer colours code with: each language it splits into units,
+/// and some it only colours (their files are one whole-file unit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Grammar {
+    Lang(Lang),
+    Swift,
+}
+
+impl Grammar {
+    fn from_path(path: &Path) -> Option<Grammar> {
+        if let Some(lang) = Lang::from_path(path) {
+            return Some(Grammar::Lang(lang));
+        }
+        let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+        match ext.as_str() {
+            "swift" => Some(Grammar::Swift),
+            _ => None,
+        }
+    }
+
+    fn ts_language(self) -> tree_sitter::Language {
+        match self {
+            Grammar::Lang(lang) => lang.ts_language(),
+            Grammar::Swift => tree_sitter_swift::LANGUAGE.into(),
+        }
     }
 }
 
@@ -52,50 +80,53 @@ pub type Lines = Vec<Vec<Option<Class>>>;
 /// wait on it.
 const MAX_BYTES: usize = 2_000_000;
 
-/// The highlight query `lang`'s grammar ships; TypeScript's adds to
-/// JavaScript's.
-fn query_source(lang: Lang) -> String {
-    match lang {
-        Lang::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY.into(),
-        Lang::Python => tree_sitter_python::HIGHLIGHTS_QUERY.into(),
-        Lang::JavaScript => tree_sitter_javascript::HIGHLIGHT_QUERY.into(),
-        Lang::TypeScript | Lang::Tsx => format!(
+/// The highlight query `grammar` ships; TypeScript's adds to JavaScript's.
+fn query_source(grammar: Grammar) -> String {
+    match grammar {
+        Grammar::Lang(Lang::Rust) => tree_sitter_rust::HIGHLIGHTS_QUERY.into(),
+        Grammar::Lang(Lang::Python) => tree_sitter_python::HIGHLIGHTS_QUERY.into(),
+        Grammar::Lang(Lang::JavaScript) => tree_sitter_javascript::HIGHLIGHT_QUERY.into(),
+        Grammar::Lang(Lang::TypeScript | Lang::Tsx) => format!(
             "{}\n{}",
             tree_sitter_javascript::HIGHLIGHT_QUERY,
             tree_sitter_typescript::HIGHLIGHTS_QUERY
         ),
-        Lang::Php => tree_sitter_php::HIGHLIGHTS_QUERY.into(),
+        Grammar::Lang(Lang::Php) => tree_sitter_php::HIGHLIGHTS_QUERY.into(),
+        Grammar::Swift => tree_sitter_swift::HIGHLIGHTS_QUERY.into(),
     }
 }
 
 thread_local! {
-    static QUERIES: RefCell<HashMap<Lang, Option<Rc<Query>>>> = RefCell::default();
+    static QUERIES: RefCell<HashMap<Grammar, Option<Rc<Query>>>> = RefCell::default();
 }
 
-/// `lang`'s compiled query, once per thread; `None` when it doesn't compile.
-fn query(lang: Lang) -> Option<Rc<Query>> {
+/// `grammar`'s compiled query, once per thread; `None` when it doesn't
+/// compile.
+fn query(grammar: Grammar) -> Option<Rc<Query>> {
     QUERIES.with(|q| {
         q.borrow_mut()
-            .entry(lang)
+            .entry(grammar)
             .or_insert_with(|| {
-                let language = lang.ts_language();
-                Query::new(&language, &query_source(lang)).ok().map(Rc::new)
+                let language = grammar.ts_language();
+                Query::new(&language, &query_source(grammar))
+                    .ok()
+                    .map(Rc::new)
             })
             .clone()
     })
 }
 
-/// The class of each char of `content`, a file in `lang`, line by line.
+/// The class of each char of `content`, a file in `grammar`, line by line.
 /// Empty when the grammar or its query fails, or the file is too large.
-pub fn classes(lang: Lang, content: &str) -> Lines {
+fn classes(grammar: Grammar, content: &str) -> Lines {
     if content.len() > MAX_BYTES {
         return Vec::new();
     }
-    let Some(query) = query(lang) else {
+    let Some(query) = query(grammar) else {
         return Vec::new();
     };
     let mut parser = Parser::new();
-    if parser.set_language(&lang.ts_language()).is_err() {
+    if parser.set_language(&grammar.ts_language()).is_err() {
         return Vec::new();
     }
     let Some(tree) = parser.parse(content, None) else {
@@ -152,8 +183,8 @@ impl Cache {
             return lines.clone();
         }
         let lines = Rc::new(
-            Lang::from_path(path)
-                .map(|lang| classes(lang, content))
+            Grammar::from_path(path)
+                .map(|grammar| classes(grammar, content))
                 .unwrap_or_default(),
         );
         self.files.borrow_mut().insert(key, lines.clone());
@@ -168,15 +199,16 @@ impl Cache {
         if let Some(lines) = self.pieces.borrow().get(&key) {
             return lines.clone();
         }
-        let lines = Rc::new(match Lang::from_path(path) {
-            Some(Lang::Php) if !text.trim_start().starts_with("<?") => {
-                let mut l = classes(Lang::Php, &format!("<?php\n{text}"));
+        let php = Grammar::Lang(Lang::Php);
+        let lines = Rc::new(match Grammar::from_path(path) {
+            Some(g) if g == php && !text.trim_start().starts_with("<?") => {
+                let mut l = classes(php, &format!("<?php\n{text}"));
                 if !l.is_empty() {
                     l.remove(0);
                 }
                 l
             }
-            Some(lang) => classes(lang, text),
+            Some(grammar) => classes(grammar, text),
             None => Vec::new(),
         });
         self.pieces.borrow_mut().insert(key, lines.clone());
@@ -198,7 +230,7 @@ mod tests {
     #[test]
     fn names_are_coloured_by_what_they_are() {
         let src = "class Cart:\n    def add(self, item):\n        total = price(item) # sum\n        return \"ok\", 3\n";
-        let lines = classes(Lang::Python, src);
+        let lines = classes(Grammar::Lang(Lang::Python), src);
         assert_eq!(lines.len(), 4);
         assert_eq!(class_at(&lines, src, 0, "class"), Some(Class::Keyword));
         assert_eq!(class_at(&lines, src, 0, "Cart"), Some(Class::Type));
@@ -211,43 +243,63 @@ mod tests {
         assert_eq!(class_at(&lines, src, 2, "="), None);
         assert_eq!(class_at(&lines, src, 3, "return"), Some(Class::Keyword));
         let src = "def f(order):\n    if order.total <= 0:\n        raise ValueError(\"x\")\n";
-        let lines = classes(Lang::Python, src);
+        let lines = classes(Grammar::Lang(Lang::Python), src);
         assert_eq!(class_at(&lines, src, 1, "if"), Some(Class::Keyword));
         assert_eq!(class_at(&lines, src, 2, "raise"), Some(Class::Keyword));
     }
 
     #[test]
     fn every_grammar_has_a_query_that_compiles() {
-        for lang in [
+        for grammar in [
             Lang::Rust,
             Lang::Python,
             Lang::JavaScript,
             Lang::TypeScript,
             Lang::Tsx,
             Lang::Php,
-        ] {
-            assert!(query(lang).is_some(), "{lang:?}");
+        ]
+        .map(Grammar::Lang)
+        .into_iter()
+        .chain([Grammar::Swift])
+        {
+            assert!(query(grammar).is_some(), "{grammar:?}");
         }
         let ts = "class Cart { add(item: Item): number { return price(item); } }\n";
-        let lines = classes(Lang::TypeScript, ts);
+        let lines = classes(Grammar::Lang(Lang::TypeScript), ts);
         assert_eq!(class_at(&lines, ts, 0, "Cart"), Some(Class::Type));
         assert_eq!(class_at(&lines, ts, 0, "Item"), Some(Class::Type));
         assert_eq!(class_at(&lines, ts, 0, "price"), Some(Class::Function));
         let rs = "fn charge(order: &Order) -> u32 { pay(order) }\n";
-        let lines = classes(Lang::Rust, rs);
+        let lines = classes(Grammar::Lang(Lang::Rust), rs);
         assert_eq!(class_at(&lines, rs, 0, "fn"), Some(Class::Keyword));
         assert_eq!(class_at(&lines, rs, 0, "charge"), Some(Class::Function));
         assert_eq!(class_at(&lines, rs, 0, "Order"), Some(Class::Type));
         let php = "<?php\nfunction charge($order) { return pay($order); }\n";
-        let lines = classes(Lang::Php, php);
+        let lines = classes(Grammar::Lang(Lang::Php), php);
         assert_eq!(class_at(&lines, php, 1, "charge"), Some(Class::Function));
         assert_eq!(class_at(&lines, php, 1, "$order"), Some(Class::Variable));
     }
 
     #[test]
+    fn swift_is_coloured_though_not_split() {
+        let path = Path::new("Cart.swift");
+        assert_eq!(Lang::from_path(path), None);
+        let src = "// pay\nfunc charge(order: Order) -> Int {\n    let ok = true\n    return pay(order, \"eur\")\n}\n";
+        let lines = Cache::default().get(path, true, src);
+        assert_eq!(class_at(&lines, src, 0, "// pay"), Some(Class::Comment));
+        assert_eq!(class_at(&lines, src, 1, "func"), Some(Class::Keyword));
+        assert_eq!(class_at(&lines, src, 1, "charge"), Some(Class::Function));
+        assert_eq!(class_at(&lines, src, 1, "Order"), Some(Class::Type));
+        assert_eq!(class_at(&lines, src, 2, "true"), Some(Class::Constant));
+        assert_eq!(class_at(&lines, src, 3, "return"), Some(Class::Keyword));
+        assert_eq!(class_at(&lines, src, 3, "pay"), Some(Class::Function));
+        assert_eq!(class_at(&lines, src, 3, "\"eur\""), Some(Class::String));
+    }
+
+    #[test]
     fn lines_split_like_str_lines_and_count_chars_not_bytes() {
         let src = "x = \"ä\"\r\ny = 1";
-        let lines = classes(Lang::Python, src);
+        let lines = classes(Grammar::Lang(Lang::Python), src);
         assert_eq!(lines.len(), src.lines().count());
         assert_eq!(lines[0].len(), "x = \"ä\"".chars().count());
         assert_eq!(lines[1].len(), 5);
