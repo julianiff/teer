@@ -13,7 +13,8 @@ use teer::keymap::{Action, Keymap, Trigger};
 use teer::review::model::{
     Change, Decision, Marker, Prep, Range, Review, Risk, Unit, UnitKind, UnitStatus,
 };
-use teer::tui::app::{App, Grouping, Overlay, Screen};
+use teer::session::app::{Grouping, Overlay, Screen};
+use teer::tui::app::App;
 use teer::tui::{slim, ui};
 
 fn unit(i: usize) -> Unit {

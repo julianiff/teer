@@ -1,0 +1,128 @@
+# Teer.app's release, from the same vX.Y.Z tag as the CLI's (release.yml,
+# cargo-dist): a universal .dmg, signed with a Developer ID and notarized
+# when the Apple secrets are set, attached to the GitHub release dist makes,
+# and the `teer-app` cask in julianiff/homebrew-tap.
+#
+# Secrets (Settings > Secrets and variables > Actions):
+#   APPLE_CERTIFICATE           the Developer ID Application certificate, .p12, base64
+#   APPLE_CERTIFICATE_PASSWORD  its password
+#   APPLE_SIGNING_IDENTITY      "Developer ID Application: <name> (<team id>)"
+#   APPLE_ID                    the Apple ID that notarizes
+#   APPLE_PASSWORD              an app-specific password for it
+#   APPLE_TEAM_ID               the team id
+#   HOMEBREW_TAP_TOKEN          writes to julianiff/homebrew-tap (release.yml has it too)
+# Without the Apple ones the app is built unsigned: fine to try, but
+# Gatekeeper stops it on other Macs, so no cask is written then.
+
+name: Desktop release
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The tag to build (vX.Y.Z)"
+        required: true
+
+jobs:
+  app:
+    runs-on: macos-14
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      # Secrets can't be read in `if:`; whether there is one can.
+      HAS_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: The tag is the app's version
+        run: |
+          version="${TAG#v}"
+          app=$(python3 -c 'import json; print(json.load(open("desktop/src-tauri/tauri.conf.json"))["version"])')
+          if [ "$app" != "$version" ]; then
+            echo "tauri.conf.json says $app, the tag $version" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Rust for both Macs
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Frontend
+        working-directory: desktop
+        run: |
+          npm ci
+          npm run check
+          npm test
+
+      - name: The signing certificate
+        if: ${{ env.HAS_CERT == 'true' }}
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/build.keychain"
+          password=$(uuidgen)
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          echo "SIGNED=1" >> "$GITHUB_ENV"
+
+      - name: Build, sign and notarize
+        working-directory: desktop
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx tauri build --target universal-apple-darwin --bundles app,dmg
+
+      - name: Attach the .dmg to the release
+        run: |
+          dmg=$(ls target/universal-apple-darwin/release/bundle/dmg/*.dmg)
+          name="Teer_${VERSION}_universal.dmg"
+          cp "$dmg" "$name"
+          # dist's release job makes the release; wait for it.
+          for i in $(seq 1 60); do
+            gh release view "$TAG" >/dev/null 2>&1 && break
+            sleep 30
+          done
+          gh release upload "$TAG" "$name" --clobber
+          echo "DMG=$name" >> "$GITHUB_ENV"
+
+      - name: The cask
+        if: ${{ env.SIGNED == '1' }}
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          sha=$(shasum -a 256 "$DMG" | cut -d' ' -f1)
+          sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256@/$sha/" desktop/packaging/teer-app.rb.in > teer-app.rb
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/julianiff/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          cp teer-app.rb tap/Casks/teer-app.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/teer-app.rb
+          git commit -m "teer-app $VERSION"
+          git push

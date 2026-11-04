@@ -1,0 +1,222 @@
+/* Teer.app's look. Colours are tokens, light and dark; code uses the
+   syntax classes teer sends. */
+
+:root {
+  --bg: #fbfbfa;
+  --panel: #ffffff;
+  --sunken: #f3f3f1;
+  --border: #e2e2de;
+  --text: #1d1f23;
+  --muted: #6b6f76;
+  --faint: #9a9ea6;
+  --accent: #2f6fde;
+  --accent-bg: #e8f0fd;
+  --select: #e9effa;
+  --visual: #fdf3d6;
+  --attention: #d0442f;
+  --look: #b7791f;
+  --routine: #4b5563;
+  --same: #9a9ea6;
+  --ok: #2f855a;
+  --bad: #c53030;
+  --flag: #c2410c;
+  --added: #e6f4ea;
+  --added-sign: #2f855a;
+  --removed: #fbe9e7;
+  --removed-sign: #c53030;
+  --note: #fff8e6;
+  --note-border: #f0d48a;
+  --agent: #8b5cf6;
+  --kw: #a626a4;
+  --fn: #4078f2;
+  --ty: #c18401;
+  --var: #383a42;
+  --str: #50a14f;
+  --com: #a0a1a7;
+  --const: #986801;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181d;
+    --panel: #1c1f25;
+    --sunken: #13151a;
+    --border: #2c3039;
+    --text: #e4e6eb;
+    --muted: #9aa0aa;
+    --faint: #6c727d;
+    --accent: #6ea0ff;
+    --accent-bg: #1f2b44;
+    --select: #233049;
+    --visual: #3b3420;
+    --attention: #ff7a5c;
+    --look: #e8b04b;
+    --routine: #b4bac4;
+    --same: #6c727d;
+    --ok: #5fd18e;
+    --bad: #ff6b6b;
+    --flag: #ff9a5a;
+    --added: #17301f;
+    --added-sign: #5fd18e;
+    --removed: #3a1d1d;
+    --removed-sign: #ff8a80;
+    --note: #2e2918;
+    --note-border: #6b5a26;
+    --agent: #a78bfa;
+    --kw: #c678dd;
+    --fn: #61afef;
+    --ty: #e5c07b;
+    --var: #e06c75;
+    --str: #98c379;
+    --com: #7f848e;
+    --const: #d19a66;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: text;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+kbd,
+.key {
+  font: 11px/1.4 var(--mono);
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.faint {
+  color: var(--faint);
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.lvl-Attention {
+  color: var(--attention);
+}
+.lvl-Look {
+  color: var(--look);
+}
+.lvl-Routine {
+  color: var(--routine);
+}
+.lvl-Same {
+  color: var(--same);
+}
+
+.risk-high {
+  color: var(--attention);
+}
+.risk-medium {
+  color: var(--look);
+}
+.risk-low {
+  color: var(--muted);
+}
+
+.c-Keyword {
+  color: var(--kw);
+}
+.c-Function {
+  color: var(--fn);
+}
+.c-Type {
+  color: var(--ty);
+}
+.c-Variable {
+  color: var(--var);
+}
+.c-String {
+  color: var(--str);
+}
+.c-Comment {
+  color: var(--com);
+  font-style: italic;
+}
+.c-Constant {
+  color: var(--const);
+}
+
+.scroll {
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.agent-said {
+  border-left: 3px solid var(--agent);
+  padding-left: 10px;
+}
+
+h3.section {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 18px 0 6px;
+}
+
+.btn {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 6px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+.btn:hover {
+  border-color: var(--accent);
+}
+
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+input[type="text"] {
+  font: inherit;
+  color: inherit;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 9px;
+  outline: none;
+}
+
+input[type="text"]:focus {
+  border-color: var(--accent);
+}

@@ -15,8 +15,9 @@ use teer::config::Config;
 use teer::keymap::{Action, KeySpec, Keymap};
 use teer::review::model::{Cite, Coverage, CoveringTest, DiveKind, DiveResult, Review, SessionRef};
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, Grouping, Overlay, Screen, Target};
-use teer::tui::unit::Panel;
+use teer::session::app::{Grouping, Overlay, Screen};
+use teer::session::unit::Panel;
+use teer::tui::app::{App, Target};
 use teer::tui::{preview, ui};
 
 /// A function whose code change is far longer than any pane (every one of

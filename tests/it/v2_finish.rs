@@ -24,8 +24,8 @@ use teer::config::{Config, Provider};
 use teer::git::{ChangedFile, FileStatus};
 use teer::review::model::{BranchNames, Decision, PrInfo, Range, Review, Unit};
 use teer::review::{BuildOptions, build_review};
-use teer::tui::Runtime;
-use teer::tui::app::{AppEvent, Effect, Overlay, Screen};
+use teer::session::Runtime;
+use teer::session::app::{AppEvent, Effect, Overlay, Screen};
 
 use Decision::{Accepted as A, Investigate as F, Pending as P};
 

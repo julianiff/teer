@@ -5,7 +5,7 @@ use crate::common;
 
 use common::v2::Driver;
 use teer::review::model::{Decision, UnitStatus};
-use teer::tui::app::{Overlay, Screen};
+use teer::session::app::{Overlay, Screen};
 
 /// `n` pending units, three per file (f0.rs, f1.rs, ...), listed in order.
 fn app(n: usize) -> Driver {
@@ -51,7 +51,8 @@ fn a_and_f_decide_the_selected_unit_and_advance_to_next_pending() {
     assert_eq!(a.sel(), 3);
 
     // Advancing skips units already decided.
-    a.app.review.units[a.app.order[4]].decision = Decision::Accepted;
+    let u = a.app.order[4];
+    a.app.review.units[u].decision = Decision::Accepted;
     a.keys("a");
     assert_eq!(a.decision(3), Decision::Accepted);
     assert_eq!(a.sel(), 5);
@@ -109,7 +110,8 @@ fn undo_restores_the_previous_decision_not_pending() {
 fn n_and_shift_n_skip_decided_units() {
     let mut a = app(7);
     for i in [1, 2, 4] {
-        a.app.review.units[a.app.order[i]].decision = Decision::Accepted;
+        let u = a.app.order[i];
+        a.app.review.units[u].decision = Decision::Accepted;
     }
     a.select(0);
     a.keys("n");

@@ -14,7 +14,7 @@ use teer::config::Config;
 use teer::keymap::{KeySpec, Keymap};
 use teer::review::model::{Decision, Review};
 use teer::review::{BuildOptions, build_review, store};
-use teer::tui::app::{Overlay, Screen};
+use teer::session::app::{Overlay, Screen};
 
 use common::FixtureRepo;
 use common::sandbox::{Sandbox, stderr, stdout};
@@ -58,7 +58,7 @@ fn repo_with_v1_review() -> FixtureRepo {
 /// `cli::run_on` does for plain `teer` on a dirty tree.
 fn restored(repo: &Path) -> Review {
     let mut r = build_review(repo, &BuildOptions::default()).unwrap();
-    teer::cli::restore(&mut r);
+    teer::review::store::restore(&mut r);
     r
 }
 
@@ -388,7 +388,7 @@ fn teer_help_lists_only_the_v2_surface() {
             .filter_map(|l| l.split_whitespace().next().map(String::from))
             .collect()
     };
-    assert_eq!(section("Commands"), vec!["pr", "notes"], "{help}");
+    assert_eq!(section("Commands"), vec!["pr", "notes", "app"], "{help}");
     assert_eq!(
         section("Options"),
         vec!["--base", "--json", "--no-agent", "-h,"],

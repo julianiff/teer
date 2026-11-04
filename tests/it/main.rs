@@ -63,6 +63,7 @@ mod v2_unit;
 mod v2_unit_answers;
 mod v2_unit_tools;
 mod v2_unit_view;
+mod view;
 mod whole_files;
 
 /// Every file in `tests/it` is a module of this binary, and no test file

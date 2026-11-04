@@ -10,68 +10,20 @@
 //! boxes says how many units were accepted for you. The preview of the unit
 //! under the cursor sits beside the list on a wide terminal, else below it.
 
+use crate::session::names;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use super::app::{App, Grouping};
+use super::app::App;
 use super::slim::{self, UNIT_LEAD};
 use super::{preview, ui};
-use crate::keymap::Action;
 use crate::review::model::{Decision, Risk, Unit, UnitKind, UnitStatus};
+use crate::session::app::Grouping;
 use crate::util::{sanitize, truncate, truncate_pad};
 
-/// The actions the queue handles, for the help, in the order it lists them
-/// inside each of its groups (Move, Decide, Look closer, More, Finish).
-pub const ACTIONS: &[Action] = &[
-    Action::MoveDown,
-    Action::MoveUp,
-    Action::MoveFirst,
-    Action::MoveLast,
-    Action::MoveNextPending,
-    Action::MovePrevPending,
-    Action::MoveNextFile,
-    Action::MovePrevFile,
-    Action::ScrollHalfDown,
-    Action::ScrollHalfUp,
-    Action::ScrollPageDown,
-    Action::ScrollPageUp,
-    Action::FindUnit,
-    Action::DecideAccept,
-    Action::DecideFlag,
-    Action::DecideAcceptFile,
-    Action::DecideFlagFile,
-    Action::NoteEdit,
-    Action::VisualStart,
-    Action::HistoryUndo,
-    Action::HistoryRedo,
-    Action::HistoryRepeat,
-    Action::ViewOpen,
-    Action::AskOpen,
-    Action::GotoDefinition,
-    Action::GotoCallers,
-    Action::GotoEditor,
-    Action::ToolAdvice,
-    Action::ToolTests,
-    Action::ToolRunOldNew,
-    Action::ToolDiagram,
-    Action::ToggleAutoAccepted,
-    Action::ToggleByFile,
-    Action::ToolHistory,
-    Action::ToolNotes,
-    Action::ToolFlagged,
-    Action::ToolSettings,
-    Action::HelpOpen,
-    Action::FinishOpen,
-    Action::ReviewRerun,
-    Action::ReviewReset,
-    Action::ViewClose,
-];
-
-/// Most characters of a flagged unit's note its row shows.
-pub const NOTE_SHOWN: usize = 40;
 /// Cells of a unit's name that stay whole before its note gives way.
 const NAME_KEEP: usize = 24;
 /// Narrowest path column; under it the rows leave the path out.
@@ -109,7 +61,7 @@ fn name_of(u: &Unit, with_path: bool) -> String {
     if u.kind == UnitKind::File && with_path {
         "whole file".into()
     } else {
-        slim::row_name(u)
+        names::row_name(u)
     }
 }
 
@@ -135,35 +87,11 @@ fn name_width(app: &App, ui: usize, with_path: bool) -> usize {
     slim::indent(app, ui).width() + name_of(u, with_path).width() + marks
 }
 
-/// The word for where `u` stands.
-fn state_word(u: &Unit) -> &'static str {
-    match u.decision {
-        Decision::Pending => "pending",
-        Decision::Accepted => "accepted",
-        Decision::Investigate => "flagged",
-    }
-}
-
-/// The first [`NOTE_SHOWN`] characters of the note on `u`, on one line,
-/// `…` after them when there is more; `None` without a note.
-pub fn note_start(u: &Unit) -> Option<String> {
-    let note = sanitize(&u.dive.note);
-    let note = note.split_whitespace().collect::<Vec<_>>().join(" ");
-    if note.is_empty() {
-        return None;
-    }
-    let mut start: String = note.chars().take(NOTE_SHOWN).collect();
-    if note.chars().count() > NOTE_SHOWN {
-        start.push('…');
-    }
-    Some(start)
-}
-
 /// Where `u` stands, in at most `room` cells: `pending`, `accepted`, or
 /// `flagged · “the start of its note”`, the note cut first.
 fn state_spans(app: &App, u: &Unit, room: usize) -> Vec<Span<'static>> {
     let t = &app.theme;
-    let word = state_word(u);
+    let word = names::state_word(u);
     let style = match u.decision {
         Decision::Pending => t.muted(),
         Decision::Accepted => t.accepted_state(),
@@ -171,7 +99,7 @@ fn state_spans(app: &App, u: &Unit, room: usize) -> Vec<Span<'static>> {
     };
     let mut spans = vec![Span::styled(truncate(word, room), style)];
     let note = if u.decision == Decision::Investigate {
-        note_start(u)
+        names::note_start(u)
     } else {
         None
     };
@@ -204,7 +132,7 @@ fn state_width(app: &App, u: &Unit) -> usize {
 fn state_reserve(app: &App) -> usize {
     app.order
         .iter()
-        .map(|&i| state_word(&app.review.units[i]).width())
+        .map(|&i| names::state_word(&app.review.units[i]).width())
         .max()
         .unwrap_or(0)
 }
@@ -324,7 +252,9 @@ pub(super) fn row(app: &App, pos: usize, width: usize, path_w: usize) -> Line<'s
     let name_full = indent.width() + name.width() + mark_w;
     let keep = name_full.min(indent.width() + NAME_KEEP + mark_w);
     // The state's word stays whole while the name keeps a few cells.
-    let word = state_word(u).width().min(avail.saturating_sub(1 + 4));
+    let word = names::state_word(u)
+        .width()
+        .min(avail.saturating_sub(1 + 4));
     let state_room = avail.saturating_sub(1 + keep).max(word);
     let state = state_spans(app, u, state_room);
     let state_w: usize = state.iter().map(|s| s.content.width()).sum();
@@ -368,7 +298,7 @@ mod tests {
     use crate::config::Config;
     use crate::keymap::Keymap;
     use crate::review::model::{Prep, Range, Review};
-    use crate::tui::app::Screen;
+    use crate::session::app::Screen;
     use std::path::PathBuf;
 
     fn unit(i: usize, file: &str, decision: Decision) -> Unit {
@@ -472,13 +402,13 @@ mod tests {
     fn the_note_shows_its_first_forty_characters_on_one_line() {
         let mut u = unit(0, "a.rs", Decision::Investigate);
         u.dive.note = "line one\nline two".into();
-        assert_eq!(note_start(&u).as_deref(), Some("line one line two"));
+        assert_eq!(names::note_start(&u).as_deref(), Some("line one line two"));
         u.dive.note = "x".repeat(40);
-        assert_eq!(note_start(&u), Some("x".repeat(40)));
+        assert_eq!(names::note_start(&u), Some("x".repeat(40)));
         u.dive.note = "x".repeat(41);
-        assert_eq!(note_start(&u), Some(format!("{}…", "x".repeat(40))));
+        assert_eq!(names::note_start(&u), Some(format!("{}…", "x".repeat(40))));
         u.dive.note = "  ".into();
-        assert_eq!(note_start(&u), None);
+        assert_eq!(names::note_start(&u), None);
     }
 
     #[test]
@@ -534,26 +464,6 @@ mod tests {
         // A flagged unit's note is in its state.
         let text = row_text(&app, pos_of(&app, "u1"), w);
         assert!(!text.contains('✎'), "{text}");
-    }
-
-    #[test]
-    fn the_queue_help_lists_each_action_once_and_no_v1_ones() {
-        for (i, a) in ACTIONS.iter().enumerate() {
-            assert!(!ACTIONS[i + 1..].contains(a), "{} twice", a.id());
-            assert!(!a.id().starts_with("v1."), "{}", a.id());
-        }
-        for a in [
-            Action::DecideAccept,
-            Action::DecideFlag,
-            Action::ToggleAutoAccepted,
-            Action::ToggleByFile,
-            Action::FinishOpen,
-            Action::ToolHistory,
-        ] {
-            assert!(ACTIONS.contains(&a), "{}", a.id());
-        }
-        assert!(!ACTIONS.contains(&Action::FinishYank));
-        assert!(!ACTIONS.contains(&Action::MoveNextHunk));
     }
 
     /// `app` drawn `w` x `h`, one string per row.

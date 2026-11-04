@@ -21,9 +21,10 @@ use teer::config::Config;
 use teer::keymap::Keymap;
 use teer::review::model::{Decision, PrInfo, Review, SessionRef};
 use teer::review::{BuildOptions, build_review, store};
-use teer::tui::Runtime;
-use teer::tui::app::{App, AppEvent, DraftState, Effect, Overlay};
-use teer::tui::finish::Step;
+use teer::session::Runtime;
+use teer::session::app::{AppEvent, DraftState, Effect, Overlay};
+use teer::session::finish::Step;
+use teer::tui::app::App;
 use teer::tui::ui;
 
 // ------------------------------------------------------------- fixtures
@@ -298,7 +299,7 @@ fn a_complete_saved_review_opens_on_the_list_and_colon_w_commits() {
     accept_all(&mut rv);
     store::save(&rv).unwrap();
     let mut fresh = review_of(&r);
-    teer::cli::restore(&mut fresh);
+    teer::review::store::restore(&mut fresh);
     let mut a = app_of(fresh);
     a.start(false, None, Vec::new(), None);
     assert_eq!(a.overlay, Overlay::None);
@@ -1290,4 +1291,28 @@ fn the_commit_effect_is_left_to_the_terminal_loop() {
         assert!(!rt.exec(&mut a, e));
     }
     assert_eq!(head_count(&r), 1, "Runtime::exec never commits by itself");
+}
+
+/// A window without a terminal streams what git and its hooks print, line
+/// by line, and still gets the whole of it with the outcome.
+#[test]
+fn a_streamed_commit_sends_each_line_of_the_hooks_as_it_comes() {
+    let r = fixture();
+    hook(&r, "pre-commit", "echo checking one\necho checking two >&2");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let out = commit::run_commit(&r.path(), &["a.py".into()], "Add a", Io::Stream(tx));
+    assert!(matches!(out, Outcome::Committed { .. }), "{out:?}");
+    let lines: Vec<String> = rx.try_iter().collect();
+    assert!(lines.iter().any(|l| l == "checking one"), "{lines:?}");
+    assert!(lines.iter().any(|l| l == "checking two"), "{lines:?}");
+
+    hook(&r, "pre-commit", "echo no way\nexit 1");
+    r.write("a.py", PY_OLD);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let out = commit::run_commit(&r.path(), &["a.py".into()], "Undo a", Io::Stream(tx));
+    let Outcome::Failed { output, .. } = out else {
+        panic!("{out:?}")
+    };
+    assert!(output.contains("no way"), "{output}");
+    assert_eq!(rx.try_iter().collect::<Vec<_>>(), ["no way"]);
 }

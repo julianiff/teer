@@ -20,7 +20,8 @@ use teer::keymap::Keymap;
 use teer::review::attention::Level;
 use teer::review::model::{Decision, Prep, Review, SessionRef, UnitKind, UnitStatus};
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, Overlay};
+use teer::session::app::Overlay;
+use teer::tui::app::App;
 use teer::tui::ui;
 
 fn lines(n: usize, word: &str) -> String {
@@ -330,7 +331,7 @@ fn gf_opens_a_whole_file_at_its_first_change() {
     let effects = v2::press(&mut a, "gf");
     assert_eq!(
         effects,
-        [teer::tui::app::Effect::Edit {
+        [teer::session::app::Effect::Edit {
             file: "docs/new.md".into(),
             line: 5
         }]
@@ -368,7 +369,7 @@ async fn whole_files_are_described_but_not_lock_files_snapshots_or_huge_ones() {
     let mock = MockAdapter::new(responder);
     let prompts = mock.prompts.clone();
     let session = SessionRef::fresh("mock", repo.path());
-    teer::cli::prepare_all(&mut r, Arc::new(mock), session, 2).await;
+    teer::start::prepare_all(&mut r, Arc::new(mock), session, 2).await;
     let all = prompts.lock().unwrap().join("\n=====\n");
 
     assert!(all.contains("### Unit README.md::(whole file)"), "{all}");

@@ -19,7 +19,8 @@ use teer::config::Config;
 use teer::keymap::Keymap;
 use teer::review::model::{Decision, Review, SessionRef};
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, AppEvent, Effect, Grouping, Overlay, Screen};
+use teer::session::app::{AppEvent, Effect, Grouping, Overlay, Screen};
+use teer::tui::app::App;
 use teer::tui::ui;
 
 const API: &str = "from checkout import charge_order\n\n\ndef handle_checkout(request):\n    return charge_order(request.order)\n\n\ndef main():\n    handle_checkout(parse())\n";
@@ -82,7 +83,7 @@ fn session() -> SessionRef {
 
 /// A prepared review of the Python fixture, with paths and commits fixed
 /// so snapshots are stable.
-async fn fixture_review() -> (Review, FixtureRepo) {
+pub(crate) async fn fixture_review() -> (Review, FixtureRepo) {
     let _env = isolate_env();
     let repo = FixtureRepo::new();
     repo.write("checkout.py", PY_OLD)
@@ -91,7 +92,7 @@ async fn fixture_review() -> (Review, FixtureRepo) {
         .commit("init");
     repo.write("checkout.py", PY_NEW);
     let mut review = build_review(&repo.path(), &BuildOptions::default()).unwrap();
-    teer::cli::prepare_all(
+    teer::start::prepare_all(
         &mut review,
         Arc::new(MockAdapter::new(responder)),
         session(),
@@ -104,7 +105,7 @@ async fn fixture_review() -> (Review, FixtureRepo) {
     (review, repo)
 }
 
-fn app_for(review: Review, cfg: Config) -> App {
+pub(crate) fn app_for(review: Review, cfg: Config) -> App {
     let mut app = App::new(review, cfg, Keymap::default());
     let effects = app.start(true, None, Vec::new(), Some(session()));
     assert!(
@@ -137,7 +138,7 @@ fn code(app: &mut App, c: KeyCode) -> Vec<Effect> {
     app.on_event(Event::Key(KeyEvent::new(c, KeyModifiers::NONE)))
 }
 
-fn select(app: &mut App, symbol: &str) {
+pub(crate) fn select(app: &mut App, symbol: &str) {
     let pos = app
         .order
         .iter()
@@ -249,7 +250,7 @@ async fn rerun_keeps_decisions_for_unchanged_units() {
 /// `charge_order` with statements citing what they say: the added check
 /// (new 9-10), the saved payment (new 12), the dropped receipt (old 10),
 /// and a second opinion that agrees.
-fn cited(review: &mut Review) {
+pub(crate) fn cited(review: &mut Review) {
     use teer::review::model::{LineRef, Risk, SecondOpinion, Side};
     let u = review
         .units
@@ -512,7 +513,7 @@ async fn facts_raise_the_level_even_when_the_agent_says_low_risk() {
             .collect();
         Ok(json!({ "units": units }))
     };
-    teer::cli::prepare_all(
+    teer::start::prepare_all(
         &mut review,
         Arc::new(MockAdapter::new(all_low)),
         session(),

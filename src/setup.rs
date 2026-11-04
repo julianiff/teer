@@ -4,7 +4,7 @@
 
 use std::ffi::OsStr;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use toml_edit::{DocumentMut, Item, Table, value};
@@ -318,7 +318,7 @@ pub async fn models(provider: Provider, api: &ApiConfig, suggest: &str) -> Resul
             tokio::task::spawn_blocking(move || crate::agent::codex::list_models(bin)).await??
         }
         Provider::Api => {
-            let key = crate::cli::api_key(api).map_err(anyhow::Error::msg)?;
+            let key = api.key().map_err(anyhow::Error::msg)?;
             crate::agent::api::list_models(api.format, &api.url(), key.as_deref()).await?
         }
     };
@@ -327,6 +327,69 @@ pub async fn models(provider: Provider, api: &ApiConfig, suggest: &str) -> Resul
         list.insert(0, m);
     }
     Ok(list)
+}
+
+/// Ask the fast model of `cfg` for a tiny answer, in an empty directory.
+pub async fn test_answer(cfg: Config) -> Result<Duration, String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let agent = crate::start::discover_agent(dir.path(), false, &cfg)?;
+    let session =
+        crate::review::model::SessionRef::fresh(cfg.provider().name(), dir.path().to_path_buf());
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": { "ok": { "type": "boolean" } },
+        "required": ["ok"],
+        "additionalProperties": false
+    });
+    let prompt =
+        "This is a connection test from teer, a code review tool. Answer with {\"ok\": true}.";
+    let start = Instant::now();
+    let ask = agent.adapter.ask_prepare(&session, prompt, &schema);
+    match tokio::time::timeout(Duration::from_secs(120), ask).await {
+        Err(_) => Err("no answer within 120s".into()),
+        Ok(Err(e)) => Err(format!("{e:#}")),
+        Ok(Ok(v)) if v["ok"].as_bool().is_some() => Ok(start.elapsed()),
+        Ok(Ok(v)) => Err(format!("unexpected answer: {v}")),
+    }
+}
+
+/// A window with no terminal signs commits only through a pinentry that
+/// asks in a window of its own: when `repo` signs its commits with GPG,
+/// whether `pinentry-mac` is there. `None` when nothing is signed (or with
+/// SSH or X.509 keys, which need no pinentry).
+pub fn pinentry_tool(repo: &Path) -> Option<Tool> {
+    let get = |key: &str| {
+        crate::git::command(repo)
+            .args(["config", "--get", key])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    if get("commit.gpgsign").as_deref() != Some("true") {
+        return None;
+    }
+    if matches!(get("gpg.format").as_deref(), Some("ssh" | "x509")) {
+        return None;
+    }
+    let found = crate::agent::claude::is_installed("pinentry-mac");
+    Some(Tool {
+        name: "pinentry-mac".into(),
+        needed: false,
+        found: if found {
+            Found::Ready("found".into())
+        } else {
+            Found::Missing("not found".into())
+        },
+        about: if found {
+            "asks for the GPG passphrase of signed commits in a window".into()
+        } else {
+            "signed commits need it without a terminal: brew install pinentry-mac, then \
+`pinentry-program` in ~/.gnupg/gpg-agent.conf"
+                .into()
+        },
+    })
 }
 
 /// What setup decided.

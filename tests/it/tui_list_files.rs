@@ -20,7 +20,8 @@ use ratatui::backend::TestBackend;
 use teer::config::Config;
 use teer::keymap::{Action, Keymap};
 use teer::review::model::{Decision, Prep, Range, Review, SessionRef, Unit, UnitKind, UnitStatus};
-use teer::tui::app::{App, Effect, Grouping, Overlay, Screen, Target};
+use teer::session::app::{Effect, Grouping, Overlay, Screen};
+use teer::tui::app::{App, Target};
 use teer::tui::{slim, ui};
 
 #[derive(Clone, Copy)]

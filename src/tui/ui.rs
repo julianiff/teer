@@ -1,5 +1,6 @@
 //! Drawing: header, bottom bar, and each screen.
 
+use crate::session::names;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -7,12 +8,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
-use super::app::{App, JumpKind, Overlay, Screen, Target};
+use super::app::{App, Target};
 use super::select;
 use super::slim;
 use crate::git::WORKTREE;
 use crate::keymap::{Action, Trigger};
 use crate::review::attention::Level;
+use crate::session::app::{JumpKind, Overlay, Screen};
+use crate::session::help::{HelpRow, help_groups, help_panel, screen_actions, screen_name};
 use crate::util::{sanitize, truncate, wrap};
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -225,13 +228,13 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let r = &app.review;
     // What is reviewed, then what the change is called (the PR's title, the
     // only commit's subject): the commits view (`␣c`) has the rest.
-    let mut title = crate::cli::subject(r);
+    let mut title = r.subject();
     let named = r.pr.is_some() || (r.head != WORKTREE && r.intent.commits.len() == 1);
     if let (true, Some(name)) = (named, crate::review::intent::headline(r).0) {
         title = format!("{title} · {}", sanitize(&name));
     }
     let mut right = Vec::new();
-    if !app.has_agent && app.agent_note.as_deref() == Some(crate::cli::NO_AGENT) {
+    if !app.has_agent && app.agent_note.as_deref() == Some(crate::session::app::NO_AGENT) {
         right.push(Span::styled("no agent  ", t.muted()));
     }
     let (done, total) = app.prep_progress();
@@ -495,7 +498,7 @@ fn draw_note_line(f: &mut Frame, app: &App, area: Rect, id: &str, text: &str) {
     let name = app
         .review
         .unit(id)
-        .map(slim::row_name)
+        .map(names::row_name)
         .unwrap_or_else(|| sanitize(id));
     let (keys, plain) = hint_line(
         app,
@@ -611,7 +614,9 @@ fn pad(r: Rect, x: u16, y: u16) -> Rect {
 /// What is left of `area`.
 pub(super) fn banner(f: &mut Frame, app: &App, area: Rect) -> Rect {
     match app.agent_note.as_deref() {
-        Some(note) if !app.has_agent && note != crate::cli::NO_AGENT && area.height > 2 => {
+        Some(note)
+            if !app.has_agent && note != crate::session::app::NO_AGENT && area.height > 2 =>
+        {
             let [banner, rest] =
                 Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
             f.render_widget(
@@ -742,215 +747,6 @@ fn modal(f: &mut Frame, app: &App, p: Paragraph, w: u16, rows: u16, border: Styl
     f.render_widget(p.block(block), r);
     text_area(app, inner, 0);
     inner
-}
-
-/// The actions the notes view handles.
-const NOTES: &[Action] = &[
-    Action::MoveDown,
-    Action::MoveUp,
-    Action::MoveFirst,
-    Action::MoveLast,
-    Action::NoteEdit,
-    Action::NoteDelete,
-    Action::ViewOpen,
-    Action::ViewBack,
-    Action::ViewClose,
-    Action::HelpOpen,
-    Action::FinishYank,
-    Action::FinishOpen,
-];
-
-/// The actions the commits view handles.
-const COMMITS: &[Action] = &[
-    Action::MoveDown,
-    Action::MoveUp,
-    Action::MoveFirst,
-    Action::MoveLast,
-    Action::ViewOpen,
-    Action::ViewBack,
-    Action::ViewClose,
-    Action::ToolHistory,
-];
-
-/// The actions a jump list (`gd`, `gr`) handles.
-const JUMP: &[Action] = &[
-    Action::MoveDown,
-    Action::MoveUp,
-    Action::MoveFirst,
-    Action::MoveLast,
-    Action::ViewOpen,
-    Action::ViewBack,
-    Action::ViewClose,
-];
-
-/// The panel the help is about, if any: the one it was opened over
-/// ([`App::help_over`]), else the one open. Its name and the actions it
-/// handles.
-fn help_panel(app: &App) -> Option<(&'static str, &'static [Action])> {
-    let over = match &app.overlay {
-        Overlay::Help => app.help_over.as_ref()?,
-        other => other,
-    };
-    match over {
-        Overlay::Notes { .. } | Overlay::ConfirmDeleteNote { .. } => Some(("notes", NOTES)),
-        Overlay::Commits { .. } => Some(("commits", COMMITS)),
-        Overlay::Jump { .. } => Some(("jump list", JUMP)),
-        Overlay::Finish { .. } => Some(("finish", super::finish::ACTIONS)),
-        _ => None,
-    }
-}
-
-/// The actions the screen or panel the help is about handles: the open
-/// panel, else the screen.
-fn screen_actions(app: &App) -> &'static [Action] {
-    match help_panel(app) {
-        Some((_, actions)) => actions,
-        None => match app.screen {
-            Screen::Queue => super::queue::ACTIONS,
-            Screen::Unit => super::unit::ACTIONS,
-            Screen::Flagged => super::flagged_list::ACTIONS,
-        },
-    }
-}
-
-/// What the help calls the screen or panel it is about.
-fn screen_name(app: &App) -> &'static str {
-    match help_panel(app) {
-        Some((name, _)) => name,
-        None => match app.screen {
-            Screen::Queue => "queue",
-            Screen::Unit => "unit",
-            Screen::Flagged => "flagged units",
-        },
-    }
-}
-
-/// The help's groups, in its order.
-const GROUPS: [&str; 5] = ["Move", "Decide", "Look closer", "More", "Finish"];
-
-/// Which of [`GROUPS`] `a` is listed under: moving through the review,
-/// deciding on it, looking closer at a unit (its view, asking, going to
-/// code, the tools beside it and moving between them), the rest of what
-/// opens, and finishing.
-fn group_of(a: Action) -> usize {
-    use Action::*;
-    match a {
-        MoveDown | MoveUp | MoveFirst | MoveLast | MoveNextPending | MovePrevPending
-        | MoveNextHunk | MovePrevHunk | MoveNextFile | MovePrevFile | ScrollHalfDown
-        | ScrollHalfUp | ScrollPageDown | ScrollPageUp | FindUnit | ViewBack => 0,
-        DecideAccept | DecideFlag | NoteEdit | DecideAcceptFile | DecideFlagFile | VisualStart
-        | HistoryUndo | HistoryRedo | HistoryRepeat | NoteDelete => 1,
-        ViewOpen | AskOpen | GotoDefinition | GotoCallers | GotoEditor | GotoBrowser
-        | ToolAdvice | ToolTests | ToolRunOldNew | ToolDiagram | ToolFlagged | MoveNextTile
-        | MovePrevTile | ToggleZoom => 2,
-        ToggleAutoAccepted | ToggleByFile | ToolHistory | ToolNotes | ToolSettings | HelpOpen => 3,
-        FinishOpen | FinishYank | ReviewRerun | ReviewReset | ViewClose => 4,
-    }
-}
-
-/// Actions the help puts on one row when a screen has both.
-const PAIRS: &[(Action, Action)] = &[
-    (Action::MoveDown, Action::MoveUp),
-    (Action::MoveFirst, Action::MoveLast),
-    (Action::MoveNextPending, Action::MovePrevPending),
-    (Action::MoveNextFile, Action::MovePrevFile),
-    (Action::MoveNextHunk, Action::MovePrevHunk),
-    (Action::ScrollHalfDown, Action::ScrollHalfUp),
-    (Action::ScrollPageDown, Action::ScrollPageUp),
-    (Action::DecideAccept, Action::DecideFlag),
-    (Action::DecideAcceptFile, Action::DecideFlagFile),
-    (Action::HistoryUndo, Action::HistoryRedo),
-    (Action::ViewOpen, Action::ViewBack),
-    (Action::GotoDefinition, Action::GotoCallers),
-    (Action::MoveNextTile, Action::MovePrevTile),
-];
-
-/// Two descriptions on one row, the words they share said once:
-/// `move down / up`, `next / previous file`.
-fn joined(a: &str, b: &str) -> String {
-    let x: Vec<&str> = a.split(' ').collect();
-    let y: Vec<&str> = b.split(' ').collect();
-    let pre = x.iter().zip(&y).take_while(|(p, q)| p == q).count();
-    // Both keep a word of their own.
-    let room = x.len().min(y.len()).saturating_sub(pre + 1);
-    let suf = x
-        .iter()
-        .rev()
-        .zip(y.iter().rev())
-        .take(room)
-        .take_while(|(p, q)| p == q)
-        .count();
-    if pre >= x.len().min(y.len()) {
-        return format!("{a} / {b}");
-    }
-    let mut out = x[..pre].join(" ");
-    if !out.is_empty() {
-        out.push(' ');
-    }
-    out.push_str(&x[pre..x.len() - suf].join(" "));
-    out.push_str(" / ");
-    out.push_str(&y[pre..y.len() - suf].join(" "));
-    if suf > 0 {
-        out.push(' ');
-        out.push_str(&x[x.len() - suf..].join(" "));
-    }
-    out
-}
-
-/// One row of the help: the keys and what they do.
-struct HelpRow {
-    keys: String,
-    what: String,
-}
-
-/// What `a` does where the help was opened: the finish sheet's `i` writes
-/// the commit message or the review summary, not a note.
-fn describe(app: &App, a: Action) -> &'static str {
-    match (help_panel(app), a) {
-        (Some(("finish", _)), Action::NoteEdit) => "edit the commit message or summary",
-        (None, a) if app.screen == Screen::Flagged => {
-            super::flagged_list::describe(a).unwrap_or(a.describe())
-        }
-        _ => a.describe(),
-    }
-}
-
-/// The help's rows for `actions`, by group: each group's name and its
-/// rows, pairs on one row, unbound actions left out.
-fn help_groups(app: &App, actions: &[Action]) -> Vec<(&'static str, Vec<HelpRow>)> {
-    let mut groups: Vec<(&'static str, Vec<HelpRow>)> =
-        GROUPS.iter().map(|g| (*g, Vec::new())).collect();
-    for &a in actions {
-        // The second of a pair is on the first one's row.
-        if PAIRS
-            .iter()
-            .any(|(x, y)| *y == a && actions.contains(x) && !app.keys.labels(*x).is_empty())
-        {
-            continue;
-        }
-        let keys = app.keys.labels(a);
-        if keys.is_empty() {
-            continue;
-        }
-        let other = PAIRS
-            .iter()
-            .find(|(x, y)| *x == a && actions.contains(y))
-            .map(|(_, y)| *y)
-            .filter(|y| !app.keys.labels(*y).is_empty());
-        let row = match other {
-            Some(b) => HelpRow {
-                keys: format!("{keys} {}", app.keys.labels(b)),
-                what: joined(describe(app, a), describe(app, b)),
-            },
-            None => HelpRow {
-                keys,
-                what: describe(app, a).to_string(),
-            },
-        };
-        groups[group_of(a)].1.push(row);
-    }
-    groups.retain(|(_, rows)| !rows.is_empty());
-    groups
 }
 
 /// A line of the help's columns.
@@ -1308,8 +1104,8 @@ fn draw_jump(f: &mut Frame, app: &App, kind: &JumpKind, query: &str, sel: usize)
 fn jump_row(app: &App, u: &crate::review::model::Unit, selected: bool, w: usize) -> Line<'static> {
     let t = &app.theme;
     let level = app.assessment(&u.id).map_or(Level::Routine, |a| a.level);
-    let name = slim::row_name(u);
-    let file = slim::file_name(&u.file);
+    let name = names::row_name(u);
+    let file = names::file_name(&u.file);
     let name_w = w.saturating_sub(4).min(name.width());
     let file_w = w.saturating_sub(4 + name_w + 2);
     let style = if selected {
@@ -1337,9 +1133,9 @@ mod tests {
     use super::*;
     use crate::keymap::{Edit, Keymap, Sheet, parse_label};
 
-    fn key(label: &str) -> crossterm::event::KeyEvent {
+    fn key(label: &str) -> crate::keymap::Key {
         match parse_label(label).as_deref() {
-            Some([k]) => k.event(),
+            Some([k]) => *k,
             other => panic!("{label} is not one key: {other:?}"),
         }
     }
@@ -1348,7 +1144,7 @@ mod tests {
     fn fixed_labels_are_the_keys_the_modes_read() {
         let km = Keymap::default();
         for (label, sheet) in [(fixed::ENTER, Sheet::Confirm), (fixed::ESC, Sheet::Cancel)] {
-            assert_eq!(km.sheet(&key(label)), Some(sheet), "{label}");
+            assert_eq!(km.sheet(key(label)), Some(sheet), "{label}");
         }
         for (label, edit) in [
             (fixed::ENTER, Edit::Submit),
@@ -1358,54 +1154,10 @@ mod tests {
             (fixed::RETRY, Edit::Retry),
             (fixed::TAB, Edit::Tab),
         ] {
-            assert_eq!(km.edit(&key(label)), edit, "{label}");
+            assert_eq!(km.edit(key(label)), edit, "{label}");
         }
-        assert!(km.confirm(&key(fixed::YES)));
-        assert!(km.confirm(&key(fixed::ENTER)));
-        assert!(!km.confirm(&key(fixed::ESC)));
-    }
-
-    #[test]
-    fn a_pair_says_the_words_it_shares_once() {
-        assert_eq!(joined("move down", "move up"), "move down / up");
-        assert_eq!(joined("first unit", "last unit"), "first / last unit");
-        assert_eq!(
-            joined("accept the unit", "flag the unit"),
-            "accept / flag the unit"
-        );
-        assert_eq!(
-            joined("scroll half a page down", "scroll half a page up"),
-            "scroll half a page down / up"
-        );
-        assert_eq!(
-            joined("undo the last decision", "redo"),
-            "undo the last decision / redo"
-        );
-        assert_eq!(joined("open", "back"), "open / back");
-        assert_eq!(joined("same", "same"), "same / same");
-    }
-
-    #[test]
-    fn every_action_is_on_some_screen_once() {
-        let tables = [
-            super::super::queue::ACTIONS,
-            super::super::unit::ACTIONS,
-            super::super::finish::ACTIONS,
-            NOTES,
-            COMMITS,
-            JUMP,
-        ];
-        for a in Action::all() {
-            assert!(
-                tables.iter().any(|t| t.contains(&a)),
-                "{} is on no screen",
-                a.id()
-            );
-        }
-        for t in tables {
-            for (i, a) in t.iter().enumerate() {
-                assert!(!t[i + 1..].contains(a), "{} twice", a.id());
-            }
-        }
+        assert!(km.confirm(key(fixed::YES)));
+        assert!(km.confirm(key(fixed::ENTER)));
+        assert!(!km.confirm(key(fixed::ESC)));
     }
 }

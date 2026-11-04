@@ -11,7 +11,8 @@ use ratatui::backend::TestBackend;
 use teer::config::{Config, Order};
 use teer::keymap::Keymap;
 use teer::review::model::{Decision, Prep, Range, Review, Unit, UnitKind, UnitStatus};
-use teer::tui::app::{App, Grouping};
+use teer::session::app::Grouping;
+use teer::tui::app::App;
 use teer::tui::ui;
 
 /// A routine unit `name` at `line` of `file`, with the units it calls and is

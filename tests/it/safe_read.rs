@@ -56,7 +56,7 @@ async fn prompts_of(mut r: Review, cwd: &Path) -> String {
     let mock = MockAdapter::new(|_, _| Ok(json!({"units": []})));
     let prompts = mock.prompts.clone();
     let session = SessionRef::fresh("mock", cwd.to_path_buf());
-    teer::cli::prepare_all(&mut r, Arc::new(mock), session, 2).await;
+    teer::start::prepare_all(&mut r, Arc::new(mock), session, 2).await;
     prompts.lock().unwrap().join("\n=====\n")
 }
 

@@ -29,7 +29,8 @@ use teer::review::model::{
 use teer::review::prepare::prepare;
 use teer::review::prompts::SECOND_RULES;
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, Grouping};
+use teer::session::app::Grouping;
+use teer::tui::app::App;
 
 // ---- The Phase 3 API these tests expect: adapt here after merging -----------
 
@@ -63,7 +64,12 @@ fn by_level(d: &mut Driver) {
 fn open(review: Review, cfg: Config) -> Driver {
     isolate_env();
     let mut app = App::new(review, cfg, Keymap::default());
-    let effects = app.start(false, Some(teer::cli::NO_AGENT.into()), Vec::new(), None);
+    let effects = app.start(
+        false,
+        Some(teer::session::app::NO_AGENT.into()),
+        Vec::new(),
+        None,
+    );
     // The queue listed by file (`zf`); by level is tests/it/v2_queue.rs's.
     app.grouping = Grouping::File;
     app.rebuild_order();

@@ -19,7 +19,8 @@ use teer::keymap::Keymap;
 use teer::review::dive::DiveEvent;
 use teer::review::model::SessionRef;
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, AppEvent, Screen};
+use teer::session::app::{AppEvent, Screen};
+use teer::tui::app::App;
 use teer::tui::ui;
 
 /// A 30-line function; changed, at line 4 and at line 26.
@@ -66,7 +67,7 @@ async fn app() -> (App, FixtureRepo) {
         id: "s1".into(),
         cwd: PathBuf::from("/work/shop"),
     };
-    teer::cli::prepare_all(
+    teer::start::prepare_all(
         &mut review,
         Arc::new(MockAdapter::new(responder)),
         session.clone(),

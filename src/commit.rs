@@ -487,13 +487,16 @@ pub fn check_anyway(review: &Review) -> Result<Vec<PathBuf>, Refusal> {
 // ---------------------------------------------------------------- commit
 
 /// How git's output is handled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum Io {
     /// The terminal belongs to git (hooks, signing and pinentry may print or
     /// ask). The caller has released the TUI.
     Inherit,
     /// stdin closed, output captured (tests).
     Capture,
+    /// stdin closed, each line of output sent as it comes (hooks can take a
+    /// while) and captured too: a window with no terminal shows it.
+    Stream(std::sync::mpsc::Sender<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -575,7 +578,7 @@ pub fn run_commit(repo: &Path, paths: &[PathBuf], message: &str, io: Io) -> Outc
             Err(e) => return Outcome::Refused(format!("Couldn't run git: {e}")),
             Ok(o) if !o.status.success() => {
                 let res = add_failed(&o);
-                if let (Io::Inherit, Outcome::Failed { output, .. }) = (io, &res) {
+                if let (Io::Inherit, Outcome::Failed { output, .. }) = (&io, &res) {
                     eprintln!("{output}");
                 }
                 return res;
@@ -612,6 +615,7 @@ pub fn run_commit(repo: &Path, paths: &[PathBuf], message: &str, io: Io) -> Outc
                     ),
                 )
             }),
+        Io::Stream(lines) => streamed(c, lines),
     };
     drop(file);
     match result {
@@ -632,6 +636,53 @@ pub fn run_commit(repo: &Path, paths: &[PathBuf], message: &str, io: Io) -> Outc
             Outcome::Committed { short }
         }
     }
+}
+
+/// Run `c` with its output read line by line as it comes, each line sent
+/// to `lines` and kept: its status and everything it printed.
+fn streamed(
+    mut c: std::process::Command,
+    lines: std::sync::mpsc::Sender<String>,
+) -> std::io::Result<(std::process::ExitStatus, String)> {
+    use std::io::BufRead;
+    let mut child = c
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let readers: Vec<_> = [
+        child
+            .stdout
+            .take()
+            .map(|o| Box::new(o) as Box<dyn std::io::Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|e| Box::new(e) as Box<dyn std::io::Read + Send>),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|r| {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(r).lines().map_while(Result::ok) {
+                let _ = tx.send(line);
+            }
+        })
+    })
+    .collect();
+    drop(tx);
+    let mut output = String::new();
+    for line in rx {
+        let _ = lines.send(line.clone());
+        output.push_str(&line);
+        output.push('\n');
+    }
+    for r in readers {
+        let _ = r.join();
+    }
+    Ok((child.wait()?, output))
 }
 
 /// A short, safe line about a failed commit for the status bar.

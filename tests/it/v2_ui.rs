@@ -17,7 +17,8 @@ use teer::config::Config;
 use teer::keymap::{Action, KeySpec, Keymap, Outcome, parse_keys};
 use teer::review::model::{Decision, Review};
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, DraftState, JumpKind, Overlay, Screen, Target};
+use teer::session::app::{DraftState, JumpKind, Overlay, Screen};
+use teer::tui::app::{App, Target};
 use teer::tui::ui;
 
 /// A review of the Python fixture's uncommitted changes, not prepared.
@@ -78,7 +79,7 @@ fn feed(app: &mut App, keys: &str) -> Outcome {
     let now = Instant::now();
     let mut last = Outcome::None;
     for k in parse_keys(keys).unwrap() {
-        last = app.keys.feed(&k.event(), now);
+        last = app.keys.feed(k, now);
     }
     last
 }

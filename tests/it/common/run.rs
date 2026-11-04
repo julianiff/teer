@@ -31,9 +31,11 @@ use teer::keymap::{Action, Keymap, parse_keys};
 use teer::review::BuildOptions;
 use teer::review::model::{Decision, Review, SessionRef};
 use teer::review::store;
-use teer::tui::app::{App, AppEvent, Effect};
+use teer::session::Runtime;
+use teer::session::app::{AppEvent, Effect};
+use teer::start::Launch;
+use teer::tui::app::App;
 use teer::tui::setup::{Ended, Opened};
-use teer::tui::{Launch, Runtime};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use super::sandbox::script;
@@ -530,7 +532,7 @@ impl Session {
         let pr = l.review.pr.is_some();
         let session = match l.session_arg {
             Some(id) => {
-                let mut s = teer::cli::session_by_id(&id, &sessions, &repo);
+                let mut s = teer::start::session_by_id(&id, &sessions, &repo);
                 if pr {
                     s.cwd = repo.clone();
                 }
@@ -563,7 +565,9 @@ impl Session {
         let keys = cfg.keymap().expect("valid keys").0;
         let session = session
             .unwrap_or_else(|| SessionRef::fresh(cfg.provider().name(), review.repo_root.clone()));
-        let note = model.is_none().then(|| teer::cli::NO_AGENT.to_string());
+        let note = model
+            .is_none()
+            .then(|| teer::session::app::NO_AGENT.to_string());
         Session::begin(review, cfg, keys, model, note, Vec::new(), session, tools)
     }
 
@@ -632,7 +636,7 @@ impl Session {
             match e {
                 Effect::Quit => self.quit = true,
                 // Need a terminal and a person: the tests answer for them.
-                Effect::Edit { .. } | Effect::Settings => {}
+                Effect::Edit { .. } | Effect::Settings | Effect::OpenApp => {}
                 Effect::EditComment { text } => self.edited.push(text),
                 Effect::Copy { text, what } => {
                     self.copied.push(text);

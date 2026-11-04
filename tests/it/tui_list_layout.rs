@@ -21,7 +21,8 @@ use teer::config::Config;
 use teer::keymap::{Action, Keymap};
 use teer::review::model::{Decision, Review, SessionRef};
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, Effect, Grouping, Overlay, Screen, Target};
+use teer::session::app::{Effect, Grouping, Overlay, Screen};
+use teer::tui::app::{App, Target};
 use teer::tui::ui;
 
 const API: &str = "from checkout import charge_order\n\n\ndef handle_checkout(request):\n    return charge_order(request.order)\n\n\ndef main():\n    handle_checkout(parse())\n";
@@ -63,7 +64,7 @@ async fn app() -> (App, FixtureRepo) {
         .commit("init");
     repo.write("checkout.py", PY_NEW);
     let mut review: Review = build_review(&repo.path(), &BuildOptions::default()).unwrap();
-    teer::cli::prepare_all(
+    teer::start::prepare_all(
         &mut review,
         Arc::new(MockAdapter::new(responder)),
         session(),

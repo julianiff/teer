@@ -413,6 +413,17 @@ pub fn edit_in_editor(editor: &Editor, text: &str) -> EditOutcome {
     }
 }
 
+/// Text written somewhere else than the editor (a window's own text
+/// field), made what [`edit_in_editor`] or, `for_commit`,
+/// [`edit_message_in_editor`] makes of what the editor saved.
+pub fn edited(text: &str, for_commit: bool) -> EditOutcome {
+    EditOutcome::Edited(if for_commit {
+        crate::commit::normalize_message(text)
+    } else {
+        clamp_text(text, BODY_MAX_CHARS)
+    })
+}
+
 /// Like [`edit_in_editor`] for a commit message: the file is named
 /// `COMMIT_EDITMSG` (so editors pick git's syntax) and the result is
 /// normalised as a commit message.

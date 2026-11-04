@@ -13,7 +13,7 @@ use teer::keymap::Keymap;
 use teer::review::model::{Change, Decision, Marker, Prep, Review, Risk, Unit, UnitStatus};
 use teer::review::prepare::PrepareEvent;
 use teer::review::store;
-use teer::tui::app::{AppEvent, Effect, Grouping, Overlay, Screen};
+use teer::session::app::{AppEvent, Effect, Grouping, Overlay, Screen};
 
 use Decision::{Accepted as A, Investigate as F, Pending as P};
 

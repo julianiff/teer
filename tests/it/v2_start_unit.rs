@@ -15,10 +15,11 @@ use clap::Parser;
 use common::*;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use teer::cli::{Args, NO_AGENT, Screens, run_on};
+use teer::cli::{Args, Screens, run_on};
 use teer::config::{Config, Provider};
 use teer::git::{self, Target};
 use teer::keymap::Keymap;
+use teer::session::app::NO_AGENT;
 use teer::tui::app::App;
 use teer::tui::setup::{Ended, Opened};
 
@@ -443,7 +444,7 @@ struct Fake {
     /// There is no terminal for setup.
     no_terminal: bool,
     shown: RefCell<Vec<String>>,
-    launched: RefCell<Option<teer::tui::Launch>>,
+    launched: RefCell<Option<teer::start::Launch>>,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -471,7 +472,7 @@ impl Screens for Fake {
         }
     }
 
-    async fn review(&self, launch: teer::tui::Launch) -> anyhow::Result<()> {
+    async fn review(&self, launch: teer::start::Launch) -> anyhow::Result<()> {
         self.shown.borrow_mut().push("review".into());
         *self.launched.borrow_mut() = Some(launch);
         Ok(())
@@ -483,7 +484,7 @@ impl Fake {
         self.shown.borrow().clone()
     }
 
-    fn launched(&self) -> teer::tui::Launch {
+    fn launched(&self) -> teer::start::Launch {
         self.launched
             .borrow_mut()
             .take()

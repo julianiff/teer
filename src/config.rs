@@ -156,6 +156,21 @@ pub struct ApiConfig {
 }
 
 impl ApiConfig {
+    /// The API key from the variable `key_env` names; `None` when it
+    /// names none (a local server).
+    pub fn key(&self) -> std::result::Result<Option<String>, String> {
+        let var = self.key_env.trim();
+        if var.is_empty() {
+            return Ok(None);
+        }
+        match std::env::var(var) {
+            Ok(k) if !k.trim().is_empty() => Ok(Some(k.trim().to_string())),
+            _ => Err(format!(
+                "${var} isn't set: export your API key in it, or pick another agent with `teer setup`."
+            )),
+        }
+    }
+
     pub fn url(&self) -> String {
         let u = self.base_url.trim().trim_end_matches('/');
         if u.is_empty() {

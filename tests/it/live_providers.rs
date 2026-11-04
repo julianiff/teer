@@ -70,7 +70,7 @@ async fn round_trip(adapter: Arc<dyn AgentAdapter>, name: &str) {
     let session = SessionRef::fresh(name, review.repo_root.clone());
 
     let t = std::time::Instant::now();
-    teer::cli::prepare_all(&mut review, adapter.clone(), session.clone(), 4).await;
+    teer::start::prepare_all(&mut review, adapter.clone(), session.clone(), 4).await;
     println!("described in {:.1}s", t.elapsed().as_secs_f64());
     let changed: Vec<_> = review
         .units
@@ -149,7 +149,7 @@ async fn api_describes_checks_and_answers() {
         base_url: env("TEER_LIVE_API_URL").unwrap_or_default(),
         key_env: env("TEER_LIVE_API_KEY_ENV").unwrap_or_default(),
     };
-    let key = teer::cli::api_key(&api).unwrap();
+    let key = api.key().unwrap();
     let second = env("TEER_LIVE_API_SECOND");
     let adapter = ApiAdapter::new(
         api.format,

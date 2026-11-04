@@ -1,6 +1,6 @@
 //! `teer pr list`: the open pull requests of this repository that are
 //! waiting for your review, assigned to you, or yours. On a terminal they
-//! open in a picker ([`crate::tui::pr_pick`]); the one picked is reviewed.
+//! open in a picker (the CLI's `pr_list`); the one picked is reviewed.
 //!
 //! git can't ask GitHub who you are, so this uses `gh` (three `gh pr list`
 //! searches with `@me`, run side by side). The repository is the one behind
@@ -18,10 +18,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::approve::tidy_output;
-use crate::config::Config;
-use crate::keymap::Keymap;
 use crate::pr;
-use crate::tui::pr_pick::Picked;
 use crate::util::{sanitize, truncate};
 
 /// Most pull requests fetched per search.
@@ -420,44 +417,6 @@ pub fn render(l: &Listing, now: DateTime<Utc>, width: Option<usize>, color: bool
     }
     out.push_str(&format!("\n{dim}Review one with: teer <url>{off}\n"));
     out
-}
-
-/// `teer pr list` for the repository at `cwd`. On a terminal the pull
-/// requests open in a picker and the one picked is returned, to be reviewed;
-/// piped or with `json`, they are printed.
-pub async fn run(cwd: &Path, json: bool, cfg: &Config, keys: Keymap) -> Result<Option<ListedPr>> {
-    use std::io::IsTerminal;
-    let repo = crate::git::repo_root(cwd)
-        .context("teer pr must run inside a clone of a GitHub repository")?;
-    let target = {
-        let repo = repo.clone();
-        tokio::task::spawn_blocking(move || target_repo(&repo)).await??
-    };
-    let gh = crate::gh::program();
-    if !json && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        let theme = crate::tui::theme::Theme::new(cfg.theme);
-        let listing = fetch(&gh, &repo, target.clone());
-        return match crate::tui::pr_pick::pick(target, listing, theme, keys).await? {
-            Picked::Pr(p) => Ok(Some(p)),
-            Picked::Quit => Ok(None),
-            Picked::Empty(l) => {
-                print!("{}", render(&l, Utc::now(), None, false));
-                Ok(None)
-            }
-        };
-    }
-    let listing = fetch(&gh, &repo, target).await?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&listing)?);
-        return Ok(None);
-    }
-    let tty = std::io::stdout().is_terminal();
-    let width = tty
-        .then(|| crossterm::terminal::size().ok().map(|(w, _)| w as usize))
-        .flatten();
-    let color = tty && std::env::var_os("NO_COLOR").is_none();
-    print!("{}", render(&listing, Utc::now(), width, color));
-    Ok(None)
 }
 
 #[cfg(test)]

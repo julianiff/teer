@@ -20,7 +20,7 @@ use teer::review::model::{
     Side, Unit, UnitStatus, Unmentioned, Verdict,
 };
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{Effect, Overlay, Screen};
+use teer::session::app::{Effect, Overlay, Screen};
 
 use Decision::{Accepted as A, Investigate as F, Pending as P};
 
@@ -546,7 +546,7 @@ fn changed_repo() -> FixtureRepo {
 /// `teer` in `repo`: the review built and merged with the saved one.
 fn reopen(repo: &FixtureRepo) -> Driver {
     let mut r: Review = build_review(&repo.path(), &BuildOptions::default()).unwrap();
-    teer::cli::restore(&mut r);
+    teer::review::store::restore(&mut r);
     Driver::open(r, Config::default())
 }
 

@@ -22,7 +22,7 @@ use unicode_width::UnicodeWidthStr;
 use super::slim::SPINNER;
 use super::theme::Theme;
 use crate::config::{ApiConfig, Config, Provider};
-use crate::keymap::{Action, Edit, Keymap, Outcome};
+use crate::keymap::{Action, Edit, Key, Keymap, Outcome};
 use crate::setup::{Choice, Found, PRESETS, Preset, Tool};
 use crate::util::{sanitize, truncate, truncate_pad};
 
@@ -306,22 +306,23 @@ impl Setup {
         if k.kind == KeyEventKind::Release {
             return None;
         }
-        if self.keys.is_interrupt(&k) {
+        let k = Key::from_event(&k);
+        if self.keys.is_interrupt(k) {
             return Some(Effect::Quit);
         }
         match self.step {
             // Lists without text: normal mode.
-            Step::Provider | Step::Check => match self.keys.feed(&k, Instant::now()) {
+            Step::Provider | Step::Check => match self.keys.feed(k, Instant::now()) {
                 Outcome::Run { action, count } => self.on_action(action, count.unwrap_or(1)),
                 _ => None,
             },
             // Text: the API's fields, the model filter.
             Step::Api => {
-                let e = self.keys.edit(&k);
+                let e = self.keys.edit(k);
                 self.api_edit(e)
             }
             Step::Fast | Step::Second => {
-                let e = self.keys.edit(&k);
+                let e = self.keys.edit(k);
                 self.model_edit(e)
             }
         }
@@ -816,30 +817,6 @@ fn check_lines(s: &Setup, w: usize, lines: &mut Vec<Line<'static>>) {
     ));
 }
 
-/// Ask the fast model of `cfg` for a tiny answer, in an empty directory.
-async fn test_answer(cfg: Config) -> Result<Duration, String> {
-    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let agent = crate::cli::discover_agent(dir.path(), false, &cfg)?;
-    let session =
-        crate::review::model::SessionRef::fresh(cfg.provider().name(), dir.path().to_path_buf());
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": { "ok": { "type": "boolean" } },
-        "required": ["ok"],
-        "additionalProperties": false
-    });
-    let prompt =
-        "This is a connection test from teer, a code review tool. Answer with {\"ok\": true}.";
-    let start = Instant::now();
-    let ask = agent.adapter.ask_prepare(&session, prompt, &schema);
-    match tokio::time::timeout(Duration::from_secs(120), ask).await {
-        Err(_) => Err("no answer within 120s".into()),
-        Ok(Err(e)) => Err(format!("{e:#}")),
-        Ok(Ok(v)) if v["ok"].as_bool().is_some() => Ok(start.elapsed()),
-        Ok(Ok(v)) => Err(format!("unexpected answer: {v}")),
-    }
-}
-
 fn start(s: &mut Setup, e: &Effect, tx: &UnboundedSender<Reply>) {
     s.asked += 1;
     let n = s.asked;
@@ -859,7 +836,7 @@ fn start(s: &mut Setup, e: &Effect, tx: &UnboundedSender<Reply>) {
             s.started = Instant::now();
             let cfg = s.choice(s.second_choice()).apply(&s.cfg);
             tokio::spawn(async move {
-                let _ = tx.send(Reply::Checked(n, test_answer(cfg).await));
+                let _ = tx.send(Reply::Checked(n, crate::setup::test_answer(cfg).await));
             });
         }
         Effect::Save | Effect::Leave | Effect::Quit => {}

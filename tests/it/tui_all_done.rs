@@ -15,7 +15,8 @@ use ratatui::buffer::Buffer;
 use teer::config::Config;
 use teer::keymap::Keymap;
 use teer::review::model::{Decision, Prep, Range, Review, Unit, UnitKind, UnitStatus};
-use teer::tui::app::{App, Effect, Overlay, Screen};
+use teer::session::app::{Effect, Overlay, Screen};
+use teer::tui::app::App;
 use teer::tui::ui;
 
 /// Unit `i` lands in a group by `i % 4`: routine (0), worth a look (1),
@@ -288,7 +289,7 @@ fn colon_w_opens_the_sheet_from_the_queue() {
     keys(&mut a, ":w<cr>");
     assert!(matches!(a.overlay, Overlay::Finish { .. }));
     // A branch, everything accepted: done.
-    assert_eq!(a.finish_step(), Some(teer::tui::finish::Step::Done));
+    assert_eq!(a.finish_step(), Some(teer::session::finish::Step::Done));
     let t = text(&a, 90, 24);
     assert!(t.contains("All 3 units accepted."), "{t}");
     // `q` and esc close it and quit nothing; ctrl+c still quits.

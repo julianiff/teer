@@ -55,7 +55,7 @@ async fn prepares_review_and_drops_claims_without_evidence() {
         id: "s1".into(),
         cwd: repo.path(),
     };
-    teer::cli::prepare_all(&mut review, Arc::new(mock), session, 2).await;
+    teer::start::prepare_all(&mut review, Arc::new(mock), session, 2).await;
     // Every request went through the preparation path (fast model, no tools).
     assert_eq!(
         *prepare_calls.lock().unwrap(),
@@ -108,7 +108,7 @@ async fn agent_failure_marks_units_unavailable() {
         id: "s1".into(),
         cwd: repo.path(),
     };
-    teer::cli::prepare_all(&mut review, Arc::new(mock), session, 4).await;
+    teer::start::prepare_all(&mut review, Arc::new(mock), session, 4).await;
     assert_eq!(review.units[0].prep, Prep::Unavailable);
 }
 
@@ -140,7 +140,7 @@ fn reopening_restores_decisions() {
 
     // Same changes: decisions come back.
     let mut again = build_review(&repo.path(), &BuildOptions::default()).unwrap();
-    teer::cli::restore(&mut again);
+    teer::review::store::restore(&mut again);
     assert!(
         again
             .units
@@ -151,7 +151,7 @@ fn reopening_restores_decisions() {
     // b changes again: only a keeps its decision.
     repo.write("a.py", "def a():\n    return 2\n\ndef b():\n    return 3\n");
     let mut third = build_review(&repo.path(), &BuildOptions::default()).unwrap();
-    teer::cli::restore(&mut third);
+    teer::review::store::restore(&mut third);
     let d = |s: &str| third.units.iter().find(|u| u.symbol == s).unwrap().decision;
     assert_eq!(d("a"), teer::review::model::Decision::Accepted);
     assert_eq!(d("b"), teer::review::model::Decision::Pending);

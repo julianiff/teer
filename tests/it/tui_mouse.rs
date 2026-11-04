@@ -15,7 +15,8 @@ use teer::config::Config;
 use teer::keymap::Keymap;
 use teer::review::model::Decision;
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, Effect, Grouping, Overlay};
+use teer::session::app::{Effect, Grouping, Overlay};
+use teer::tui::app::App;
 use teer::tui::ui;
 
 const W: u16 = 100;

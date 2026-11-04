@@ -11,7 +11,8 @@ use ratatui::backend::TestBackend;
 use teer::config::Config;
 use teer::keymap::{Keymap, parse_keys};
 use teer::review::model::{Decision, Prep, Review, SessionRef, Unit, UnitKind, UnitStatus};
-use teer::tui::app::{App, Effect, Overlay, Screen};
+use teer::session::app::{Effect, Overlay, Screen};
+use teer::tui::app::App;
 use teer::tui::ui;
 
 /// Unit `u{i}` (symbol `s{i}`), a changed function in `file` with no
@@ -246,7 +247,7 @@ impl Driver {
         super::isolate_env();
         let mut app = App::new(review, cfg, Keymap::default());
         let session = SessionRef::fresh("mock", app.review.repo_root.clone());
-        let note = (!agent).then(|| teer::cli::NO_AGENT.to_string());
+        let note = (!agent).then(|| teer::session::app::NO_AGENT.to_string());
         let effects = app.start(agent, note, Vec::new(), Some(session));
         Driver { app, effects }
     }

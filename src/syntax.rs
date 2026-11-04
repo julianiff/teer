@@ -7,13 +7,14 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
 
 use crate::units::lang::Lang;
 
 /// What a stretch of code is, as far as colour goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Class {
     Keyword,
     Function,
@@ -165,8 +166,8 @@ fn classes(grammar: Grammar, content: &str) -> Lines {
 /// new file), and of pieces of files, by path and text.
 #[derive(Debug, Default)]
 pub struct Cache {
-    files: RefCell<HashMap<(PathBuf, bool), Rc<Lines>>>,
-    pieces: RefCell<HashMap<(PathBuf, String), Rc<Lines>>>,
+    files: RefCell<HashMap<(PathBuf, bool), Arc<Lines>>>,
+    pieces: RefCell<HashMap<(PathBuf, String), Arc<Lines>>>,
 }
 
 impl Cache {
@@ -177,12 +178,12 @@ impl Cache {
 
     /// The classes of `content`, the `new` (or old) side of `path`; empty
     /// for a language teer has no grammar for.
-    pub fn get(&self, path: &Path, new: bool, content: &str) -> Rc<Lines> {
+    pub fn get(&self, path: &Path, new: bool, content: &str) -> Arc<Lines> {
         let key = (path.to_path_buf(), new);
         if let Some(lines) = self.files.borrow().get(&key) {
             return lines.clone();
         }
-        let lines = Rc::new(
+        let lines = Arc::new(
             Grammar::from_path(path)
                 .map(|grammar| classes(grammar, content))
                 .unwrap_or_default(),
@@ -194,13 +195,13 @@ impl Cache {
     /// The classes of `text`, some lines of `path` parsed on their own (PHP
     /// gets the opening tag it needs first). Close, not exact: what the
     /// lines sit in is not known.
-    pub fn piece(&self, path: &Path, text: &str) -> Rc<Lines> {
+    pub fn piece(&self, path: &Path, text: &str) -> Arc<Lines> {
         let key = (path.to_path_buf(), text.to_string());
         if let Some(lines) = self.pieces.borrow().get(&key) {
             return lines.clone();
         }
         let php = Grammar::Lang(Lang::Php);
-        let lines = Rc::new(match Grammar::from_path(path) {
+        let lines = Arc::new(match Grammar::from_path(path) {
             Some(g) if g == php && !text.trim_start().starts_with("<?") => {
                 let mut l = classes(php, &format!("<?php\n{text}"));
                 if !l.is_empty() {
@@ -308,7 +309,7 @@ mod tests {
         assert!(cache.get(Path::new("notes.md"), true, "# hi").is_empty());
         let a = cache.get(Path::new("a.py"), true, src);
         let b = cache.get(Path::new("a.py"), true, "other");
-        assert!(Rc::ptr_eq(&a, &b));
+        assert!(Arc::ptr_eq(&a, &b));
         cache.clear();
         assert!(cache.get(Path::new("a.py"), true, "").is_empty());
     }

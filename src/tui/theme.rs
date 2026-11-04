@@ -178,8 +178,8 @@ impl Theme {
     }
 
     /// Code of a `class`: its colour, nothing without colour.
-    pub fn syntax(&self, class: crate::tui::syntax::Class) -> Style {
-        use crate::tui::syntax::Class;
+    pub fn syntax(&self, class: crate::syntax::Class) -> Style {
+        use crate::syntax::Class;
         if self.mono() {
             return Style::new();
         }

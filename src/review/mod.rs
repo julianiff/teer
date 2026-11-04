@@ -4,6 +4,7 @@
 pub mod ask;
 pub mod attention;
 pub mod behavior;
+pub mod diff;
 pub mod dive;
 pub mod history;
 pub mod intent;
@@ -23,7 +24,7 @@ use anyhow::Result;
 use crate::git::{self, ChangedFile, SkippedFile};
 use crate::graph;
 use crate::units;
-use crate::util::hash_hex;
+use crate::util::{hash_hex, sanitize};
 use model::{Prep, Review, SessionRef, Unit};
 use prepare::PrepareEvent;
 
@@ -89,6 +90,34 @@ fn build(cwd: &Path, opts: &BuildOptions, tree: bool) -> Result<Review> {
 }
 
 impl Review {
+    /// What the review is of, as its header says it: "your changes", "feature
+    /// since main, 6 commits", "PR #482 by octocat".
+    pub fn subject(&self) -> String {
+        if let Some(pr) = &self.pr {
+            let author = self.intent.pr.as_ref().map(|m| m.author.as_str());
+            return match author.filter(|a| !a.is_empty()) {
+                Some(a) => format!("PR #{} by {}", pr.number, sanitize(a)),
+                None => format!("PR #{}", pr.number),
+            };
+        }
+        if self.head == git::WORKTREE {
+            return "your changes".into();
+        }
+        // No commits read (git failed, or a review made up in a test): no count.
+        let commits = match self.intent.commits.len() {
+            0 => String::new(),
+            1 => ", 1 commit".into(),
+            n => format!(", {n} commits"),
+        };
+        match &self.branch {
+            Some(b) => format!("{} since {}{commits}", sanitize(&b.head), sanitize(&b.base)),
+            None => {
+                let short: String = self.base.chars().take(7).collect();
+                format!("since {short}{commits}")
+            }
+        }
+    }
+
     pub fn file_of(&self, unit: &Unit) -> Option<&ChangedFile> {
         self.files.iter().find(|f| f.path == unit.file)
     }
@@ -207,5 +236,50 @@ impl Review {
 
     pub fn set_session(&mut self, s: Option<SessionRef>) {
         self.agent_session = s;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn review(head: &str, base: &str) -> Review {
+        let mut r: Review = serde_json::from_value(serde_json::json!({
+            "id": "r", "repo_root": "/work/subject-test", "base": base, "head": head,
+            "head_commit": head, "agent_session": null, "created_at": "2026-11-02T00:00:00Z",
+            "files": [], "units": []
+        }))
+        .unwrap();
+        r.intent.commits = vec![Default::default(); 3];
+        r
+    }
+
+    #[test]
+    fn the_subject_says_what_is_reviewed() {
+        assert_eq!(review(git::WORKTREE, "b1").subject(), "your changes");
+
+        let r = review("h2", "b2");
+        assert_eq!(r.subject(), "since b2, 3 commits");
+        let mut r = r;
+        r.branch = Some(crate::review::model::BranchNames {
+            head: "feature".into(),
+            base: "origin/main".into(),
+        });
+        assert_eq!(r.subject(), "feature since origin/main, 3 commits");
+        let mut one = r.clone();
+        one.intent.commits.truncate(1);
+        assert_eq!(one.subject(), "feature since origin/main, 1 commit");
+
+        let mut pr = review("h3", "b3");
+        pr.pr = Some(crate::review::model::PrInfo {
+            number: 482,
+            ..Default::default()
+        });
+        assert_eq!(pr.subject(), "PR #482");
+        pr.intent.pr = Some(crate::review::model::PrMeta {
+            author: "octocat".into(),
+            ..Default::default()
+        });
+        assert_eq!(pr.subject(), "PR #482 by octocat");
     }
 }

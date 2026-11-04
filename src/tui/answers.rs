@@ -12,139 +12,29 @@ use ratatui::widgets::{Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
-use super::slim;
-use crate::config::{Role, Theme as ThemeName};
+use crate::config::Theme as ThemeName;
 use crate::keymap::Action;
 use crate::review::model::{
     Behavior, ClaimCheck, Coverage, Delta, DiveKind, Expect, FoundTest, Marker, Outcome, ProbeCase,
     Reach, Risk, TestCheck, TestSearch, Unit, UnitStatus, Visual,
 };
 use crate::review::visual::{DARK, LIGHT, edge_line};
+use crate::session::names;
+use crate::session::tools::{self, may_read_tests, pending, tool_key};
 use crate::util::{truncate, wrap};
-
-const ASKING: &str = "asking the agent…";
-const PROBING: &str = "the agent writes a probe, then teer runs it before and after the change…";
-const CHECKING: &str = "a second model checks the description…";
-const SEARCHING: &str = "searching the test files…";
-
-/// Each tool: its kind, the key that opens its panel, its name, and what
-/// it brings to light, in the order the ask panel suggests them.
-pub(super) const TOOLS: [(DiveKind, Action, &str, &str); 3] = [
-    (
-        DiveKind::Tests,
-        Action::ToolTests,
-        "Tests",
-        "the tests that reach it, found at once; then the agent may read them",
-    ),
-    (
-        DiveKind::Behavior,
-        Action::ToolRunOldNew,
-        "Behavior",
-        "runs the old and the new code on the same inputs",
-    ),
-    (
-        DiveKind::Visualize,
-        Action::ToolDiagram,
-        "Visualize",
-        "a picture of what it talks to and what changes",
-    ),
-];
 
 /// The advice tile's name.
 pub(super) const ADVICE: &str = "Advice";
 /// The advice tile's question, after its key, until the agent is asked.
 pub(super) const ASK_ADVICE: &str = "ask the agent what to do about it";
 
-/// May the agent be asked for advice on `u`: there is an agent, and it
-/// hasn't answered and isn't answering.
-pub(super) fn may_advise(app: &App, u: &Unit) -> bool {
-    let kind = DiveKind::Recommend;
-    app.can_ask() && !u.dive.results.contains_key(&kind) && !pending(u, kind)
-}
-
 /// The Tests tile's question, after its key, when teer found tests.
 pub(super) const READ_TESTS: &str = "the agent reads them";
 /// The same, when teer found none.
 pub(super) const LOOK_TESTS: &str = "the agent looks for tests itself";
 
-/// May the agent read what teer's test search found for `u`: there is an
-/// agent, the search is done, and the agent hasn't read it or isn't
-/// reading it.
-pub(super) fn may_read_tests(app: &App, u: &Unit) -> bool {
-    let kind = DiveKind::Tests;
-    let searched = u
-        .dive
-        .results
-        .get(&kind)
-        .and_then(|r| r.coverage.as_ref())
-        .is_some_and(|c| c.search.is_some() && !c.judged);
-    app.can_ask() && searched && !pending(u, kind)
-}
-
 /// The first row of what brings more light into a unit.
 pub(super) const MENU: &str = "Not sure yet? Bring more light into it:";
-
-/// The tool `a` opens.
-pub(super) fn tool_kind(a: Action) -> Option<DiveKind> {
-    TOOLS.iter().find(|t| t.1 == a).map(|t| t.0)
-}
-
-/// The key that opens tool `kind`; empty for the questions no key asks.
-pub(super) fn tool_key(app: &App, kind: DiveKind) -> String {
-    TOOLS
-        .iter()
-        .find(|t| t.0 == kind)
-        .map_or(String::new(), |t| app.keys.label(t.1))
-}
-
-/// Tool `kind`'s name and what it brings to light.
-pub(super) fn light(kind: DiveKind) -> (&'static str, &'static str) {
-    TOOLS
-        .iter()
-        .find(|t| t.0 == kind)
-        .map_or(("", ""), |t| (t.2, t.3))
-}
-
-/// What the answer to `kind` says while it is on its way: the latest
-/// progress when there is one.
-fn waiting(app: &App, u: &Unit, kind: DiveKind) -> String {
-    if let Some(p) = app.progress.get(&(u.id.clone(), kind)) {
-        return p.clone();
-    }
-    match kind {
-        DiveKind::Behavior => PROBING,
-        DiveKind::Disagree => CHECKING,
-        DiveKind::Tests if !u.dive.results.contains_key(&kind) => SEARCHING,
-        _ => ASKING,
-    }
-    .to_string()
-}
-
-/// Who wrote the answer to `kind`. Questions here run on the deep model
-/// (the CLI's own default, or the second model with an API); the second
-/// opinion on `second_model`; the Tests search is teer's own until the
-/// agent reads it.
-pub(super) fn answer_label(app: &App, u: &Unit, kind: DiveKind) -> String {
-    let agent = slim::model_name(app, Role::Deep);
-    let tests = u.dive.results.get(&kind).and_then(|r| r.coverage.as_ref());
-    match kind {
-        DiveKind::Tests if tests.is_some_and(|c| !c.judged) => "found by teer".into(),
-        DiveKind::Tests if tests.is_some_and(|c| c.search.is_some()) => {
-            format!("found by teer, read by the agent ({agent})")
-        }
-        DiveKind::Disagree => format!("second opinion ({})", slim::model_name(app, Role::Second)),
-        DiveKind::Behavior => format!("probe by the agent ({agent}), run by teer"),
-        _ => format!("agent ({agent})"),
-    }
-}
-
-/// Is `kind`'s answer on its way? The second opinion keeps its own flag.
-pub(super) fn pending(u: &Unit, kind: DiveKind) -> bool {
-    match kind {
-        DiveKind::Disagree => u.checks.second_pending,
-        _ => u.dive_pending.contains(&kind),
-    }
-}
 
 fn delta_style(app: &App, d: Delta) -> Style {
     let t = &app.theme;
@@ -546,7 +436,7 @@ pub(super) fn disagree_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>
             ("✗", t.needs_fix())
         };
         lines.extend(marked(glyph, &format!("\"{}\"", v.statement), w, style));
-        let why = format!("{} ({})", v.why, slim::cite_text(&v.evidence));
+        let why = format!("{} ({})", v.why, names::cite_text(&v.evidence));
         for l in wrap(&why, w.saturating_sub(4)) {
             lines.push(Line::styled(format!("   {l}"), t.muted()));
         }
@@ -558,7 +448,7 @@ pub(super) fn disagree_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>
                 "missed [{} risk]: {} ({})",
                 word(m.risk),
                 m.statement,
-                slim::cite_text(&m.evidence)
+                names::cite_text(&m.evidence)
             ),
             w,
             if m.risk >= Risk::Medium {
@@ -615,7 +505,7 @@ pub(super) fn section_body(app: &App, u: &Unit, kind: DiveKind, w: usize) -> Vec
         if !lines.is_empty() {
             lines.push(Line::default());
         }
-        let wait = waiting(app, u, kind);
+        let wait = tools::waiting(app, u, kind);
         for (k, l) in wrap(&wait, w.saturating_sub(2)).into_iter().enumerate() {
             let lead = if k == 0 { app.spinner() } else { " " };
             lines.push(Line::styled(format!(" {lead} {l}"), t.muted()));
