@@ -10,6 +10,11 @@ homepage = "https://github.com/julianiff/teer"
 keywords = ["code-review", "tui", "git", "claude", "tree-sitter"]
 categories = ["command-line-utilities", "development-tools"]
 
+# The `teer` library and binary are the root package; `desktop/src-tauri`
+# is Teer.app, built on the library without the terminal front end.
+[workspace]
+members = [".", "desktop/src-tauri"]
+
 [[bin]]
 name = "teer"
 path = "src/main.rs"

@@ -70,7 +70,7 @@ async fn round_trip(adapter: Arc<dyn AgentAdapter>, name: &str) {
     let session = SessionRef::fresh(name, review.repo_root.clone());
 
     let t = std::time::Instant::now();
-    teer::cli::prepare_all(&mut review, adapter.clone(), session.clone(), 4).await;
+    teer::start::prepare_all(&mut review, adapter.clone(), session.clone(), 4).await;
     println!("described in {:.1}s", t.elapsed().as_secs_f64());
     let changed: Vec<_> = review
         .units

@@ -36,7 +36,7 @@ async fn live_prepare_contract() {
     };
     let mut review = build_review(&repo, &BuildOptions::default()).unwrap();
     let adapter: Arc<dyn AgentAdapter> = Arc::new(ClaudeAdapter::default());
-    teer::cli::prepare_all(&mut review, adapter, session, 4).await;
+    teer::start::prepare_all(&mut review, adapter, session, 4).await;
     let unit = review
         .units
         .iter()

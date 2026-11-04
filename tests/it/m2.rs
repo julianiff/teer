@@ -55,7 +55,7 @@ async fn prepares_review_and_drops_claims_without_evidence() {
         id: "s1".into(),
         cwd: repo.path(),
     };
-    teer::cli::prepare_all(&mut review, Arc::new(mock), session, 2).await;
+    teer::start::prepare_all(&mut review, Arc::new(mock), session, 2).await;
     // Every request went through the preparation path (fast model, no tools).
     assert_eq!(
         *prepare_calls.lock().unwrap(),
@@ -108,7 +108,7 @@ async fn agent_failure_marks_units_unavailable() {
         id: "s1".into(),
         cwd: repo.path(),
     };
-    teer::cli::prepare_all(&mut review, Arc::new(mock), session, 4).await;
+    teer::start::prepare_all(&mut review, Arc::new(mock), session, 4).await;
     assert_eq!(review.units[0].prep, Prep::Unavailable);
 }
 

@@ -64,7 +64,7 @@ async fn app() -> (App, FixtureRepo) {
         .commit("init");
     repo.write("checkout.py", PY_NEW);
     let mut review: Review = build_review(&repo.path(), &BuildOptions::default()).unwrap();
-    teer::cli::prepare_all(
+    teer::start::prepare_all(
         &mut review,
         Arc::new(MockAdapter::new(responder)),
         session(),

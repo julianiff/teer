@@ -820,7 +820,7 @@ fn check_lines(s: &Setup, w: usize, lines: &mut Vec<Line<'static>>) {
 /// Ask the fast model of `cfg` for a tiny answer, in an empty directory.
 async fn test_answer(cfg: Config) -> Result<Duration, String> {
     let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let agent = crate::cli::discover_agent(dir.path(), false, &cfg)?;
+    let agent = crate::start::discover_agent(dir.path(), false, &cfg)?;
     let session =
         crate::review::model::SessionRef::fresh(cfg.provider().name(), dir.path().to_path_buf());
     let schema = serde_json::json!({

@@ -783,7 +783,7 @@ async fn agent_prompts_say_the_code_is_untrusted() {
     let prompts = mock.prompts.clone();
     let adapter = Arc::new(UntrustedCode(Arc::new(mock)));
     let session = SessionRef::fresh("mock", s.worktree.path().to_path_buf());
-    teer::cli::prepare_all(&mut s.review, adapter, session, 2).await;
+    teer::start::prepare_all(&mut s.review, adapter, session, 2).await;
     let seen = prompts.lock().unwrap();
     assert!(!seen.is_empty());
     assert!(seen.iter().all(|p| p.contains(UNTRUSTED_NOTICE)));

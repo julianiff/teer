@@ -325,7 +325,7 @@ pub struct UnitScreen {
 }
 
 /// Which tile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub enum TileId {
     Advice,
     Ask,
@@ -592,7 +592,8 @@ pub struct JumpItem {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct JumpView {
-    pub kind: JumpKind,
+    /// What it lists.
+    pub list: JumpKind,
     pub query: String,
     pub sel: usize,
     pub items: Vec<JumpItem>,
@@ -1422,7 +1423,7 @@ fn overlay(app: &App) -> OverlayView {
         }),
         Overlay::Finish { sel } => OverlayView::Finish(finish(app, *sel)),
         Overlay::Jump { kind, query, sel } => OverlayView::Jump(JumpView {
-            kind: kind.clone(),
+            list: kind.clone(),
             query: query.clone(),
             sel: *sel,
             items: app

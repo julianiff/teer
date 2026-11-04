@@ -26,6 +26,7 @@ pub mod review;
 pub mod sandbox;
 pub mod session;
 pub mod setup;
+pub mod start;
 pub mod syntax;
 #[cfg(feature = "tui")]
 pub mod tui;

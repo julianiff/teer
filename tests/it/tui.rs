@@ -92,7 +92,7 @@ pub(crate) async fn fixture_review() -> (Review, FixtureRepo) {
         .commit("init");
     repo.write("checkout.py", PY_NEW);
     let mut review = build_review(&repo.path(), &BuildOptions::default()).unwrap();
-    teer::cli::prepare_all(
+    teer::start::prepare_all(
         &mut review,
         Arc::new(MockAdapter::new(responder)),
         session(),
@@ -513,7 +513,7 @@ async fn facts_raise_the_level_even_when_the_agent_says_low_risk() {
             .collect();
         Ok(json!({ "units": units }))
     };
-    teer::cli::prepare_all(
+    teer::start::prepare_all(
         &mut review,
         Arc::new(MockAdapter::new(all_low)),
         session(),

@@ -794,7 +794,7 @@ mod agent {
         });
         let prompts = mock.prompts.clone();
         let s = session(&r);
-        teer::cli::prepare_all(&mut r, Arc::new(mock), s, 2).await;
+        teer::start::prepare_all(&mut r, Arc::new(mock), s, 2).await;
         let p = prompts.lock().unwrap().clone();
         let s = schemas.lock().unwrap().clone();
         (r, p, s)

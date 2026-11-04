@@ -89,9 +89,14 @@ impl DerefMut for App {
 
 impl App {
     pub fn new(review: Review, cfg: Config, keys: Keymap) -> App {
+        App::wrap(session::App::new(review, cfg, keys))
+    }
+
+    /// The terminal's view of `core`.
+    pub fn wrap(core: session::App) -> App {
         App {
-            theme: Theme::new(cfg.theme),
-            core: session::App::new(review, cfg, keys),
+            theme: Theme::new(core.cfg.theme),
+            core,
             pictures: None,
             targets: RefCell::new(Vec::new()),
             text_areas: RefCell::new(Vec::new()),

@@ -33,7 +33,7 @@ use teer::review::model::{Decision, Review, SessionRef};
 use teer::review::store;
 use teer::session::Runtime;
 use teer::session::app::{AppEvent, Effect};
-use teer::tui::Launch;
+use teer::start::Launch;
 use teer::tui::app::App;
 use teer::tui::setup::{Ended, Opened};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
@@ -532,7 +532,7 @@ impl Session {
         let pr = l.review.pr.is_some();
         let session = match l.session_arg {
             Some(id) => {
-                let mut s = teer::cli::session_by_id(&id, &sessions, &repo);
+                let mut s = teer::start::session_by_id(&id, &sessions, &repo);
                 if pr {
                     s.cwd = repo.clone();
                 }

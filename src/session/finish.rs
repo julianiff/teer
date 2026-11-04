@@ -361,7 +361,7 @@ teer; the review is saved."
     }
 
     /// The step under the cursor changed: a commit on offer gets its message.
-    fn on_step(&mut self) -> Vec<Effect> {
+    pub(crate) fn on_step(&mut self) -> Vec<Effect> {
         if self.finish_step() == Some(Step::Commit) {
             self.offer_commit()
         } else {

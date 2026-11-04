@@ -35,12 +35,8 @@ use crossterm::terminal::{
     Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use futures::StreamExt;
-use tokio::sync::mpsc::unbounded_channel;
 
-use crate::config::Config;
-use crate::keymap::Keymap;
-use crate::review::model::Review;
-use crate::review::{BuildOptions, store};
+use crate::review::store;
 use crate::session::runtime::agent_program;
 use crate::session::{Effect, Runtime};
 use app::App;
@@ -60,61 +56,14 @@ pub fn restore_terminal() {
     ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
-pub struct Launch {
-    pub review: Review,
-    pub agent: std::result::Result<crate::cli::Agent, String>,
-    pub session_arg: Option<String>,
-    pub cfg: Config,
-    pub keymap: Keymap,
-}
-
-pub async fn run(l: Launch) -> Result<()> {
-    let base = if l.review.head == crate::git::WORKTREE {
-        None
-    } else {
-        Some(l.review.base.clone())
-    };
-    let build = BuildOptions {
-        base,
-        languages: l.cfg.languages.clone(),
-    };
-    let mut app = App::new(l.review, l.cfg, l.keymap);
-    let repo = app.review.repo_root.clone();
-    let (adapter, sessions, note) = match l.agent {
-        Ok(a) => (Some(a.adapter), a.sessions, None),
-        Err(why) => (None, Vec::new(), Some(why)),
-    };
-    // Without a session (none found, none given), teer runs the agent
-    // headless in the repo; no picker.
-    let session = match l.session_arg {
-        Some(id) => {
-            let mut s = crate::cli::session_by_id(&id, &sessions, &repo);
-            if app.review.pr.is_some() {
-                // Read the PR's code, not the checkout the session was made in.
-                s.cwd = repo.clone();
-            }
-            s
-        }
-        None => crate::review::model::SessionRef::fresh(app.cfg.provider().name(), repo.clone()),
-    };
-    let initial = app.start(adapter.is_some(), note, sessions, Some(session));
-    if let Some(b) = app.review.pr.as_ref().and_then(|p| p.base_assumed.clone()) {
-        app.status = format!(
-            "base assumed: {} (PR has conflicts)",
-            crate::util::sanitize(&b)
-        );
-    }
-
-    let (tx, mut rx) = unbounded_channel();
-    let mut rt = Runtime {
-        adapter,
-        tx,
-        build,
-        tools: crate::approve::Tools {
-            editor: app.cfg.editor()?,
-            ..Default::default()
-        },
-    };
+pub async fn run(l: crate::start::Launch) -> Result<()> {
+    let crate::start::Begun {
+        app: core,
+        runtime: mut rt,
+        events: mut rx,
+        initial,
+    } = crate::start::begin(l)?;
+    let mut app = App::wrap(core);
 
     let mut terminal = ratatui::init();
     ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);

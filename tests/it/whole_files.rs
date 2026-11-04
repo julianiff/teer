@@ -369,7 +369,7 @@ async fn whole_files_are_described_but_not_lock_files_snapshots_or_huge_ones() {
     let mock = MockAdapter::new(responder);
     let prompts = mock.prompts.clone();
     let session = SessionRef::fresh("mock", repo.path());
-    teer::cli::prepare_all(&mut r, Arc::new(mock), session, 2).await;
+    teer::start::prepare_all(&mut r, Arc::new(mock), session, 2).await;
     let all = prompts.lock().unwrap().join("\n=====\n");
 
     assert!(all.contains("### Unit README.md::(whole file)"), "{all}");

@@ -2,21 +2,19 @@
 //! the headless `--json` path.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
-use crate::agent::api::ApiAdapter;
-use crate::agent::claude::{ClaudeAdapter, is_installed};
-use crate::agent::codex::CodexAdapter;
-use crate::agent::{AgentAdapter, SessionInfo};
-use crate::config::{Config, Provider, Role};
+use crate::config::{Config, Provider};
 use crate::git::{self, Target};
 use crate::keymap::{Action, Keymap};
 use crate::review::model::{BranchNames, Review, SessionRef};
-use crate::review::prepare;
 use crate::review::{BuildOptions, build_review, store};
+use crate::start::{
+    discover_agent, nothing_to_review, pr_base_ref, pr_url, prepare_all, session_by_id,
+    writer_session,
+};
 use crate::tui::setup::{Ended, Opened};
 use crate::util::sanitize;
 
@@ -179,155 +177,6 @@ pub fn version_text() -> String {
     format!("{TAGLINE} (v{})", env!("CARGO_PKG_VERSION"))
 }
 
-pub struct Agent {
-    pub adapter: Arc<dyn AgentAdapter>,
-    pub sessions: Vec<SessionInfo>,
-    /// The provider it is: the configured one, or the one found.
-    pub provider: Provider,
-}
-
-/// Find the agent `cfg` names, and its sessions for this repo (Claude
-/// Code's only); with none set up, the first agent CLI on the PATH, as teer
-/// did before it asked. `Err` explains why there is no agent, for the user.
-/// `untrusted` is for code from a pull request: the agent loads none of the
-/// repo's own instructions and every prompt says the code is untrusted data.
-pub fn discover_agent(
-    repo: &Path,
-    untrusted: bool,
-    cfg: &Config,
-) -> std::result::Result<Agent, String> {
-    // A CLI found here is known to be installed.
-    let (provider, found) = match cfg.provider {
-        Some(p) => (p, false),
-        None => detect_provider().map_or((Provider::Claude, false), |p| (p, true)),
-    };
-    let cfg = &Config {
-        provider: Some(provider),
-        ..cfg.clone()
-    };
-    let installed = |bin: &str| found || is_installed(bin);
-    let model = |role| cfg.model(role).map_err(|e| format!("{e:#}"));
-    let (prepare, second) = (model(Role::Fast)?, model(Role::Second)?);
-    let missing = |what: &str, url: &str| {
-        format!(
-            "{what} isn't on your PATH. Install it ({url}), pick another agent with `teer setup`, \
-or run with --no-agent to review without change statements."
-        )
-    };
-    let (adapter, sessions): (Arc<dyn AgentAdapter>, _) = match provider {
-        Provider::Claude => {
-            let adapter = ClaudeAdapter {
-                untrusted,
-                prepare,
-                second,
-                ..ClaudeAdapter::default()
-            };
-            if !installed(&adapter.bin) {
-                return Err(missing(
-                    "Claude Code ('claude')",
-                    "https://claude.com/claude-code",
-                ));
-            }
-            let sessions = adapter
-                .list_sessions(repo)
-                .map_err(|e| format!("couldn't list Claude Code sessions: {e:#}"))?;
-            (Arc::new(adapter), sessions)
-        }
-        Provider::Codex => {
-            let adapter = CodexAdapter {
-                untrusted,
-                prepare,
-                second,
-                ..CodexAdapter::default()
-            };
-            if !installed(&adapter.bin) {
-                return Err(missing(
-                    "Codex ('codex')",
-                    "https://developers.openai.com/codex",
-                ));
-            }
-            (Arc::new(adapter), Vec::new())
-        }
-        Provider::Api => {
-            let key = cfg.api.key()?;
-            let deep = model(Role::Deep)?;
-            let adapter =
-                ApiAdapter::new(cfg.api.format, &cfg.api.url(), key, prepare, second, deep)
-                    .map_err(|e| format!("{e:#}"))?;
-            (Arc::new(adapter), Vec::new())
-        }
-    };
-    let adapter: Arc<dyn AgentAdapter> = if untrusted {
-        Arc::new(crate::pr::UntrustedCode(adapter))
-    } else {
-        adapter
-    };
-    Ok(Agent {
-        adapter,
-        sessions,
-        provider,
-    })
-}
-
-/// The first agent CLI on the PATH: Claude Code, then Codex.
-pub fn detect_provider() -> Option<Provider> {
-    [Provider::Claude, Provider::Codex]
-        .into_iter()
-        .find(|p| p.program().is_some_and(is_installed))
-}
-
-/// Resolve `--session <id>` (a prefix is enough) against the known sessions.
-pub fn session_by_id(id: &str, sessions: &[SessionInfo], repo: &Path) -> SessionRef {
-    sessions
-        .iter()
-        .find(|s| s.id == id)
-        .or_else(|| sessions.iter().find(|s| s.id.starts_with(id)))
-        .map(|s| s.to_ref())
-        .unwrap_or_else(|| SessionRef {
-            agent: Provider::Claude.name().into(),
-            id: id.into(),
-            cwd: repo.to_path_buf(),
-        })
-}
-
-/// Prepare every unit that still needs the agent, waiting for all of them.
-/// No second opinion here: `--json` output stays what it was.
-pub async fn prepare_all(
-    review: &mut Review,
-    adapter: Arc<dyn AgentAdapter>,
-    session: SessionRef,
-    concurrency: usize,
-) {
-    let todo = review.to_prepare(None);
-    if todo.is_empty() {
-        return;
-    }
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let task = tokio::spawn(prepare::prepare(
-        adapter,
-        session,
-        todo,
-        concurrency,
-        false,
-        Arc::new(review.brief()),
-        tx,
-    ));
-    let mut dropped = 0;
-    while let Some(ev) = rx.recv().await {
-        if let prepare::PrepareEvent::Ready { dropped: d, .. } = &ev {
-            dropped += d.len();
-        }
-        review.apply(ev);
-    }
-    let _ = task.await;
-    if dropped > 0 {
-        eprintln!(
-            "teer: dropped {dropped} claim(s) without valid evidence (see {})",
-            crate::log::path().display()
-        );
-    }
-}
-
 /// The screens teer opens on the terminal: setup and the review. [`Terminal`]
 /// draws them; tests stand in for the user.
 #[async_trait::async_trait(?Send)]
@@ -343,7 +192,7 @@ pub trait Screens {
     ) -> Result<Option<Ended>>;
 
     /// The review, until the user leaves it.
-    async fn review(&self, launch: crate::tui::Launch) -> Result<()>;
+    async fn review(&self, launch: crate::start::Launch) -> Result<()>;
 }
 
 /// The screens on the terminal teer runs in.
@@ -366,7 +215,7 @@ impl Screens for Terminal {
             .map(Some)
     }
 
-    async fn review(&self, launch: crate::tui::Launch) -> Result<()> {
+    async fn review(&self, launch: crate::start::Launch) -> Result<()> {
         crate::tui::run(launch).await
     }
 }
@@ -379,64 +228,6 @@ enum Start {
     Pr(String),
     /// A pull request the user picks (`teer pr`, `teer pr list`).
     Pick,
-}
-
-/// What plain `teer` prints when there is nothing to review: a clean tree
-/// on the default branch (`on`), or on a detached HEAD the base has.
-pub fn nothing_to_review(on: &str) -> String {
-    format!(
-        "Nothing to review: no changes, and you're on {}.",
-        sanitize(on)
-    )
-}
-
-/// The URL of the pull request `input` names: its URL, or its number in the
-/// repository behind this clone's GitHub remote.
-fn pr_url(cwd: &Path, input: &str) -> Result<String> {
-    match crate::pr::parse_target(input)? {
-        crate::pr::Target::Url(url) => Ok(url),
-        crate::pr::Target::Number(n) => {
-            let repo = git::repo_root(cwd)
-                .with_context(|| format!("teer {n} must run inside a clone of the repository"))?;
-            crate::pr::url_of_number(&repo, n)
-        }
-    }
-}
-
-/// The base of the current branch's pull request as a ref of this clone:
-/// the branch on the remote gh uses (`origin/main`), else the local branch.
-/// `None` when gh doesn't say within [`crate::gh::BASE_TIMEOUT`] or names
-/// a branch this clone doesn't have.
-fn pr_base_ref(repo: &Path) -> Option<String> {
-    let name = crate::gh::pr_base(&crate::gh::program(), repo, crate::gh::BASE_TIMEOUT)?;
-    if !crate::pr::valid_branch_name(&name) {
-        return None;
-    }
-    let remote = crate::pr_list::target_repo(repo).ok().map(|r| r.remote);
-    remote
-        .map(|r| format!("{r}/{name}"))
-        .into_iter()
-        .chain([name])
-        .find(|r| git::commit_of(repo, r).is_some())
-}
-
-/// The Claude Code session that wrote `review`'s changes in the last day
-/// ([`crate::agent::sessions::wrote_changes`]), if there is one.
-fn writer_session(review: &Review) -> Option<SessionInfo> {
-    let root = crate::agent::sessions::projects_root()?;
-    let changed: Vec<PathBuf> = review
-        .files
-        .iter()
-        .flat_map(|f| std::iter::once(&f.path).chain(&f.old_path))
-        .chain(review.skipped.iter().map(|f| &f.path))
-        .cloned()
-        .collect();
-    crate::agent::sessions::wrote_changes(
-        &root,
-        &review.repo_root,
-        &changed,
-        std::time::SystemTime::now(),
-    )
 }
 
 pub async fn run(args: Args) -> Result<()> {
@@ -798,20 +589,7 @@ async fn run_review(
     }
 
     if review.files.is_empty() && review.skipped.is_empty() {
-        let what = if let Some(pr) = &review.pr {
-            format!("changes in PR #{}", pr.number)
-        } else if review.head == crate::git::WORKTREE {
-            "uncommitted changes".to_string()
-        } else {
-            let base = review.branch.as_ref().map(|b| b.base.clone());
-            let base = base.unwrap_or_else(|| review.base.chars().take(7).collect());
-            format!("changes since {}", sanitize(&base))
-        };
-        let place = match &review.pr {
-            Some(pr) => format!("{}/{}", pr.owner, pr.repo),
-            None => repo.display().to_string(),
-        };
-        println!("teer: no {what} to review in {place}");
+        println!("{}", crate::start::nothing_to_show(&review));
         return Ok(());
     }
 
@@ -832,7 +610,7 @@ async fn run_review(
         _ => None,
     };
     screens
-        .review(crate::tui::Launch {
+        .review(crate::start::Launch {
             review,
             agent,
             session_arg,

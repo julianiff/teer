@@ -469,6 +469,10 @@ pub struct App {
     /// The units the last re-run found changed or new, by id: listed at the
     /// top of their level until the next one.
     pub changed: HashSet<String>,
+    /// The last action a key, a click or a menu ran, and its count, until a
+    /// front end takes it: one that scrolls natively scrolls for the
+    /// scroll actions.
+    pub ran: Option<(Action, Option<u32>)>,
 }
 
 impl App {
@@ -509,6 +513,7 @@ impl App {
             waiting: None,
             fix_by: None,
             changed: HashSet::new(),
+            ran: None,
             cfg,
         };
         app.rebuild_order();
@@ -1010,7 +1015,10 @@ impl App {
     /// are dropped, and an unknown command is reported.
     pub(crate) fn panel_action(&mut self, k: Key) -> Option<Action> {
         match self.keys.feed(k, std::time::Instant::now()) {
-            Outcome::Run { action, .. } => Some(action),
+            Outcome::Run { action, count } => {
+                self.ran = Some((action, count));
+                Some(action)
+            }
             Outcome::Error(e) => {
                 self.status = e;
                 None
@@ -1023,6 +1031,7 @@ impl App {
     /// extend the selection, a decision applies to all of it, and anything
     /// else leaves visual mode first. Decisions are remembered for `.`.
     pub fn run_action(&mut self, a: Action, count: Option<u32>) -> Vec<Effect> {
+        self.ran = Some((a, count));
         let effects = self.action(a, count);
         self.save_cursor(effects)
     }
@@ -1062,6 +1071,31 @@ impl App {
             self.last_decision = Some((a, count));
         }
         self.act(a, count)
+    }
+
+    /// A click on item `i` of the list the overlay shows (the sheet's
+    /// steps, the notes, a jump list, the commits): it is selected, as the
+    /// keys that move there would select it.
+    pub fn pick(&mut self, i: usize) -> Vec<Effect> {
+        let steps = self.finish_steps().len();
+        match &mut self.overlay {
+            Overlay::Finish { sel } => {
+                let to = i.min(steps.saturating_sub(1));
+                if *sel == to {
+                    return Vec::new();
+                }
+                *sel = to;
+                self.finish.scroll = 0;
+                return self.on_step();
+            }
+            Overlay::Commits { sel, unit } => {
+                *sel = i;
+                *unit = None;
+            }
+            Overlay::Notes { sel } | Overlay::Jump { sel, .. } => *sel = i,
+            _ => {}
+        }
+        Vec::new()
     }
 
     /// The help (`?`) for the screen, or for the panel open on it.

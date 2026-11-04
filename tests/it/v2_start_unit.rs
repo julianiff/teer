@@ -444,7 +444,7 @@ struct Fake {
     /// There is no terminal for setup.
     no_terminal: bool,
     shown: RefCell<Vec<String>>,
-    launched: RefCell<Option<teer::tui::Launch>>,
+    launched: RefCell<Option<teer::start::Launch>>,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -472,7 +472,7 @@ impl Screens for Fake {
         }
     }
 
-    async fn review(&self, launch: teer::tui::Launch) -> anyhow::Result<()> {
+    async fn review(&self, launch: teer::start::Launch) -> anyhow::Result<()> {
         self.shown.borrow_mut().push("review".into());
         *self.launched.borrow_mut() = Some(launch);
         Ok(())
@@ -484,7 +484,7 @@ impl Fake {
         self.shown.borrow().clone()
     }
 
-    fn launched(&self) -> teer::tui::Launch {
+    fn launched(&self) -> teer::start::Launch {
         self.launched
             .borrow_mut()
             .take()

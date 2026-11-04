@@ -67,7 +67,7 @@ async fn app() -> (App, FixtureRepo) {
         id: "s1".into(),
         cwd: PathBuf::from("/work/shop"),
     };
-    teer::cli::prepare_all(
+    teer::start::prepare_all(
         &mut review,
         Arc::new(MockAdapter::new(responder)),
         session.clone(),
