@@ -45,6 +45,7 @@ teer                # your changes, or this branch since its base
 teer <url>          # a github pull request
 teer 482            # pull request 482 of this repo
 teer pr             # pick one waiting for you
+teer app            # the same review in teer.app
 ```
 
 the first start asks which agent and models to use; `teer setup` changes it.
@@ -65,15 +66,25 @@ the first start asks which agent and models to use; `teer setup` changes it.
 | `:w` | finish: send the notes, commit, approve |
 | `?` | every key |
 
-your place is saved on every change.
+your place is saved on every change. a review is open in one place at a time: a second `teer` on it, in another terminal or the app, says where it's open.
 
 ## the desktop app
 
-teer.app is the same review in a window: the same keys, config and saved reviews, with panes, inline diagrams and a terminal pane for your agent. `teer app` opens this repo's review in it, `:app` hands it the review open in the terminal, and its file menu's "open in terminal" hands it back. a review is open in one place at a time.
+teer.app is the same review in a window, on the same code: the same keys (your `[keys]` too), config and saved reviews. a review started in one goes on in the other.
+
+- **your repositories up front** — the start screen lists them, each with the pull requests waiting for your review or assigned to you; one click opens one. `+ add repository` adds a folder, or drop it on the window. paste a pull request's link and it opens in your clone of its repository. in a review, the subject at the top left (`⇧⌘O`) lists the rest.
+- **buttons where they act** — accept and flag on the unit, the closer looks over the unit view, zoom and close on a tile, each showing its key, so the keymap is learned by clicking. `⇧⌘B` hides them all; `⌘K` finds any action.
+- **the handoffs in the window** — your agent runs in a terminal pane, the commit message and the review summary are written in the window, and the commit's output streams into a panel.
+- **to the terminal and back** — `teer app` opens this repo's review in the app, `:app` hands it the review open in the terminal, and file › open in terminal hands it back.
+
+macos (it builds on linux too). until a signed release is out, build it from a clone:
 
 ```bash
-brew install --cask julianiff/tap/teer-app   # once a signed release is out; until then see docs/desktop.md
+cd desktop && npm install && npx tauri build --debug --bundles app
+open ../target/debug/bundle/macos/Teer.app
 ```
+
+once one is out: `brew install --cask julianiff/tap/teer-app`. more in [docs/desktop.md](docs/desktop.md).
 
 ## config
 
