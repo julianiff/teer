@@ -6,10 +6,15 @@
   import { api } from "../lib/api";
   import type { ListedPr, Listing, Recent } from "../lib/types";
 
+  // What the last review asked for came to instead: nothing to review in
+  // that repository, or why it couldn't be opened.
   let {
     mode = $bindable(null),
     said = null,
-  }: { mode: "folder" | "pr" | null; said?: string | null } = $props();
+  }: {
+    mode: "folder" | "pr" | null;
+    said?: { repo: string; text: string; error: boolean } | null;
+  } = $props();
 
   let recent = $state<Recent[]>([]);
   let repo = $state("");
@@ -24,6 +29,16 @@
   let prField: HTMLInputElement | undefined = $state();
 
   onMount(async () => {
+    if (said) {
+      // Back from "Opening…": the same repository, and what came of it.
+      repo = said.repo;
+      if (said.error) error = said.text;
+      else {
+        note = said.text;
+        // Nothing to review here: perhaps a pull request of it.
+        void loadPrs();
+      }
+    }
     recent = await api.recent();
     if (!repo && recent[0]) repo = recent[0].path;
   });
@@ -137,7 +152,7 @@
       </button>
       <button class="btn" disabled={!repo} onclick={loadPrs}>Pull requests…</button>
     </div>
-    {#if note ?? said}<p class="note">{note ?? said}</p>{/if}
+    {#if note}<p class="note">{note}</p>{/if}
     {#if error}<pre class="error">{error}</pre>{/if}
   </section>
 

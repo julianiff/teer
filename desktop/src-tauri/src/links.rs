@@ -31,11 +31,11 @@ pub fn open(handle: &AppHandle, link: Link, no_agent: bool) {
     tauri::async_runtime::spawn(async move {
         let windows = handle.state::<Windows>();
         let repo = link.repo.display().to_string();
-        let opened = open_in(
+        // The window hears how it ended: `open_in` tells it.
+        let _ = open_in(
             &handle, &windows, &label, repo, link.base, link.pr, no_agent,
         )
         .await;
-        crate::report(&handle, &label, opened);
     });
 }
 
@@ -102,11 +102,9 @@ pub fn to_terminal(handle: &AppHandle, label: &str) {
             }
         }
         if let Err(e) = run_in_terminal(&repo, pr.as_deref()) {
-            crate::report(
-                &handle,
-                &label,
-                Err(format!("Couldn't open the terminal: {e}")),
-            );
+            let repo = repo.display().to_string();
+            let text = format!("Couldn't open the terminal: {e}");
+            crate::commands::say(&handle, &label, &repo, &text, true);
         }
     });
 }

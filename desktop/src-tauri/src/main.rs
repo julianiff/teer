@@ -15,18 +15,6 @@ mod recent;
 mod settings;
 mod window;
 
-/// A review the app opened by itself (not the window's start screen) came
-/// to nothing or failed: the window says so.
-fn report(handle: &tauri::AppHandle, label: &str, opened: Result<Option<String>, String>) {
-    use tauri::Emitter;
-    let said = match opened {
-        Ok(None) => return,
-        Ok(Some(said)) => said,
-        Err(e) => e,
-    };
-    let _ = handle.emit_to(tauri::EventTarget::webview_window(label), "said", said);
-}
-
 fn main() {
     // Before any thread: PATH and the rest from the login shell.
     env::import();

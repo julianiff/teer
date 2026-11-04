@@ -21,7 +21,7 @@
   let palette = $state(false);
   let startMode = $state<"folder" | "pr" | null>(null);
   // What a review the app opened by itself came to, instead of a review.
-  let said = $state<string | null>(null);
+  let said = $state<{ repo: string; text: string; error: boolean } | null>(null);
   // What takes over from the review for a while: the terminal pane, the
   // text editor, the commit's output, the settings.
   let terminal = $state<{ id: number; title: string } | null>(null);
@@ -37,7 +37,7 @@
         opening = null;
       }),
       on<string>("opening", (repo) => (opening = repo)),
-      on<string>("said", (s) => {
+      on<{ repo: string; text: string; error: boolean }>("said", (s) => {
         said = s;
         opening = null;
       }),

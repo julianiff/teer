@@ -118,6 +118,44 @@ pub async fn open_in(
     pr: Option<String>,
     no_agent: bool,
 ) -> Result<Option<String>, String> {
+    let opened = open_here(handle, windows, label, repo.clone(), base, pr, no_agent).await;
+    // The window went to "Opening…": it hears how that ended, whoever asked.
+    match &opened {
+        Ok(None) => {}
+        Ok(Some(text)) => say(handle, label, &repo, text, false),
+        Err(text) => say(handle, label, &repo, text, true),
+    }
+    opened
+}
+
+/// What a window that was opening a review is told instead of a review:
+/// there is nothing to review in `repo`, or (`error`) why it can't be.
+#[derive(Debug, Clone, Serialize)]
+pub struct Said {
+    pub repo: String,
+    pub text: String,
+    pub error: bool,
+}
+
+/// Tell window `label` [`Said`].
+pub fn say(handle: &AppHandle, label: &str, repo: &str, text: &str, error: bool) {
+    let said = Said {
+        repo: repo.to_string(),
+        text: text.to_string(),
+        error,
+    };
+    let _ = handle.emit_to(EventTarget::webview_window(label), "said", said);
+}
+
+async fn open_here(
+    handle: &AppHandle,
+    windows: &Windows,
+    label: &str,
+    repo: String,
+    base: Option<String>,
+    pr: Option<String>,
+    no_agent: bool,
+) -> Result<Option<String>, String> {
     let cwd = PathBuf::from(&repo);
     {
         let mut map = windows.0.lock().map_err(|e| e.to_string())?;
