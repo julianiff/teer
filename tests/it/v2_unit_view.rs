@@ -22,9 +22,10 @@ use teer::review::model::{
     TestSearch, Unit, Verdict,
 };
 use teer::review::{BuildOptions, build_review, store};
-use teer::tui::Runtime;
-use teer::tui::app::{App, AppEvent, Effect, JumpKind, Overlay, Screen};
-use teer::tui::unit::Panel;
+use teer::session::Runtime;
+use teer::session::app::{AppEvent, Effect, JumpKind, Overlay, Screen};
+use teer::session::unit::Panel;
+use teer::tui::app::App;
 
 // ---- Helpers -----------------------------------------------------------
 

@@ -19,9 +19,11 @@ use teer::git::{ChangedFile, FileStatus};
 use teer::keymap::Keymap;
 use teer::review::BuildOptions;
 use teer::review::model::{Decision, PrInfo, Prep, Range, Review, Unit, UnitKind, UnitStatus};
-use teer::tui::app::{App, AppEvent, Effect, Overlay};
-use teer::tui::finish::Step;
-use teer::tui::{Runtime, ui};
+use teer::session::Runtime;
+use teer::session::app::{AppEvent, Effect, Overlay};
+use teer::session::finish::Step;
+use teer::tui::app::App;
+use teer::tui::ui;
 
 const OLD: &str = "def f():\n    return 1\n\n\ndef g():\n    return 2\n";
 const NEW: &str = "def f():\n    return 10\n\n\ndef g():\n    return 20\n";

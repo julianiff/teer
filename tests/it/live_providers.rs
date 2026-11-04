@@ -149,7 +149,7 @@ async fn api_describes_checks_and_answers() {
         base_url: env("TEER_LIVE_API_URL").unwrap_or_default(),
         key_env: env("TEER_LIVE_API_KEY_ENV").unwrap_or_default(),
     };
-    let key = teer::cli::api_key(&api).unwrap();
+    let key = api.key().unwrap();
     let second = env("TEER_LIVE_API_SECOND");
     let adapter = ApiAdapter::new(
         api.format,

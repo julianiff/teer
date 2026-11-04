@@ -20,9 +20,10 @@ use teer::review::model::{
     Decision, Dive, PrInfo, Prep, Range, Review, Unit, UnitKind, UnitStatus,
 };
 use teer::review::{BuildOptions, build_review};
-use teer::tui::Runtime;
-use teer::tui::app::{App, AppEvent, DraftState, Effect, Overlay};
-use teer::tui::finish::Step;
+use teer::session::Runtime;
+use teer::session::app::{AppEvent, DraftState, Effect, Overlay};
+use teer::session::finish::Step;
+use teer::tui::app::App;
 
 // ---- Local changes and branches ---------------------------------------------
 

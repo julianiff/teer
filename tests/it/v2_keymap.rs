@@ -13,8 +13,8 @@ use std::path::PathBuf;
 use common::v2::{Driver, review, unit, units};
 use teer::keymap::{Action, KeySpec, Keymap, Trigger};
 use teer::review::model::{Change, Decision, DiveKind, DiveResult, Marker, Range, Risk, Visual};
-use teer::tui::app::{Effect, Grouping, JumpKind, Overlay, Screen};
-use teer::tui::unit::Panel;
+use teer::session::app::{Effect, Grouping, JumpKind, Overlay, Screen};
+use teer::session::unit::Panel;
 
 use Decision::{Accepted as A, Investigate as F, Pending as P};
 
@@ -652,7 +652,7 @@ fn leader_s_opens_the_settings() {
 
 #[test]
 fn colon_w_opens_the_finish_sheet_on_the_step_that_fits() {
-    use teer::tui::finish::Step;
+    use teer::session::finish::Step;
     let mut d = Driver::new(3);
     d.keys(":w<cr>");
     assert_eq!(*d.overlay(), Overlay::Finish { sel: 0 });

@@ -21,9 +21,10 @@ use teer::config::Config;
 use teer::keymap::Keymap;
 use teer::review::model::{Decision, PrInfo, Review, SessionRef};
 use teer::review::{BuildOptions, build_review, store};
-use teer::tui::Runtime;
-use teer::tui::app::{App, AppEvent, DraftState, Effect, Overlay};
-use teer::tui::finish::Step;
+use teer::session::Runtime;
+use teer::session::app::{AppEvent, DraftState, Effect, Overlay};
+use teer::session::finish::Step;
+use teer::tui::app::App;
 use teer::tui::ui;
 
 // ------------------------------------------------------------- fixtures
@@ -298,7 +299,7 @@ fn a_complete_saved_review_opens_on_the_list_and_colon_w_commits() {
     accept_all(&mut rv);
     store::save(&rv).unwrap();
     let mut fresh = review_of(&r);
-    teer::cli::restore(&mut fresh);
+    teer::review::store::restore(&mut fresh);
     let mut a = app_of(fresh);
     a.start(false, None, Vec::new(), None);
     assert_eq!(a.overlay, Overlay::None);

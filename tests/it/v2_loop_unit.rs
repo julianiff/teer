@@ -16,8 +16,9 @@ use teer::config::{Config, Provider};
 use teer::keymap::Keymap;
 use teer::review::model::{Decision, PrInfo};
 use teer::review::{BuildOptions, build_review};
-use teer::tui::Runtime;
-use teer::tui::app::{App, AppEvent, Effect, Overlay};
+use teer::session::Runtime;
+use teer::session::app::{AppEvent, Effect, Overlay};
+use teer::tui::app::App;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 const OLD: &str = "def total(items):

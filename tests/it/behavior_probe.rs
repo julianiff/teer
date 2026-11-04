@@ -254,9 +254,10 @@ async fn leader_r_in_the_unit_view_runs_the_probe_and_shows_the_table() {
     use teer::config::Config;
     use teer::keymap::Keymap;
     use teer::review::model::DiveKind;
-    use teer::tui::Runtime;
-    use teer::tui::app::{App, Effect, Screen};
-    use teer::tui::unit::Panel;
+    use teer::session::Runtime;
+    use teer::session::app::{Effect, Screen};
+    use teer::session::unit::Panel;
+    use teer::tui::app::App;
 
     if !has_python() {
         return;
@@ -304,7 +305,9 @@ async fn leader_r_in_the_unit_view_runs_the_probe_and_shows_the_table() {
             .expect("the run finishes")
             .unwrap();
         let said = match &ev {
-            teer::tui::app::AppEvent::Dive(DiveEvent::Progress { text, .. }) => Some(text.clone()),
+            teer::session::app::AppEvent::Dive(DiveEvent::Progress { text, .. }) => {
+                Some(text.clone())
+            }
             _ => None,
         };
         let done = said.is_none();

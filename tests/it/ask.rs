@@ -19,8 +19,9 @@ use teer::review::model::{Answer, DiveKind, DiveResult, Question, Review, Sessio
 use teer::review::prompts::ask_prompt;
 use teer::review::validate::validate_answer;
 use teer::review::{BuildOptions, ask, build_review, store};
-use teer::tui::app::{App, AppEvent, Effect, Overlay, Screen};
-use teer::tui::unit::Panel;
+use teer::session::app::{AppEvent, Effect, Overlay, Screen};
+use teer::session::unit::Panel;
+use teer::tui::app::App;
 
 const CART: &str = "class Cart:\n    def add(self, item):\n        self.items.append(item)\n";
 const CHARGE: &str = "checkout.py::charge_order";

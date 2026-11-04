@@ -20,7 +20,8 @@ use teer::keymap::Keymap;
 use teer::review::attention::Level;
 use teer::review::model::{Decision, Prep, Review, SessionRef, UnitKind, UnitStatus};
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, Overlay};
+use teer::session::app::Overlay;
+use teer::tui::app::App;
 use teer::tui::ui;
 
 fn lines(n: usize, word: &str) -> String {
@@ -330,7 +331,7 @@ fn gf_opens_a_whole_file_at_its_first_change() {
     let effects = v2::press(&mut a, "gf");
     assert_eq!(
         effects,
-        [teer::tui::app::Effect::Edit {
+        [teer::session::app::Effect::Edit {
             file: "docs/new.md".into(),
             line: 5
         }]

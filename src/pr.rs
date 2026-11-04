@@ -1141,7 +1141,7 @@ pub fn prepare(cwd: &Path, url: &str, languages: Option<Vec<String>>) -> Result<
         Err(_) => None,
     };
     review.pr = Some(info);
-    crate::cli::restore(&mut review);
+    crate::review::store::restore(&mut review);
     Ok(PrSession { review, worktree })
 }
 

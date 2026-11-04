@@ -19,7 +19,8 @@ use teer::keymap::Keymap;
 use teer::review::dive::DiveEvent;
 use teer::review::model::SessionRef;
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, AppEvent, Screen};
+use teer::session::app::{AppEvent, Screen};
+use teer::tui::app::App;
 use teer::tui::ui;
 
 /// A 30-line function; changed, at line 4 and at line 26.

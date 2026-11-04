@@ -20,7 +20,8 @@ use teer::review::model::{Review, SessionRef};
 use teer::review::prepare::{PrepareEvent, prepare};
 use teer::review::prompts::SECOND_RULES;
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, Effect, Screen};
+use teer::session::app::{Effect, Screen};
+use teer::tui::app::App;
 
 /// The first line of each unit in the prompt, by id.
 fn units_in(prompt: &str) -> Vec<(String, u32)> {

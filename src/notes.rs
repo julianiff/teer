@@ -2,8 +2,8 @@
 //! for the clipboard and `teer notes`, and as the first message of a Claude
 //! Code or Codex session that works through them (the `:w` sheet).
 
+use crate::review::diff::{self, Kind};
 use crate::review::model::{Decision, Review, Unit};
-use crate::tui::diff::{self, Kind};
 use crate::util::sanitize;
 
 /// Most diff rows quoted per note.

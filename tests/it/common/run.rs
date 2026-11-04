@@ -31,9 +31,11 @@ use teer::keymap::{Action, Keymap, parse_keys};
 use teer::review::BuildOptions;
 use teer::review::model::{Decision, Review, SessionRef};
 use teer::review::store;
-use teer::tui::app::{App, AppEvent, Effect};
+use teer::session::Runtime;
+use teer::session::app::{AppEvent, Effect};
+use teer::tui::Launch;
+use teer::tui::app::App;
 use teer::tui::setup::{Ended, Opened};
-use teer::tui::{Launch, Runtime};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use super::sandbox::script;

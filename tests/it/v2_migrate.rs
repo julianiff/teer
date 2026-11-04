@@ -28,7 +28,7 @@ use teer::config::Config;
 use teer::keymap::{Action, KeySpec, Keymap};
 use teer::review::model::{Decision, Review};
 use teer::review::store;
-use teer::tui::app::{Overlay, Screen};
+use teer::session::app::{Overlay, Screen};
 
 use Decision::{Accepted as A, Investigate as F, Pending as P};
 

@@ -1,5 +1,6 @@
 //! Drawing: header, bottom bar, and each screen.
 
+use crate::session::names;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -7,12 +8,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
-use super::app::{App, JumpKind, Overlay, Screen, Target};
+use super::app::{App, Target};
 use super::select;
 use super::slim;
 use crate::git::WORKTREE;
 use crate::keymap::{Action, Trigger};
 use crate::review::attention::Level;
+use crate::session::app::{JumpKind, Overlay, Screen};
 use crate::util::{sanitize, truncate, wrap};
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -225,7 +227,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let r = &app.review;
     // What is reviewed, then what the change is called (the PR's title, the
     // only commit's subject): the commits view (`␣c`) has the rest.
-    let mut title = crate::cli::subject(r);
+    let mut title = r.subject();
     let named = r.pr.is_some() || (r.head != WORKTREE && r.intent.commits.len() == 1);
     if let (true, Some(name)) = (named, crate::review::intent::headline(r).0) {
         title = format!("{title} · {}", sanitize(&name));
@@ -495,7 +497,7 @@ fn draw_note_line(f: &mut Frame, app: &App, area: Rect, id: &str, text: &str) {
     let name = app
         .review
         .unit(id)
-        .map(slim::row_name)
+        .map(names::row_name)
         .unwrap_or_else(|| sanitize(id));
     let (keys, plain) = hint_line(
         app,
@@ -1308,8 +1310,8 @@ fn draw_jump(f: &mut Frame, app: &App, kind: &JumpKind, query: &str, sel: usize)
 fn jump_row(app: &App, u: &crate::review::model::Unit, selected: bool, w: usize) -> Line<'static> {
     let t = &app.theme;
     let level = app.assessment(&u.id).map_or(Level::Routine, |a| a.level);
-    let name = slim::row_name(u);
-    let file = slim::file_name(&u.file);
+    let name = names::row_name(u);
+    let file = names::file_name(&u.file);
     let name_w = w.saturating_sub(4).min(name.width());
     let file_w = w.saturating_sub(4 + name_w + 2);
     let style = if selected {
@@ -1337,9 +1339,9 @@ mod tests {
     use super::*;
     use crate::keymap::{Edit, Keymap, Sheet, parse_label};
 
-    fn key(label: &str) -> crossterm::event::KeyEvent {
+    fn key(label: &str) -> crate::keymap::Key {
         match parse_label(label).as_deref() {
-            Some([k]) => k.event(),
+            Some([k]) => *k,
             other => panic!("{label} is not one key: {other:?}"),
         }
     }
@@ -1348,7 +1350,7 @@ mod tests {
     fn fixed_labels_are_the_keys_the_modes_read() {
         let km = Keymap::default();
         for (label, sheet) in [(fixed::ENTER, Sheet::Confirm), (fixed::ESC, Sheet::Cancel)] {
-            assert_eq!(km.sheet(&key(label)), Some(sheet), "{label}");
+            assert_eq!(km.sheet(key(label)), Some(sheet), "{label}");
         }
         for (label, edit) in [
             (fixed::ENTER, Edit::Submit),
@@ -1358,11 +1360,11 @@ mod tests {
             (fixed::RETRY, Edit::Retry),
             (fixed::TAB, Edit::Tab),
         ] {
-            assert_eq!(km.edit(&key(label)), edit, "{label}");
+            assert_eq!(km.edit(key(label)), edit, "{label}");
         }
-        assert!(km.confirm(&key(fixed::YES)));
-        assert!(km.confirm(&key(fixed::ENTER)));
-        assert!(!km.confirm(&key(fixed::ESC)));
+        assert!(km.confirm(key(fixed::YES)));
+        assert!(km.confirm(key(fixed::ENTER)));
+        assert!(!km.confirm(key(fixed::ESC)));
     }
 
     #[test]

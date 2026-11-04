@@ -10,17 +10,19 @@
 //! boxes says how many units were accepted for you. The preview of the unit
 //! under the cursor sits beside the list on a wide terminal, else below it.
 
+use crate::session::names;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use super::app::{App, Grouping};
+use super::app::App;
 use super::slim::{self, UNIT_LEAD};
 use super::{preview, ui};
 use crate::keymap::Action;
 use crate::review::model::{Decision, Risk, Unit, UnitKind, UnitStatus};
+use crate::session::app::Grouping;
 use crate::util::{sanitize, truncate, truncate_pad};
 
 /// The actions the queue handles, for the help, in the order it lists them
@@ -109,7 +111,7 @@ fn name_of(u: &Unit, with_path: bool) -> String {
     if u.kind == UnitKind::File && with_path {
         "whole file".into()
     } else {
-        slim::row_name(u)
+        names::row_name(u)
     }
 }
 
@@ -368,7 +370,7 @@ mod tests {
     use crate::config::Config;
     use crate::keymap::Keymap;
     use crate::review::model::{Prep, Range, Review};
-    use crate::tui::app::Screen;
+    use crate::session::app::Screen;
     use std::path::PathBuf;
 
     fn unit(i: usize, file: &str, decision: Decision) -> Unit {

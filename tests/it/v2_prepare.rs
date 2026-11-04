@@ -29,7 +29,8 @@ use teer::review::model::{
 use teer::review::prepare::prepare;
 use teer::review::prompts::SECOND_RULES;
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, Grouping};
+use teer::session::app::Grouping;
+use teer::tui::app::App;
 
 // ---- The Phase 3 API these tests expect: adapt here after merging -----------
 

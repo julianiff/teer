@@ -23,8 +23,8 @@ use teer::review::model::{
     Reach, Related, Review, Risk, SecondOpinion, Side, TestSearch, Unit, Verdict, Visual,
 };
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{AppEvent, Effect, JumpKind, Overlay, Screen};
-use teer::tui::unit::Panel;
+use teer::session::app::{AppEvent, Effect, JumpKind, Overlay, Screen};
+use teer::session::unit::Panel;
 
 use Decision::{Accepted as A, Investigate as F, Pending as P};
 

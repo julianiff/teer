@@ -11,7 +11,7 @@ use crate::agent::api::ApiAdapter;
 use crate::agent::claude::{ClaudeAdapter, is_installed};
 use crate::agent::codex::CodexAdapter;
 use crate::agent::{AgentAdapter, SessionInfo};
-use crate::config::{ApiConfig, Config, Provider, Role};
+use crate::config::{Config, Provider, Role};
 use crate::git::{self, Target};
 use crate::keymap::{Action, Keymap};
 use crate::review::model::{BranchNames, Review, SessionRef};
@@ -253,7 +253,7 @@ or run with --no-agent to review without change statements."
             (Arc::new(adapter), Vec::new())
         }
         Provider::Api => {
-            let key = api_key(&cfg.api)?;
+            let key = cfg.api.key()?;
             let deep = model(Role::Deep)?;
             let adapter =
                 ApiAdapter::new(cfg.api.format, &cfg.api.url(), key, prepare, second, deep)
@@ -271,21 +271,6 @@ or run with --no-agent to review without change statements."
         sessions,
         provider,
     })
-}
-
-/// The API key from the variable `[api] key_env` names; `None` when it
-/// names none (a local server).
-pub fn api_key(api: &ApiConfig) -> std::result::Result<Option<String>, String> {
-    let var = api.key_env.trim();
-    if var.is_empty() {
-        return Ok(None);
-    }
-    match std::env::var(var) {
-        Ok(k) if !k.trim().is_empty() => Ok(Some(k.trim().to_string())),
-        _ => Err(format!(
-            "${var} isn't set: export your API key in it, or pick another agent with `teer setup`."
-        )),
-    }
 }
 
 /// The first agent CLI on the PATH: Claude Code, then Codex.
@@ -307,23 +292,6 @@ pub fn session_by_id(id: &str, sessions: &[SessionInfo], repo: &Path) -> Session
             id: id.into(),
             cwd: repo.to_path_buf(),
         })
-}
-
-/// Load a previous review for the same changes and carry its state over.
-pub fn restore(review: &mut Review) {
-    // A PR review only ever sees reviews of the same PR, never the repo's own.
-    let pr = review.pr.as_ref();
-    let prev = store::load(
-        &review.repo_root,
-        pr,
-        &review.base,
-        &review.head,
-        &review.head_commit,
-    )
-    .or_else(|| store::load_latest(&review.repo_root, pr));
-    if let Some(prev) = prev {
-        store::merge_previous(review, &prev);
-    }
 }
 
 /// Prepare every unit that still needs the agent, waiting for all of them.
@@ -454,34 +422,6 @@ fn pr_base_ref(repo: &Path) -> Option<String> {
         .into_iter()
         .chain([name])
         .find(|r| git::commit_of(repo, r).is_some())
-}
-
-/// What `review` is of, as its header says it: "your changes", "feature
-/// since main, 6 commits", "PR #482 by octocat".
-pub fn subject(review: &Review) -> String {
-    if let Some(pr) = &review.pr {
-        let author = review.intent.pr.as_ref().map(|m| m.author.as_str());
-        return match author.filter(|a| !a.is_empty()) {
-            Some(a) => format!("PR #{} by {}", pr.number, sanitize(a)),
-            None => format!("PR #{}", pr.number),
-        };
-    }
-    if review.head == git::WORKTREE {
-        return "your changes".into();
-    }
-    // No commits read (git failed, or a review made up in a test): no count.
-    let commits = match review.intent.commits.len() {
-        0 => String::new(),
-        1 => ", 1 commit".into(),
-        n => format!(", {n} commits"),
-    };
-    match &review.branch {
-        Some(b) => format!("{} since {}{commits}", sanitize(&b.head), sanitize(&b.base)),
-        None => {
-            let short: String = review.base.chars().take(7).collect();
-            format!("since {short}{commits}")
-        }
-    }
 }
 
 /// The Claude Code session that wrote `review`'s changes in the last day
@@ -633,11 +573,11 @@ pub async fn run_on(args: Args, path: &Path, screens: &dyn Screens) -> Result<()
                     base: base.clone(),
                 });
             }
-            restore(&mut review);
+            store::restore(&mut review);
             run_review(args, review, cfg, keymap, screens).await
         }
         Start::Pick => {
-            let picked = crate::pr_list::run(&cwd, args.json, &cfg, keymap.clone()).await?;
+            let picked = pr_list(&cwd, args.json, &cfg, keymap.clone()).await?;
             let Some(pr) = picked else {
                 return Ok(());
             };
@@ -645,6 +585,51 @@ pub async fn run_on(args: Args, path: &Path, screens: &dyn Screens) -> Result<()
         }
         Start::Pr(url) => review_pr(args, cwd, url, cfg, keymap, screens).await,
     }
+}
+
+/// `teer pr list` for the repository at `cwd`. On a terminal the pull
+/// requests open in a picker and the one picked is returned, to be reviewed;
+/// piped or with `json`, they are printed.
+async fn pr_list(
+    cwd: &Path,
+    json: bool,
+    cfg: &Config,
+    keys: Keymap,
+) -> Result<Option<crate::pr_list::ListedPr>> {
+    use crate::pr_list::{fetch, render, target_repo};
+    use crate::tui::pr_pick::Picked;
+    use std::io::IsTerminal;
+    let repo = crate::git::repo_root(cwd)
+        .context("teer pr must run inside a clone of a GitHub repository")?;
+    let target = {
+        let repo = repo.clone();
+        tokio::task::spawn_blocking(move || target_repo(&repo)).await??
+    };
+    let gh = crate::gh::program();
+    if !json && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        let theme = crate::tui::theme::Theme::new(cfg.theme);
+        let listing = fetch(&gh, &repo, target.clone());
+        return match crate::tui::pr_pick::pick(target, listing, theme, keys).await? {
+            Picked::Pr(p) => Ok(Some(p)),
+            Picked::Quit => Ok(None),
+            Picked::Empty(l) => {
+                print!("{}", render(&l, chrono::Utc::now(), None, false));
+                Ok(None)
+            }
+        };
+    }
+    let listing = fetch(&gh, &repo, target).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&listing)?);
+        return Ok(None);
+    }
+    let tty = std::io::stdout().is_terminal();
+    let width = tty
+        .then(|| crossterm::terminal::size().ok().map(|(w, _)| w as usize))
+        .flatten();
+    let color = tty && std::env::var_os("NO_COLOR").is_none();
+    print!("{}", render(&listing, chrono::Utc::now(), width, color));
+    Ok(None)
 }
 
 /// `teer notes`: the notes of the repository's last review, or of the pull
@@ -978,45 +963,5 @@ mod tests {
             nothing_to_review("main"),
             "Nothing to review: no changes, and you're on main."
         );
-    }
-
-    fn review(head: &str, base: &str) -> Review {
-        let mut r: Review = serde_json::from_value(serde_json::json!({
-            "id": "r", "repo_root": "/work/subject-test", "base": base, "head": head,
-            "head_commit": head, "agent_session": null, "created_at": "2026-11-02T00:00:00Z",
-            "files": [], "units": []
-        }))
-        .unwrap();
-        r.intent.commits = vec![Default::default(); 3];
-        r
-    }
-
-    #[test]
-    fn the_subject_says_what_is_reviewed() {
-        assert_eq!(subject(&review(git::WORKTREE, "b1")), "your changes");
-
-        let r = review("h2", "b2");
-        assert_eq!(subject(&r), "since b2, 3 commits");
-        let mut r = r;
-        r.branch = Some(BranchNames {
-            head: "feature".into(),
-            base: "origin/main".into(),
-        });
-        assert_eq!(subject(&r), "feature since origin/main, 3 commits");
-        let mut one = r.clone();
-        one.intent.commits.truncate(1);
-        assert_eq!(subject(&one), "feature since origin/main, 1 commit");
-
-        let mut pr = review("h3", "b3");
-        pr.pr = Some(crate::review::model::PrInfo {
-            number: 482,
-            ..Default::default()
-        });
-        assert_eq!(subject(&pr), "PR #482");
-        pr.intent.pr = Some(crate::review::model::PrMeta {
-            author: "octocat".into(),
-            ..Default::default()
-        });
-        assert_eq!(subject(&pr), "PR #482 by octocat");
     }
 }

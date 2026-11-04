@@ -845,7 +845,7 @@ fn pr_and_local_reviews_never_see_each_other() {
     // The user's own uncommitted review of the same code, with a decision.
     fx.dirty();
     let mut local = build_review(&fx.path(), &BuildOptions::default()).unwrap();
-    teer::cli::restore(&mut local);
+    teer::review::store::restore(&mut local);
     assert_eq!(decision(&local, "price"), Decision::Pending);
     decide(&mut local, "price", Decision::Investigate);
     store::save(&local).unwrap();
@@ -859,7 +859,7 @@ fn pr_and_local_reviews_never_see_each_other() {
 
     // The local review still has its own decision, not the PR's.
     let mut local2 = build_review(&fx.path(), &BuildOptions::default()).unwrap();
-    teer::cli::restore(&mut local2);
+    teer::review::store::restore(&mut local2);
     assert_eq!(decision(&local2, "price"), Decision::Investigate);
     let latest = store::load_latest(&fx.path(), None).unwrap();
     assert!(latest.pr.is_none());

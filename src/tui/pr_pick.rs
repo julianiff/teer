@@ -20,7 +20,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::slim::SPINNER;
 use super::theme::Theme;
-use crate::keymap::{Action, Keymap, Outcome};
+use crate::keymap::{Action, Key, Keymap, Outcome};
 use crate::pr_list::{LIMIT, ListedPr, Listing, RepoRef, SHOWN, Section, age, details};
 use crate::util::{truncate, truncate_pad};
 
@@ -92,10 +92,11 @@ impl Picker {
         if k.kind == KeyEventKind::Release {
             return None;
         }
-        if self.keys.is_interrupt(&k) {
+        let k = Key::from_event(&k);
+        if self.keys.is_interrupt(k) {
             return Some(Picked::Quit);
         }
-        match self.keys.feed(&k, Instant::now()) {
+        match self.keys.feed(k, Instant::now()) {
             Outcome::Run { action, count } => self.on_action(action, count.unwrap_or(1) as usize),
             _ => None,
         }

@@ -17,7 +17,8 @@ use ratatui::layout::Rect;
 use teer::config::Config;
 use teer::keymap::Keymap;
 use teer::review::model::{Decision, Prep, Range, Review, Unit, UnitKind, UnitStatus};
-use teer::tui::app::{App, Grouping, Target};
+use teer::session::app::Grouping;
+use teer::tui::app::{App, Target};
 use teer::tui::{preview, ui};
 
 /// Unit `i`, alone in its file, gets a level by `i % 4`: routine, worth a

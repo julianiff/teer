@@ -3,10 +3,8 @@
 
 use std::collections::HashSet;
 
-use crossterm::event::KeyEvent;
-
 use super::app::{App, Effect, JumpKind, Overlay, typed};
-use crate::keymap::{Action, Edit};
+use crate::keymap::{Action, Edit, Key};
 
 /// Longest query, in characters.
 const QUERY_MAX: usize = 200;
@@ -41,7 +39,7 @@ impl App {
     /// selection; the `gd` and `gr` lists are panels
     /// ([`App::panel_action`]): `j`/`k`/`gg`/`G` move, `view.open` goes,
     /// `view.back` or `view.close` closes.
-    pub(super) fn jump_key(&mut self, k: KeyEvent) -> Vec<Effect> {
+    pub(crate) fn jump_key(&mut self, k: Key) -> Vec<Effect> {
         let Overlay::Jump {
             kind,
             mut query,
@@ -54,7 +52,7 @@ impl App {
         let last = items.len().saturating_sub(1);
         let mut sel = sel.min(last);
         if kind == JumpKind::Find {
-            match self.keys.edit(&k) {
+            match self.keys.edit(k) {
                 Edit::Submit => {
                     // Nothing matches: nothing to go to, the query stays.
                     let Some(&i) = items.get(sel) else {
@@ -76,7 +74,7 @@ impl App {
                 }
             }
         } else {
-            let Some(a) = self.panel_action(&k) else {
+            let Some(a) = self.panel_action(k) else {
                 return Vec::new();
             };
             match a {
@@ -208,7 +206,7 @@ mod tests {
     use crate::config::Config;
     use crate::keymap::{Keymap, parse_keys};
     use crate::review::model::{Decision, Prep, Review, Unit, UnitKind, UnitStatus};
-    use crate::tui::app::Screen;
+    use crate::session::app::Screen;
 
     fn unit(file: &str, symbol: &str) -> Unit {
         Unit {
@@ -278,7 +276,7 @@ mod tests {
     fn press(a: &mut App, keys: &str) -> Vec<Effect> {
         let mut out = Vec::new();
         for k in parse_keys(keys).unwrap() {
-            out.extend(a.on_key(k.event()));
+            out.extend(a.on_key(k));
         }
         out
     }

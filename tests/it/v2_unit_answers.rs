@@ -19,8 +19,9 @@ use teer::review::model::{
     Range, Review, SessionRef, TestCheck, Unit, UnitKind, UnitStatus,
 };
 use teer::review::{BuildOptions, build_review, store};
-use teer::tui::app::{App, AppEvent, Effect, NOTE_MAX, Overlay, Screen};
-use teer::tui::unit::Panel;
+use teer::session::app::{AppEvent, Effect, NOTE_MAX, Overlay, Screen};
+use teer::session::unit::Panel;
+use teer::tui::app::App;
 
 /// Unit `u{i}`, a described function `func_{i}` in `src/f{i}.rs`, pending.
 fn unit(i: usize) -> Unit {

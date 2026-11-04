@@ -318,7 +318,7 @@ pub async fn models(provider: Provider, api: &ApiConfig, suggest: &str) -> Resul
             tokio::task::spawn_blocking(move || crate::agent::codex::list_models(bin)).await??
         }
         Provider::Api => {
-            let key = crate::cli::api_key(api).map_err(anyhow::Error::msg)?;
+            let key = api.key().map_err(anyhow::Error::msg)?;
             crate::agent::api::list_models(api.format, &api.url(), key.as_deref()).await?
         }
     };

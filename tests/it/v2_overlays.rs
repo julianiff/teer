@@ -16,9 +16,10 @@ use teer::review::model::{
     Decision, Dive, PrInfo, Prep, Range, Review, Unit, UnitKind, UnitStatus,
 };
 use teer::review::{BuildOptions, build_review};
-use teer::tui::Runtime;
-use teer::tui::app::{App, DraftState, Effect, JumpKind, Overlay, Screen};
-use teer::tui::finish::Step;
+use teer::session::Runtime;
+use teer::session::app::{DraftState, Effect, JumpKind, Overlay, Screen};
+use teer::session::finish::Step;
+use teer::tui::app::App;
 
 const OLD: &str = "def f():\n    return 1\n\n\ndef g():\n    return 2\n";
 const NEW: &str = "def f():\n    return 10\n\n\ndef g():\n    return 20\n";
@@ -453,7 +454,7 @@ fn the_post_sheet_picks_the_verdict_with_j_and_k() {
 
 #[test]
 fn letters_typed_in_the_ask_panel_go_into_the_question() {
-    use teer::tui::unit::Panel;
+    use teer::session::unit::Panel;
     // From the queue, `K` asks in the unit view's panel.
     let mut a = app(["", ""], None);
     assert_eq!(a.screen, Screen::Queue);

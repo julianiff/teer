@@ -2,6 +2,7 @@
 //! commits between base and head with their type and tickets, and for the
 //! selected commit its message and the units it changed.
 
+use crate::session::names;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -179,7 +180,7 @@ fn detail_lines(app: &App, n: usize, unit: Option<usize>, w: usize) -> (Vec<Line
         };
         let place = super::slim::place(u);
         let name = truncate(
-            &super::slim::row_name(u),
+            &names::row_name(u),
             w.saturating_sub(place.width() + 4).max(8),
         );
         lines.push(Line::from(vec![

@@ -5,6 +5,7 @@
 //! change is marked so, its changed lines with `+`. An answer also shows on
 //! the unit it belongs to ([`note_lines`]).
 
+use crate::session::names;
 use std::cell::Cell;
 
 use ratatui::Frame;
@@ -14,12 +15,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-use super::app::{App, LiveAnswer, Target};
+use super::app::{App, Target};
 use super::preview::barred;
 use super::slim;
 use super::ui::fixed;
 use crate::keymap::Action;
 use crate::review::model::{Question, Shown};
+use crate::session::app::LiveAnswer;
 use crate::util::{sanitize, truncate, wrap};
 
 /// What a question on its way says.
@@ -243,7 +245,7 @@ fn related_line(app: &App, id: &str, why: &str, selected: bool, w: usize) -> Lin
     } else {
         t.bold()
     };
-    let name = slim::row_name(u);
+    let name = names::row_name(u);
     let place = slim::place(u);
     let why = if why.is_empty() {
         String::new()

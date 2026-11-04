@@ -31,7 +31,6 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
 
 /// Everything a key can ask for. The id ([`Action::id`]) is what
@@ -380,6 +379,75 @@ impl Action {
     }
 }
 
+/// A key on the keyboard, whatever front end read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeyCode {
+    Char(char),
+    Enter,
+    Tab,
+    BackTab,
+    Esc,
+    Backspace,
+    Delete,
+    Insert,
+    Left,
+    Right,
+    Up,
+    Down,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    F(u8),
+    /// A key teer has no name for (a media key, a modifier on its own).
+    Null,
+}
+
+/// The modifiers held with a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct KeyModifiers(u8);
+
+impl KeyModifiers {
+    pub const NONE: KeyModifiers = KeyModifiers(0);
+    pub const SHIFT: KeyModifiers = KeyModifiers(1);
+    pub const CONTROL: KeyModifiers = KeyModifiers(1 << 1);
+    pub const ALT: KeyModifiers = KeyModifiers(1 << 2);
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Holds every modifier of `other`.
+    pub const fn contains(self, other: KeyModifiers) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// Holds any modifier of `other`.
+    pub const fn intersects(self, other: KeyModifiers) -> bool {
+        self.0 & other.0 != 0
+    }
+}
+
+impl std::ops::BitOr for KeyModifiers {
+    type Output = KeyModifiers;
+    fn bitor(self, other: KeyModifiers) -> KeyModifiers {
+        KeyModifiers(self.0 | other.0)
+    }
+}
+
+impl std::ops::BitOrAssign for KeyModifiers {
+    fn bitor_assign(&mut self, other: KeyModifiers) {
+        self.0 |= other.0;
+    }
+}
+
+impl std::ops::BitAnd for KeyModifiers {
+    type Output = KeyModifiers;
+    fn bitand(self, other: KeyModifiers) -> KeyModifiers {
+        KeyModifiers(self.0 & other.0)
+    }
+}
+
 /// One key press. Shift is folded into the character (`G`, not shift+g).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Key {
@@ -395,10 +463,12 @@ impl Key {
         }
     }
 
-    pub fn from_event(k: &KeyEvent) -> Key {
-        let mods = k.modifiers & (KeyModifiers::CONTROL | KeyModifiers::ALT);
-        let shift = k.modifiers.contains(KeyModifiers::SHIFT);
-        let code = match k.code {
+    /// The key `code` pressed with `mods`, as the keymap reads it: shift
+    /// folded into the character, only ctrl and alt kept.
+    pub fn new(code: KeyCode, modifiers: KeyModifiers) -> Key {
+        let mods = modifiers & (KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let shift = modifiers.contains(KeyModifiers::SHIFT);
+        let code = match code {
             // Some terminals send ctrl+letter uppercase.
             KeyCode::Char(c) if mods.contains(KeyModifiers::CONTROL) => {
                 KeyCode::Char(c.to_ascii_lowercase())
@@ -409,10 +479,6 @@ impl Key {
             other => other,
         };
         Key { code, mods }
-    }
-
-    pub fn event(self) -> KeyEvent {
-        KeyEvent::new(self.code, self.mods)
     }
 
     fn ctrl(self) -> bool {
@@ -844,8 +910,7 @@ impl Keymap {
     // ---- Normal mode -----------------------------------------------------
 
     /// Feed one key typed in normal mode at `now`.
-    pub fn feed(&mut self, k: &KeyEvent, now: Instant) -> Outcome {
-        let key = Key::from_event(k);
+    pub fn feed(&mut self, key: Key, now: Instant) -> Outcome {
         if self.command.is_some() {
             return self.feed_command(key);
         }
@@ -1008,14 +1073,12 @@ impl Keymap {
     // ---- Other modes -----------------------------------------------------
 
     /// `ctrl+c`, which quits from anywhere.
-    pub fn is_interrupt(&self, k: &KeyEvent) -> bool {
-        let key = Key::from_event(k);
+    pub fn is_interrupt(&self, key: Key) -> bool {
         key.ctrl() && key.code == KeyCode::Char('c')
     }
 
     /// A key typed into a text input.
-    pub fn edit(&self, k: &KeyEvent) -> Edit {
-        let key = Key::from_event(k);
+    pub fn edit(&self, key: Key) -> Edit {
         if let Some(c) = key.text() {
             return Edit::Char(c);
         }
@@ -1039,14 +1102,12 @@ impl Keymap {
     }
 
     /// A yes/no prompt: `y` or enter says yes, anything else no.
-    pub fn confirm(&self, k: &KeyEvent) -> bool {
-        let key = Key::from_event(k);
+    pub fn confirm(&self, key: Key) -> bool {
         key.mods.is_empty() && matches!(key.code, KeyCode::Enter | KeyCode::Char('y' | 'Y'))
     }
 
     /// A key on a sheet.
-    pub fn sheet(&self, k: &KeyEvent) -> Option<Sheet> {
-        let key = Key::from_event(k);
+    pub fn sheet(&self, key: Key) -> Option<Sheet> {
         if !key.mods.is_empty() {
             return None;
         }
@@ -1266,7 +1327,7 @@ fn v1_key(s: &str) -> Option<Key> {
         }
         _ => return None,
     };
-    Some(Key::from_event(&KeyEvent::new(code, modifiers)))
+    Some(Key::new(code, modifiers))
 }
 
 /// One action per trigger, no trigger the start of another (it could never
@@ -1313,6 +1374,84 @@ fn validate(bindings: &[(Action, Trigger)]) -> Result<()> {
     Ok(())
 }
 
+/// Keys as the terminal reads them (crossterm), and back.
+#[cfg(feature = "tui")]
+mod terminal {
+    use crossterm::event as ct;
+
+    use super::{Key, KeyCode, KeyModifiers};
+
+    impl Key {
+        /// The key a terminal key event is.
+        pub fn from_event(k: &ct::KeyEvent) -> Key {
+            let code = match k.code {
+                ct::KeyCode::Char(c) => KeyCode::Char(c),
+                ct::KeyCode::Enter => KeyCode::Enter,
+                ct::KeyCode::Tab => KeyCode::Tab,
+                ct::KeyCode::BackTab => KeyCode::BackTab,
+                ct::KeyCode::Esc => KeyCode::Esc,
+                ct::KeyCode::Backspace => KeyCode::Backspace,
+                ct::KeyCode::Delete => KeyCode::Delete,
+                ct::KeyCode::Insert => KeyCode::Insert,
+                ct::KeyCode::Left => KeyCode::Left,
+                ct::KeyCode::Right => KeyCode::Right,
+                ct::KeyCode::Up => KeyCode::Up,
+                ct::KeyCode::Down => KeyCode::Down,
+                ct::KeyCode::Home => KeyCode::Home,
+                ct::KeyCode::End => KeyCode::End,
+                ct::KeyCode::PageUp => KeyCode::PageUp,
+                ct::KeyCode::PageDown => KeyCode::PageDown,
+                ct::KeyCode::F(n) => KeyCode::F(n),
+                _ => KeyCode::Null,
+            };
+            let m = k.modifiers;
+            let mut mods = KeyModifiers::NONE;
+            for (theirs, ours) in [
+                (ct::KeyModifiers::SHIFT, KeyModifiers::SHIFT),
+                (ct::KeyModifiers::CONTROL, KeyModifiers::CONTROL),
+                (ct::KeyModifiers::ALT, KeyModifiers::ALT),
+            ] {
+                if m.contains(theirs) {
+                    mods |= ours;
+                }
+            }
+            Key::new(code, mods)
+        }
+
+        /// The terminal key event for this key.
+        pub fn event(self) -> ct::KeyEvent {
+            let code = match self.code {
+                KeyCode::Char(c) => ct::KeyCode::Char(c),
+                KeyCode::Enter => ct::KeyCode::Enter,
+                KeyCode::Tab => ct::KeyCode::Tab,
+                KeyCode::BackTab => ct::KeyCode::BackTab,
+                KeyCode::Esc => ct::KeyCode::Esc,
+                KeyCode::Backspace => ct::KeyCode::Backspace,
+                KeyCode::Delete => ct::KeyCode::Delete,
+                KeyCode::Insert => ct::KeyCode::Insert,
+                KeyCode::Left => ct::KeyCode::Left,
+                KeyCode::Right => ct::KeyCode::Right,
+                KeyCode::Up => ct::KeyCode::Up,
+                KeyCode::Down => ct::KeyCode::Down,
+                KeyCode::Home => ct::KeyCode::Home,
+                KeyCode::End => ct::KeyCode::End,
+                KeyCode::PageUp => ct::KeyCode::PageUp,
+                KeyCode::PageDown => ct::KeyCode::PageDown,
+                KeyCode::F(n) => ct::KeyCode::F(n),
+                KeyCode::Null => ct::KeyCode::Null,
+            };
+            let mut mods = ct::KeyModifiers::NONE;
+            if self.mods.contains(KeyModifiers::CONTROL) {
+                mods |= ct::KeyModifiers::CONTROL;
+            }
+            if self.mods.contains(KeyModifiers::ALT) {
+                mods |= ct::KeyModifiers::ALT;
+            }
+            ct::KeyEvent::new(code, mods)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1321,7 +1460,7 @@ mod tests {
         parse_keys(keys)
             .unwrap()
             .into_iter()
-            .map(|k| km.feed(&k.event(), now))
+            .map(|k| km.feed(k, now))
             .collect()
     }
 
@@ -1406,12 +1545,12 @@ mod tests {
     fn shift_and_ctrl_are_normalized() {
         let mut km = Keymap::default();
         let now = Instant::now();
-        let shifted = KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT);
-        assert_eq!(km.feed(&shifted, now), ran(Action::MoveLast, None));
-        let ctrl_upper = KeyEvent::new(KeyCode::Char('D'), KeyModifiers::CONTROL);
-        assert_eq!(km.feed(&ctrl_upper, now), ran(Action::ScrollHalfDown, None));
-        let backtab = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
-        assert_eq!(km.edit(&backtab), Edit::BackTab);
+        let shifted = Key::new(KeyCode::Char('G'), KeyModifiers::SHIFT);
+        assert_eq!(km.feed(shifted, now), ran(Action::MoveLast, None));
+        let ctrl_upper = Key::new(KeyCode::Char('D'), KeyModifiers::CONTROL);
+        assert_eq!(km.feed(ctrl_upper, now), ran(Action::ScrollHalfDown, None));
+        let backtab = Key::new(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(km.edit(backtab), Edit::BackTab);
     }
 
     #[test]
@@ -1730,22 +1869,22 @@ mod tests {
     #[test]
     fn text_inputs_take_every_letter() {
         let km = Keymap::default();
-        let key = |s: &str| parse_keys(s).unwrap()[0].event();
-        assert_eq!(km.edit(&key("j")), Edit::Char('j'));
-        assert_eq!(km.edit(&key("q")), Edit::Char('q'));
-        assert_eq!(km.edit(&key(" ")), Edit::Char(' '));
-        assert_eq!(km.edit(&key("<cr>")), Edit::Submit);
-        assert_eq!(km.edit(&key("<esc>")), Edit::Cancel);
-        assert_eq!(km.edit(&key("<bs>")), Edit::Backspace);
-        assert_eq!(km.edit(&key("<c-u>")), Edit::ClearLine);
-        assert_eq!(km.edit(&key("<c-r>")), Edit::Retry);
-        assert!(km.confirm(&key("y")));
-        assert!(km.confirm(&key("<cr>")));
-        assert!(!km.confirm(&key("n")));
-        assert!(!km.confirm(&key("<esc>")));
-        assert_eq!(km.sheet(&key("i")), Some(Sheet::Edit));
-        assert_eq!(km.sheet(&key("<cr>")), Some(Sheet::Confirm));
-        assert!(km.is_interrupt(&key("<c-c>")));
+        let key = |s: &str| parse_keys(s).unwrap()[0];
+        assert_eq!(km.edit(key("j")), Edit::Char('j'));
+        assert_eq!(km.edit(key("q")), Edit::Char('q'));
+        assert_eq!(km.edit(key(" ")), Edit::Char(' '));
+        assert_eq!(km.edit(key("<cr>")), Edit::Submit);
+        assert_eq!(km.edit(key("<esc>")), Edit::Cancel);
+        assert_eq!(km.edit(key("<bs>")), Edit::Backspace);
+        assert_eq!(km.edit(key("<c-u>")), Edit::ClearLine);
+        assert_eq!(km.edit(key("<c-r>")), Edit::Retry);
+        assert!(km.confirm(key("y")));
+        assert!(km.confirm(key("<cr>")));
+        assert!(!km.confirm(key("n")));
+        assert!(!km.confirm(key("<esc>")));
+        assert_eq!(km.sheet(key("i")), Some(Sheet::Edit));
+        assert_eq!(km.sheet(key("<cr>")), Some(Sheet::Confirm));
+        assert!(km.is_interrupt(key("<c-c>")));
     }
 
     #[test]

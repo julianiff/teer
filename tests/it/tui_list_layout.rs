@@ -21,7 +21,8 @@ use teer::config::Config;
 use teer::keymap::{Action, Keymap};
 use teer::review::model::{Decision, Review, SessionRef};
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{App, Effect, Grouping, Overlay, Screen, Target};
+use teer::session::app::{Effect, Grouping, Overlay, Screen};
+use teer::tui::app::{App, Target};
 use teer::tui::ui;
 
 const API: &str = "from checkout import charge_order\n\n\ndef handle_checkout(request):\n    return charge_order(request.order)\n\n\ndef main():\n    handle_checkout(parse())\n";

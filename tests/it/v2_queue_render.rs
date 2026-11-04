@@ -22,7 +22,8 @@ use teer::review::model::{
     BranchNames, Change, Commit, Decision, LineRef, Marker, PrInfo, PrMeta, Prep, Review, Risk,
     SecondOpinion, Side, Unit, UnitStatus, Verdict,
 };
-use teer::tui::app::{App, Grouping, Overlay, Screen, Target};
+use teer::session::app::{Grouping, Overlay, Screen};
+use teer::tui::app::{App, Target};
 use teer::tui::{preview, ui};
 
 /// The note on the flagged unit: longer than the 40 characters a row shows.
@@ -145,7 +146,7 @@ fn pos_of(app: &App, id: &str) -> usize {
 fn feed(app: &mut App, keys: &str) {
     let now = Instant::now();
     for k in parse_keys(keys).unwrap() {
-        app.keys.feed(&k.event(), now);
+        app.keys.feed(k, now);
     }
 }
 

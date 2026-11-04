@@ -1,5 +1,6 @@
 //! Live preview pane for the unit under the cursor in the queue.
 
+use crate::session::names;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -137,7 +138,7 @@ pub fn layout_of(app: &App, area: Rect) -> (Rect, Option<(Rect, Pane)>) {
 /// them into the code change instead when it shows one (see
 /// [`super::diff`]).
 pub fn unit_lines(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Line<'static>> {
-    let name = truncate(&slim::row_name(u), w);
+    let name = truncate(&names::row_name(u), w);
     let mut lines = vec![Line::styled(format!(" {name}"), app.theme.bold())];
     let mut groups = unit_groups(app, u, w, statements).into_iter();
     lines.extend(groups.next().unwrap_or_default());
@@ -153,7 +154,7 @@ pub fn unit_lines(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Line<'
 /// file name stays.
 pub fn unit_head(app: &App, u: &Unit, w: usize) -> Line<'static> {
     let t = &app.theme;
-    let name = truncate(&slim::row_name(u), w);
+    let name = truncate(&names::row_name(u), w);
     let mut tail = Vec::new();
     if u.prep == Prep::Pending {
         tail.push(Span::styled(format!(" {}", app.spinner()), t.muted()));

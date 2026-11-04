@@ -467,7 +467,8 @@ mod view {
     use ratatui::style::{Color, Modifier};
     use teer::config::Config;
     use teer::keymap::Keymap;
-    use teer::tui::app::{App, Overlay};
+    use teer::session::app::Overlay;
+    use teer::tui::app::App;
 
     fn key(app: &mut App, c: KeyCode) {
         app.on_key(KeyEvent::new(c, KeyModifiers::NONE));
@@ -672,7 +673,8 @@ mod preview {
     use super::*;
     use teer::config::Config;
     use teer::keymap::Keymap;
-    use teer::tui::app::{App, Screen};
+    use teer::session::app::Screen;
+    use teer::tui::app::App;
 
     fn text(t: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
         let h = t.backend().buffer().area.height;
@@ -742,7 +744,8 @@ mod agent {
     use teer::config::Config;
     use teer::keymap::Keymap;
     use teer::review::model::{Decision, SessionRef};
-    use teer::tui::app::{App, Screen};
+    use teer::session::app::Screen;
+    use teer::tui::app::App;
 
     /// One valid statement per unit; for `g` an unmentioned change on its
     /// first new line, for `f` one citing a line far outside it.
@@ -939,8 +942,9 @@ mod summary {
     use teer::keymap::Keymap;
     use teer::review::model::{Prep, SessionRef};
     use teer::review::prompts::SUMMARY_RULES;
-    use teer::tui::Runtime;
-    use teer::tui::app::{App, Effect, Overlay};
+    use teer::session::Runtime;
+    use teer::session::app::{Effect, Overlay};
+    use teer::tui::app::App;
 
     fn responder(prompt: &str, _schema: &Value) -> anyhow::Result<Value> {
         if prompt.starts_with(SUMMARY_RULES) {

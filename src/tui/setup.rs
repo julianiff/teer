@@ -22,7 +22,7 @@ use unicode_width::UnicodeWidthStr;
 use super::slim::SPINNER;
 use super::theme::Theme;
 use crate::config::{ApiConfig, Config, Provider};
-use crate::keymap::{Action, Edit, Keymap, Outcome};
+use crate::keymap::{Action, Edit, Key, Keymap, Outcome};
 use crate::setup::{Choice, Found, PRESETS, Preset, Tool};
 use crate::util::{sanitize, truncate, truncate_pad};
 
@@ -306,22 +306,23 @@ impl Setup {
         if k.kind == KeyEventKind::Release {
             return None;
         }
-        if self.keys.is_interrupt(&k) {
+        let k = Key::from_event(&k);
+        if self.keys.is_interrupt(k) {
             return Some(Effect::Quit);
         }
         match self.step {
             // Lists without text: normal mode.
-            Step::Provider | Step::Check => match self.keys.feed(&k, Instant::now()) {
+            Step::Provider | Step::Check => match self.keys.feed(k, Instant::now()) {
                 Outcome::Run { action, count } => self.on_action(action, count.unwrap_or(1)),
                 _ => None,
             },
             // Text: the API's fields, the model filter.
             Step::Api => {
-                let e = self.keys.edit(&k);
+                let e = self.keys.edit(k);
                 self.api_edit(e)
             }
             Step::Fast | Step::Second => {
-                let e = self.keys.edit(&k);
+                let e = self.keys.edit(k);
                 self.model_edit(e)
             }
         }

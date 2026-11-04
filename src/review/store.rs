@@ -300,6 +300,23 @@ pub fn changed_units(new: &Review, old: &Review) -> Vec<String> {
         .collect()
 }
 
+/// Load a previous review for the same changes and carry its state over.
+pub fn restore(review: &mut Review) {
+    // A PR review only ever sees reviews of the same PR, never the repo's own.
+    let pr = review.pr.as_ref();
+    let prev = load(
+        &review.repo_root,
+        pr,
+        &review.base,
+        &review.head,
+        &review.head_commit,
+    )
+    .or_else(|| load_latest(&review.repo_root, pr));
+    if let Some(prev) = prev {
+        merge_previous(review, &prev);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

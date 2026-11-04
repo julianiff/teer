@@ -29,11 +29,12 @@ use teer::review::dive::{DiveEvent, TestsJob, interpret_tests, run_dive, search_
 use teer::review::model::{DiveKind, Review, Risk, SessionRef, Visual};
 use teer::review::prompts::{ProbeSetting, behavior_prompt};
 use teer::review::{BuildOptions, build_review, store, test_search, visual};
-use teer::tui::Runtime;
-use teer::tui::app::{App, AppEvent, Effect, Overlay, Screen};
+use teer::session::Runtime;
+use teer::session::app::{AppEvent, Effect, Overlay, Screen};
+use teer::session::unit::Panel;
+use teer::tui::app::App;
 use teer::tui::picture::Pictures;
 use teer::tui::ui;
-use teer::tui::unit::Panel;
 
 struct Fixture {
     app: App,

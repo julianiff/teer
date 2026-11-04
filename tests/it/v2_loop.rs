@@ -27,7 +27,7 @@ use teer::keymap::Action;
 use teer::review::model::{Decision, DiveKind, Unit};
 use teer::review::prepare::PrepareEvent;
 use teer::review::{BuildOptions, build_review};
-use teer::tui::app::{AppEvent, Effect, Overlay, Screen};
+use teer::session::app::{AppEvent, Effect, Overlay, Screen};
 
 use Decision::{Accepted as A, Investigate as F, Pending as P};
 

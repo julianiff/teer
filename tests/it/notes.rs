@@ -16,8 +16,9 @@ use teer::keymap::Keymap;
 use teer::review::model::{
     Decision, PrInfo, Prep, Range, Review, SessionRef, Unit, UnitKind, UnitStatus,
 };
-use teer::tui::app::{App, AppEvent, Effect, Overlay, Screen};
-use teer::tui::finish::Step;
+use teer::session::app::{AppEvent, Effect, Overlay, Screen};
+use teer::session::finish::Step;
+use teer::tui::app::App;
 use teer::tui::ui;
 
 const OLD: &str = "def f():\n    return 1\n\n\ndef g():\n    return 2\n";

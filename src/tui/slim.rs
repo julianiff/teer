@@ -20,12 +20,12 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use super::app::{App, Grouping};
+use super::app::App;
 use crate::config::Role;
 use crate::keymap::Action;
 use crate::review::attention::Level;
 use crate::review::model::{Decision, LineRef, Prep, Side, Unit, UnitKind, UnitStatus};
-use crate::units::extract::MODULE_SYMBOL;
+use crate::session::app::Grouping;
 use crate::util::{sanitize, truncate, truncate_pad, wrap};
 
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -242,16 +242,6 @@ fn line_span(u: &Unit) -> String {
         Some(r) if r.end > r.start => format!("{}-{}", r.start, r.end),
         Some(r) => r.start.to_string(),
         None => String::new(),
-    }
-}
-
-/// The name a unit goes by in rows: its symbol, `(top level)` for the
-/// code outside any function, and a whole file's file name.
-pub fn row_name(u: &Unit) -> String {
-    match u.kind {
-        UnitKind::File => file_name(&u.file),
-        _ if u.kind == UnitKind::Module || u.symbol == MODULE_SYMBOL => "(top level)".into(),
-        _ => sanitize(&u.symbol),
     }
 }
 
@@ -537,12 +527,6 @@ pub(super) fn indent(app: &App, ui: usize) -> String {
         0 => String::new(),
         depth => format!("{}↳ ", "  ".repeat(depth.min(3) - 1)),
     }
-}
-
-pub fn file_name(path: &std::path::Path) -> String {
-    path.file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default()
 }
 
 /// Fewest list rows at which a blank line separates the boxes, and the

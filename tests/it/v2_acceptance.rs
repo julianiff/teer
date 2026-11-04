@@ -21,9 +21,9 @@ use common::run::{
 use teer::config::Config;
 use teer::keymap::{Keymap, parse_keys};
 use teer::review::model::{Decision, Unit};
-use teer::tui::app::{Effect, Overlay, Screen};
+use teer::session::app::{Effect, Overlay, Screen};
+use teer::session::unit::Panel;
 use teer::tui::pr_pick::{Picked, Picker};
-use teer::tui::unit::Panel;
 
 use Decision::{Accepted as A, Investigate as F, Pending as P};
 
