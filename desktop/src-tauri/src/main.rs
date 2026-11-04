@@ -49,6 +49,7 @@ fn main() {
             commands::recent_repos,
             commands::list_prs,
             commands::new_window,
+            commands::open_elsewhere,
             commands::written,
             pty::pty_write,
             pty::pty_resize,

@@ -305,6 +305,21 @@ pub async fn list_prs(repo: String) -> Result<teer::pr_list::Listing, String> {
         .map_err(|e| format!("{e:#}"))
 }
 
+/// Open a review in the window that shows it already, else a free or a
+/// new one: a pull request of `repo` (its number or URL), or its changes.
+#[tauri::command]
+pub fn open_elsewhere(handle: AppHandle, repo: String, pr: Option<String>) {
+    crate::links::open(
+        &handle,
+        teer::app_link::Link {
+            repo: PathBuf::from(repo),
+            pr: pr.filter(|p| !p.trim().is_empty()),
+            base: None,
+        },
+        false,
+    );
+}
+
 /// Open a new window, on the start screen.
 #[tauri::command]
 pub fn new_window(handle: AppHandle) -> Result<(), String> {

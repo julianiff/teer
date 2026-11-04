@@ -22,6 +22,8 @@ export const api = {
   recent: () => invoke<Recent[]>("recent_repos"),
   listPrs: (repo: string) => invoke<Listing>("list_prs", { repo }),
   newWindow: () => invoke<void>("new_window"),
+  openElsewhere: (repo: string, pr?: string) =>
+    invoke<void>("open_elsewhere", { repo, pr: pr ?? null }),
 };
 
 /** Listen to `event` sent to this window only. */

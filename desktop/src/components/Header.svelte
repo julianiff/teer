@@ -1,12 +1,13 @@
 <script lang="ts">
   // What is reviewed and what the change is called; what teer is doing.
   import type { Header, Screen } from "../lib/types";
+  import PrMenu from "./PrMenu.svelte";
   let { header, screen }: { header: Header; screen: Screen } = $props();
 </script>
 
 <header>
   <div class="line">
-    <strong>{header.subject}</strong>
+    <PrMenu subject={header.subject} home={header.home} pr={header.pr} />
     {#if header.title}<span class="title">· {header.title}</span>{/if}
     <span class="spacer"></span>
     {#if header.no_agent}<span class="muted">no agent</span>{/if}

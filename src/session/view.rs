@@ -49,6 +49,11 @@ pub struct View {
 pub struct Header {
     /// The repository reviewed (a pull request's checkout for one).
     pub repo: String,
+    /// The repository the review was started in: for a pull request, the
+    /// clone it was fetched into. Its pull requests and changes open from here.
+    pub home: String,
+    /// The pull request reviewed, by number.
+    pub pr: Option<u32>,
     /// `your changes`, `feature since main, 6 commits`, `PR #482 by ana`.
     pub subject: String,
     /// What the change is called: the PR's title, the only commit's subject.
@@ -700,6 +705,14 @@ fn header(app: &App) -> Header {
     let (done, total) = app.prep_progress();
     Header {
         repo: r.repo_root.display().to_string(),
+        home: r
+            .pr
+            .as_ref()
+            .and_then(|p| p.repo_dir.as_ref())
+            .unwrap_or(&r.repo_root)
+            .display()
+            .to_string(),
+        pr: r.pr.as_ref().map(|p| p.number),
         subject: r.subject(),
         title,
         summary,

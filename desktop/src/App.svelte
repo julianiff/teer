@@ -5,6 +5,7 @@
   import { api, on } from "./lib/api";
   import { notation } from "./lib/keys";
   import { scrollFor } from "./lib/scroll";
+  import { ui } from "./lib/ui.svelte";
   import type { View } from "./lib/types";
   import Start from "./components/Start.svelte";
   import Review from "./components/Review.svelte";
@@ -27,7 +28,7 @@
   let editing = $state<{ text: string; title: string } | null>(null);
   let commit = $state<{ lines: string[]; done: boolean; ok: boolean } | null>(null);
   let settings = $state(false);
-  const away = $derived(palette || !!terminal || !!editing || settings);
+  const away = $derived(palette || !!terminal || !!editing || settings || ui.prMenu);
 
   onMount(() => {
     const offs = [
@@ -44,7 +45,8 @@
       on<{ action: string; count: number }>("scroll", (s) => view && scrollFor(view, s.action, s.count)),
       on<string>("menu", (id) => {
         if (id === "palette" && view) palette = true;
-        if (id === "open_folder" || id === "open_pr") {
+        if (id === "open_pr" && view && !ended) ui.prMenu = true;
+        else if (id === "open_folder" || id === "open_pr") {
           if (view && !ended) void api.newWindow();
           else startMode = id === "open_folder" ? "folder" : "pr";
         }

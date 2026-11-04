@@ -54,6 +54,10 @@ open (`store::lock`). A lock whose process is gone is taken over.
   those).
 - Folders dropped on the Dock icon, and `teer://` links from anywhere, open
   in a free window; a window that shows the review already comes forward.
+- The subject at the top left of a review is a menu (⇧⌘O) of what else to
+  review in the repository, as `teer pr` lists it: its own changes, the
+  pull requests waiting for your review, assigned to you, and yours. One
+  picked opens in a window of its own.
 
 ## Develop
 
