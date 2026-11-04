@@ -1292,3 +1292,27 @@ fn the_commit_effect_is_left_to_the_terminal_loop() {
     }
     assert_eq!(head_count(&r), 1, "Runtime::exec never commits by itself");
 }
+
+/// A window without a terminal streams what git and its hooks print, line
+/// by line, and still gets the whole of it with the outcome.
+#[test]
+fn a_streamed_commit_sends_each_line_of_the_hooks_as_it_comes() {
+    let r = fixture();
+    hook(&r, "pre-commit", "echo checking one\necho checking two >&2");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let out = commit::run_commit(&r.path(), &["a.py".into()], "Add a", Io::Stream(tx));
+    assert!(matches!(out, Outcome::Committed { .. }), "{out:?}");
+    let lines: Vec<String> = rx.try_iter().collect();
+    assert!(lines.iter().any(|l| l == "checking one"), "{lines:?}");
+    assert!(lines.iter().any(|l| l == "checking two"), "{lines:?}");
+
+    hook(&r, "pre-commit", "echo no way\nexit 1");
+    r.write("a.py", PY_OLD);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let out = commit::run_commit(&r.path(), &["a.py".into()], "Undo a", Io::Stream(tx));
+    let Outcome::Failed { output, .. } = out else {
+        panic!("{out:?}")
+    };
+    assert!(output.contains("no way"), "{output}");
+    assert_eq!(rx.try_iter().collect::<Vec<_>>(), ["no way"]);
+}

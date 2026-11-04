@@ -47,6 +47,8 @@ pub struct View {
 /// The top line: what is reviewed and what teer is doing.
 #[derive(Debug, Clone, Serialize)]
 pub struct Header {
+    /// The repository reviewed (a pull request's checkout for one).
+    pub repo: String,
     /// `your changes`, `feature since main, 6 commits`, `PR #482 by ana`.
     pub subject: String,
     /// What the change is called: the PR's title, the only commit's subject.
@@ -697,6 +699,7 @@ fn header(app: &App) -> Header {
         .filter(|n| !app.has_agent && n != super::app::NO_AGENT);
     let (done, total) = app.prep_progress();
     Header {
+        repo: r.repo_root.display().to_string(),
         subject: r.subject(),
         title,
         summary,

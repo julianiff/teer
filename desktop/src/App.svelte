@@ -9,6 +9,10 @@
   import Start from "./components/Start.svelte";
   import Review from "./components/Review.svelte";
   import Palette from "./components/Palette.svelte";
+  import Terminal from "./components/Terminal.svelte";
+  import TextEditor from "./components/TextEditor.svelte";
+  import CommitPanel from "./components/CommitPanel.svelte";
+  import Settings from "./components/Settings.svelte";
 
   let view = $state<View | null>(null);
   let opening = $state<string | null>(null);
@@ -17,6 +21,13 @@
   let startMode = $state<"folder" | "pr" | null>(null);
   // What a review the app opened by itself came to, instead of a review.
   let said = $state<string | null>(null);
+  // What takes over from the review for a while: the terminal pane, the
+  // text editor, the commit's output, the settings.
+  let terminal = $state<{ id: number; title: string } | null>(null);
+  let editing = $state<{ text: string; title: string } | null>(null);
+  let commit = $state<{ lines: string[]; done: boolean; ok: boolean } | null>(null);
+  let settings = $state(false);
+  const away = $derived(palette || !!terminal || !!editing || settings);
 
   onMount(() => {
     const offs = [
@@ -37,7 +48,21 @@
           if (view && !ended) void api.newWindow();
           else startMode = id === "open_folder" ? "folder" : "pr";
         }
-        if (id === "settings" && view) void api.action("tool.settings");
+        if (id === "settings") {
+          if (view && !ended) void api.action("tool.settings");
+          else settings = true;
+        }
+      }),
+      on<{ id: number; title: string }>("pty-open", (t) => (terminal = t)),
+      on<{ text: string; title: string }>("edit", (e) => (editing = e)),
+      on<null>("settings", () => (settings = true)),
+      on<null>("commit-start", () => (commit = { lines: [], done: false, ok: false })),
+      on<string>("commit-line", (l) => commit && (commit.lines = [...commit.lines, l])),
+      on<boolean>("commit-end", (ok) => {
+        if (!commit) return;
+        commit.done = true;
+        commit.ok = ok;
+        if (ok) setTimeout(() => (commit = null), 1500);
       }),
     ];
     // A window that loads again (or opened by the app) finds what it shows.
@@ -50,7 +75,7 @@
 
   function onKey(e: KeyboardEvent) {
     // The start screen and the palette type into their own fields.
-    if (!view || ended || palette) return;
+    if (!view || ended || away) return;
     if ((e.target as HTMLElement)?.closest?.("input, textarea, [data-own-keys]")) return;
     const n = notation(e);
     if (!n) return;
@@ -59,7 +84,7 @@
   }
 
   function onPaste(e: ClipboardEvent) {
-    if (!view || ended || palette) return;
+    if (!view || ended || away) return;
     if ((e.target as HTMLElement)?.closest?.("input, textarea")) return;
     const text = e.clipboardData?.getData("text/plain");
     if (text) {
@@ -94,6 +119,21 @@
   </main>
 {:else}
   <Start bind:mode={startMode} {said} />
+{/if}
+
+{#if terminal}
+  {#key terminal.id}
+    <Terminal id={terminal.id} title={terminal.title} onclose={() => (terminal = null)} />
+  {/key}
+{/if}
+{#if editing}
+  <TextEditor text={editing.text} title={editing.title} onclose={() => (editing = null)} />
+{/if}
+{#if commit}
+  <CommitPanel lines={commit.lines} done={commit.done} ok={commit.ok} onclose={() => (commit = null)} />
+{/if}
+{#if settings}
+  <Settings repo={view?.header.repo ?? null} onclose={() => (settings = false)} />
 {/if}
 
 <style>

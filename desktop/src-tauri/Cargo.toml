@@ -22,7 +22,11 @@ tauri-build = { version = "2", features = [] }
 # The review core, without the terminal front end.
 teer = { path = "../..", default-features = false }
 anyhow = "1"
+# The terminal pane's output goes to the window as base64.
+base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# The terminal pane: the agent CLI and terminal editors run in a pty.
+portable-pty = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }

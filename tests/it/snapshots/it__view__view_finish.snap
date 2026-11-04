@@ -5,6 +5,7 @@ expression: json(&app)
 {
   "screen": "Queue",
   "header": {
+    "repo": "/work/shop",
     "subject": "your changes",
     "title": null,
     "summary": null,

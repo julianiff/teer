@@ -817,30 +817,6 @@ fn check_lines(s: &Setup, w: usize, lines: &mut Vec<Line<'static>>) {
     ));
 }
 
-/// Ask the fast model of `cfg` for a tiny answer, in an empty directory.
-async fn test_answer(cfg: Config) -> Result<Duration, String> {
-    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let agent = crate::start::discover_agent(dir.path(), false, &cfg)?;
-    let session =
-        crate::review::model::SessionRef::fresh(cfg.provider().name(), dir.path().to_path_buf());
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": { "ok": { "type": "boolean" } },
-        "required": ["ok"],
-        "additionalProperties": false
-    });
-    let prompt =
-        "This is a connection test from teer, a code review tool. Answer with {\"ok\": true}.";
-    let start = Instant::now();
-    let ask = agent.adapter.ask_prepare(&session, prompt, &schema);
-    match tokio::time::timeout(Duration::from_secs(120), ask).await {
-        Err(_) => Err("no answer within 120s".into()),
-        Ok(Err(e)) => Err(format!("{e:#}")),
-        Ok(Ok(v)) if v["ok"].as_bool().is_some() => Ok(start.elapsed()),
-        Ok(Ok(v)) => Err(format!("unexpected answer: {v}")),
-    }
-}
-
 fn start(s: &mut Setup, e: &Effect, tx: &UnboundedSender<Reply>) {
     s.asked += 1;
     let n = s.asked;
@@ -860,7 +836,7 @@ fn start(s: &mut Setup, e: &Effect, tx: &UnboundedSender<Reply>) {
             s.started = Instant::now();
             let cfg = s.choice(s.second_choice()).apply(&s.cfg);
             tokio::spawn(async move {
-                let _ = tx.send(Reply::Checked(n, test_answer(cfg).await));
+                let _ = tx.send(Reply::Checked(n, crate::setup::test_answer(cfg).await));
             });
         }
         Effect::Save | Effect::Leave | Effect::Quit => {}

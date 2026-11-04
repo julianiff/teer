@@ -65,13 +65,13 @@ pub enum Returned {
         cli: teer::config::Provider,
         ran: std::io::Result<std::process::ExitStatus>,
     },
-    /// The text written in the window's editor for the commit message or
-    /// the review summary; `None` when it was cancelled.
-    Edited(teer::approve::EditOutcome),
+    /// The text written in the window for the commit message or the
+    /// review summary; `None` when it was cancelled.
+    Written(Option<String>),
     /// The commit ran.
     Committed(teer::commit::Outcome),
-    /// The settings were saved (`Some`) or left.
-    Settings(Option<teer::config::Config>),
+    /// The settings were saved.
+    Settings(Box<teer::config::Config>),
     /// A status line to show.
     Status(String),
 }
@@ -121,6 +121,7 @@ pub fn spawn(
             syntax: Cache::default(),
             view,
             tx,
+            committing: false,
         };
         let ended = s.run(begun.initial, inputs, begun.events).await;
         release();
@@ -141,6 +142,8 @@ pub struct Session {
     view: Arc<Mutex<Option<serde_json::Value>>>,
     /// The window's own channel, for handoffs to come back on.
     pub tx: UnboundedSender<Input>,
+    /// A commit is on its way: `⏎` again doesn't start another.
+    pub committing: bool,
 }
 
 /// How often the review looks at its timers: key prefixes, the watched tree.
@@ -301,10 +304,7 @@ impl Session {
     pub fn exec_all(&mut self, effects: Vec<Effect>) -> bool {
         let mut quit = false;
         for e in effects {
-            match crate::front::take(self, e) {
-                Some(e) => quit |= self.rt.exec(&mut self.app, e),
-                None => {}
-            }
+            if let Some(e) = crate::front::take(self, e) { quit |= self.rt.exec(&mut self.app, e) }
         }
         quit
     }

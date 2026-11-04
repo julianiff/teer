@@ -7,7 +7,9 @@ mod commands;
 mod front;
 mod host;
 mod menu;
+mod pty;
 mod recent;
+mod settings;
 mod window;
 
 /// A review the app opened by itself (not the window's start screen) came
@@ -27,7 +29,8 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(commands::Windows::default())
-        .menu(|handle| menu::build(handle))
+        .manage(pty::Ptys::default())
+        .menu(menu::build)
         .on_menu_event(menu::on_event)
         .invoke_handler(tauri::generate_handler![
             commands::loaded,
@@ -40,6 +43,15 @@ fn main() {
             commands::recent_repos,
             commands::list_prs,
             commands::new_window,
+            commands::written,
+            pty::pty_write,
+            pty::pty_resize,
+            pty::pty_kill,
+            settings::setup_state,
+            settings::setup_tools,
+            settings::setup_models,
+            settings::setup_test,
+            settings::setup_save,
         ])
         .setup(|app| {
             let first = window::open(app.handle())?;

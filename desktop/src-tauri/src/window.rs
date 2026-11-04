@@ -43,27 +43,3 @@ pub fn focused(handle: &AppHandle) -> Option<WebviewWindow> {
         .or_else(|| windows.values().next())
         .cloned()
 }
-
-/// A window with no review open or opening, to open one in; a new one
-/// when every window has its review.
-pub fn free(handle: &AppHandle) -> tauri::Result<WebviewWindow> {
-    let windows = handle.state::<Windows>();
-    let busy: Vec<String> = windows
-        .0
-        .lock()
-        .map(|m| {
-            m.iter()
-                .filter(|(_, s)| s.host.is_some() || s.opening.is_some())
-                .map(|(l, _)| l.clone())
-                .collect()
-        })
-        .unwrap_or_default();
-    if let Some(w) = handle
-        .webview_windows()
-        .into_values()
-        .find(|w| !busy.contains(&w.label().to_string()))
-    {
-        return Ok(w);
-    }
-    open(handle)
-}

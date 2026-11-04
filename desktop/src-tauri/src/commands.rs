@@ -230,6 +230,20 @@ pub fn paste(
     windows.send(window.label(), Input::Paste(text))
 }
 
+/// The text written in the window's editor for the commit message or the
+/// review summary; `None` when it was cancelled.
+#[tauri::command]
+pub fn written(
+    window: WebviewWindow,
+    windows: State<'_, Windows>,
+    text: Option<String>,
+) -> Result<(), String> {
+    windows.send(
+        window.label(),
+        Input::Returned(crate::host::Returned::Written(text)),
+    )
+}
+
 /// Every action with its keys, for the command palette.
 #[tauri::command]
 pub async fn actions(

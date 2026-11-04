@@ -44,6 +44,7 @@ export interface View {
 }
 
 export interface Header {
+  repo: string;
   subject: string;
   title: string | null;
   summary: string | null;
