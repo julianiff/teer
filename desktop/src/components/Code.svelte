@@ -1,8 +1,10 @@
 <script lang="ts">
   // A unit's code change: diff rows coloured by syntax class, each
   // statement written in under the row it cites.
+  // `tools`: what can be done with it, on its head.
+  import type { Snippet } from "svelte";
   import type { Code, Statement } from "../lib/types";
-  let { code, statements }: { code: Code; statements: Statement[] } = $props();
+  let { code, statements, tools }: { code: Code; statements: Statement[]; tools?: Snippet } = $props();
 
   const width = $derived(
     Math.max(3, ...code.rows.map((r) => String(r.line ?? r.old ?? "").length)),
@@ -14,6 +16,7 @@
 <div class="code">
   <div class="head">
     <span>code change</span>
+    {#if tools}<span class="tools">{@render tools()}</span>{/if}
     <span class="counts"><span class="add">+{code.added}</span> <span class="del">−{code.removed}</span></span>
   </div>
   <div class="rows" style="--digits: {width}ch">
@@ -57,12 +60,21 @@
   }
   .head {
     display: flex;
-    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
     padding: 4px 10px;
     font-size: 11px;
     color: var(--muted);
     border-bottom: 1px solid var(--border);
     background: var(--sunken);
+  }
+  .tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 4px;
+  }
+  .counts {
+    margin-left: auto;
   }
   .add {
     color: var(--added-sign);

@@ -544,6 +544,22 @@ impl App {
         }
     }
 
+    /// A click on the unit view's way back: back to where it was opened
+    /// from, whatever tile has the focus (`h` would close that first).
+    pub fn unit_click_back(&mut self) {
+        if self.screen == Screen::Unit {
+            self.unit_back();
+        }
+    }
+
+    /// A click on a tile's close button: tile `p` closes, and a zoom ends.
+    pub fn unit_click_close(&mut self, p: Panel) {
+        if self.unit.tiles.contains(&p) {
+            self.unit.zoom = false;
+            self.close_tile(p);
+        }
+    }
+
     /// `zz`: the tile in focus (or the text) fills the view, or no longer
     /// does. The keys tile is always beside the text, so there is always
     /// something to hide.

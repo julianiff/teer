@@ -41,6 +41,22 @@ export interface View {
   unit: UnitScreen | null;
   flagged: FlaggedScreen | null;
   overlay: Overlay;
+  /** What buttons press, by action id: each one's key, what it does,
+   *  whether it can. The window puts them where they act. */
+  actions: Record<string, ActionView>;
+  /** What the open panel's keys do, for buttons on it. */
+  panel: Hint[];
+}
+
+/** An action a button presses: its key (empty when unbound) and what it
+ *  does, in the screen's words. */
+export interface ActionView {
+  keys: string;
+  what: string;
+  /** Needs an agent, and there is none. */
+  off: boolean;
+  /** A toggle's state (listed by file, zoomed); null for the rest. */
+  on: boolean | null;
 }
 
 export interface Header {
@@ -53,6 +69,8 @@ export interface Header {
   no_agent: boolean;
   agent_note: string | null;
   preparing: { done: number; total: number } | null;
+  /** The commits reviewed. */
+  commits: number;
 }
 
 export interface Hint {
@@ -73,6 +91,8 @@ export interface Bar {
   flagged: number;
   accepted: number;
   auto_accepted: number;
+  /** Units with a note. */
+  notes: number;
   finish_key: string;
   help_key: string;
   status: string;
@@ -328,7 +348,6 @@ export interface UnitScreen {
   focus: TileId | null;
   zoom: boolean;
   typing: boolean;
-  keys: { name: string; items: { keys: string; what: string; action: string; off: boolean }[] }[];
 }
 
 export interface FlaggedScreen {
@@ -400,7 +419,7 @@ export type JumpKind = "Find" | { Definition: { of: string } } | { Callers: { of
 
 export type Overlay =
   | { kind: "None" }
-  | ({ kind: "Help" } & { of: string; groups: { name: string; rows: { keys: string; what: string }[] }[] })
+  | ({ kind: "Help" } & { of: string; groups: { name: string; rows: { keys: string; what: string; each: Hint[] }[] }[] })
   | { kind: "ConfirmReset"; decisions: number }
   | ({ kind: "Note" } & NoteEditor)
   | { kind: "Notes"; sel: number; notes: NoteItem[] }
@@ -421,6 +440,8 @@ export type Click =
   | { kind: "Row"; pos: number }
   | { kind: "Open"; id: string }
   | { kind: "Tile"; id: TileId | null }
+  | { kind: "CloseTile"; id: TileId }
+  | { kind: "Back" }
   | { kind: "Flagged"; i: number }
   | { kind: "Link"; i: number }
   | { kind: "Item"; i: number };
@@ -429,6 +450,29 @@ export interface Recent {
   path: string;
   name: string;
   opened: string;
+}
+
+/** A repository saved on the start screen. */
+export interface Saved {
+  path: string;
+  name: string;
+}
+
+/** A folder the add sheet was given: its repository, and the GitHub
+ *  repository whose pull requests it lists (null without one). */
+export interface RepoCheck {
+  path: string;
+  name: string;
+  github: string | null;
+}
+
+/** A pull request's link: its repository (`owner/repo`) and number, and
+ *  the clone it opens in (null when none is known yet). */
+export interface PrLink {
+  url: string;
+  repo: string;
+  number: number;
+  clone: Saved | null;
 }
 
 export interface ListedPr {
@@ -453,4 +497,6 @@ export interface Listing {
 export interface Loaded {
   opening: string | null;
   view: View | null;
+  /** The buttons show (View › Show Buttons). */
+  buttons: boolean;
 }

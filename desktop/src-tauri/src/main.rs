@@ -10,8 +10,10 @@ mod host;
 mod links;
 mod menu;
 mod notify;
+mod prefs;
 mod pty;
 mod recent;
+mod repos;
 mod settings;
 mod window;
 
@@ -39,6 +41,12 @@ fn main() {
             commands::new_window,
             commands::open_elsewhere,
             commands::written,
+            prefs::set_buttons_shown,
+            repos::saved_repos,
+            repos::save_repo,
+            repos::forget_repo,
+            repos::check_repo,
+            repos::pr_link,
             pty::pty_write,
             pty::pty_resize,
             pty::pty_kill,

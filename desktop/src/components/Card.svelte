@@ -2,7 +2,10 @@
   // One unit as the preview, the unit view and the flagged list show it:
   // why it has its level, what the agent said, the code change with the
   // statements in it, the note, the answers asked about it. What the agent
-  // wrote is plain text.
+  // wrote is plain text. What can be done with the unit goes under its
+  // name (`actions`), staying in view as the card scrolls when `sticky`;
+  // what can be done with its code goes on the code's head (`codeTools`).
+  import type { Snippet } from "svelte";
   import type { Card } from "../lib/types";
   import Code from "./Code.svelte";
   import Second from "./Second.svelte";
@@ -12,16 +15,29 @@
     card,
     second = null,
     title = true,
-  }: { card: Card; second?: SecondModel | null; title?: boolean } = $props();
+    sticky = false,
+    actions,
+    codeTools,
+  }: {
+    card: Card;
+    second?: SecondModel | null;
+    title?: boolean;
+    sticky?: boolean;
+    actions?: Snippet;
+    codeTools?: Snippet;
+  } = $props();
 </script>
 
 <article class="card">
   {#if title}
-    <div class="title">
-      <span class="lvl-{card.level} icon">{card.icon}</span>
-      <strong class="name">{card.name}</strong>
-      <span class="muted mono place">{card.place}</span>
-      <span class="state d-{card.decision}">{card.state}</span>
+    <div class="head" class:sticky>
+      <div class="title">
+        <span class="lvl-{card.level} icon">{card.icon}</span>
+        <strong class="name">{card.name}</strong>
+        <span class="muted mono place">{card.place}</span>
+        <span class="state d-{card.decision}">{card.state}</span>
+      </div>
+      {@render actions?.()}
     </div>
   {/if}
 
@@ -64,7 +80,7 @@
   {/if}
 
   {#if card.code}
-    <Code code={card.code} statements={card.statements} />
+    <Code code={card.code} statements={card.statements} tools={codeTools} />
   {/if}
 
   {#if card.note}
@@ -92,12 +108,23 @@
   .card {
     max-width: 980px;
   }
+  .head {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 6px;
+  }
+  /* Under the scroll pane's 16px top padding: flush with its edge. */
+  .head.sticky {
+    position: sticky;
+    top: -16px;
+    z-index: 2;
+    margin-top: -16px;
+    padding-top: 16px;
+    background: var(--bg);
+  }
   .title {
     display: flex;
     gap: 8px;
     align-items: baseline;
-    padding-bottom: 6px;
-    border-bottom: 1px solid var(--border);
   }
   .icon {
     font-size: 14px;

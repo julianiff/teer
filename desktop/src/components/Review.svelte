@@ -1,5 +1,8 @@
 <script lang="ts">
-  // A review: the header, the screen teer is on, the bar, and what is open over them.
+  // A review: the header, the screen teer is on, the bar, and what is
+  // open over them. Its buttons sit where they act and take their keys
+  // from the view's actions.
+  import { provideActions } from "../lib/actions";
   import type { View } from "../lib/types";
   import Header from "./Header.svelte";
   import Bar from "./Bar.svelte";
@@ -9,10 +12,11 @@
   import OverlayView from "./OverlayView.svelte";
 
   let { view }: { view: View } = $props();
+  provideActions(() => view.actions);
 </script>
 
 <div class="review">
-  <Header header={view.header} screen={view.screen} />
+  <Header header={view.header} screen={view.screen} done={view.bar.pending === 0} />
   <div class="screen">
     {#if view.screen === "Unit" && view.unit}
       <UnitView unit={view.unit} />
@@ -24,7 +28,7 @@
   </div>
   <Bar bar={view.bar} />
   {#if view.overlay.kind !== "None"}
-    <OverlayView overlay={view.overlay} />
+    <OverlayView overlay={view.overlay} panel={view.panel} />
   {/if}
 </div>
 

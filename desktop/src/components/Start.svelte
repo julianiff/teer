@@ -1,10 +1,18 @@
 <script lang="ts">
-  // The start screen: a repository to review (picked, recent, or dropped),
-  // its changes or a pull request of it.
+  // The start screen: a pull request's link to open, your repositories
+  // with what waits for your review in each (added through the add sheet,
+  // as settings add an account), the recent ones not saved. A folder
+  // dropped on the window opens the sheet with it (Tauri takes every drop,
+  // so a dragged link never reaches the page: links are pasted). Every
+  // repository opened here is saved, the newest first.
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
+  import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { onMount } from "svelte";
   import { api } from "../lib/api";
-  import type { ListedPr, Listing, Recent } from "../lib/types";
+  import type { Recent, Saved } from "../lib/types";
+  import AddRepo from "./AddRepo.svelte";
+  import OpenPr from "./OpenPr.svelte";
+  import SavedRepos from "./SavedRepos.svelte";
 
   // What the last review asked for came to instead: nothing to review in
   // that repository, or why it couldn't be opened.
@@ -17,30 +25,34 @@
   } = $props();
 
   let recent = $state<Recent[]>([]);
-  let repo = $state("");
-  let base = $state("");
-  let pr = $state("");
+  let saved = $state<Saved[]>([]);
+  // The recent ones not saved: the saved ones are above.
+  const others = $derived(recent.filter((r) => !saved.some((s) => s.path === r.path)));
   let noAgent = $state(false);
   let error = $state<string | null>(null);
   let note = $state<string | null>(null);
   let busy = $state(false);
-  let listing = $state<Listing | null>(null);
-  let listing_error = $state<string | null>(null);
-  let prField: HTMLInputElement | undefined = $state();
+  /** The add sheet, open with this folder in it; `null` when closed. */
+  let adding = $state<string | null>(null);
+  let prBox: ReturnType<typeof OpenPr> | undefined = $state();
 
-  onMount(async () => {
+  onMount(() => {
     if (said) {
-      // Back from "Opening…": the same repository, and what came of it.
-      repo = said.repo;
+      // Back from "Opening…": what came of it; with nothing to review,
+      // perhaps a pull request of it, above.
       if (said.error) error = said.text;
       else {
         note = said.text;
-        // Nothing to review here: perhaps a pull request of it.
-        void loadPrs();
+        void remember(said.repo);
       }
     }
-    recent = await api.recent();
-    if (!repo && recent[0]) repo = recent[0].path;
+    void api.savedRepos().then((s) => (saved = s));
+    void api.recent().then((r) => (recent = r));
+    // Folders dropped on the window: the sheet, with the first of them.
+    const off = getCurrentWebviewWindow().onDragDropEvent((e) => {
+      if (e.payload.type === "drop" && e.payload.paths[0]) adding = e.payload.paths[0];
+    });
+    return () => void off.then((f) => f());
   });
 
   $effect(() => {
@@ -49,30 +61,38 @@
       void choose();
     } else if (mode === "pr") {
       mode = null;
-      prField?.focus();
+      prBox?.focus();
     }
   });
 
+  /** File › Open Folder…: a folder, saved and reviewed. */
   async function choose() {
     const dir = await pickFolder({ directory: true, title: "A repository to review" });
-    if (typeof dir === "string") {
-      repo = dir;
-      listing = null;
-      await start();
+    if (typeof dir === "string") await open(dir);
+  }
+
+  /** Save the repository `dir` is in; a folder outside one isn't. */
+  async function remember(dir: string) {
+    try {
+      saved = await api.saveRepo(dir);
+    } catch {
+      // Not a repository: opening it says so.
     }
   }
 
-  async function start(with_pr?: string) {
-    if (!repo || busy) return;
+  async function forget(path: string) {
+    saved = await api.forgetRepo(path);
+  }
+
+  /** Review `repo`: its changes (against `base`), or pull request `pr`. */
+  async function open(repo: string, pr?: string, base?: string) {
+    if (busy) return;
+    void remember(repo);
     busy = true;
     error = null;
     note = null;
     try {
-      const said = await api.openReview(repo, {
-        base: base || undefined,
-        pr: with_pr ?? (pr || undefined),
-        noAgent,
-      });
+      const said = await api.openReview(repo, { base: base || undefined, pr, noAgent });
       if (said) note = said;
     } catch (e) {
       error = String(e);
@@ -81,131 +101,64 @@
     }
   }
 
-  async function loadPrs() {
-    if (!repo) return;
-    listing = null;
-    listing_error = null;
+  async function add(path: string) {
     try {
-      listing = await api.listPrs(repo);
+      saved = await api.saveRepo(path);
     } catch (e) {
-      listing_error = String(e);
-    }
-  }
-
-  const sections = (l: Listing): [string, ListedPr[]][] => [
-    ["Waiting for your review", l.needs_review],
-    ["Assigned to you", l.assigned],
-    ["Yours", l.mine],
-  ];
-
-  function dropped(e: DragEvent) {
-    e.preventDefault();
-    const path = e.dataTransfer?.getData("text/uri-list") || e.dataTransfer?.getData("text/plain");
-    if (path) {
-      repo = decodeURIComponent(path.replace(/^file:\/\//, "").trim());
-      void start();
+      error = String(e);
     }
   }
 </script>
 
-<main
-  class="start"
-  role="region"
-  aria-label="Start"
-  ondragover={(e) => e.preventDefault()}
-  ondrop={dropped}
->
+<main class="start" role="region" aria-label="Start">
   <section class="hero">
     <h1>teer</h1>
     <p class="muted">The essence of every revision: review changes by what they mean.</p>
   </section>
 
-  <section class="card">
-    <div class="repo">
-      <input type="text" bind:value={repo} placeholder="/path/to/a/repository" spellcheck="false" />
-      <button class="btn" onclick={choose}>Choose…</button>
-    </div>
-    <div class="options">
-      <label>
-        <span>Base</span>
-        <input type="text" bind:value={base} placeholder="found by itself" spellcheck="false" />
-      </label>
-      <label>
-        <span>Pull request</span>
-        <input
-          type="text"
-          bind:this={prField}
-          bind:value={pr}
-          placeholder="482 or a GitHub URL"
-          spellcheck="false"
-          onkeydown={(e) => e.key === "Enter" && start()}
-        />
-      </label>
-      <label class="check">
-        <input type="checkbox" bind:checked={noAgent} />
-        <span>Without an agent</span>
-      </label>
-    </div>
-    <div class="go">
-      <button class="btn primary" disabled={!repo || busy} onclick={() => start()}>
-        {busy ? "Opening…" : pr ? `Review PR ${pr}` : "Review the changes"}
-      </button>
-      <button class="btn" disabled={!repo} onclick={loadPrs}>Pull requests…</button>
-    </div>
-    {#if note}<p class="note">{note}</p>{/if}
-    {#if error}<pre class="error">{error}</pre>{/if}
-  </section>
-
-  {#if listing || listing_error}
-    <section class="card">
-      {#if listing_error}
-        <pre class="error">{listing_error}</pre>
-      {:else if listing}
-        <h3 class="section">{listing.repo.owner}/{listing.repo.repo}</h3>
-        {#each sections(listing) as [title, prs] (title)}
-          {#if prs.length}
-            <h4>{title}</h4>
-            <ul class="prs">
-              {#each prs as p (p.number)}
-                <li>
-                  <button onclick={() => start(String(p.url))}>
-                    <span class="num">#{p.number}</span>
-                    <span class="title">{p.title}</span>
-                    <span class="muted">@{p.author}{p.draft ? " · draft" : ""}</span>
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        {/each}
-        {#if !listing.needs_review.length && !listing.assigned.length && !listing.mine.length}
-          <p class="muted">No open pull requests are waiting, assigned to you, or yours.</p>
-        {/if}
-      {/if}
+  {#if note || error}
+    <section class="said" class:bad={!!error} role="status">
+      {#if error}<pre>{error}</pre>{:else}<p>{note}</p>{/if}
     </section>
   {/if}
 
-  {#if recent.length}
+  <OpenPr bind:this={prBox} {busy} onopen={(path, url) => open(path, url)} onsaved={(s) => (saved = s)} />
+
+  <SavedRepos {saved} {busy} onopen={(path, pr) => open(path, pr)} onforget={forget} onadd={() => (adding = "")} />
+
+  {#if others.length}
     <section class="card">
       <h3 class="section">Recent</h3>
       <ul class="recent">
-        {#each recent as r (r.path)}
+        {#each others as r (r.path)}
           <li>
-            <button
-              onclick={() => {
-                repo = r.path;
-                void start();
-              }}
-            >
+            <button class="go" disabled={busy} title="Review its changes" onclick={() => open(r.path)}>
               <span class="name">{r.name}</span>
               <span class="path muted mono">{r.path}</span>
             </button>
+            <button class="plus" title="Add to your repositories" aria-label="Add {r.name} to your repositories" onclick={() => add(r.path)}>+</button>
           </li>
         {/each}
       </ul>
     </section>
   {/if}
-  <p class="faint drop">Or drop a folder here, or on Teer in the Dock.</p>
+
+  <footer>
+    <label class="check">
+      <input type="checkbox" bind:checked={noAgent} />
+      <span>Open reviews without an agent</span>
+    </label>
+    <span class="faint">Drop a repository's folder on the window to add it.</span>
+  </footer>
+
+  {#if adding !== null}
+    <AddRepo
+      dir={adding}
+      onclose={() => (adding = null)}
+      onadded={(s) => (saved = s)}
+      onreview={(path, base) => open(path, undefined, base)}
+    />
+  {/if}
 </main>
 
 <style>
@@ -226,51 +179,22 @@
     margin: 0 0 6px;
     letter-spacing: -0.02em;
   }
-  .card {
+  .card,
+  .said {
     width: min(720px, 100%);
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 10px;
-    padding: 16px 18px;
+    padding: 12px 18px;
   }
-  .repo {
-    display: flex;
-    gap: 8px;
+  .said p,
+  .said pre {
+    margin: 0;
   }
-  .repo input {
-    flex: 1;
-    font-family: var(--mono);
+  .said.bad {
+    border-color: var(--bad);
   }
-  .options {
-    display: flex;
-    gap: 12px;
-    margin-top: 12px;
-    flex-wrap: wrap;
-    align-items: end;
-  }
-  .options label {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    font-size: 12px;
-    color: var(--muted);
-  }
-  .options label.check {
-    flex-direction: row;
-    align-items: center;
-    gap: 6px;
-    padding-bottom: 7px;
-  }
-  .go {
-    display: flex;
-    gap: 8px;
-    margin-top: 14px;
-  }
-  .note {
-    margin: 12px 0 0;
-  }
-  .error {
-    margin: 12px 0 0;
+  .said pre {
     color: var(--bad);
     white-space: pre-wrap;
     font: 12px/1.5 var(--mono);
@@ -280,8 +204,14 @@
     margin: 0;
     padding: 0;
   }
-  li button {
-    width: 100%;
+  .recent li {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .go {
+    flex: 1;
+    min-width: 0;
     display: flex;
     gap: 10px;
     align-items: baseline;
@@ -292,7 +222,7 @@
     border-radius: 6px;
     cursor: pointer;
   }
-  li button:hover {
+  .go:hover {
     background: var(--select);
   }
   .recent .name {
@@ -305,20 +235,32 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .prs .num {
-    font-family: var(--mono);
+  .plus {
+    border: 1px solid transparent;
+    background: none;
+    border-radius: 6px;
     color: var(--muted);
-    min-width: 48px;
+    font-weight: 700;
+    width: 26px;
+    cursor: pointer;
   }
-  .prs .title {
-    flex: 1;
+  .plus:hover {
+    border-color: var(--border);
+    background: var(--sunken);
+    color: var(--text);
   }
-  h4 {
-    margin: 12px 0 4px;
+  footer {
+    width: min(720px, 100%);
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 6px 16px;
     font-size: 12px;
+  }
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     color: var(--muted);
-  }
-  .drop {
-    font-size: 12px;
   }
 </style>

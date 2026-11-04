@@ -51,6 +51,10 @@ pub enum Click {
     Open { id: String },
     /// A tile of the unit view, or its text (`None`): it takes the focus.
     Tile { id: Option<TileId> },
+    /// A tile's close button.
+    CloseTile { id: TileId },
+    /// The unit view's way back.
+    Back,
     /// An entry of the flagged list.
     Flagged { i: usize },
     /// A link in the ask conversation.
@@ -337,7 +341,8 @@ impl Session {
                 }
             },
             Input::Action { id, count } => match Action::from_id(&id) {
-                Some(a) => app.run_action(a, count),
+                // As its key would: an open panel takes it as its own.
+                Some(a) => app.press(a, count),
                 None => Vec::new(),
             },
             Input::Click(c) => match c {
@@ -346,6 +351,14 @@ impl Session {
                 Click::Open { id } => app.open_unit(id),
                 Click::Tile { id } => {
                     app.unit_click_tile(id.map(TileId::panel));
+                    Vec::new()
+                }
+                Click::Back => {
+                    app.unit_click_back();
+                    Vec::new()
+                }
+                Click::CloseTile { id } => {
+                    app.unit_click_close(id.panel());
                     Vec::new()
                 }
                 Click::Flagged { i } => {
@@ -362,8 +375,9 @@ impl Session {
                 .collect(),
             Input::Returned(r) => return Some(crate::front::returned(self, r)),
             Input::Actions(reply) => {
+                // `:app` is the terminal's way here.
                 let hints = Action::all()
-                    .filter(|a| !app.keys.label(*a).is_empty())
+                    .filter(|a| !app.keys.label(*a).is_empty() && *a != Action::FinishApp)
                     .map(|a| Hint {
                         keys: app.keys.labels(a),
                         action: a.id(),

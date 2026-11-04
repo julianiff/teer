@@ -3,7 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import type { Click, Hint, Listing, Loaded, Recent, View } from "./types";
+import type { Click, Hint, Listing, Loaded, PrLink, Recent, RepoCheck, Saved, View } from "./types";
 
 export const api = {
   loaded: () => invoke<Loaded>("loaded"),
@@ -20,10 +20,20 @@ export const api = {
   paste: (text: string) => invoke<void>("paste", { text }),
   actions: () => invoke<Hint[]>("actions"),
   recent: () => invoke<Recent[]>("recent_repos"),
+  savedRepos: () => invoke<Saved[]>("saved_repos"),
+  /** Save the repository `dir` is in; rejects for a folder outside one. */
+  saveRepo: (dir: string) => invoke<Saved[]>("save_repo", { dir }),
+  forgetRepo: (path: string) => invoke<Saved[]>("forget_repo", { path }),
+  /** What a folder is, before it is saved; rejects outside a repository. */
+  checkRepo: (dir: string) => invoke<RepoCheck>("check_repo", { dir }),
+  /** A pull request's link and the clone it opens in; rejects a non-link. */
+  prLink: (url: string) => invoke<PrLink>("pr_link", { url }),
   listPrs: (repo: string) => invoke<Listing>("list_prs", { repo }),
   newWindow: () => invoke<void>("new_window"),
   openElsewhere: (repo: string, pr?: string) =>
     invoke<void>("open_elsewhere", { repo, pr: pr ?? null }),
+  /** Show the buttons in every window, or only the keys. */
+  setButtons: (on: boolean) => invoke<void>("set_buttons_shown", { on }),
 };
 
 /** Listen to `event` sent to this window only. */

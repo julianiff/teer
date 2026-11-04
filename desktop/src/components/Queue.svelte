@@ -1,9 +1,15 @@
 <script lang="ts">
   // The queue: units in level boxes, most attention first; the unit under
   // the cursor beside them. A click selects, a double click looks closer.
+  // Over the list, how it is listed and finding a unit; on a row under
+  // the mouse, accept and flag; on the preview, all the unit can do.
   import { api } from "../lib/api";
+  import { tip, useActions } from "../lib/actions";
+  import { ui } from "../lib/ui.svelte";
   import type { Card as CardT, Queue, QueueRow } from "../lib/types";
+  import Act from "./Act.svelte";
   import Card from "./Card.svelte";
+  import UnitActions from "./UnitActions.svelte";
 
   let { queue, preview }: { queue: Queue; preview: CardT | null } = $props();
   let list: HTMLElement | undefined = $state();
@@ -15,6 +21,11 @@
   });
 
   const byFile = $derived(queue.grouping === "File");
+  const actions = useActions();
+  const grouping = $derived(actions()["toggle.by_file"]);
+  const listBy = (files: boolean) => files !== byFile && void api.action("toggle.by_file");
+  // A row's buttons act on it: it is selected first.
+  const select = (pos: number) => () => api.click({ kind: "Row", pos });
 
   function name(r: QueueRow) {
     return byFile || !r.whole_file ? r.name : "whole file";
@@ -23,6 +34,17 @@
 
 <div class="queue">
   <div class="list scroll" bind:this={list}>
+    {#if ui.buttons}
+    <div class="listbar">
+      <div class="seg" role="group" aria-label="List by" title={grouping ? tip(grouping) : ""}>
+        <button class:on={!byFile} aria-pressed={!byFile} onclick={() => listBy(false)}>Units</button>
+        <button class:on={byFile} aria-pressed={byFile} onclick={() => listBy(true)}>Files</button>
+      </div>
+      {#if grouping?.keys}<kbd class="faint">{grouping.keys}</kbd>{/if}
+      <span class="spacer"></span>
+      <Act id="find.unit" label="Find a unit" icon="⌕" />
+    </div>
+    {/if}
     {#each queue.boxes as box (box.level)}
       <section class="box">
         <h2 class="lvl-{box.level}">{box.title}</h2>
@@ -35,6 +57,7 @@
               </div>
             {/if}
             {#each file.rows as r (r.id)}
+              <div class="rowwrap" class:selected={r.selected}>
               <button
                 class="row d-{r.decision}"
                 class:selected={r.selected}
@@ -55,6 +78,13 @@
                   {r.state}{#if r.note}<span class="muted"> · “</span><span class="note">{r.note}</span><span class="muted">”</span>{/if}
                 </span>
               </button>
+              {#if ui.buttons}
+                <span class="quick">
+                  <Act id="decide.accept" icon="✓" kind="icon" before={select(r.pos)} />
+                  <Act id="decide.flag" icon="⚑" kind="icon" before={select(r.pos)} />
+                </span>
+              {/if}
+              </div>
             {/each}
           </div>
         {/each}
@@ -68,8 +98,12 @@
         {/each}
       </section>
     {/if}
-    {#if queue.auto_line}
-      <p class="auto muted">○ {queue.auto_line}</p>
+    {#if queue.auto_line && !ui.buttons}
+      <p class="auto">○ {queue.auto_line}</p>
+    {:else if queue.auto_line}
+      <button class="auto" aria-pressed={queue.show_auto} onclick={() => api.action("toggle.auto_accepted")}>
+        ○ {queue.auto_line}
+      </button>
     {/if}
     {#if !queue.boxes.length && !queue.skipped.length}
       <p class="muted empty">Nothing to review.</p>
@@ -77,7 +111,9 @@
   </div>
   <div class="preview scroll" data-scroll="preview">
     {#if preview}
-      <Card card={preview} />
+      <Card card={preview} sticky>
+        {#snippet actions()}<UnitActions on="queue" />{/snippet}
+      </Card>
     {/if}
   </div>
 </div>
@@ -97,6 +133,74 @@
     flex: 1;
     min-width: 0;
     padding: 16px 22px 40px;
+  }
+  .listbar {
+    position: sticky;
+    top: -12px;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: -12px -12px 10px;
+    padding: 10px 12px 8px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--sunken);
+    padding: 1px;
+  }
+  .seg button {
+    border: 0;
+    background: none;
+    border-radius: 5px;
+    padding: 1px 10px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .seg button.on {
+    background: var(--panel);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  }
+  .listbar kbd {
+    font-size: 10px;
+    border-bottom-width: 1px;
+    background: transparent;
+  }
+  .spacer {
+    flex: 1;
+  }
+  .rowwrap {
+    position: relative;
+  }
+  .quick {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: none;
+    gap: 2px;
+    padding-left: 18px;
+    background: linear-gradient(to right, transparent, var(--sunken) 16px);
+  }
+  .rowwrap:hover .quick {
+    display: flex;
+  }
+  .rowwrap:hover .row {
+    background: var(--sunken);
+  }
+  .rowwrap:hover .row.selected,
+  .rowwrap.selected .quick {
+    background: var(--select);
+  }
+  .rowwrap.selected .quick {
+    background: linear-gradient(to right, transparent, var(--select) 16px);
   }
   .box {
     border: 1px solid var(--border);
@@ -221,7 +325,23 @@
       opacity: 0.2;
     }
   }
-  .auto,
+  .auto {
+    border: 0;
+    background: none;
+    color: var(--muted);
+    padding: 2px 6px;
+    border-radius: 5px;
+    text-align: left;
+    cursor: pointer;
+  }
+  p.auto {
+    margin: 0;
+    cursor: default;
+  }
+  button.auto:hover {
+    color: var(--text);
+    background: var(--sunken);
+  }
   .empty {
     padding: 0 6px;
   }

@@ -67,6 +67,8 @@ pub struct Loaded {
     pub opening: Option<String>,
     /// The review's view, once one is open.
     pub view: Option<serde_json::Value>,
+    /// The buttons show (View › Show Buttons).
+    pub buttons: bool,
 }
 
 #[tauri::command]
@@ -78,6 +80,7 @@ pub fn loaded(window: WebviewWindow, windows: State<'_, Windows>) -> Loaded {
         view: state
             .and_then(|s| s.host.as_ref())
             .and_then(|h| h.view.lock().ok()?.clone()),
+        buttons: crate::prefs::load().buttons,
     }
 }
 

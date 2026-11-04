@@ -22,6 +22,7 @@ desktop/              Teer.app
 │   ├── pty.rs        the terminal pane (portable-pty)
 │   ├── settings.rs   `teer setup`'s checks, models and save, for the settings screen
 │   ├── links.rs      reviews opened by `teer app`, teer:// links, Dock drops; Open in Terminal
+│   ├── repos.rs      the repositories saved on the start screen
 │   └── env.rs        the login shell's PATH for an app started from Finder
 └── src/              Svelte + TypeScript: draws the View, sends keys, actions and clicks
 ```
@@ -31,6 +32,35 @@ keymap resolves them), action ids and clicks (`host::Click`), and draws
 the `View` teer sends after each change (at most one per frame while
 answers stream). What scrolls natively (the panes) teer tells it with a
 `scroll` event naming the action a key ran.
+
+Every button sits where its action acts, with its key beside it and in its
+tooltip, so the keymap is learned by clicking (`View.actions`: each
+action's key, words and state, by id; the window places them):
+
+- on the unit's card, under its name: accept, flag, note, accept the file,
+  undo, and in the queue's preview open, ask, advice, tests;
+- on a queue row under the mouse: accept and flag (the row is selected
+  first); over the list: units or files, find a unit; under it, the units
+  accepted for you shown or hidden;
+- over the unit view: back, the pending units before and after, and the
+  closer looks (advice, ask, tests, old vs new, diagram), each opening its
+  tile; on the code, its hunks, what it calls, its callers, the editor; on
+  a tile, zoom and close;
+- in the header: the commits (or the pull request's description), the
+  palette (⌘K) and finish; in the bar, the flagged and noted counts open
+  their lists, `?` every key;
+- on the open panel (notes, jump lists, commits, the sheet), its keys
+  (`View.panel`); in the help, every key.
+
+View › Show Buttons (⇧⌘B, or "hide the buttons" in the palette) hides them
+in every window, leaving the keys alone as in the terminal; the panels'
+dialogs and the help stay clickable. The app keeps the choice in
+`desktop-prefs.json` beside the saved reviews (`prefs.rs`).
+
+A click presses the key (`App::press`): the help closes first, an open
+panel takes it as its own key, and a note or question being typed keeps its
+letters. Where a click means more than the key it is a `host::Click`:
+back from the unit view whatever tile has the focus, a tile's close.
 
 The five effects that take over the terminal are the window's
 (`front.rs`): the agent CLI the notes go to runs in a terminal pane and
@@ -54,6 +84,17 @@ open (`store::lock`). A lock whose process is gone is taken over.
   those).
 - Folders dropped on the Dock icon, and `teer://` links from anywhere, open
   in a free window; a window that shows the review already comes forward.
+- The start screen lists your repositories, the newest first, each with
+  the pull requests waiting for your review or assigned to you: one click
+  opens one, its name reviews its own changes, ✕ forgets it (its reviews
+  stay); "Refresh all" fetches every repository's again. "+ Add repository" opens a sheet
+  that checks the folder (typed, chosen, or dropped on the window) before
+  Add, and can review its changes right away against a base. Above them,
+  a pull request's link pasted opens it in the clone of its repository
+  among yours, or asks for that folder once. Every repository opened from
+  here is saved too. `repos.rs` keeps them in `desktop-repos.json` beside
+  the saved reviews. (Tauri takes every drop on the window, so a link
+  dragged from the browser never reaches the page: links are pasted.)
 - The subject at the top left of a review is a menu (⇧⌘O) of what else to
   review in the repository, as `teer pr` lists it: its own changes, the
   pull requests waiting for your review, assigned to you, and yours. One
@@ -104,5 +145,6 @@ What needs your accounts before the first public release:
 
 - Frontend end-to-end tests: Tauri's WebDriver doesn't drive WKWebView, so
   they would run on Linux CI. The view model is snapshot tested in Rust
-  (`tests/it/view.rs`), the key and scroll logic with vitest.
+  (`tests/it/view.rs`), and vitest draws those snapshots
+  (`Review.test.ts`), with the key and scroll logic.
 - Pictures are SVG inline; the terminal's Kitty graphics aren't needed.

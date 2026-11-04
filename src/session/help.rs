@@ -329,11 +329,34 @@ pub fn joined(a: &str, b: &str) -> String {
     out
 }
 
-/// One row of the help: the keys and what they do.
+/// One row of the help: the keys and what they do; and each action on
+/// it with its keys, for a click to press.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HelpRow {
     pub keys: String,
     pub what: String,
+    pub each: Vec<Hint>,
+}
+
+/// A key and what it does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Hint {
+    /// As the keymap labels it: `gd`, `<space>a`, `:w`.
+    pub keys: String,
+    /// The action's id (`decide.accept`), for a click to run.
+    pub action: &'static str,
+    pub what: String,
+}
+
+impl Hint {
+    /// `a` with every key of it, and what it does where the help was opened.
+    pub fn of(app: &App, a: Action) -> Hint {
+        Hint {
+            keys: app.keys.labels(a),
+            action: a.id(),
+            what: describe(app, a).to_string(),
+        }
+    }
 }
 
 /// What `a` does where the help was opened: the finish sheet's `i` writes
@@ -372,10 +395,12 @@ pub fn help_groups(app: &App, actions: &[Action]) -> Vec<(&'static str, Vec<Help
             Some(b) => HelpRow {
                 keys: format!("{keys} {}", app.keys.labels(b)),
                 what: joined(describe(app, a), describe(app, b)),
+                each: vec![Hint::of(app, a), Hint::of(app, b)],
             },
             None => HelpRow {
                 keys,
                 what: describe(app, a).to_string(),
+                each: vec![Hint::of(app, a)],
             },
         };
         groups[group_of(a)].1.push(row);

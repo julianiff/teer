@@ -471,6 +471,14 @@ impl Key {
         }
     }
 
+    /// `⏎`: a text input's submit.
+    pub const ENTER: Key = Key::plain(KeyCode::Enter);
+    /// `esc`: a text input's cancel.
+    pub const ESC: Key = Key::plain(KeyCode::Esc);
+    /// A key nothing is bound to: what a click hands a panel that takes
+    /// the action it pressed instead of a key's.
+    pub const NONE: Key = Key::plain(KeyCode::Null);
+
     /// The key `code` pressed with `mods`, as the keymap reads it: shift
     /// folded into the character, only ctrl and alt kept.
     pub fn new(code: KeyCode, modifiers: KeyModifiers) -> Key {

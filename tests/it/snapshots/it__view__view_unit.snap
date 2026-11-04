@@ -13,13 +13,15 @@ expression: json(&app)
     "summary": null,
     "no_agent": false,
     "agent_note": null,
-    "preparing": null
+    "preparing": null,
+    "commits": 0
   },
   "bar": {
     "pending": 4,
     "flagged": 0,
     "accepted": 3,
     "auto_accepted": 3,
+    "notes": 0,
     "finish_key": ":w",
     "help_key": "?",
     "status": "",
@@ -542,152 +544,181 @@ expression: json(&app)
     ],
     "focus": "Tests",
     "zoom": false,
-    "typing": false,
-    "keys": [
-      {
-        "name": "Decide",
-        "items": [
-          {
-            "keys": "a",
-            "what": "accept",
-            "action": "decide.accept",
-            "off": false
-          },
-          {
-            "keys": "f",
-            "what": "flag",
-            "action": "decide.flag",
-            "off": false
-          },
-          {
-            "keys": "i",
-            "what": "note",
-            "action": "note.edit",
-            "off": false
-          },
-          {
-            "keys": "u",
-            "what": "undo",
-            "action": "history.undo",
-            "off": false
-          }
-        ]
-      },
-      {
-        "name": "Look closer",
-        "items": [
-          {
-            "keys": "␣a",
-            "what": "advice",
-            "action": "tool.advice",
-            "off": false
-          },
-          {
-            "keys": "K",
-            "what": "ask",
-            "action": "ask.open",
-            "off": false
-          },
-          {
-            "keys": "␣t",
-            "what": "tests",
-            "action": "tool.tests",
-            "off": false
-          },
-          {
-            "keys": "␣r",
-            "what": "old vs new",
-            "action": "tool.run_old_new",
-            "off": false
-          },
-          {
-            "keys": "␣v",
-            "what": "diagram",
-            "action": "tool.diagram",
-            "off": false
-          },
-          {
-            "keys": "gd",
-            "what": "calls",
-            "action": "goto.definition",
-            "off": false
-          },
-          {
-            "keys": "gr",
-            "what": "callers",
-            "action": "goto.callers",
-            "off": false
-          },
-          {
-            "keys": "gf",
-            "what": "editor",
-            "action": "goto.editor",
-            "off": false
-          },
-          {
-            "keys": "␣f",
-            "what": "all flagged",
-            "action": "tool.flagged",
-            "off": false
-          }
-        ]
-      },
-      {
-        "name": "Move",
-        "items": [
-          {
-            "keys": "n N",
-            "what": "pending",
-            "action": "move.next_pending",
-            "off": false
-          },
-          {
-            "keys": "]c [c",
-            "what": "hunks",
-            "action": "move.next_hunk",
-            "off": false
-          },
-          {
-            "keys": "tab",
-            "what": "tiles",
-            "action": "move.next_tile",
-            "off": false
-          },
-          {
-            "keys": "zz",
-            "what": "zoom",
-            "action": "toggle.zoom",
-            "off": false
-          },
-          {
-            "keys": "h",
-            "what": "back",
-            "action": "view.back",
-            "off": false
-          }
-        ]
-      },
-      {
-        "name": "Finish",
-        "items": [
-          {
-            "keys": ":w",
-            "what": "finish",
-            "action": "finish.open",
-            "off": false
-          },
-          {
-            "keys": "?",
-            "what": "every key",
-            "action": "help.open",
-            "off": false
-          }
-        ]
-      }
-    ]
+    "typing": false
   },
   "flagged": null,
   "overlay": {
     "kind": "None"
-  }
+  },
+  "actions": {
+    "ask.open": {
+      "keys": "K",
+      "what": "ask about the unit",
+      "off": false,
+      "on": null
+    },
+    "decide.accept": {
+      "keys": "a",
+      "what": "accept the unit",
+      "off": false,
+      "on": null
+    },
+    "decide.accept_file": {
+      "keys": "A",
+      "what": "accept the file's pending units",
+      "off": false,
+      "on": null
+    },
+    "decide.flag": {
+      "keys": "f",
+      "what": "flag the unit",
+      "off": false,
+      "on": null
+    },
+    "find.unit": {
+      "keys": "/",
+      "what": "find a unit by file or name",
+      "off": false,
+      "on": null
+    },
+    "finish.open": {
+      "keys": ":w",
+      "what": "finish",
+      "off": false,
+      "on": null
+    },
+    "goto.callers": {
+      "keys": "gr",
+      "what": "what calls this unit",
+      "off": false,
+      "on": null
+    },
+    "goto.definition": {
+      "keys": "gd",
+      "what": "what this unit calls",
+      "off": false,
+      "on": null
+    },
+    "goto.editor": {
+      "keys": "gf",
+      "what": "open in the editor",
+      "off": false,
+      "on": null
+    },
+    "help.open": {
+      "keys": "?",
+      "what": "keys",
+      "off": false,
+      "on": null
+    },
+    "history.undo": {
+      "keys": "u",
+      "what": "undo the last decision",
+      "off": false,
+      "on": null
+    },
+    "move.next_hunk": {
+      "keys": "]c",
+      "what": "next hunk",
+      "off": false,
+      "on": null
+    },
+    "move.next_pending": {
+      "keys": "n",
+      "what": "next pending unit",
+      "off": false,
+      "on": null
+    },
+    "move.prev_hunk": {
+      "keys": "[c",
+      "what": "previous hunk",
+      "off": false,
+      "on": null
+    },
+    "move.prev_pending": {
+      "keys": "N",
+      "what": "previous pending unit",
+      "off": false,
+      "on": null
+    },
+    "note.edit": {
+      "keys": "i",
+      "what": "edit the note",
+      "off": false,
+      "on": null
+    },
+    "toggle.auto_accepted": {
+      "keys": "za",
+      "what": "show units accepted for you",
+      "off": false,
+      "on": false
+    },
+    "toggle.by_file": {
+      "keys": "zf",
+      "what": "list by file or by level",
+      "off": false,
+      "on": false
+    },
+    "toggle.zoom": {
+      "keys": "zz",
+      "what": "zoom the tile in focus",
+      "off": false,
+      "on": false
+    },
+    "tool.advice": {
+      "keys": "␣a",
+      "what": "advice: what to do about the unit",
+      "off": false,
+      "on": null
+    },
+    "tool.diagram": {
+      "keys": "␣v",
+      "what": "diagram of the change",
+      "off": false,
+      "on": null
+    },
+    "tool.flagged": {
+      "keys": "␣f",
+      "what": "flagged units, one after another",
+      "off": false,
+      "on": null
+    },
+    "tool.history": {
+      "keys": "␣c",
+      "what": "commits and PR description",
+      "off": false,
+      "on": null
+    },
+    "tool.notes": {
+      "keys": "␣n",
+      "what": "every note",
+      "off": false,
+      "on": null
+    },
+    "tool.run_old_new": {
+      "keys": "␣r",
+      "what": "run old and new",
+      "off": false,
+      "on": null
+    },
+    "tool.tests": {
+      "keys": "␣t",
+      "what": "tests that cover this unit",
+      "off": false,
+      "on": null
+    },
+    "view.back": {
+      "keys": "h",
+      "what": "back",
+      "off": false,
+      "on": null
+    },
+    "view.open": {
+      "keys": "l",
+      "what": "open",
+      "off": false,
+      "on": null
+    }
+  },
+  "panel": []
 }

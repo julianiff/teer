@@ -18,7 +18,6 @@
   let view = $state<View | null>(null);
   let opening = $state<string | null>(null);
   let ended = $state<{ line: string | null } | null>(null);
-  let palette = $state(false);
   let startMode = $state<"folder" | "pr" | null>(null);
   // What a review the app opened by itself came to, instead of a review.
   let said = $state<{ repo: string; text: string; error: boolean } | null>(null);
@@ -28,7 +27,7 @@
   let editing = $state<{ text: string; title: string } | null>(null);
   let commit = $state<{ lines: string[]; done: boolean; ok: boolean } | null>(null);
   let settings = $state(false);
-  const away = $derived(palette || !!terminal || !!editing || settings || ui.prMenu);
+  const away = $derived(ui.palette || !!terminal || !!editing || settings || ui.prMenu);
 
   onMount(() => {
     const offs = [
@@ -44,7 +43,7 @@
       on<{ line: string | null }>("ended", (e) => (ended = e)),
       on<{ action: string; count: number }>("scroll", (s) => view && scrollFor(view, s.action, s.count)),
       on<string>("menu", (id) => {
-        if (id === "palette" && view) palette = true;
+        if (id === "palette" && view) ui.palette = true;
         if (id === "open_pr" && view && !ended) ui.prMenu = true;
         else if (id === "open_folder" || id === "open_pr") {
           if (view && !ended) void api.newWindow();
@@ -58,6 +57,7 @@
       on<{ id: number; title: string }>("pty-open", (t) => (terminal = t)),
       on<{ text: string; title: string }>("edit", (e) => (editing = e)),
       on<null>("settings", () => (settings = true)),
+      on<boolean>("buttons", (b) => (ui.buttons = b)),
       on<null>("commit-start", () => (commit = { lines: [], done: false, ok: false })),
       on<string>("commit-line", (l) => commit && (commit.lines = [...commit.lines, l])),
       on<boolean>("commit-end", (ok) => {
@@ -69,6 +69,7 @@
     ];
     // A window that loads again (or opened by the app) finds what it shows.
     api.loaded().then((l) => {
+      ui.buttons = l.buttons;
       opening = l.opening;
       if (l.view) view = l.view;
     });
@@ -110,8 +111,8 @@
   </main>
 {:else if view}
   <Review {view} />
-  {#if palette}
-    <Palette onclose={() => (palette = false)} />
+  {#if ui.palette}
+    <Palette onclose={() => (ui.palette = false)} />
   {/if}
 {:else if opening}
   <main class="opening">

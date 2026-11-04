@@ -1,8 +1,12 @@
 <script lang="ts">
-  // ⌘K: every action, found by what it does or its keys, run on ⏎.
+  // ⌘K: every action, found by what it does or its keys, run on ⏎; and
+  // the window's own: the buttons shown or hidden.
   import { onMount } from "svelte";
   import { api } from "../lib/api";
+  import { ui } from "../lib/ui.svelte";
   import type { Hint } from "../lib/types";
+
+  const BUTTONS = "window.buttons";
 
   let { onclose }: { onclose: () => void } = $props();
   let all = $state<Hint[]>([]);
@@ -12,7 +16,8 @@
 
   onMount(async () => {
     field?.focus();
-    all = await api.actions();
+    const buttons = { keys: "⇧⌘B", action: BUTTONS, what: `${ui.buttons ? "hide" : "show"} the buttons` };
+    all = [...(await api.actions()), buttons];
   });
 
   const found = $derived(
@@ -25,7 +30,8 @@
   function run(h: Hint | undefined) {
     if (!h) return;
     onclose();
-    void api.action(h.action);
+    if (h.action === BUTTONS) void api.setButtons(!ui.buttons);
+    else void api.action(h.action);
   }
 
   function key(e: KeyboardEvent) {

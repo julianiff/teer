@@ -476,6 +476,9 @@ pub struct App {
     /// front end takes it: one that scrolls natively scrolls for the
     /// scroll actions.
     pub ran: Option<(Action, Option<u32>)>,
+    /// The action a click pressed ([`App::press`]), for the open panel to
+    /// take instead of a key's.
+    pressed: Option<Action>,
 }
 
 impl App {
@@ -517,6 +520,7 @@ impl App {
             fix_by: None,
             changed: HashSet::new(),
             ran: None,
+            pressed: None,
             cfg,
         };
         app.rebuild_order();
@@ -1017,6 +1021,10 @@ impl App {
     /// any. Sequences and the command line work as in normal mode; counts
     /// are dropped, and an unknown command is reported.
     pub(crate) fn panel_action(&mut self, k: Key) -> Option<Action> {
+        if let Some(a) = self.pressed.take() {
+            self.ran = Some((a, None));
+            return Some(a);
+        }
         match self.keys.feed(k, std::time::Instant::now()) {
             Outcome::Run { action, count } => {
                 self.ran = Some((action, count));
@@ -1027,6 +1035,47 @@ impl App {
                 None
             }
             Outcome::None | Outcome::Pending | Outcome::Command => None,
+        }
+    }
+
+    /// A click on `a` where a front end names it (a button, a key in the
+    /// help, the palette): what pressing its key does there. The help
+    /// closes first, back to what it was opened over, and keys waiting for
+    /// more are dropped. On a screen the action runs (a question being
+    /// typed in the ask tile keeps its letters); an open panel takes it as
+    /// the action of its own keys, and the find list as its ⏎ or esc. A
+    /// question or a note being typed waits for its answer.
+    pub fn press(&mut self, a: Action, count: Option<u32>) -> Vec<Effect> {
+        self.keys.reset();
+        if self.overlay == Overlay::Help {
+            self.overlay = self.help_over.take().unwrap_or(Overlay::None);
+            if a == Action::HelpOpen {
+                return Vec::new();
+            }
+        }
+        match &self.overlay {
+            Overlay::None => self.run_action(a, count),
+            Overlay::Jump {
+                kind: JumpKind::Find,
+                ..
+            } => match a {
+                Action::ViewOpen => self.on_key(Key::ENTER),
+                Action::ViewBack | Action::ViewClose => self.on_key(Key::ESC),
+                _ => Vec::new(),
+            },
+            Overlay::Notes { .. }
+            | Overlay::Commits { .. }
+            | Overlay::Jump { .. }
+            | Overlay::Finish { .. }
+                if self.finish.editing.is_none() && self.finish.confirm.is_none() =>
+            {
+                self.pressed = Some(a);
+                let effects = self.on_key(Key::NONE);
+                // A panel that didn't ask for an action leaves it.
+                self.pressed = None;
+                effects
+            }
+            _ => Vec::new(),
         }
     }
 

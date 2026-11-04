@@ -1,10 +1,13 @@
 <script lang="ts">
   // What is open over the screen: the keys, a question, the notes, a jump
-  // list, the commits, the `:w` sheet. Keys still go to teer; a click picks.
+  // list, the commits, the `:w` sheet. Keys still go to teer; a click picks,
+  // and a key named here is pressed by a click on it (the panel's keys
+  // under its list, every key in the help).
   import { api } from "../lib/api";
-  import type { Overlay } from "../lib/types";
+  import { ui } from "../lib/ui.svelte";
+  import type { Hint, Overlay } from "../lib/types";
 
-  let { overlay }: { overlay: Overlay } = $props();
+  let { overlay, panel = [] }: { overlay: Overlay; panel?: Hint[] } = $props();
   let box: HTMLElement | undefined = $state();
 
   $effect(() => {
@@ -17,6 +20,7 @@
     void pick(i);
     void api.action("view.open");
   };
+  const press = (h: Hint) => void api.action(h.action);
   const stateWord = (d: string) => (d === "Investigate" ? "flagged" : d.toLowerCase());
   const jumpTitle = (o: Extract<Overlay, { kind: "Jump" }>) =>
     o.list === "Find"
@@ -35,12 +39,19 @@
           <section>
             <h3>{g.name}</h3>
             {#each g.rows as r (r.keys)}
-              <div class="hrow"><span class="key">{r.keys}</span><span>{r.what}</span></div>
+              <div class="hrow">
+                <span class="hkeys">
+                  {#each r.each as k (k.action)}
+                    <button class="key" title={k.what} onclick={() => press(k)}>{k.keys}</button>
+                  {/each}
+                </span>
+                <button class="hwhat" title="Do it" onclick={() => press(r.each[0])}>{r.what}</button>
+              </div>
             {/each}
           </section>
         {/each}
       </div>
-      <p class="muted foot">esc closes · ⌘K finds any action</p>
+      <p class="muted foot">A click on a key does what it does · esc closes · ⌘K finds any action</p>
     {:else if overlay.kind === "ConfirmReset"}
       <h2>Reset every decision?</h2>
       <p>{overlay.decisions} decision{overlay.decisions === 1 ? "" : "s"} go back to pending, the ones accepted for you too.</p>
@@ -82,6 +93,7 @@
           <li class="muted">No notes yet. i writes one on the unit on show.</li>
         {/each}
       </ul>
+      {@render keys(panel)}
     {:else if overlay.kind === "Jump"}
       <h2>{jumpTitle(overlay)}</h2>
       {#if overlay.list === "Find"}
@@ -101,6 +113,7 @@
           <li class="muted">Nothing matches.</li>
         {/each}
       </ul>
+      {@render keys(panel)}
     {:else if overlay.kind === "Commits"}
       <h2>Commits and description</h2>
       {#if overlay.pr}
@@ -136,6 +149,7 @@
           {/each}
         </ul>
       {/if}
+      {@render keys(panel)}
     {:else if overlay.kind === "Finish"}
       <h2>Finish · {overlay.subject}</h2>
       {#if overlay.not_shown}<p class="muted small">{overlay.not_shown}</p>{/if}
@@ -192,9 +206,20 @@
         <button class="btn primary" onclick={() => api.keys("<cr>")}>{overlay.steps[overlay.sel]?.verb ?? "go"} ⏎</button>
         <button class="btn" onclick={() => api.keys("<esc>")}>Close</button>
       </div>
+      {@render keys(panel.filter((h) => h.action !== "view.back"))}
     {/if}
   </div>
 </div>
+
+{#snippet keys(hints: Hint[])}
+  {#if hints.length && ui.buttons}
+    <div class="pkeys">
+      {#each hints as h (h.action)}
+        <button class="pkey" onclick={() => press(h)}><span class="key">{h.keys}</span> {h.what}</button>
+      {/each}
+    </div>
+  {/if}
+{/snippet}
 
 <style>
   .backdrop {
@@ -242,9 +267,53 @@
   }
   .hrow {
     display: grid;
-    grid-template-columns: 90px 1fr;
+    grid-template-columns: 128px 1fr;
     gap: 8px;
     padding: 1px 0;
+    align-items: baseline;
+  }
+  .hkeys {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+  }
+  button.key {
+    cursor: pointer;
+  }
+  button.key:hover {
+    border-color: var(--accent);
+  }
+  .hwhat {
+    border: 0;
+    background: none;
+    padding: 0 4px;
+    margin-left: -4px;
+    text-align: left;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .hwhat:hover {
+    background: var(--sunken);
+  }
+  .pkeys {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    border-top: 1px solid var(--border);
+    margin-top: 10px;
+    padding-top: 8px;
+  }
+  .pkey {
+    border: 1px solid transparent;
+    background: none;
+    border-radius: 6px;
+    padding: 2px 6px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .pkey:hover {
+    border-color: var(--border);
+    background: var(--sunken);
   }
   .foot {
     font-size: 12px;

@@ -9,6 +9,8 @@
 //! Code comes as diff rows cut into pieces by syntax class
 //! ([`crate::syntax::Class`]); the front end's theme colours them.
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 
 use super::app::{App, DraftState, Grouping, JumpKind, NOTE_MAX, Overlay, Screen};
@@ -42,6 +44,14 @@ pub struct View {
     /// The flagged list, while it is on show.
     pub flagged: Option<FlaggedScreen>,
     pub overlay: OverlayView,
+    /// What a front end puts up as buttons where they act (the unit's
+    /// decisions on its card, the tiles beside it, the grouping over the
+    /// list), by action id: each one's key, what it does, whether it can.
+    /// Every key is in the help.
+    pub actions: BTreeMap<&'static str, ActionView>,
+    /// What the open panel's keys do (the notes, a jump list, the
+    /// commits, the sheet), for buttons on it; empty without one.
+    pub panel: Vec<Hint>,
 }
 
 /// The top line: what is reviewed and what teer is doing.
@@ -66,6 +76,9 @@ pub struct Header {
     pub agent_note: Option<String>,
     /// Units described so far, while prepare runs.
     pub preparing: Option<Progress>,
+    /// The commits reviewed: with a pull request or one of them, the
+    /// commits view has something to show.
+    pub commits: usize,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -83,6 +96,8 @@ pub struct Bar {
     pub accepted: usize,
     /// Of those, accepted for the reviewer (no behavior change).
     pub auto_accepted: usize,
+    /// Units with a note.
+    pub notes: usize,
     /// The key that opens the `:w` sheet, said once nothing is pending.
     pub finish_key: String,
     /// The key that lists the keys.
@@ -105,15 +120,7 @@ pub struct Bar {
     pub waiting: Option<String>,
 }
 
-/// A key and what it does.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Hint {
-    /// As the keymap labels it: `gd`, `<space>a`, `:w`.
-    pub keys: String,
-    /// The action's id (`decide.accept`), for a click to run.
-    pub action: &'static str,
-    pub what: String,
-}
+pub use super::help::Hint;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NoteEditor {
@@ -327,8 +334,6 @@ pub struct UnitScreen {
     pub zoom: bool,
     /// Keys go into the ask tile's question.
     pub typing: bool,
-    /// The keys tile.
-    pub keys: Vec<KeyGroup>,
 }
 
 /// Which tile.
@@ -503,20 +508,16 @@ pub struct ShownView {
     pub link: usize,
 }
 
+/// An action a button presses: its key (empty when unbound) and what it
+/// does, in the screen's words.
 #[derive(Debug, Clone, Serialize)]
-pub struct KeyGroup {
-    pub name: &'static str,
-    pub items: Vec<KeyItemView>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct KeyItemView {
+pub struct ActionView {
     pub keys: String,
-    pub what: &'static str,
-    /// Run on a click.
-    pub action: &'static str,
+    pub what: String,
     /// Needs an agent, and there is none.
     pub off: bool,
+    /// A toggle's state (listed by file, zoomed); `None` for the rest.
+    pub on: Option<bool>,
 }
 
 /// The flagged units one after another.
@@ -681,6 +682,8 @@ pub fn snapshot(app: &App, syntax: Option<&Cache>) -> View {
             .flatten(),
         flagged: (app.screen == Screen::Flagged).then(|| flagged(app, syntax)),
         overlay: overlay(app),
+        actions: actions(app),
+        panel: panel_keys(app),
     }
 }
 
@@ -719,6 +722,7 @@ fn header(app: &App) -> Header {
         no_agent,
         agent_note,
         preparing: (done < total).then_some(Progress { done, total }),
+        commits: r.intent.commits.len(),
     }
 }
 
@@ -792,6 +796,7 @@ fn bar(app: &App) -> Bar {
         flagged,
         accepted,
         auto_accepted: app.auto_accepted(),
+        notes: crate::notes::noted(&app.review).len(),
         finish_key: app.keys.label(Action::FinishOpen),
         help_key: app.keys.label(Action::HelpOpen),
         status: app.status.clone(),
@@ -1318,27 +1323,115 @@ fn tile(app: &App, u: &Unit, p: Panel) -> Tile {
     Tile { id, title, body }
 }
 
-fn unit_keys(app: &App) -> Vec<KeyGroup> {
-    help::KEY_GROUPS
+/// The actions a window puts up as buttons where they act.
+pub const BUTTONS: &[Action] = &[
+    Action::DecideAccept,
+    Action::DecideFlag,
+    Action::NoteEdit,
+    Action::HistoryUndo,
+    Action::DecideAcceptFile,
+    Action::ViewOpen,
+    Action::ViewBack,
+    Action::AskOpen,
+    Action::ToolAdvice,
+    Action::ToolTests,
+    Action::ToolRunOldNew,
+    Action::ToolDiagram,
+    Action::GotoDefinition,
+    Action::GotoCallers,
+    Action::GotoEditor,
+    Action::FindUnit,
+    Action::ToggleByFile,
+    Action::ToggleAutoAccepted,
+    Action::ToggleZoom,
+    Action::MoveNextPending,
+    Action::MovePrevPending,
+    Action::MoveNextHunk,
+    Action::MovePrevHunk,
+    Action::ToolFlagged,
+    Action::ToolNotes,
+    Action::ToolHistory,
+    Action::FinishOpen,
+    Action::HelpOpen,
+];
+
+fn actions(app: &App) -> BTreeMap<&'static str, ActionView> {
+    BUTTONS
         .iter()
-        .map(|(name, items)| KeyGroup {
-            name,
-            items: items
-                .iter()
-                .filter_map(|(actions, what)| {
-                    let keys: Vec<String> = actions
-                        .iter()
-                        .map(|a| app.keys.label(*a))
-                        .filter(|k| !k.is_empty())
-                        .collect();
-                    (!keys.is_empty()).then(|| KeyItemView {
-                        keys: keys.join(" "),
-                        what,
-                        action: actions[0].id(),
-                        off: help::AGENT_KEYS.contains(&actions[0]) && !app.can_ask(),
-                    })
-                })
-                .collect(),
+        .map(|&a| {
+            let what = match app.screen {
+                Screen::Flagged => help::flagged_describe(a),
+                _ => None,
+            }
+            .unwrap_or(a.describe());
+            let view = ActionView {
+                keys: app.keys.label(a),
+                what: what.into(),
+                off: help::AGENT_KEYS.contains(&a) && !app.can_ask(),
+                on: toggled(app, a),
+            };
+            (a.id(), view)
+        })
+        .collect()
+}
+
+/// `actions` as a window lists them: without `:app`, the way from the
+/// terminal to the window this is.
+fn window_actions(actions: &[Action]) -> Vec<Action> {
+    actions
+        .iter()
+        .copied()
+        .filter(|&a| a != Action::FinishApp)
+        .collect()
+}
+
+/// Whether the toggle `a` is on; `None` for what isn't one.
+fn toggled(app: &App, a: Action) -> Option<bool> {
+    match a {
+        Action::ToggleByFile => Some(app.grouping == Grouping::File),
+        Action::ToggleAutoAccepted => Some(app.show_auto),
+        Action::ToggleZoom => Some(app.unit.zoom),
+        _ => None,
+    }
+}
+
+/// The keys of the panel open (not the help over it): what it does
+/// besides moving through its list, which a click does, and its way back.
+fn panel_keys(app: &App) -> Vec<Hint> {
+    let find = matches!(
+        app.overlay,
+        Overlay::Jump {
+            kind: JumpKind::Find,
+            ..
+        }
+    );
+    let open = matches!(
+        app.overlay,
+        Overlay::Notes { .. }
+            | Overlay::Commits { .. }
+            | Overlay::Jump { .. }
+            | Overlay::Finish { .. }
+    );
+    let Some((_, actions)) = help::help_panel(app).filter(|_| open) else {
+        return Vec::new();
+    };
+    actions
+        .iter()
+        .filter(|&&a| help::group_of(a) != 0 || a == Action::ViewBack)
+        .filter(|&&a| a != Action::ViewClose)
+        .filter_map(|&a| {
+            // Finding, the keys are the query's: ⏎ goes, esc closes.
+            let keys = match (find, a) {
+                (false, _) => app.keys.labels(a),
+                (true, Action::ViewOpen) => "⏎".into(),
+                (true, Action::ViewBack) => "esc".into(),
+                (true, _) => return None,
+            };
+            (!keys.is_empty()).then(|| Hint {
+                keys,
+                action: a.id(),
+                what: help::describe(app, a).into(),
+            })
         })
         .collect()
 }
@@ -1355,7 +1448,6 @@ fn unit_screen(app: &App, syntax: Option<&Cache>) -> Option<UnitScreen> {
         focus: app.unit.panel.map(TileId::of),
         zoom: app.unit.zoom,
         typing: app.unit.typing,
-        keys: unit_keys(app),
     })
 }
 
@@ -1398,7 +1490,7 @@ fn overlay(app: &App) -> OverlayView {
         Overlay::None => OverlayView::None,
         Overlay::Help => OverlayView::Help(HelpView {
             of: help::screen_name(app),
-            groups: help::help_groups(app, help::screen_actions(app))
+            groups: help::help_groups(app, &window_actions(help::screen_actions(app)))
                 .into_iter()
                 .map(|(name, rows)| HelpGroup { name, rows })
                 .collect(),
@@ -1595,7 +1687,8 @@ mod tests {
         assert_eq!(v.screen, Screen::Unit);
         let u = v.unit.expect("the unit view");
         assert_eq!(u.card.id, id);
-        assert!(u.keys.iter().any(|g| g.name == "Decide"));
+        assert_eq!(v.actions["decide.accept"].keys, "a");
+        assert_eq!(v.actions["toggle.zoom"].on, Some(false));
         assert!(v.preview.is_none());
     }
 

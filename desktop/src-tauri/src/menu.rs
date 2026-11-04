@@ -4,7 +4,8 @@
 //! (the folder picker, the palette).
 
 use tauri::menu::{
-    Menu, MenuBuilder, MenuEvent, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
+    CheckMenuItemBuilder, Menu, MenuBuilder, MenuEvent, MenuItemBuilder, PredefinedMenuItem,
+    SubmenuBuilder,
 };
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
@@ -98,6 +99,13 @@ pub fn build<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     }
     let view = view
         .separator()
+        .item(
+            &CheckMenuItemBuilder::with_id(crate::prefs::BUTTONS_ITEM, "Show Buttons")
+                .checked(crate::prefs::load().buttons)
+                .accelerator("CmdOrCtrl+Shift+B")
+                .build(handle)?,
+        )
+        .separator()
         .item(&PredefinedMenuItem::fullscreen(handle, None)?)
         .build()?;
     let window = SubmenuBuilder::new(handle, "Window")
@@ -114,6 +122,12 @@ pub fn on_event(handle: &AppHandle, event: MenuEvent) {
     let id = event.id().as_ref();
     if id == "new_window" {
         let _ = crate::window::open(handle);
+        return;
+    }
+    // Every window, whichever has the focus; the tick is set from what is
+    // saved, not from the click's own toggling.
+    if id == crate::prefs::BUTTONS_ITEM {
+        crate::prefs::set_buttons(handle, !crate::prefs::load().buttons);
         return;
     }
     let Some(window) = crate::window::focused(handle) else {
