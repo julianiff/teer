@@ -23,10 +23,11 @@ use crate::approve::{self, EditOutcome, Verdict};
 use crate::commit::{self, Branch};
 use crate::config::Provider;
 use crate::keymap::{Action, Edit, Key, Sheet};
-use crate::review::model::Decision;
+use crate::review::model::{Decision, PrInfo};
+use crate::util::sanitize;
 
 /// What the review is of, as the sheet tells its rows apart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Reviewing {
     /// Uncommitted changes (plain `teer` on a dirty tree): they can be
     /// committed.
@@ -38,7 +39,7 @@ pub enum Reviewing {
 }
 
 /// A next step the sheet offers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Step {
     /// Close the sheet on the first pending unit.
     KeepReviewing,
@@ -192,6 +193,65 @@ impl App {
             Step::Approve => format!("approve PR #{n}"),
             Step::ApproveWithComment => "approve with a comment".into(),
         }
+    }
+
+    /// What `step` does, in a sentence or two; `None` for the commit and
+    /// the posts, whose details show what they will send instead.
+    pub fn step_text(&self, step: Step) -> Option<String> {
+        let k = |a: Action| self.keys.label(a);
+        // What waiting for copied notes' changes does.
+        let wait = || {
+            format!(
+                "Then teer waits, the queue on show: once the files have changed and stayed the \
+same for {} s, it re-runs the review on what changed. {} stops waiting; {} re-runs later.",
+                self.cfg.fix_loop.quiet_seconds,
+                k(Action::ViewClose),
+                k(Action::ReviewRerun)
+            )
+        };
+        Some(match step {
+            Step::KeepReviewing => format!(
+                "Goes to the first pending unit. {} comes back here.",
+                k(Action::FinishOpen)
+            ),
+            Step::SendNotes => match self.cfg.provider() {
+                Provider::Api => format!(
+                    "teer can't hand notes to the model API: this copies them, with what to do, \
+for you to paste into your agent. {}",
+                    wait()
+                ),
+                cli => {
+                    let session = self
+                        .review
+                        .agent_session
+                        .as_ref()
+                        .filter(|s| !s.is_fresh() && cli == Provider::Claude)
+                        .map(|s| {
+                            let id: String = s.id.chars().take(8).collect();
+                            format!(", in a fork of session {}", sanitize(&id))
+                        })
+                        .unwrap_or_default();
+                    format!(
+                        "Opens {} with the notes as its first message{session}. When you quit it, \
+teer re-runs the review on what it changed.",
+                        cli.title(),
+                    )
+                }
+            },
+            Step::Yank if self.waits_for_fixes() => format!(
+                "Copies the notes as Markdown, each with its diff, for your agent. {}",
+                wait()
+            ),
+            Step::Yank => "Copies the notes as Markdown, each with its diff.".into(),
+            Step::Done => "Everything is accepted, and a branch has nothing to commit. Leaves \
+teer; the review is saved."
+                .into(),
+            Step::Commit
+            | Step::RequestChanges
+            | Step::CommentOnly
+            | Step::Approve
+            | Step::ApproveWithComment => return None,
+        })
     }
 
     /// Open the sheet (`:w`) on its default step. A commit on offer gets its
@@ -790,3 +850,21 @@ impl App {
 }
 
 // ---- Drawing ----------------------------------------------------------------
+
+/// "Checks PR #7 (owner/repo) is still at abc1234, then posts on GitHub."
+pub fn head_check(pr: &PrInfo) -> String {
+    let head: String = pr
+        .head_sha
+        .as_deref()
+        .unwrap_or_default()
+        .chars()
+        .take(7)
+        .collect();
+    format!(
+        "Checks PR #{} ({}/{}) is still at {}, the commit you reviewed, then posts on GitHub.",
+        pr.number,
+        sanitize(&pr.owner),
+        sanitize(&pr.repo),
+        sanitize(&head)
+    )
+}

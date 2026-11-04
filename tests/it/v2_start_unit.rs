@@ -15,10 +15,11 @@ use clap::Parser;
 use common::*;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use teer::cli::{Args, NO_AGENT, Screens, run_on};
+use teer::cli::{Args, Screens, run_on};
 use teer::config::{Config, Provider};
 use teer::git::{self, Target};
 use teer::keymap::Keymap;
+use teer::session::app::NO_AGENT;
 use teer::tui::app::App;
 use teer::tui::setup::{Ended, Opened};
 

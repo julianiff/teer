@@ -7,11 +7,13 @@
 pub mod app;
 pub mod finish;
 pub mod flagged_list;
+pub mod help;
 pub mod jump;
 pub mod names;
 pub mod runtime;
 pub mod tools;
 pub mod unit;
+pub mod view;
 
 pub use app::{App, AppEvent, Effect, Overlay, Screen};
 pub use runtime::Runtime;

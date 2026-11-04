@@ -1,0 +1,690 @@
+---
+source: tests/it/view.rs
+expression: json(&app)
+---
+{
+  "screen": "Unit",
+  "header": {
+    "subject": "your changes",
+    "title": null,
+    "summary": null,
+    "no_agent": false,
+    "agent_note": null,
+    "preparing": null
+  },
+  "bar": {
+    "pending": 4,
+    "flagged": 0,
+    "accepted": 3,
+    "auto_accepted": 3,
+    "finish_key": ":w",
+    "help_key": "?",
+    "status": "",
+    "typed": null,
+    "follow": [],
+    "command": null,
+    "commands": [],
+    "visual": null,
+    "visual_actions": [],
+    "note": null,
+    "waiting": null
+  },
+  "queue": {
+    "grouping": "Unit",
+    "boxes": [
+      {
+        "level": "Attention",
+        "title": "Needs a close look · 1 unit",
+        "files": [
+          {
+            "path": "checkout.py",
+            "done": 0,
+            "total": 1,
+            "busy": false,
+            "flagged": false,
+            "rows": [
+              {
+                "pos": 0,
+                "id": "checkout.py::charge_order",
+                "level": "Attention",
+                "icon": "▲",
+                "path": "checkout.py",
+                "name": "charge_order",
+                "whole_file": false,
+                "depth": 0,
+                "decision": "Pending",
+                "state": "pending",
+                "note": null,
+                "disputed": false,
+                "noted": false,
+                "removed": false,
+                "preparing": false,
+                "selected": true,
+                "in_visual": false,
+                "changed": false
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "level": "Look",
+        "title": "Worth a look · 1 unit",
+        "files": [
+          {
+            "path": "checkout.py",
+            "done": 0,
+            "total": 1,
+            "busy": false,
+            "flagged": false,
+            "rows": [
+              {
+                "pos": 1,
+                "id": "checkout.py::old_helper",
+                "level": "Look",
+                "icon": "◆",
+                "path": "checkout.py",
+                "name": "old_helper",
+                "whole_file": false,
+                "depth": 0,
+                "decision": "Pending",
+                "state": "pending",
+                "note": null,
+                "disputed": false,
+                "noted": false,
+                "removed": true,
+                "preparing": false,
+                "selected": false,
+                "in_visual": false,
+                "changed": false
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "level": "Routine",
+        "title": "Routine · 2 units",
+        "files": [
+          {
+            "path": "checkout.py",
+            "done": 0,
+            "total": 2,
+            "busy": false,
+            "flagged": false,
+            "rows": [
+              {
+                "pos": 2,
+                "id": "checkout.py::new_helper",
+                "level": "Routine",
+                "icon": "●",
+                "path": "checkout.py",
+                "name": "new_helper",
+                "whole_file": false,
+                "depth": 0,
+                "decision": "Pending",
+                "state": "pending",
+                "note": null,
+                "disputed": false,
+                "noted": false,
+                "removed": false,
+                "preparing": false,
+                "selected": false,
+                "in_visual": false,
+                "changed": false
+              },
+              {
+                "pos": 3,
+                "id": "checkout.py::Cart::add",
+                "level": "Routine",
+                "icon": "●",
+                "path": "checkout.py",
+                "name": "Cart::add",
+                "whole_file": false,
+                "depth": 0,
+                "decision": "Pending",
+                "state": "pending",
+                "note": null,
+                "disputed": false,
+                "noted": false,
+                "removed": false,
+                "preparing": false,
+                "selected": false,
+                "in_visual": false,
+                "changed": false
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "skipped": [],
+    "auto_line": "3 units accepted for you, za shows them",
+    "sel": 0,
+    "show_auto": false
+  },
+  "preview": null,
+  "unit": {
+    "card": {
+      "id": "checkout.py::charge_order",
+      "name": "charge_order",
+      "place": "checkout.py:8-12",
+      "file": "checkout.py",
+      "line": 9,
+      "kind": "Function",
+      "status": "Changed",
+      "level": "Attention",
+      "icon": "▲",
+      "level_title": "Needs a close look",
+      "decision": "Pending",
+      "accepted_for_you": false,
+      "state": "pending",
+      "why": [
+        "3 callers",
+        "agent: high risk"
+      ],
+      "reasons": [],
+      "commits": [],
+      "agent_label": "agent (haiku, sonnet)",
+      "summary": "Changes how orders are charged.",
+      "nbc_reason": null,
+      "prep": "Ready",
+      "prep_note": null,
+      "statements": [
+        {
+          "marker": "added",
+          "symbol": "+",
+          "text": "Rejects unsupported currencies. 2 callers don't handle it.",
+          "risk": "high",
+          "cites": "L9-10",
+          "evidence": [
+            {
+              "side": "new",
+              "line": 9
+            },
+            {
+              "side": "new",
+              "line": 10
+            }
+          ]
+        },
+        {
+          "marker": "changed",
+          "symbol": "~",
+          "text": "Saves the payment on the order before returning it, so a failed save now fails the whole charge.",
+          "risk": "medium",
+          "cites": "L12",
+          "evidence": [
+            {
+              "side": "new",
+              "line": 12
+            }
+          ]
+        },
+        {
+          "marker": "removed",
+          "symbol": "−",
+          "text": "No longer sends the receipt email.",
+          "risk": "low",
+          "cites": "old L10",
+          "evidence": [
+            {
+              "side": "old",
+              "line": 10
+            }
+          ]
+        }
+      ],
+      "code": {
+        "added": 3,
+        "removed": 2,
+        "rows": [
+          {
+            "kind": "Context",
+            "line": 8,
+            "old": 8,
+            "pieces": [
+              {
+                "text": "def",
+                "class": "Keyword"
+              },
+              {
+                "text": " ",
+                "class": null
+              },
+              {
+                "text": "charge_order",
+                "class": "Function"
+              },
+              {
+                "text": "(",
+                "class": null
+              },
+              {
+                "text": "order",
+                "class": "Variable"
+              },
+              {
+                "text": "):",
+                "class": null
+              }
+            ]
+          },
+          {
+            "kind": "Added",
+            "line": 9,
+            "old": null,
+            "pieces": [
+              {
+                "text": "    ",
+                "class": null
+              },
+              {
+                "text": "if",
+                "class": "Keyword"
+              },
+              {
+                "text": " ",
+                "class": null
+              },
+              {
+                "text": "order",
+                "class": "Variable"
+              },
+              {
+                "text": ".",
+                "class": null
+              },
+              {
+                "text": "currency",
+                "class": "Variable"
+              },
+              {
+                "text": " not in ",
+                "class": null
+              },
+              {
+                "text": "SUPPORTED",
+                "class": "Constant"
+              },
+              {
+                "text": ":",
+                "class": null
+              }
+            ]
+          },
+          {
+            "kind": "Added",
+            "line": 10,
+            "old": null,
+            "pieces": [
+              {
+                "text": "        ",
+                "class": null
+              },
+              {
+                "text": "raise",
+                "class": "Keyword"
+              },
+              {
+                "text": " ",
+                "class": null
+              },
+              {
+                "text": "ValueError",
+                "class": "Function"
+              },
+              {
+                "text": "(",
+                "class": null
+              },
+              {
+                "text": "\"unsupported currency\"",
+                "class": "String"
+              },
+              {
+                "text": ")",
+                "class": null
+              }
+            ]
+          },
+          {
+            "kind": "Context",
+            "line": 11,
+            "old": 9,
+            "pieces": [
+              {
+                "text": "    ",
+                "class": null
+              },
+              {
+                "text": "result",
+                "class": "Variable"
+              },
+              {
+                "text": " = ",
+                "class": null
+              },
+              {
+                "text": "pay",
+                "class": "Function"
+              },
+              {
+                "text": "(",
+                "class": null
+              },
+              {
+                "text": "order",
+                "class": "Variable"
+              },
+              {
+                "text": ")",
+                "class": null
+              }
+            ]
+          },
+          {
+            "kind": "Removed",
+            "line": null,
+            "old": 10,
+            "pieces": [
+              {
+                "text": "    ",
+                "class": null
+              },
+              {
+                "text": "send_receipt",
+                "class": "Function"
+              },
+              {
+                "text": "(",
+                "class": null
+              },
+              {
+                "text": "order",
+                "class": "Variable"
+              },
+              {
+                "text": ")",
+                "class": null
+              }
+            ]
+          },
+          {
+            "kind": "Removed",
+            "line": null,
+            "old": 11,
+            "pieces": [
+              {
+                "text": "    ",
+                "class": null
+              },
+              {
+                "text": "return",
+                "class": "Keyword"
+              },
+              {
+                "text": " ",
+                "class": null
+              },
+              {
+                "text": "result",
+                "class": "Variable"
+              }
+            ]
+          },
+          {
+            "kind": "Added",
+            "line": 12,
+            "old": null,
+            "pieces": [
+              {
+                "text": "    ",
+                "class": null
+              },
+              {
+                "text": "return",
+                "class": "Keyword"
+              },
+              {
+                "text": " ",
+                "class": null
+              },
+              {
+                "text": "save_payment",
+                "class": "Function"
+              },
+              {
+                "text": "(",
+                "class": null
+              },
+              {
+                "text": "order",
+                "class": "Variable"
+              },
+              {
+                "text": ", ",
+                "class": null
+              },
+              {
+                "text": "result",
+                "class": "Variable"
+              },
+              {
+                "text": ")",
+                "class": null
+              }
+            ]
+          }
+        ],
+        "notes": [
+          {
+            "after": 2,
+            "statement": 0
+          },
+          {
+            "after": 4,
+            "statement": 2
+          },
+          {
+            "after": 6,
+            "statement": 1
+          }
+        ],
+        "hunks": [
+          1,
+          4
+        ]
+      },
+      "note": null,
+      "answers": [],
+      "disputed": false
+    },
+    "second": null,
+    "tiles": [
+      {
+        "id": "Advice",
+        "title": "Advice",
+        "body": {
+          "kind": "Answer",
+          "question": "Recommend",
+          "label": "agent (Claude Code's default model)",
+          "result": null,
+          "svg": null,
+          "waiting": null,
+          "ask": {
+            "keys": "␣a",
+            "action": "tool.advice",
+            "what": "ask the agent what to do about it: concrete steps, most important first, each with its reason"
+          },
+          "none": null,
+          "second": null
+        }
+      },
+      {
+        "id": "Tests",
+        "title": "Tests",
+        "body": {
+          "kind": "Answer",
+          "question": "Tests",
+          "label": "agent (Claude Code's default model)",
+          "result": null,
+          "svg": null,
+          "waiting": "searching the test files…",
+          "ask": null,
+          "none": null,
+          "second": null
+        }
+      }
+    ],
+    "focus": "Tests",
+    "zoom": false,
+    "typing": false,
+    "keys": [
+      {
+        "name": "Decide",
+        "items": [
+          {
+            "keys": "a",
+            "what": "accept",
+            "action": "decide.accept",
+            "off": false
+          },
+          {
+            "keys": "f",
+            "what": "flag",
+            "action": "decide.flag",
+            "off": false
+          },
+          {
+            "keys": "i",
+            "what": "note",
+            "action": "note.edit",
+            "off": false
+          },
+          {
+            "keys": "u",
+            "what": "undo",
+            "action": "history.undo",
+            "off": false
+          }
+        ]
+      },
+      {
+        "name": "Look closer",
+        "items": [
+          {
+            "keys": "␣a",
+            "what": "advice",
+            "action": "tool.advice",
+            "off": false
+          },
+          {
+            "keys": "K",
+            "what": "ask",
+            "action": "ask.open",
+            "off": false
+          },
+          {
+            "keys": "␣t",
+            "what": "tests",
+            "action": "tool.tests",
+            "off": false
+          },
+          {
+            "keys": "␣r",
+            "what": "old vs new",
+            "action": "tool.run_old_new",
+            "off": false
+          },
+          {
+            "keys": "␣v",
+            "what": "diagram",
+            "action": "tool.diagram",
+            "off": false
+          },
+          {
+            "keys": "gd",
+            "what": "calls",
+            "action": "goto.definition",
+            "off": false
+          },
+          {
+            "keys": "gr",
+            "what": "callers",
+            "action": "goto.callers",
+            "off": false
+          },
+          {
+            "keys": "gf",
+            "what": "editor",
+            "action": "goto.editor",
+            "off": false
+          },
+          {
+            "keys": "␣f",
+            "what": "all flagged",
+            "action": "tool.flagged",
+            "off": false
+          }
+        ]
+      },
+      {
+        "name": "Move",
+        "items": [
+          {
+            "keys": "n N",
+            "what": "pending",
+            "action": "move.next_pending",
+            "off": false
+          },
+          {
+            "keys": "]c [c",
+            "what": "hunks",
+            "action": "move.next_hunk",
+            "off": false
+          },
+          {
+            "keys": "tab",
+            "what": "tiles",
+            "action": "move.next_tile",
+            "off": false
+          },
+          {
+            "keys": "zz",
+            "what": "zoom",
+            "action": "toggle.zoom",
+            "off": false
+          },
+          {
+            "keys": "h",
+            "what": "back",
+            "action": "view.back",
+            "off": false
+          }
+        ]
+      },
+      {
+        "name": "Finish",
+        "items": [
+          {
+            "keys": ":w",
+            "what": "finish",
+            "action": "finish.open",
+            "off": false
+          },
+          {
+            "keys": "?",
+            "what": "every key",
+            "action": "help.open",
+            "off": false
+          }
+        ]
+      }
+    ]
+  },
+  "flagged": null,
+  "overlay": {
+    "kind": "None"
+  }
+}

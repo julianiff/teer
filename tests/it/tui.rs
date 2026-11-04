@@ -83,7 +83,7 @@ fn session() -> SessionRef {
 
 /// A prepared review of the Python fixture, with paths and commits fixed
 /// so snapshots are stable.
-async fn fixture_review() -> (Review, FixtureRepo) {
+pub(crate) async fn fixture_review() -> (Review, FixtureRepo) {
     let _env = isolate_env();
     let repo = FixtureRepo::new();
     repo.write("checkout.py", PY_OLD)
@@ -105,7 +105,7 @@ async fn fixture_review() -> (Review, FixtureRepo) {
     (review, repo)
 }
 
-fn app_for(review: Review, cfg: Config) -> App {
+pub(crate) fn app_for(review: Review, cfg: Config) -> App {
     let mut app = App::new(review, cfg, Keymap::default());
     let effects = app.start(true, None, Vec::new(), Some(session()));
     assert!(
@@ -138,7 +138,7 @@ fn code(app: &mut App, c: KeyCode) -> Vec<Effect> {
     app.on_event(Event::Key(KeyEvent::new(c, KeyModifiers::NONE)))
 }
 
-fn select(app: &mut App, symbol: &str) {
+pub(crate) fn select(app: &mut App, symbol: &str) {
     let pos = app
         .order
         .iter()
@@ -250,7 +250,7 @@ async fn rerun_keeps_decisions_for_unchanged_units() {
 /// `charge_order` with statements citing what they say: the added check
 /// (new 9-10), the saved payment (new 12), the dropped receipt (old 10),
 /// and a second opinion that agrees.
-fn cited(review: &mut Review) {
+pub(crate) fn cited(review: &mut Review) {
     use teer::review::model::{LineRef, Risk, SecondOpinion, Side};
     let u = review
         .units

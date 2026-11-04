@@ -247,7 +247,7 @@ impl Driver {
         super::isolate_env();
         let mut app = App::new(review, cfg, Keymap::default());
         let session = SessionRef::fresh("mock", app.review.repo_root.clone());
-        let note = (!agent).then(|| teer::cli::NO_AGENT.to_string());
+        let note = (!agent).then(|| teer::session::app::NO_AGENT.to_string());
         let effects = app.start(agent, note, Vec::new(), Some(session));
         Driver { app, effects }
     }

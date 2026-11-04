@@ -23,7 +23,7 @@ const OUTSIDE_MOST: usize = 8;
 const OUTSIDE_BYTES: usize = 512 * 1024;
 
 /// A tile beside the unit's text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum Panel {
     /// What the agent says to do about the unit: open as the unit opens.
     Recommend,

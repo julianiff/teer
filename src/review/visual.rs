@@ -599,7 +599,7 @@ impl Palette {
     }
 
     /// `--bg: #…; --fg: #…; …` for the page's CSS.
-    fn css_vars(&self) -> String {
+    pub fn css_vars(&self) -> String {
         INKS.iter()
             .map(|(i, name)| format!("--{name}: {};", self.ink(*i)))
             .collect::<Vec<_>>()

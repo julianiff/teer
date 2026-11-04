@@ -15,29 +15,10 @@ use crate::approve;
 use crate::commit::{self, Branch};
 use crate::config::Provider;
 use crate::keymap::Action;
-use crate::review::model::{Decision, PrInfo, Side, Unit};
+use crate::review::model::{Decision, Side, Unit};
 use crate::session::app::{DraftState, Overlay};
 use crate::session::finish::Step;
 use crate::util::{sanitize, truncate, wrap};
-
-/// The actions the sheet handles, for the help. `⏎` (the step) and `esc`
-/// (close) are the sheet's own keys, as on every sheet.
-pub const ACTIONS: &[Action] = &[
-    Action::MoveDown,
-    Action::MoveUp,
-    Action::MoveFirst,
-    Action::MoveLast,
-    Action::MoveNextPending,
-    Action::NoteEdit,
-    Action::FinishYank,
-    Action::ScrollHalfDown,
-    Action::ScrollHalfUp,
-    Action::ScrollPageDown,
-    Action::ScrollPageUp,
-    Action::ViewBack,
-    Action::ViewClose,
-    Action::HelpOpen,
-];
 
 /// Most file rows listed for a commit before "and N more".
 const FILES_SHOWN: usize = 8;
@@ -257,65 +238,19 @@ fn capitalized(s: &str) -> String {
 /// message, the post's summary and inline comments, where the notes go.
 fn details(app: &App, step: Option<Step>, w: usize) -> Vec<Line<'static>> {
     let t = &app.theme;
-    let k = |a: Action| app.keys.label(a);
     let say = |text: String| -> Vec<Line<'static>> {
         wrap(&text, w)
             .into_iter()
             .map(|l| Line::styled(l, t.muted()))
             .collect()
     };
-    // What waiting for copied notes' changes does.
-    let wait = || {
-        format!(
-            "Then teer waits, the queue on show: once the files have changed and stayed the \
-same for {} s, it re-runs the review on what changed. {} stops waiting; {} re-runs later.",
-            app.cfg.fix_loop.quiet_seconds,
-            k(Action::ViewClose),
-            k(Action::ReviewRerun)
-        )
-    };
     match step {
         None => Vec::new(),
-        Some(Step::KeepReviewing) => say(format!(
-            "Goes to the first pending unit. {} comes back here.",
-            k(Action::FinishOpen)
-        )),
-        Some(Step::SendNotes) => match app.cfg.provider() {
-            Provider::Api => say(format!(
-                "teer can't hand notes to the model API: this copies them, with what to do, \
-for you to paste into your agent. {}",
-                wait()
-            )),
-            cli => {
-                let session = app
-                    .review
-                    .agent_session
-                    .as_ref()
-                    .filter(|s| !s.is_fresh() && cli == Provider::Claude)
-                    .map(|s| {
-                        let id: String = s.id.chars().take(8).collect();
-                        format!(", in a fork of session {}", sanitize(&id))
-                    })
-                    .unwrap_or_default();
-                say(format!(
-                    "Opens {} with the notes as its first message{session}. When you quit it, \
-teer re-runs the review on what it changed.",
-                    cli.title(),
-                ))
-            }
-        },
-        Some(Step::Yank) if app.waits_for_fixes() => say(format!(
-            "Copies the notes as Markdown, each with its diff, for your agent. {}",
-            wait()
-        )),
-        Some(Step::Yank) => say("Copies the notes as Markdown, each with its diff.".into()),
-        Some(Step::Done) => say(
-            "Everything is accepted, and a branch has nothing to commit. Leaves teer; the \
-review is saved."
-                .into(),
-        ),
         Some(Step::Commit) => commit_details(app, w),
-        Some(s) => post_details(app, s, w),
+        Some(s) => match app.step_text(s) {
+            Some(text) => say(text),
+            None => post_details(app, s, w),
+        },
     }
 }
 
@@ -415,7 +350,7 @@ fn post_details(app: &App, step: Step, w: usize) -> Vec<Line<'static>> {
     let Some(pr) = app.review.pr.as_ref() else {
         return Vec::new();
     };
-    let mut out: Vec<Line> = wrap(&head_check(pr), w)
+    let mut out: Vec<Line> = wrap(&crate::session::finish::head_check(pr), w)
         .into_iter()
         .map(|l| Line::styled(l, t.muted()))
         .collect();
@@ -464,24 +399,6 @@ fn post_details(app: &App, step: Step, w: usize) -> Vec<Line<'static>> {
         }
     }
     out
-}
-
-/// "Checks PR #7 (owner/repo) is still at abc1234, then posts on GitHub."
-fn head_check(pr: &PrInfo) -> String {
-    let head: String = pr
-        .head_sha
-        .as_deref()
-        .unwrap_or_default()
-        .chars()
-        .take(7)
-        .collect();
-    format!(
-        "Checks PR #{} ({}/{}) is still at {}, the commit you reviewed, then posts on GitHub.",
-        pr.number,
-        sanitize(&pr.owner),
-        sanitize(&pr.repo),
-        sanitize(&head)
-    )
 }
 
 /// The notes overview: every flagged or noted unit, its level and place,
@@ -556,6 +473,7 @@ mod tests {
     use crate::approve::{EditOutcome, Verdict};
     use crate::config::Config;
     use crate::keymap::Keymap;
+    use crate::review::model::PrInfo;
     use crate::review::model::{Prep, Review, SessionRef, UnitKind, UnitStatus};
     use crate::session::app::Effect;
 

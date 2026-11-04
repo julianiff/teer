@@ -13,7 +13,7 @@ use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
 use crate::units::lang::Lang;
 
 /// What a stretch of code is, as far as colour goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Class {
     Keyword,
     Function,

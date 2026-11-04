@@ -178,7 +178,7 @@ fn detail_lines(app: &App, n: usize, unit: Option<usize>, w: usize) -> (Vec<Line
             Decision::Pending if on => t.bold(),
             Decision::Pending => Style::new(),
         };
-        let place = super::slim::place(u);
+        let place = names::place(u);
         let name = truncate(
             &names::row_name(u),
             w.saturating_sub(place.width() + 4).max(8),

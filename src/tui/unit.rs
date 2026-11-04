@@ -33,121 +33,13 @@ use super::app::{App, Target};
 use super::{ask, diff, preview, slim};
 use crate::keymap::Action;
 use crate::review::model::{AcceptedBy, Decision, DiveKind, Prep, Unit};
+use crate::session::help;
 use crate::session::tools::{self, TOOLS, tool_key};
 use crate::session::unit::{Panel, TileScroll};
 use crate::util::{truncate, wrap};
 
-/// The actions the unit view handles, for the help, in the order it lists
-/// them inside each of its groups (Move, Decide, Look closer, More, Finish).
-pub const ACTIONS: &[Action] = &[
-    Action::MoveNextPending,
-    Action::MovePrevPending,
-    Action::MoveNextHunk,
-    Action::MovePrevHunk,
-    Action::MoveNextFile,
-    Action::MovePrevFile,
-    Action::MoveNextTile,
-    Action::MovePrevTile,
-    Action::ToggleZoom,
-    Action::MoveDown,
-    Action::MoveUp,
-    Action::MoveFirst,
-    Action::MoveLast,
-    Action::ScrollHalfDown,
-    Action::ScrollHalfUp,
-    Action::ScrollPageDown,
-    Action::ScrollPageUp,
-    Action::FindUnit,
-    Action::ViewBack,
-    Action::DecideAccept,
-    Action::DecideFlag,
-    Action::DecideAcceptFile,
-    Action::DecideFlagFile,
-    Action::NoteEdit,
-    Action::HistoryUndo,
-    Action::HistoryRedo,
-    Action::HistoryRepeat,
-    Action::AskOpen,
-    Action::GotoDefinition,
-    Action::GotoCallers,
-    Action::GotoEditor,
-    Action::GotoBrowser,
-    Action::ToolAdvice,
-    Action::ToolTests,
-    Action::ToolRunOldNew,
-    Action::ToolDiagram,
-    Action::ToolHistory,
-    Action::ToolNotes,
-    Action::ToolFlagged,
-    Action::ToolSettings,
-    Action::HelpOpen,
-    Action::FinishOpen,
-    Action::ReviewRerun,
-    Action::ReviewReset,
-    Action::ViewClose,
-];
-
-/// An item of the keys tile: the actions it stands for (the keys of all
-/// of them shown, the first one run on a click) and a word or two for it.
-type KeyItem = (&'static [Action], &'static str);
-
-/// What the keys tile lists, by group.
-const KEY_GROUPS: &[(&str, &[KeyItem])] = &[
-    (
-        "Decide",
-        &[
-            (&[Action::DecideAccept], "accept"),
-            (&[Action::DecideFlag], "flag"),
-            (&[Action::NoteEdit], "note"),
-            (&[Action::HistoryUndo], "undo"),
-        ],
-    ),
-    (
-        "Look closer",
-        &[
-            (&[Action::ToolAdvice], "advice"),
-            (&[Action::AskOpen], "ask"),
-            (&[Action::ToolTests], "tests"),
-            (&[Action::ToolRunOldNew], "old vs new"),
-            (&[Action::ToolDiagram], "diagram"),
-            (&[Action::GotoDefinition], "calls"),
-            (&[Action::GotoCallers], "callers"),
-            (&[Action::GotoEditor], "editor"),
-            (&[Action::ToolFlagged], "all flagged"),
-        ],
-    ),
-    (
-        "Move",
-        &[
-            (
-                &[Action::MoveNextPending, Action::MovePrevPending],
-                "pending",
-            ),
-            (&[Action::MoveNextHunk, Action::MovePrevHunk], "hunks"),
-            (&[Action::MoveNextTile], "tiles"),
-            (&[Action::ToggleZoom], "zoom"),
-            (&[Action::ViewBack], "back"),
-        ],
-    ),
-    (
-        "Finish",
-        &[
-            (&[Action::FinishOpen], "finish"),
-            (&[Action::HelpOpen], "every key"),
-        ],
-    ),
-];
-
 /// Blanks between two items of the keys tile.
 const KEY_GAP: usize = 2;
-
-/// Items of the keys tile that need an agent.
-const AGENT_KEYS: [Action; 4] = [
-    Action::ToolAdvice,
-    Action::AskOpen,
-    Action::ToolRunOldNew,
-    Action::ToolDiagram,
-];
 
 /// From this width the text sits beside the tiles, else above them.
 const SIDE_BY_SIDE: u16 = 90;
@@ -412,7 +304,7 @@ fn second_model_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
     if !app.can_ask() || !disputed(app, u) {
         return Vec::new();
     }
-    let by = answers::answer_label(app, u, DiveKind::Disagree);
+    let by = crate::session::tools::answer_label(app, u, DiveKind::Disagree);
     let mut lines = vec![Line::default(), heading_by(app, "Second model", by, w)];
     lines.extend(answers::disagree_lines(app, u, w));
     lines
@@ -611,7 +503,7 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
     }
     // Who gave the advice.
     if p == Panel::Recommend && u.dive.results.contains_key(&DiveKind::Recommend) {
-        let by = answers::answer_label(app, u, DiveKind::Recommend);
+        let by = crate::session::tools::answer_label(app, u, DiveKind::Recommend);
         let room = (area.width as usize).saturating_sub(keys_w + 6);
         block = block.title_bottom(
             Line::styled(format!(" {} ", truncate(&by, room)), t.muted()).left_aligned(),
@@ -728,12 +620,17 @@ struct KeyAt {
 /// unbound.
 fn keys_lines(app: &App, w: usize) -> (Vec<Line<'static>>, Vec<KeyAt>) {
     let t = &app.theme;
-    let label_w = KEY_GROUPS.iter().map(|g| g.0.width()).max().unwrap_or(0) + 2;
+    let label_w = help::KEY_GROUPS
+        .iter()
+        .map(|g| g.0.width())
+        .max()
+        .unwrap_or(0)
+        + 2;
     // Too narrow for the names in a column of their own: none.
     let label_w = if w >= label_w + 24 { label_w } else { 0 };
     let mut lines = Vec::new();
     let mut at = Vec::new();
-    for (name, items) in KEY_GROUPS {
+    for (name, items) in help::KEY_GROUPS {
         let mut spans: Vec<Span<'static>> = Vec::new();
         if label_w > 0 {
             spans.push(Span::styled(format!("{name:<label_w$}"), t.muted()));
@@ -741,7 +638,7 @@ fn keys_lines(app: &App, w: usize) -> (Vec<Line<'static>>, Vec<KeyAt>) {
         let mut x = label_w;
         let mut first = true;
         for (actions, what) in *items {
-            if !app.can_ask() && actions.iter().any(|a| AGENT_KEYS.contains(a)) {
+            if !app.can_ask() && actions.iter().any(|a| help::AGENT_KEYS.contains(a)) {
                 continue;
             }
             let keys: Vec<String> = actions.iter().map(|&a| app.keys.label(a)).collect();

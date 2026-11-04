@@ -8,7 +8,7 @@
 //! the rows; `crate::notes` quotes them.
 
 use crate::review::attention::Level;
-use crate::review::model::{LineRef, Range, Review, Side, Unit};
+use crate::review::model::{Change, LineRef, Range, Review, Side, Unit};
 use crate::syntax::{Cache, Class};
 use crate::util::{DiffOp, diff_lines};
 
@@ -23,7 +23,7 @@ pub const CONTEXT: usize = 2;
 pub const NOTE_CONTEXT: usize = 2;
 const TAB: &str = "    ";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Kind {
     Context,
     Removed,
@@ -59,6 +59,32 @@ fn lines_in(content: Option<&str>, r: Option<Range>) -> Vec<&str> {
 /// removed. Empty when the file is unknown or nothing inside the unit changed.
 pub fn unit_rows(review: &Review, u: &Unit) -> Vec<Row> {
     rows_near(review, u, &[], None).0
+}
+
+/// The row a statement is written under: the last one it cites, else the
+/// one nearest its first cited line (a cited line may sit in a gap).
+pub fn anchor(c: &Change, rows: &[Row]) -> Option<usize> {
+    let cites = |r: &Row| {
+        c.evidence.iter().any(|e| match e.side {
+            Side::New => r.line == Some(e.line),
+            Side::Old => r.old == Some(e.line),
+        })
+    };
+    if let Some(k) = rows.iter().rposition(cites) {
+        return Some(k);
+    }
+    let first = c.evidence.first()?;
+    rows.iter()
+        .enumerate()
+        .filter_map(|(k, r)| {
+            let n = match first.side {
+                Side::New => r.line,
+                Side::Old => r.old,
+            }?;
+            Some((n.abs_diff(first.line), k))
+        })
+        .min()
+        .map(|(_, k)| k)
 }
 
 /// [`unit_rows`] around the lines in `cites`, with how many lines the whole

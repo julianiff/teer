@@ -179,10 +179,6 @@ pub fn version_text() -> String {
     format!("{TAGLINE} (v{})", env!("CARGO_PKG_VERSION"))
 }
 
-/// Why there is no agent when the user asked for none; the review list
-/// doesn't repeat it as a banner.
-pub const NO_AGENT: &str = "running with --no-agent";
-
 pub struct Agent {
     pub adapter: Arc<dyn AgentAdapter>,
     pub sessions: Vec<SessionInfo>,
@@ -763,7 +759,7 @@ async fn run_review(
     let is_pr = review.pr.is_some();
 
     let agent = if args.no_agent {
-        Err(NO_AGENT.to_string())
+        Err(crate::session::app::NO_AGENT.to_string())
     } else {
         discover_agent(&repo, is_pr, &cfg)
     };

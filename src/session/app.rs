@@ -26,7 +26,7 @@ use crate::review::model::{
 use crate::review::prepare::PrepareEvent;
 use crate::review::story;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Screen {
     /// The queue (Phase 4): what teer opens on.
     Queue,
@@ -38,7 +38,7 @@ pub enum Screen {
 }
 
 /// What the queue's level boxes hold (`toggle.by_file` switches).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 pub enum Grouping {
     /// Files, each in the box of the most attention one of its units
     /// needs, its units under its name.
@@ -98,7 +98,7 @@ pub enum Overlay {
 }
 
 /// What a jump list lists.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum JumpKind {
     /// Every listed unit whose file or name matches the query.
     Find,
@@ -168,7 +168,7 @@ pub(crate) fn typed(text: &mut String, e: Edit, max: usize) -> bool {
 }
 
 /// Where the commit message came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum DraftState {
     /// The agent is drafting; the template is shown meanwhile.
     Pending,
@@ -2315,6 +2315,10 @@ impl App {
         Vec::new()
     }
 }
+
+/// Why there is no agent when the user asked for none; the review list
+/// doesn't repeat it as a banner.
+pub const NO_AGENT: &str = "running with --no-agent";
 
 #[cfg(test)]
 pub(crate) mod tests {

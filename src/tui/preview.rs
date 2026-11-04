@@ -161,7 +161,7 @@ pub fn unit_head(app: &App, u: &Unit, w: usize) -> Line<'static> {
     }
     let tail_w: usize = tail.iter().map(|s| s.content.width()).sum();
     let room = w.saturating_sub(name.width() + tail_w + 2);
-    let place = slim::place(u);
+    let place = names::place(u);
     let place = if room >= 8 {
         slim::fit_path(&place, room)
     } else {
@@ -297,7 +297,7 @@ pub fn agent_lines(
         return Vec::new();
     }
     let mut lines = vec![Line::styled(
-        truncate(&slim::agent_label(app, u), w),
+        truncate(&names::agent_label(app, u), w),
         t.muted(),
     )];
     if let Some(s) = u.summary.as_deref() {

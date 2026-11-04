@@ -246,7 +246,7 @@ fn related_line(app: &App, id: &str, why: &str, selected: bool, w: usize) -> Lin
         t.bold()
     };
     let name = names::row_name(u);
-    let place = slim::place(u);
+    let place = names::place(u);
     let why = if why.is_empty() {
         String::new()
     } else {

@@ -22,57 +22,6 @@ use crate::keymap::Action;
 use crate::review::model::Unit;
 use crate::util::truncate;
 
-/// The actions the flagged list handles, for the help, in the order it
-/// lists them inside each of its groups.
-pub const ACTIONS: &[Action] = &[
-    Action::MoveNextPending,
-    Action::MovePrevPending,
-    Action::MoveNextHunk,
-    Action::MovePrevHunk,
-    Action::MoveDown,
-    Action::MoveUp,
-    Action::MoveFirst,
-    Action::MoveLast,
-    Action::ScrollHalfDown,
-    Action::ScrollHalfUp,
-    Action::ScrollPageDown,
-    Action::ScrollPageUp,
-    Action::FindUnit,
-    Action::ViewBack,
-    Action::DecideAccept,
-    Action::NoteEdit,
-    Action::HistoryUndo,
-    Action::HistoryRedo,
-    Action::ViewOpen,
-    Action::AskOpen,
-    Action::GotoDefinition,
-    Action::GotoCallers,
-    Action::GotoEditor,
-    Action::ToolAdvice,
-    Action::ToolTests,
-    Action::ToolRunOldNew,
-    Action::ToolDiagram,
-    Action::ToolFlagged,
-    Action::ToolHistory,
-    Action::ToolNotes,
-    Action::HelpOpen,
-    Action::FinishOpen,
-    Action::ViewClose,
-];
-
-/// What the flagged list says an action does where `?` lists it, when
-/// that differs from the keymap's words.
-pub fn describe(a: Action) -> Option<&'static str> {
-    Some(match a {
-        Action::MoveNextPending | Action::MoveDown => "next flagged unit",
-        Action::MovePrevPending | Action::MoveUp => "previous flagged unit",
-        Action::ViewOpen => "look closer at it",
-        Action::DecideAccept => "accept it: it leaves the list",
-        Action::ToolFlagged => "back",
-        _ => return None,
-    })
-}
-
 // ---- Drawing -----------------------------------------------------------
 
 /// Draw the flagged list into `area`: the title row, then the boxes.

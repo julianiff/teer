@@ -565,7 +565,9 @@ impl Session {
         let keys = cfg.keymap().expect("valid keys").0;
         let session = session
             .unwrap_or_else(|| SessionRef::fresh(cfg.provider().name(), review.repo_root.clone()));
-        let note = model.is_none().then(|| teer::cli::NO_AGENT.to_string());
+        let note = model
+            .is_none()
+            .then(|| teer::session::app::NO_AGENT.to_string());
         Session::begin(review, cfg, keys, model, note, Vec::new(), session, tools)
     }
 

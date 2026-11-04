@@ -16,8 +16,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use super::app::App;
 use super::preview;
-use crate::review::diff::{DIFF_LEVEL, Kind, Row, expand_tabs, rows_around};
-use crate::review::model::{Change, LineRef, Marker, Prep, Side, Unit};
+use crate::review::diff::{DIFF_LEVEL, Kind, anchor, expand_tabs, rows_around};
+use crate::review::model::{Change, LineRef, Marker, Prep, Unit};
 use crate::syntax::Class;
 use crate::util::sanitize;
 
@@ -325,32 +325,6 @@ pub fn code_change_of(app: &App, u: &Unit, w: usize, notes: Notes) -> CodeChange
     }
 }
 
-/// The row a statement is written under: the last one it cites, else the
-/// one nearest its first cited line (a cited line may sit in a gap).
-fn anchor(c: &Change, rows: &[Row]) -> Option<usize> {
-    let cites = |r: &Row| {
-        c.evidence.iter().any(|e| match e.side {
-            Side::New => r.line == Some(e.line),
-            Side::Old => r.old == Some(e.line),
-        })
-    };
-    if let Some(k) = rows.iter().rposition(cites) {
-        return Some(k);
-    }
-    let first = c.evidence.first()?;
-    rows.iter()
-        .enumerate()
-        .filter_map(|(k, r)| {
-            let n = match first.side {
-                Side::New => r.line,
-                Side::Old => r.old,
-            }?;
-            Some((n.abs_diff(first.line), k))
-        })
-        .min()
-        .map(|(_, k)| k)
-}
-
 /// A statement as a comment in the code, under the row above it: a small
 /// rounded card from the sign column (`at` cells in) on, as wide as its
 /// text needs and at most to `w`, the statement inside in the note style.
@@ -471,7 +445,7 @@ mod tests {
     use super::*;
     use crate::git::{ChangedFile, FileStatus};
     use crate::review::diff::{rows_near, unit_rows};
-    use crate::review::model::{Decision, Range, Review, UnitKind, UnitStatus};
+    use crate::review::model::{Decision, Range, Review, Side, UnitKind, UnitStatus};
     use std::path::PathBuf;
 
     /// [`wrap_ranges`] as strings.
