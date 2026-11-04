@@ -75,6 +75,7 @@ pub fn take(s: &mut Session, e: Effect) -> Option<Effect> {
             message,
         } => commit(s, repo, paths, message),
         Effect::Settings => emit(s, "settings", ()),
+        Effect::OpenApp => s.app.status = "This is Teer.app.".into(),
         other => return Some(other),
     }
     None
@@ -210,6 +211,14 @@ fn commit(s: &mut Session, repo: PathBuf, paths: Vec<PathBuf>, message: String) 
 pub fn returned(s: &mut Session, r: Returned) -> Vec<Effect> {
     match r {
         Returned::Agent { cli, ran } => {
+            if ran.is_ok() {
+                crate::notify::send(
+                    &s.handle,
+                    &s.label,
+                    &format!("{} is done", cli.title()),
+                    "The review runs again on what it changed.",
+                );
+            }
             if s.rt.agent_exited(&mut s.app, cli, ran) {
                 return vec![Effect::Quit];
             }

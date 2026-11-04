@@ -30,8 +30,8 @@ underneath (Claude Code, Codex, or a model API with your key; teer asks which on
 `teer setup` changes it); you read it in the terminal.\n\n\
 Plain `teer` works out what to review: your uncommitted changes (staged, unstaged or untracked); \
 with none, this branch since its base; on the default branch with none, there is nothing to review.",
-    after_help = "Examples:\n  teer                 review your changes, or this branch since its base\n  teer --base main     review this branch since main\n  teer <url>           review a GitHub pull request of this repository (fetched with git)\n  teer 482             review pull request #482 of this repository\n  teer pr              pick a pull request waiting for your review, assigned to you, or yours\n  teer --no-agent      review without an agent: no change statements, no questions\n  teer --json          print the prepared review as JSON and exit\n  teer notes           print your notes from the last review as Markdown, for an agent\n\nConfig: ~/.config/teer/config.toml   Data: ~/.local/share/teer/",
-    override_usage = "teer [--base <REF>] [--no-agent] [--json]\n       teer <URL>\n       teer pr\n       teer notes",
+    after_help = "Examples:\n  teer                 review your changes, or this branch since its base\n  teer --base main     review this branch since main\n  teer <url>           review a GitHub pull request of this repository (fetched with git)\n  teer 482             review pull request #482 of this repository\n  teer pr              pick a pull request waiting for your review, assigned to you, or yours\n  teer --no-agent      review without an agent: no change statements, no questions\n  teer --json          print the prepared review as JSON and exit\n  teer notes           print your notes from the last review as Markdown, for an agent\n  teer app             open this review in Teer.app, the desktop app\n\nConfig: ~/.config/teer/config.toml   Data: ~/.local/share/teer/",
+    override_usage = "teer [--base <REF>] [--no-agent] [--json]\n       teer <URL>\n       teer pr\n       teer notes\n       teer app",
     disable_version_flag = true,
     disable_help_subcommand = true
 )]
@@ -111,6 +111,17 @@ pub enum Command {
         /// The pull request whose review's notes to print, instead of the repository's.
         #[arg(value_name = "URL")]
         url: Option<String>,
+    },
+    /// Open this repository's review in Teer.app, the desktop app.
+    ///
+    /// What plain `teer` would review (your changes, or this branch since its base; with
+    /// --base, since that), or with a pull request that one. Teer.app and teer share the
+    /// config and the saved reviews: decisions made in one are there in the other.
+    #[command(after_help = "Examples:\n  teer app\n  teer app 482\n  teer app --base main")]
+    App {
+        /// A pull request of this repository: its number or URL.
+        #[arg(value_name = "PR")]
+        pr: Option<String>,
     },
     /// Pick what prepares reviews and its models; teer asks this on the first start.
     ///
@@ -289,6 +300,9 @@ pub async fn run_on(args: Args, path: &Path, screens: &dyn Screens) -> Result<()
         (Some(Command::Notes { url }), None) => {
             return print_notes(&cwd, url.as_deref(), &keymap);
         }
+        (Some(Command::App { pr }), None) => {
+            return open_app(&cwd, pr.as_deref(), args.base.as_deref());
+        }
         (Some(Command::Setup | Command::Help { .. }), None) => unreachable!("handled above"),
         // `teer pr`, `teer pr list` (clap takes no URL with `list`).
         (Some(Command::Pr { url: None, .. }), None) => Start::Pick,
@@ -417,6 +431,16 @@ async fn pr_list(
     let color = tty && std::env::var_os("NO_COLOR").is_none();
     print!("{}", render(&listing, chrono::Utc::now(), width, color));
     Ok(None)
+}
+
+/// `teer app`: the repository at `cwd` (and `pr`, or since `base`) in
+/// Teer.app.
+fn open_app(cwd: &Path, pr: Option<&str>, base: Option<&str>) -> Result<()> {
+    let repo = git::repo_root(cwd).context("teer app must run inside a git repository")?;
+    let url = crate::app_link::url(&repo, pr, base);
+    crate::app_link::open(&url).with_context(|| format!("couldn't open {url}"))?;
+    println!("teer: opened in Teer.app");
+    Ok(())
 }
 
 /// `teer notes`: the notes of the repository's last review, or of the pull

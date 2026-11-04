@@ -388,7 +388,7 @@ fn teer_help_lists_only_the_v2_surface() {
             .filter_map(|l| l.split_whitespace().next().map(String::from))
             .collect()
     };
-    assert_eq!(section("Commands"), vec!["pr", "notes"], "{help}");
+    assert_eq!(section("Commands"), vec!["pr", "notes", "app"], "{help}");
     assert_eq!(
         section("Options"),
         vec!["--base", "--json", "--no-agent", "-h,"],

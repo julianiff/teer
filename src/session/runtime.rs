@@ -398,7 +398,8 @@ impl Runtime {
             | Effect::EditComment { .. }
             | Effect::Commit { .. }
             | Effect::OpenAgent { .. }
-            | Effect::Settings => {}
+            | Effect::Settings
+            | Effect::OpenApp => {}
         }
         false
     }

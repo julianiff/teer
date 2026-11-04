@@ -1,0 +1,21 @@
+# Teer.app, the desktop app. Written to julianiff/homebrew-tap as
+# Casks/teer-app.rb by .github/workflows/desktop-release.yml; the formula
+# `teer` is the terminal app.
+cask "teer-app" do
+  version "@VERSION@"
+  sha256 "@SHA256@"
+
+  url "https://github.com/julianiff/teer/releases/download/v#{version}/Teer_#{version}_universal.dmg"
+  name "Teer"
+  desc "Semantic code review: review changes by what they mean"
+  homepage "https://github.com/julianiff/teer"
+
+  depends_on macos: ">= :big_sur"
+
+  app "Teer.app"
+
+  zap trash: [
+    "~/Library/Caches/com.julianiff.teer",
+    "~/Library/WebKit/com.julianiff.teer",
+  ]
+end

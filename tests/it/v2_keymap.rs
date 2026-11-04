@@ -651,6 +651,12 @@ fn leader_s_opens_the_settings() {
 // ---- Command line ---------------------------------------------------------------
 
 #[test]
+fn colon_app_saves_and_hands_the_review_to_the_app() {
+    let mut d = Driver::new(3);
+    assert_eq!(d.keys(":app<cr>"), vec![Effect::Save, Effect::OpenApp]);
+}
+
+#[test]
 fn colon_w_opens_the_finish_sheet_on_the_step_that_fits() {
     use teer::session::finish::Step;
     let mut d = Driver::new(3);

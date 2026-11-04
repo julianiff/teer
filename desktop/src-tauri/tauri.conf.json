@@ -18,7 +18,10 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "category": "DeveloperTool",
     "shortDescription": "Semantic code review",
     "icon": [
@@ -29,7 +32,10 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "minimumSystemVersion": "11.0"
-    }
+      "minimumSystemVersion": "11.0",
+      "hardenedRuntime": true,
+      "signingIdentity": null
+    },
+    "copyright": "Apache-2.0"
   }
 }

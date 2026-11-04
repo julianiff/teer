@@ -28,9 +28,24 @@ pub struct WindowState {
     pub host: Option<Host>,
     /// The repository being opened, while it is.
     pub opening: Option<String>,
+    /// What the window reviews, or is opening: the repository and the pull
+    /// request.
+    pub what: Option<(PathBuf, Option<String>)>,
 }
 
 impl Windows {
+    /// The window that reviews, or is opening, `repo` (and `pr`).
+    pub fn showing(&self, repo: &std::path::Path, pr: Option<&str>) -> Option<String> {
+        let map = self.0.lock().ok()?;
+        map.iter()
+            .find(|(_, s)| {
+                s.what
+                    .as_ref()
+                    .is_some_and(|(r, p)| same_dir(r, repo) && p.as_deref() == pr)
+            })
+            .map(|(l, _)| l.clone())
+    }
+
     pub fn host(&self, label: &str) -> Option<Host> {
         self.0.lock().ok()?.get(label)?.host.clone()
     }
@@ -114,6 +129,7 @@ pub async fn open_in(
             return Err("This window is opening a review already.".into());
         }
         state.opening = Some(repo.clone());
+        state.what = Some((cwd.clone(), pr.clone().filter(|p| !p.trim().is_empty())));
     }
     let _ = handle.emit_to(EventTarget::webview_window(label), "opening", &repo);
     let what = match pr.filter(|p| !p.trim().is_empty()) {
@@ -134,6 +150,7 @@ pub async fn open_in(
             && let Some(s) = map.get_mut(label)
         {
             s.opening = None;
+            s.what = None;
         }
     };
     let (launch, worktree) = match opened {
@@ -155,7 +172,7 @@ pub async fn open_in(
             .unwrap_or_default(),
         launch.review.subject()
     );
-    let begun = match teer::start::begin(*launch) {
+    let begun = match teer::start::begin(*launch, "Teer.app") {
         Ok(b) => b,
         Err(e) => {
             done(windows);
@@ -184,6 +201,16 @@ pub async fn open_in(
     state.opening = None;
     state.host = Some(host);
     Ok(None)
+}
+
+/// Whether `a` and `b` are the same folder (or the same repository's root
+/// and a folder in it).
+fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let real = |p: &std::path::Path| {
+        let p = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        teer::git::repo_root(&p).unwrap_or(p)
+    };
+    a == b || real(a) == real(b)
 }
 
 /// A pull request's checkout is no repository to list again.

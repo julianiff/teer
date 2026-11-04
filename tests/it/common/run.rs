@@ -636,7 +636,7 @@ impl Session {
             match e {
                 Effect::Quit => self.quit = true,
                 // Need a terminal and a person: the tests answer for them.
-                Effect::Edit { .. } | Effect::Settings => {}
+                Effect::Edit { .. } | Effect::Settings | Effect::OpenApp => {}
                 Effect::EditComment { text } => self.edited.push(text),
                 Effect::Copy { text, what } => {
                     self.copied.push(text);

@@ -36,6 +36,7 @@ use crossterm::terminal::{
 };
 use futures::StreamExt;
 
+use crate::review::model::Review;
 use crate::review::store;
 use crate::session::runtime::agent_program;
 use crate::session::{Effect, Runtime};
@@ -62,7 +63,8 @@ pub async fn run(l: crate::start::Launch) -> Result<()> {
         runtime: mut rt,
         events: mut rx,
         initial,
-    } = crate::start::begin(l)?;
+        lock,
+    } = crate::start::begin(l, "teer in a terminal")?;
     let mut app = App::wrap(core);
 
     let mut terminal = ratatui::init();
@@ -72,6 +74,7 @@ pub async fn run(l: crate::start::Launch) -> Result<()> {
         app.pictures = picture::Pictures::detect();
     }
     execute!(stdout(), EnableMouseCapture, EnableBracketedPaste)?;
+    let mut open_app = false;
     let result = async {
         let mut quit = false;
         for e in initial {
@@ -154,6 +157,10 @@ pub async fn run(l: crate::start::Launch) -> Result<()> {
                         quit |= rt.exec(&mut app, follow);
                     }
                     events = EventStream::new();
+                } else if let Effect::OpenApp = e {
+                    // The app opens it once this terminal has let go of it.
+                    open_app = true;
+                    quit = true;
                 } else if let Effect::Settings = e {
                     // The setup screen draws on this terminal and reads its own keys.
                     drop(events);
@@ -169,11 +176,37 @@ pub async fn run(l: crate::start::Launch) -> Result<()> {
     .await;
     restore_terminal();
     let _ = store::save(&app.review);
+    drop(lock);
+    if open_app {
+        let (repo, pr) = app_target(&app.review);
+        let url = crate::app_link::url(&repo, pr.as_deref(), None);
+        match crate::app_link::open(&url) {
+            Ok(()) => println!("teer: the review is open in Teer.app"),
+            Err(e) => eprintln!("teer: couldn't open Teer.app: {e}"),
+        }
+    }
     // What `:w` did (a commit, a post), once the terminal is the shell's again.
     if let Some(line) = &app.finish.exit_line {
         println!("{line}");
     }
     result
+}
+
+/// What Teer.app is asked to open for `review`: the repository it was
+/// started in, and the pull request it is of.
+fn app_target(review: &Review) -> (std::path::PathBuf, Option<String>) {
+    match &review.pr {
+        Some(pr) => (
+            pr.repo_dir
+                .clone()
+                .unwrap_or_else(|| review.repo_root.clone()),
+            Some(format!(
+                "https://{}/{}/{}/pull/{}",
+                pr.host, pr.owner, pr.repo, pr.number
+            )),
+        ),
+        None => (review.repo_root.clone(), None),
+    }
 }
 
 /// Run the commit with the terminal handed to git. When it fails, wait for

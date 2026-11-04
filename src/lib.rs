@@ -7,6 +7,7 @@
 //! default.
 
 pub mod agent;
+pub mod app_link;
 pub mod approve;
 #[cfg(feature = "tui")]
 pub mod cli;

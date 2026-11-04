@@ -47,6 +47,7 @@ pub const QUEUE: &[Action] = &[
     Action::ToolNotes,
     Action::ToolFlagged,
     Action::ToolSettings,
+    Action::FinishApp,
     Action::HelpOpen,
     Action::FinishOpen,
     Action::ReviewRerun,
@@ -97,6 +98,7 @@ pub const UNIT: &[Action] = &[
     Action::ToolNotes,
     Action::ToolFlagged,
     Action::ToolSettings,
+    Action::FinishApp,
     Action::HelpOpen,
     Action::FinishOpen,
     Action::ReviewRerun,
@@ -274,7 +276,7 @@ pub fn group_of(a: Action) -> usize {
         | ToolAdvice | ToolTests | ToolRunOldNew | ToolDiagram | ToolFlagged | MoveNextTile
         | MovePrevTile | ToggleZoom => 2,
         ToggleAutoAccepted | ToggleByFile | ToolHistory | ToolNotes | ToolSettings | HelpOpen => 3,
-        FinishOpen | FinishYank | ReviewRerun | ReviewReset | ViewClose => 4,
+        FinishOpen | FinishYank | FinishApp | ReviewRerun | ReviewReset | ViewClose => 4,
     }
 }
 

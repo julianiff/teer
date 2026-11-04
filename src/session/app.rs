@@ -324,6 +324,9 @@ pub enum Effect {
     /// Suspend the review, run the settings screen (`teer setup`) and load
     /// the config and keys again (`<space>s`).
     Settings,
+    /// Hand the review to Teer.app (`:app`): the terminal leaves it first,
+    /// so the app can hold it.
+    OpenApp,
 }
 
 #[derive(Debug)]
@@ -1173,6 +1176,7 @@ impl App {
                 return Vec::new();
             }
             Action::ToolSettings => return vec![Effect::Settings],
+            Action::FinishApp => return vec![Effect::Save, Effect::OpenApp],
             Action::FinishOpen => return self.open_finish(),
             Action::ToggleAutoAccepted => {
                 self.toggle_auto();

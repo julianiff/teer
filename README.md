@@ -67,6 +67,14 @@ the first start asks which agent and models to use; `teer setup` changes it.
 
 your place is saved on every change.
 
+## the desktop app
+
+teer.app is the same review in a window: the same keys, config and saved reviews, with panes, inline diagrams and a terminal pane for your agent. `teer app` opens this repo's review in it, `:app` hands it the review open in the terminal, and its file menu's "open in terminal" hands it back. a review is open in one place at a time.
+
+```bash
+brew install --cask julianiff/tap/teer-app   # once a signed release is out; until then see docs/desktop.md
+```
+
 ## config
 
 `~/.config/teer/config.toml`:
@@ -121,6 +129,8 @@ cargo test                   # unit, fixture-repo and tui snapshot tests
 cargo nextest run            # the same, each test in its own process, with timings
 cargo clippy --all-targets
 ```
+
+teer.app is `desktop/`, a workspace member: `cd desktop && npm install && npx tauri dev`. its frontend tests: `npm test`, `npm run check`. more in [docs/desktop.md](docs/desktop.md).
 
 the integration tests are one binary: each file in `tests/it/` is a module of `tests/it/main.rs`. run a part of them by module path, e.g. `cargo test --test it pr::`.
 

@@ -4,9 +4,12 @@
 //! reviews are the CLI's: a review started in one continues in the other.
 
 mod commands;
+mod env;
 mod front;
 mod host;
+mod links;
 mod menu;
+mod notify;
 mod pty;
 mod recent;
 mod settings;
@@ -25,9 +28,12 @@ fn report(handle: &tauri::AppHandle, label: &str, opened: Result<Option<String>,
 }
 
 fn main() {
-    tauri::Builder::default()
+    // Before any thread: PATH and the rest from the login shell.
+    env::import();
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(commands::Windows::default())
         .manage(pty::Ptys::default())
         .menu(menu::build)
@@ -54,30 +60,34 @@ fn main() {
             settings::setup_save,
         ])
         .setup(|app| {
-            let first = window::open(app.handle())?;
-            // `teer-desktop [--no-agent] <repo> [<pr>]`: open that review in
-            // the first window.
-            let args: Vec<String> = std::env::args()
-                .skip(1)
-                .filter(|a| !a.starts_with("-psn"))
-                .collect();
-            let no_agent = args.iter().any(|a| a == "--no-agent");
-            let mut args = args.into_iter().filter(|a| !a.starts_with("--"));
-            if let Some(repo) = args.next() {
-                let pr = args.next();
-                let handle = app.handle().clone();
-                let label = first.label().to_string();
-                tauri::async_runtime::spawn(async move {
-                    use tauri::Manager;
-                    let windows = handle.state::<commands::Windows>();
-                    let opened =
-                        commands::open_in(&handle, &windows, &label, repo, None, pr, no_agent)
-                            .await;
-                    report(&handle, &label, opened);
-                });
+            window::open(app.handle())?;
+            // `teer-desktop [--no-agent] <repo> [<pr>]`, or a `teer://` link.
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            if let (Some(link), no_agent) = links::of_args(&args) {
+                links::open(app.handle(), link, no_agent);
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("Teer.app failed to start");
+    app.run(|handle, event| {
+        // `teer app`, a `teer://` link, a folder dropped on the Dock icon.
+        #[cfg(target_os = "macos")]
+        match &event {
+            tauri::RunEvent::Opened { urls } => {
+                for link in urls.iter().filter_map(links::of_url) {
+                    links::open(handle, link, false);
+                }
+            }
+            // The Dock icon clicked with every window closed: a new one.
+            tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } => {
+                let _ = window::open(handle);
+            }
+            _ => {}
+        }
+        let _ = (handle, event);
+    });
 }

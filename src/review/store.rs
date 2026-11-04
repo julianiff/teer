@@ -317,6 +317,126 @@ pub fn restore(review: &mut Review) {
     }
 }
 
+// ---- Who has a review open ---------------------------------------------
+
+/// A review this process has open: a lock file beside the saved reviews of
+/// its repository (or its pull request), so two front ends (teer in a
+/// terminal and Teer.app, or two windows) never save the same review at
+/// the same time. Let go when dropped.
+#[derive(Debug)]
+pub struct Lock {
+    /// Empty when there was nowhere to write it (saving fails then too).
+    path: PathBuf,
+    token: u64,
+}
+
+/// Who has a review open already.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Held {
+    pub pid: u32,
+    /// What has it open: `teer in a terminal`, `Teer.app`.
+    pub by: String,
+}
+
+impl std::fmt::Display for Held {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (process {})", self.by, self.pid)
+    }
+}
+
+/// The locks this process holds, by token: another of its windows asking
+/// for one of them is turned away like another process.
+static HELD: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+static NEXT_TOKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Hold `review` open for `by`, unless a live process has it open: then
+/// who. A lock whose process is gone is taken over.
+pub fn lock(review: &Review, by: &str) -> std::result::Result<Lock, Held> {
+    use std::io::Write;
+    let dir = scope_dir(&review.repo_root, review.pr.as_ref());
+    let path = dir.join("lock");
+    let pid = std::process::id();
+    let token =
+        (u64::from(pid) << 32) | NEXT_TOKEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return Ok(Lock {
+            path: PathBuf::new(),
+            token,
+        });
+    }
+    for _ in 0..3 {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut f) => {
+                let _ = write!(f, "{pid}\n{token}\n{by}\n");
+                HELD.lock().expect("held locks").push(token);
+                return Ok(Lock { path, token });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if let Some((holder, their, by)) = read_lock(&path)
+                    && alive(holder, their)
+                {
+                    return Err(Held { pid: holder, by });
+                }
+                // Left behind by a process that is gone.
+                let _ = std::fs::remove_file(&path);
+            }
+            Err(_) => break,
+        }
+    }
+    Ok(Lock {
+        path: PathBuf::new(),
+        token,
+    })
+}
+
+/// The pid, token and holder a lock file names.
+fn read_lock(path: &Path) -> Option<(u32, u64, String)> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut lines = text.lines();
+    let pid = lines.next()?.trim().parse().ok()?;
+    let token = lines.next()?.trim().parse().ok()?;
+    Some((pid, token, lines.next().unwrap_or("teer").to_string()))
+}
+
+/// Whether the lock `token` of process `pid` is still held.
+fn alive(pid: u32, token: u64) -> bool {
+    if pid == std::process::id() {
+        return HELD.lock().expect("held locks").contains(&token);
+    }
+    process_alive(pid)
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+#[cfg(not(unix))]
+fn process_alive(_pid: u32) -> bool {
+    true
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        if let Ok(mut held) = HELD.lock() {
+            held.retain(|t| *t != self.token);
+        }
+        if read_lock(&self.path).is_some_and(|(_, t, _)| t == self.token) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -681,5 +801,41 @@ mod tests {
         save(&r).unwrap();
         let back = load(&r.repo_root, None, &r.base, &r.head, &r.head_commit).unwrap();
         assert_eq!(back.units[1].decision, Pending);
+    }
+
+    #[test]
+    fn a_review_is_open_in_one_place_at_a_time() {
+        let mut review = test_review_for_lock();
+        let first = lock(&review, "Teer.app").expect("free");
+        let held = lock(&review, "teer in a terminal").expect_err("held");
+        assert_eq!(held.by, "Teer.app");
+        assert_eq!(held.pid, std::process::id());
+        // Another repository is free.
+        review.repo_root = PathBuf::from("/work/other-shop");
+        let other = lock(&review, "Teer.app").expect("another repo");
+        drop(other);
+        review.repo_root = PathBuf::from("/work/lock-shop");
+        drop(first);
+        assert!(lock(&review, "teer in a terminal").is_ok());
+    }
+
+    #[test]
+    fn a_lock_left_by_a_process_that_is_gone_is_taken_over() {
+        let mut review = test_review_for_lock();
+        review.repo_root = PathBuf::from("/work/stale-shop");
+        let dir = scope_dir(&review.repo_root, None);
+        std::fs::create_dir_all(&dir).unwrap();
+        // No process has this pid (above the largest pid macOS and Linux give).
+        std::fs::write(dir.join("lock"), "99999999\n7\nteer\n").unwrap();
+        assert!(lock(&review, "Teer.app").is_ok());
+    }
+
+    fn test_review_for_lock() -> Review {
+        serde_json::from_value(serde_json::json!({
+            "id": "r", "repo_root": "/work/lock-shop", "base": "a", "head": "WORKTREE",
+            "head_commit": "b", "agent_session": null, "created_at": "2026-11-04T00:00:00Z",
+            "files": [], "units": []
+        }))
+        .expect("a review")
     }
 }

@@ -90,6 +90,8 @@ pub enum Action {
     ToolSettings,
     FinishOpen,
     FinishYank,
+    /// The review in Teer.app: the terminal lets go of it first.
+    FinishApp,
     ReviewRerun,
     ReviewReset,
     ViewClose,
@@ -299,6 +301,12 @@ const TABLE: &[(Action, &str, &[&str], &str)] = &[
         "tool.settings",
         &["<space>s"],
         "settings",
+    ),
+    (
+        Action::FinishApp,
+        "finish.app",
+        &[":app"],
+        "open the review in Teer.app",
     ),
     (Action::FinishOpen, "finish.open", &[":w"], "finish"),
     (Action::FinishYank, "finish.yank", &["y"], "copy the notes"),

@@ -64,6 +64,11 @@ pub fn build<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 .accelerator("CmdOrCtrl+Shift+O")
                 .build(handle)?,
         )
+        .item(
+            &MenuItemBuilder::with_id("open_terminal", "Open in Terminal")
+                .accelerator("CmdOrCtrl+Shift+T")
+                .build(handle)?,
+        )
         .separator()
         .item(&PredefinedMenuItem::close_window(handle, None)?)
         .build()?;
@@ -115,6 +120,10 @@ pub fn on_event(handle: &AppHandle, event: MenuEvent) {
         let _ = crate::window::open(handle);
         return;
     };
+    if id == "open_terminal" {
+        crate::links::to_terminal(handle, window.label());
+        return;
+    }
     if let Some(action) = id.strip_prefix("action:") {
         let windows = handle.state::<Windows>();
         if let Some(host) = windows.host(window.label()) {

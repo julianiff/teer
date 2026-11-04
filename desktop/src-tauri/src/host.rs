@@ -36,8 +36,9 @@ pub enum Input {
     Returned(Returned),
     /// Every action with its keys, for the command palette.
     Actions(oneshot::Sender<Vec<Hint>>),
-    /// The window is closing: save and stop.
-    Close,
+    /// The window is closing, or hands the review to the terminal: save,
+    /// let go of the review, then say so on the sender.
+    Close(Option<oneshot::Sender<()>>),
 }
 
 /// Where a click landed.
@@ -113,21 +114,44 @@ pub fn spawn(
         view: view.clone(),
     };
     tauri::async_runtime::spawn(async move {
+        let Begun {
+            app,
+            runtime,
+            events,
+            initial,
+            lock,
+        } = begun;
         let mut s = Session {
             handle,
             label,
-            app: begun.app,
-            rt: begun.runtime,
+            notice: Notice::of(&app),
+            app,
+            rt: runtime,
             syntax: Cache::default(),
             view,
             tx,
             committing: false,
         };
-        let ended = s.run(begun.initial, inputs, begun.events).await;
+        let (ended, closed) = s.run(initial, inputs, events).await;
+        // Saved: another window or the terminal may have it now.
+        drop(lock);
         release();
+        {
+            use tauri::Manager;
+            let windows = s.handle.state::<crate::commands::Windows>();
+            if let Ok(mut map) = windows.0.lock()
+                && let Some(state) = map.get_mut(&s.label)
+            {
+                state.host = None;
+                state.what = None;
+            }
+        }
         let _ = s
             .handle
             .emit_to(EventTarget::webview_window(&s.label), "ended", ended);
+        if let Some(done) = closed {
+            let _ = done.send(());
+        }
     });
     host
 }
@@ -144,6 +168,26 @@ pub struct Session {
     pub tx: UnboundedSender<Input>,
     /// A commit is on its way: `⏎` again doesn't start another.
     pub committing: bool,
+    /// What the review was when it was last looked at for news.
+    notice: Notice,
+}
+
+/// What is news in a review, for a notification while the window is
+/// behind others: prepare finished, a second model disputes a unit.
+#[derive(Debug, Clone, Copy)]
+struct Notice {
+    preparing: bool,
+    disputed: usize,
+}
+
+impl Notice {
+    fn of(app: &App) -> Notice {
+        let (done, total) = app.prep_progress();
+        Notice {
+            preparing: done < total,
+            disputed: app.levels.iter().filter(|l| !l.doubts.is_empty()).count(),
+        }
+    }
 }
 
 /// How often the review looks at its timers: key prefixes, the watched tree.
@@ -157,7 +201,8 @@ impl Session {
         initial: Vec<Effect>,
         mut inputs: UnboundedReceiver<Input>,
         mut events: UnboundedReceiver<AppEvent>,
-    ) -> Ended {
+    ) -> (Ended, Option<oneshot::Sender<()>>) {
+        let mut closed = None;
         let mut quit = self.exec_all(initial);
         let mut tick = tokio::time::interval(TICK);
         let mut dirty = true;
@@ -173,6 +218,10 @@ impl Session {
             tokio::select! {
                 input = inputs.recv() => {
                     let Some(input) = input else { break };
+                    if let Input::Close(done) = input {
+                        closed = done;
+                        break;
+                    }
                     match self.on_input(input) {
                         Some(effects) => quit |= self.exec_all(effects),
                         None => break,
@@ -185,6 +234,7 @@ impl Session {
                     while let Ok(ev) = events.try_recv() {
                         quit |= self.on_event(ev);
                     }
+                    self.news();
                     dirty = true;
                 }
                 _ = tokio::time::sleep(wait), if dirty => {}
@@ -202,9 +252,37 @@ impl Session {
             eprintln!("teer: couldn't save the review: {e:#}");
         }
         self.send_view();
-        Ended {
+        let ended = Ended {
             line: self.app.finish.exit_line.clone(),
+        };
+        (ended, closed)
+    }
+
+    /// Say what is news since the last look, when the window is behind.
+    fn news(&mut self) {
+        let now = Notice::of(&self.app);
+        let subject = self.app.review.subject();
+        if self.notice.preparing && !now.preparing {
+            crate::notify::send(
+                &self.handle,
+                &self.label,
+                "The review is prepared",
+                &format!("{subject}: every unit is described."),
+            );
         }
+        if now.disputed > self.notice.disputed {
+            let n = now.disputed - self.notice.disputed;
+            crate::notify::send(
+                &self.handle,
+                &self.label,
+                "A second model disputes",
+                &format!(
+                    "{subject}: {n} unit{} described differently.",
+                    if n == 1 { "" } else { "s" }
+                ),
+            );
+        }
+        self.notice = now;
     }
 
     /// The window scrolls its panes itself: an action that scrolls, or in
@@ -295,7 +373,7 @@ impl Session {
                 let _ = reply.send(hints);
                 Vec::new()
             }
-            Input::Close => return None,
+            Input::Close(_) => return None,
         })
     }
 
@@ -304,7 +382,9 @@ impl Session {
     pub fn exec_all(&mut self, effects: Vec<Effect>) -> bool {
         let mut quit = false;
         for e in effects {
-            if let Some(e) = crate::front::take(self, e) { quit |= self.rt.exec(&mut self.app, e) }
+            if let Some(e) = crate::front::take(self, e) {
+                quit |= self.rt.exec(&mut self.app, e)
+            }
         }
         quit
     }

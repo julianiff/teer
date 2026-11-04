@@ -236,19 +236,25 @@ pub struct Launch {
 }
 
 /// A review begun: the app on its first screen, the runtime that carries
-/// out its effects, the channel their answers come back on, and the
-/// effects to carry out first.
+/// out its effects, the channel their answers come back on, the effects
+/// to carry out first, and the lock that keeps the review open here only
+/// (dropped after the last save).
 pub struct Begun {
     pub app: crate::session::App,
     pub runtime: crate::session::Runtime,
     pub events: tokio::sync::mpsc::UnboundedReceiver<crate::session::AppEvent>,
     pub initial: Vec<crate::session::Effect>,
+    pub lock: crate::review::store::Lock,
 }
 
 /// Begin `l` as every front end does: the app on the queue, started with
 /// the agent and the session (a fresh one in the repo when none was asked
-/// for), and the runtime with the configured editor.
-pub fn begin(l: Launch) -> Result<Begun> {
+/// for), and the runtime with the configured editor. `by` names the front
+/// end for the lock: a review open elsewhere (`teer` in a terminal,
+/// Teer.app) isn't begun again.
+pub fn begin(l: Launch, by: &str) -> Result<Begun> {
+    let lock = crate::review::store::lock(&l.review, by)
+        .map_err(|held| anyhow::anyhow!("this review is open in {held}: leave it there first"))?;
     let base = (l.review.head != git::WORKTREE).then(|| l.review.base.clone());
     let build = crate::review::BuildOptions {
         base,
@@ -291,6 +297,7 @@ pub fn begin(l: Launch) -> Result<Begun> {
         runtime,
         events,
         initial,
+        lock,
     })
 }
 

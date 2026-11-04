@@ -230,6 +230,7 @@ keys follow neovim, and a key does the same on every screen. a prefix (`g`, `]`,
 | `<space>n` | `tool.notes` | every note |
 | `<space>f` | `tool.flagged` | flagged units, one after another |
 | `<space>s` | `tool.settings` | settings |
+| `:app` | `finish.app` | open the review in Teer.app |
 | `:w` | `finish.open` | finish |
 | `y` | `finish.yank` | copy the notes |
 | `:e` | `review.rerun` | re-run, decisions kept |
