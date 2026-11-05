@@ -11,7 +11,7 @@
 #   APPLE_PASSWORD              an app-specific password for it
 #   APPLE_TEAM_ID               the team id
 #   HOMEBREW_TAP_TOKEN          writes to julianiff/homebrew-tap (release.yml has it too)
-# Without the Apple ones the app is built unsigned: fine to try, but
+# Without the Apple ones the app is signed ad hoc: fine to try, but
 # Gatekeeper stops it on other Macs, so no cask is written then.
 
 name: Desktop release
@@ -95,7 +95,15 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npx tauri build --target universal-apple-darwin --bundles app,dmg
+        run: |
+          # Without the certificate, signed ad hoc: an empty identity has
+          # codesign look for one named "" and fail, and empty Apple ID ones
+          # would try to notarize.
+          if [ "${SIGNED:-}" != 1 ]; then
+            export APPLE_SIGNING_IDENTITY=-
+            unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          fi
+          npx tauri build --target universal-apple-darwin --bundles app,dmg
 
       - name: Attach the .dmg to the release
         run: |
