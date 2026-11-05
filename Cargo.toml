@@ -1,6 +1,6 @@
 [package]
 name = "teer"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "teer: the essence of every revision. Semantic code review in the terminal."
 license = "Apache-2.0"

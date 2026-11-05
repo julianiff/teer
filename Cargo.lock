@@ -5556,7 +5556,7 @@ dependencies = [
 
 [[package]]
 name = "teer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5592,7 +5592,7 @@ dependencies = [
 
 [[package]]
 name = "teer-desktop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
