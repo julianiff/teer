@@ -1170,6 +1170,10 @@ any test notices the change. When no test exercises the unit, give an empty comm
 - Work fast: read the unit's file, what it uses, one caller and the nearest test. Don't survey the repository.
 - PHP: `require 'vendor/autoload.php'` loads the project's classes from this checkout; Composer packages are installed. \
 Construct the class directly with fakes for its constructor arguments; don't boot the framework or its container.
+- Go: put the probe in a new folder of this module as a `main` package (e.g. \"teer_probe/main.go\") that imports the \
+package under review by its module path, and run it with [\"go\", \"run\", \"./teer_probe\"]. Only modules already in the \
+module cache resolve: there is no network. An unexported function is reached through an exported one that calls it, \
+or by a `_test.go` file in its package run with [\"go\", \"test\", \"-run\", \"TestTeerProbe\", \"./pkg/...\"].
 - Do not modify any files yourself. Only read and answer.
 
 ",

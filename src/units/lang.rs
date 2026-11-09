@@ -14,6 +14,7 @@ pub enum Lang {
     TypeScript,
     Tsx,
     Php,
+    Go,
 }
 
 impl Lang {
@@ -26,6 +27,7 @@ impl Lang {
             "ts" | "mts" | "cts" => Lang::TypeScript,
             "tsx" => Lang::Tsx,
             "php" => Lang::Php,
+            "go" => Lang::Go,
             _ => return None,
         })
     }
@@ -38,6 +40,7 @@ impl Lang {
             Lang::JavaScript => "javascript",
             Lang::TypeScript | Lang::Tsx => "typescript",
             Lang::Php => "php",
+            Lang::Go => "go",
         }
     }
 
@@ -50,6 +53,7 @@ impl Lang {
             Lang::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             // The full grammar, so files with `<?php` tags and inline HTML parse.
             Lang::Php => tree_sitter_php::LANGUAGE_PHP.into(),
+            Lang::Go => tree_sitter_go::LANGUAGE.into(),
         }
     }
 
@@ -66,6 +70,7 @@ impl Lang {
                 "import_statement" | "import_from_statement" | "future_import_statement"
             ),
             Lang::Php => kind == "namespace_use_declaration",
+            Lang::Go => kind == "import_declaration",
             _ => kind == "import_statement",
         }
     }

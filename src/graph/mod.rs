@@ -35,6 +35,7 @@ enum Family {
     Python,
     Js,
     Php,
+    Go,
 }
 
 fn family(l: Lang) -> Family {
@@ -42,6 +43,7 @@ fn family(l: Lang) -> Family {
         Lang::Rust => Family::Rust,
         Lang::Python => Family::Python,
         Lang::Php => Family::Php,
+        Lang::Go => Family::Go,
         _ => Family::Js,
     }
 }
@@ -219,7 +221,10 @@ pub fn build(repo: &Path, analysis: &Analysis, units: &mut [Unit]) -> GraphData 
                 .filter(|&t| t != i)
                 .filter(|&t| match nodes[t].kind {
                     UnitKind::Method => c.method,
-                    UnitKind::Function | UnitKind::Class => !c.method || node_lang[i] == Lang::Rust,
+                    // `Foo::new()` and `pkg.Func()` look like method calls.
+                    UnitKind::Function | UnitKind::Class => {
+                        !c.method || matches!(node_lang[i], Lang::Rust | Lang::Go)
+                    }
                     UnitKind::Module | UnitKind::File => false,
                 })
                 .collect();

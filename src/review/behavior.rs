@@ -44,7 +44,7 @@ const ATTEMPTS: usize = 3;
 const DEP_DIRS: &[&str] = &["node_modules", "vendor", ".venv", "venv"];
 
 /// Programs named in the prompt when they are on PATH, with how to get a version line.
-const PROGRAMS: &[&str] = &["python3", "node", "php", "cargo", "deno", "bun"];
+const PROGRAMS: &[&str] = &["python3", "node", "php", "cargo", "deno", "bun", "go"];
 
 /// Longest output kept per case, in columns.
 const MAX_OUTCOME: usize = 300;
@@ -676,8 +676,10 @@ fn programs() -> Vec<String> {
             PROGRAMS
                 .iter()
                 .filter_map(|p| {
+                    // `go version`; every other program takes `--version`.
+                    let flag = if *p == "go" { "version" } else { "--version" };
                     let out = std::process::Command::new(which(p)?)
-                        .arg("--version")
+                        .arg(flag)
                         .stdin(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null())
                         .output()

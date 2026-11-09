@@ -239,6 +239,34 @@ fn rust_type_name(n: Node, src: &[u8]) -> String {
     }
 }
 
+/// Name of a Go type node without pointer, type arguments or package:
+/// `*Cart[T]` -> `Cart`, `pkg.Cart` -> `Cart`.
+fn go_type_name(n: Node, src: &[u8]) -> String {
+    match n.kind() {
+        "pointer_type" | "parenthesized_type" => n
+            .named_child(0)
+            .map(|t| go_type_name(t, src))
+            .unwrap_or_default(),
+        "generic_type" => n
+            .child_by_field_name("type")
+            .map(|t| go_type_name(t, src))
+            .unwrap_or_default(),
+        "qualified_type" => field_text(n, "name", src).unwrap_or_default(),
+        _ => text(n, src).to_string(),
+    }
+}
+
+/// The type a Go method belongs to: `Cart` for `func (c *Cart) Add()`.
+pub(crate) fn go_receiver(n: Node, src: &[u8]) -> Option<String> {
+    let recv = n.child_by_field_name("receiver")?;
+    let mut c = recv.walk();
+    let param = recv
+        .named_children(&mut c)
+        .find(|p| p.kind() == "parameter_declaration")?;
+    let name = go_type_name(param.child_by_field_name("type")?, src);
+    (!name.is_empty()).then_some(name)
+}
+
 fn wrap_export(n: Node) -> Node {
     match n.parent() {
         Some(p) if p.kind() == "export_statement" => p,
@@ -290,6 +318,23 @@ fn classify<'t>(
                 } else {
                     Some((name, fn_kind, outer, false))
                 }
+            }
+            _ => None,
+        },
+        Lang::Go => match n.kind() {
+            "function_declaration" => {
+                Some((field_text(n, "name", src)?, UnitKind::Function, n, false))
+            }
+            // Its receiver's type is on the stack (see `collect_defs`).
+            "method_declaration" => Some((field_text(n, "name", src)?, UnitKind::Method, n, false)),
+            "type_spec" | "type_alias" => {
+                // `type Cart struct {}` is the whole declaration; a type in a
+                // `type (...)` group is its own lines.
+                let outer = match n.parent() {
+                    Some(p) if p.kind() == "type_declaration" && p.named_child_count() == 1 => p,
+                    _ => n,
+                };
+                Some((field_text(n, "name", src)?, UnitKind::Class, outer, true))
             }
             _ => None,
         },
@@ -357,8 +402,16 @@ fn collect_defs<'t>(
     stack: &mut Vec<(String, bool)>,
     out: &mut Vec<Def<'t>>,
 ) {
+    let mut pushed = 0usize;
+    // A Go method belongs to its receiver's type: `func (c *Cart) Add()` is `Cart::Add`.
+    if lang == Lang::Go
+        && n.kind() == "method_declaration"
+        && let Some(recv) = go_receiver(n, src)
+    {
+        stack.push((recv, true));
+        pushed += 1;
+    }
     let in_class = stack.last().is_some_and(|(_, class)| *class);
-    let mut pushed = false;
     if let Some((name, kind, outer, opens_class)) = classify(lang, n, src, in_class) {
         let mut path: Vec<&str> = stack.iter().map(|(s, _)| s.as_str()).collect();
         path.push(&name);
@@ -369,7 +422,7 @@ fn collect_defs<'t>(
             kind,
         });
         stack.push((name, opens_class));
-        pushed = true;
+        pushed += 1;
     } else if lang == Lang::Rust {
         // Containers that aren't units themselves.
         let container = match n.kind() {
@@ -383,14 +436,14 @@ fn collect_defs<'t>(
         };
         if let Some(c) = container {
             stack.push(c);
-            pushed = true;
+            pushed += 1;
         }
     }
     let mut cursor = n.walk();
     for child in n.children(&mut cursor) {
         collect_defs(lang, child, src, stack, out);
     }
-    if pushed {
+    for _ in 0..pushed {
         stack.pop();
     }
 }
@@ -489,6 +542,8 @@ fn pattern_idents(n: Node, src: &[u8], out: &mut HashSet<String>) {
         | "subscript"
         | "member_expression"
         | "subscript_expression"
+        | "selector_expression"
+        | "index_expression"
         | "type_annotation"
         | "shorthand_property_identifier_pattern" => return,
         _ => {}
@@ -578,6 +633,29 @@ fn collect_bindings(
             "closure_parameters" => pattern_idents(n, src, out),
             _ => {}
         },
+        // Go has no named arguments: parameters are local names too.
+        Lang::Go => match n.kind() {
+            "short_var_declaration" | "range_clause" => {
+                if let Some(p) = field("left") {
+                    pattern_idents(p, src, out);
+                }
+            }
+            "var_spec"
+            | "const_spec"
+            | "parameter_declaration"
+            | "variadic_parameter_declaration" => {
+                let mut c = n.walk();
+                for p in n.children_by_field_name("name", &mut c) {
+                    pattern_idents(p, src, out);
+                }
+            }
+            "type_switch_statement" => {
+                if let Some(p) = field("alias") {
+                    pattern_idents(p, src, out);
+                }
+            }
+            _ => {}
+        },
         Lang::Python => match n.kind() {
             "assignment" | "augmented_assignment" | "for_statement" | "for_in_clause" => {
                 if let Some(p) = field("left") {
@@ -664,6 +742,11 @@ fn callee_name(lang: Lang, f: Node, src: &[u8]) -> Option<(String, bool)> {
             .child_by_field_name("function")
             .and_then(|x| callee_name(lang, x, src)),
         (Lang::Python, "attribute") => f.child_by_field_name("attribute").map(|x| (t(x), true)),
+        // `c.Add()` and `pkg.Func()` alike: the graph tries both.
+        (Lang::Go, "selector_expression") => f.child_by_field_name("field").map(|x| (t(x), true)),
+        (Lang::Go, "parenthesized_expression") => {
+            f.named_child(0).and_then(|x| callee_name(lang, x, src))
+        }
         (_, "member_expression") => f.child_by_field_name("property").map(|x| (t(x), true)),
         _ => None,
     }
@@ -848,6 +931,75 @@ mod tests {
         let q1 = parse_source(Lang::Php, "<?php\nfunction g() { return 'a$b'; }\n").unwrap();
         let q2 = parse_source(Lang::Php, "<?php\nfunction g() { return \"a$b\"; }\n").unwrap();
         assert_ne!(q1.get("g").unwrap().norm, q2.get("g").unwrap().norm);
+    }
+
+    #[test]
+    fn go_symbols_and_calls() {
+        let src = "package cart\n\nimport \"strings\"\n\ntype Cart struct {\n\titems []Item\n}\n\ntype (\n\tItem struct{ Name string }\n\tID = int\n)\n\nfunc (c *Cart) Add(item Item) int {\n\tc.items = append(c.items, item)\n\treturn recalc(c.items, strings.ToUpper(item.Name))\n}\n\nfunc recalc(items []Item, _ string) int { return len(items) }\n";
+        let p = parse_source(Lang::Go, src).unwrap();
+        let got: Vec<_> = p
+            .symbols
+            .iter()
+            .skip(1)
+            .map(|s| (s.path.as_str(), s.kind))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("Cart", UnitKind::Class),
+                ("Item", UnitKind::Class),
+                ("ID", UnitKind::Class),
+                ("Cart::Add", UnitKind::Method),
+                ("recalc", UnitKind::Function),
+            ]
+        );
+        assert_eq!(p.get("Cart").unwrap().range, Range::new(5, 7));
+        assert_eq!(p.get("Item").unwrap().range, Range::new(10, 10));
+        let calls: Vec<_> = p
+            .get("Cart::Add")
+            .unwrap()
+            .calls
+            .iter()
+            .map(|c| (c.name.as_str(), c.method))
+            .collect();
+        assert_eq!(
+            calls,
+            vec![("append", false), ("recalc", false), ("ToUpper", true)]
+        );
+        // Imports aren't part of the top level; the type group's brackets are.
+        let module = &p.symbols[0];
+        assert!(
+            !module.norm.iter().any(|t| t == "import"),
+            "{:?}",
+            module.norm
+        );
+        assert!(module.norm.iter().any(|t| t == "package"));
+    }
+
+    #[test]
+    fn go_local_renames_normalize_equal() {
+        let a = parse_source(
+            Lang::Go,
+            "package p\n\nfunc f(x int) int {\n\ttotal := x + 1\n\tfor i, v := range []int{total} {\n\t\ttotal += i + v\n\t}\n\treturn total\n}\n",
+        )
+        .unwrap();
+        let b = parse_source(
+            Lang::Go,
+            "package p\n\nfunc f(y int) int {\n\t// note\n\tsum := y + 1\n\tfor k, w := range []int{sum} {\n\t\tsum += k + w\n\t}\n\treturn sum\n}\n",
+        )
+        .unwrap();
+        assert_eq!(a.get("f").unwrap().norm, b.get("f").unwrap().norm);
+        assert_ne!(
+            a.get("f").unwrap().norm_plain,
+            b.get("f").unwrap().norm_plain
+        );
+        // A field is not a local name.
+        let c = parse_source(
+            Lang::Go,
+            "package p\n\nfunc f(x int) int {\n\ttotal := x + 1\n\tfor i, v := range []int{total} {\n\t\ttotal += i + v\n\t}\n\treturn total + s.x\n}\n",
+        )
+        .unwrap();
+        assert!(c.get("f").unwrap().norm.iter().any(|t| t == "x"));
     }
 
     #[test]

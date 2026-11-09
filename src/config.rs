@@ -3,7 +3,7 @@
 //! ```toml
 //! theme = "dark"            # dark | light | mono
 //! concurrency = 4           # agent requests in flight
-//! languages = ["rust", "python", "typescript", "javascript", "php"]
+//! languages = ["rust", "python", "typescript", "javascript", "php", "go"]
 //! large_review = 150        # above this many units, prepare lazily per file
 //! dive_web = true           # a question in the unit view may search the web (asks once per session)
 //! images = true             # draw Visualize pictures in the terminal when it can show images

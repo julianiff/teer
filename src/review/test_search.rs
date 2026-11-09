@@ -532,6 +532,21 @@ fn case_at(lang: Lang, n: Node, src: &[u8]) -> Option<(String, tree_sitter::Poin
             }
             _ => None,
         },
+        Lang::Go => {
+            if !matches!(n.kind(), "function_declaration" | "method_declaration") {
+                return None;
+            }
+            let fname = name(n)?;
+            if !go_test_name(&fname) {
+                return None;
+            }
+            // A suite's method: `func (s *CartSuite) TestAdd()`.
+            let full = match extract::go_receiver(n, src) {
+                Some(recv) => format!("{recv}::{fname}"),
+                None => fname,
+            };
+            Some((full, n.start_position()))
+        }
         _ => {
             if n.kind() != "call_expression" {
                 return None;
@@ -547,6 +562,15 @@ fn case_at(lang: Lang, n: Node, src: &[u8]) -> Option<(String, tree_sitter::Poin
                 .map(|s| (s, n.start_position()))
         }
     }
+}
+
+/// A Go test function: `TestAdd`, `BenchmarkAdd`, `FuzzAdd`, `ExampleAdd`,
+/// `Test`; not `Testable`, which `go test` doesn't run either.
+fn go_test_name(name: &str) -> bool {
+    ["Test", "Benchmark", "Fuzz", "Example"].iter().any(|p| {
+        name.strip_prefix(p)
+            .is_some_and(|rest| !rest.starts_with(|c: char| c.is_lowercase()))
+    })
 }
 
 /// The name a test inside `n` gets in front of its own: a Rust `mod`, a
@@ -671,9 +695,27 @@ mod tests {
     }
 
     #[test]
+    fn go_test_functions_and_suite_methods() {
+        let src = "package cart\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tt.Run(\"one\", func(t *testing.T) { add(1) })\n}\n\nfunc Testable() {}\n\nfunc (s *CartSuite) TestEmpty() {\n\ts.cart.add(0)\n}\n\nfunc BenchmarkAdd(b *testing.B) {}\n\nfunc helper() {}\n";
+        assert_eq!(
+            names(Lang::Go, src),
+            [
+                ("TestAdd".into(), 5, 7),
+                ("CartSuite::TestEmpty".into(), 11, 13),
+                ("BenchmarkAdd".into(), 15, 15)
+            ]
+        );
+        assert!(go_test_name("Test"));
+        assert!(go_test_name("Test_add"));
+        assert!(!go_test_name("Testing"));
+        assert!(!go_test_name("Fuzzy"));
+    }
+
+    #[test]
     fn test_paths() {
         for p in [
             "tests/a.rs",
+            "pkg/cart/cart_test.go",
             "app/__tests__/cart.ts",
             "src/cart.test.ts",
             "src/cart.spec.js",

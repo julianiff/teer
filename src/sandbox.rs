@@ -49,6 +49,9 @@ const TOOLCHAINS: &[&str] = &[
     ".pnpm-store",
     "Library/pnpm",
     "Library/Python",
+    // Go: the module cache and `go install` binaries, and toolchains from `golang.org/dl`.
+    "go",
+    "sdk",
 ];
 
 /// Variables passed through from teer's own environment; everything else
@@ -68,6 +71,9 @@ const PASS_ENV: &[&str] = &[
     "VOLTA_HOME",
     "PYENV_ROOT",
     "JAVA_HOME",
+    "GOROOT",
+    "GOPATH",
+    "GOMODCACHE",
 ];
 
 /// Later rules win: everything is allowed, then network, writes and home
@@ -180,6 +186,9 @@ fn reads(home: &Path, extra: &[PathBuf]) -> Vec<PathBuf> {
         "NVM_DIR",
         "VOLTA_HOME",
         "PYENV_ROOT",
+        "GOROOT",
+        "GOPATH",
+        "GOMODCACHE",
     ] {
         if let Some(v) = std::env::var_os(var) {
             add(PathBuf::from(v));
@@ -204,6 +213,11 @@ fn env(home: &Path, cache: &Path) -> Vec<(OsString, OsString)> {
         set("npm_config_cache", cache.join("npm").into()),
         set("CARGO_TARGET_DIR", cache.join("cargo-target").into()),
         set("CARGO_NET_OFFLINE", "true".into()),
+        // Go builds into the cache folder, fails fast on a missing module
+        // instead of trying the network, and never downloads a toolchain.
+        set("GOCACHE", cache.join("go-build").into()),
+        set("GOPROXY", "off".into()),
+        set("GOTOOLCHAIN", "local".into()),
         set("PYTHONDONTWRITEBYTECODE", "1".into()),
         set("NO_COLOR", "1".into()),
         set("TERM", "dumb".into()),

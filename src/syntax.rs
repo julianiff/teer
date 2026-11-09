@@ -93,8 +93,18 @@ fn query_source(grammar: Grammar) -> String {
             tree_sitter_typescript::HIGHLIGHTS_QUERY
         ),
         Grammar::Lang(Lang::Php) => tree_sitter_php::HIGHLIGHTS_QUERY.into(),
+        Grammar::Lang(Lang::Go) => go_query(),
         Grammar::Swift => tree_sitter_swift::HIGHLIGHTS_QUERY.into(),
     }
+}
+
+/// Go's query puts its general captures last, where they would win here
+/// over the specific ones (a call's function); they go first.
+fn go_query() -> String {
+    const GENERAL: &str =
+        "(type_identifier) @type\n(field_identifier) @property\n(identifier) @variable\n";
+    let rest = tree_sitter_go::HIGHLIGHTS_QUERY.replace(GENERAL, "");
+    format!("{GENERAL}\n{rest}")
 }
 
 thread_local! {
@@ -258,6 +268,7 @@ mod tests {
             Lang::TypeScript,
             Lang::Tsx,
             Lang::Php,
+            Lang::Go,
         ]
         .map(Grammar::Lang)
         .into_iter()
@@ -279,6 +290,20 @@ mod tests {
         let lines = classes(Grammar::Lang(Lang::Php), php);
         assert_eq!(class_at(&lines, php, 1, "charge"), Some(Class::Function));
         assert_eq!(class_at(&lines, php, 1, "$order"), Some(Class::Variable));
+        let go = "// pay\nfunc (c *Cart) charge(order *Order) int {\n\treturn pay(c.total, order.Sum(), \"eur\", 3, nil)\n}\n";
+        let lines = classes(Grammar::Lang(Lang::Go), go);
+        assert_eq!(class_at(&lines, go, 0, "// pay"), Some(Class::Comment));
+        assert_eq!(class_at(&lines, go, 1, "func"), Some(Class::Keyword));
+        assert_eq!(class_at(&lines, go, 1, "Cart"), Some(Class::Type));
+        assert_eq!(class_at(&lines, go, 1, "charge"), Some(Class::Function));
+        assert_eq!(class_at(&lines, go, 1, "order"), Some(Class::Variable));
+        assert_eq!(class_at(&lines, go, 1, "Order"), Some(Class::Type));
+        assert_eq!(class_at(&lines, go, 2, "pay"), Some(Class::Function));
+        assert_eq!(class_at(&lines, go, 2, "total"), Some(Class::Variable));
+        assert_eq!(class_at(&lines, go, 2, "Sum"), Some(Class::Function));
+        assert_eq!(class_at(&lines, go, 2, "\"eur\""), Some(Class::String));
+        assert_eq!(class_at(&lines, go, 2, "3"), Some(Class::Constant));
+        assert_eq!(class_at(&lines, go, 2, "nil"), Some(Class::Constant));
     }
 
     #[test]
