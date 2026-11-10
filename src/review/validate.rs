@@ -719,7 +719,7 @@ fn added_lines(f: &ChangedFile) -> Vec<u32> {
 
 /// A cited path relative to the repository: `./` and the absolute prefix
 /// `root` are removed; `..` and other absolute paths are refused.
-fn repo_path(raw: &str, root: &Path) -> Option<PathBuf> {
+pub(crate) fn repo_path(raw: &str, root: &Path) -> Option<PathBuf> {
     let p = Path::new(raw.trim());
     let p = if p.is_absolute() {
         p.strip_prefix(root).ok()?

@@ -289,6 +289,21 @@ impl Runtime {
                     });
                     return false;
                 }
+                if kind == DiveKind::Security {
+                    // Cited lines are read where the agent reads them.
+                    let job = crate::security::audit::Job::new(
+                        &app.review,
+                        unit,
+                        file,
+                        session.cwd.clone(),
+                        crate::security::SecurityConfig::load(),
+                        app.cfg.second_opinion,
+                    );
+                    forward(tx, AppEvent::Dive, |dtx| {
+                        crate::security::audit::run(adapter, session, job, dtx)
+                    });
+                    return false;
+                }
                 // What a picture may cite.
                 let target = (kind == DiveKind::Visualize)
                     .then(|| crate::review::visual::target(&app.review, &unit));

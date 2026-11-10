@@ -183,7 +183,7 @@ fn status_word(s: UnitStatus) -> &'static str {
     }
 }
 
-fn unit_block(unit: &Unit, file: &ChangedFile) -> String {
+pub(crate) fn unit_block(unit: &Unit, file: &ChangedFile) -> String {
     let callers = if unit.callers.is_empty() {
         "none found".to_string()
     } else {
@@ -765,7 +765,7 @@ pub fn visual_schema() -> Value {
     })
 }
 
-fn dive_marker(kind: DiveKind) -> String {
+pub(crate) fn dive_marker(kind: DiveKind) -> String {
     format!("DIVE:{kind:?}")
 }
 
@@ -822,7 +822,7 @@ fn flagged_answers(unit: &Unit) -> String {
     format!("Answers the reviewer has on screen about it:\n{p}\n")
 }
 
-fn seen_so_far(unit: &Unit) -> String {
+pub(crate) fn seen_so_far(unit: &Unit) -> String {
     let mut p = String::from("What the reviewer has seen so far:\n");
     match &unit.summary {
         Some(s) => p.push_str(&format!("summary: {s}\n")),

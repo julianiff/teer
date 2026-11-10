@@ -27,6 +27,7 @@ use crate::review::model::{
     Commit, Decision, DiveKind, DiveResult, LineRef, Marker, PrMeta, Prep, Risk, Shown, Side, Unit,
     UnitKind, UnitStatus,
 };
+use crate::security::audit;
 use crate::syntax::{Cache, Class};
 use crate::util::sanitize;
 
@@ -344,6 +345,7 @@ pub enum TileId {
     Tests,
     Behavior,
     Visualize,
+    Security,
     Outside,
 }
 
@@ -355,6 +357,7 @@ impl TileId {
             Panel::Outside => TileId::Outside,
             Panel::Tool(DiveKind::Tests) => TileId::Tests,
             Panel::Tool(DiveKind::Behavior) => TileId::Behavior,
+            Panel::Tool(DiveKind::Security) => TileId::Security,
             Panel::Tool(_) => TileId::Visualize,
         }
     }
@@ -367,6 +370,7 @@ impl TileId {
             TileId::Tests => Panel::Tool(DiveKind::Tests),
             TileId::Behavior => Panel::Tool(DiveKind::Behavior),
             TileId::Visualize => Panel::Tool(DiveKind::Visualize),
+            TileId::Security => Panel::Tool(DiveKind::Security),
         }
     }
 }
@@ -407,6 +411,10 @@ pub struct AnswerTile {
     pub none: Option<String>,
     /// Under the advice: the second model, when it disputes the description.
     pub second: Option<SecondModel>,
+    /// In the Security tile: the facts teer found in the change itself,
+    /// there before the agent answers (and without one).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub facts: Vec<crate::security::Fact>,
 }
 
 /// A diagram: SVG whose colours are CSS variables (`var(--fg)`), and the
@@ -1176,7 +1184,16 @@ fn answer_tile(app: &App, u: &Unit, kind: DiveKind) -> AnswerTile {
             dark: DARK.css_vars(),
         }
     });
-    let waiting = tools::pending(u, kind).then(|| tools::waiting(app, u, kind));
+    let audit = result.as_ref().and_then(|r| r.audit.as_ref());
+    let waiting = if tools::pending(u, kind) {
+        Some(tools::waiting(app, u, kind))
+    } else if audit.is_some_and(|a| a.checking) {
+        Some(audit::CHECKING.to_string())
+    } else if audit.is_some_and(|a| a.proving) {
+        Some(audit::PROVING.to_string())
+    } else {
+        None
+    };
     let ask = if kind == DiveKind::Recommend && result.is_none() && waiting.is_none() {
         Some(hint(
             app,
@@ -1196,11 +1213,18 @@ with its reason",
             "the agent looks for tests itself"
         };
         Some(hint(app, Action::ToolTests, what))
+    } else if audit.is_some_and(|a| !a.findings.is_empty() && !a.proving) {
+        Some(hint(
+            app,
+            Action::ToolProve,
+            "prove it: each finding's attacker case, old against new",
+        ))
     } else {
         None
     };
     let none = (result.is_none() && waiting.is_none() && ask.is_none()).then(|| {
         match tools::tool_key(app, kind) {
+            _ if kind == DiveKind::Security && !app.can_ask() => audit::NO_AGENT.to_string(),
             key if key.is_empty() => "No answer. Opening the unit again asks again.".to_string(),
             key => format!("No answer. {key} asks again."),
         }
@@ -1216,6 +1240,11 @@ with its reason",
         second: (kind == DiveKind::Recommend && app.can_ask() && disputed(app, u))
             .then(|| second_model(app, u))
             .flatten(),
+        facts: if kind == DiveKind::Security {
+            u.security.clone()
+        } else {
+            Vec::new()
+        },
     }
 }
 

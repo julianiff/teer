@@ -1,8 +1,8 @@
 //! The agent's answers about a unit, as the unit view shows them: the
 //! advice, the second model, and the tools' panels (the tests, old
-//! against new, the diagram). (The agent questions keep the `Dive*` names:
-//! `DiveKind`, `DiveEvent`.) Everything the agent wrote is untrusted and
-//! drawn as plain text.
+//! against new, the diagram, the security findings). (The agent
+//! questions keep the `Dive*` names: `DiveKind`, `DiveEvent`.) Everything
+//! the agent wrote is untrusted and drawn as plain text.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -15,10 +15,11 @@ use super::app::App;
 use crate::config::Theme as ThemeName;
 use crate::keymap::Action;
 use crate::review::model::{
-    Behavior, ClaimCheck, Coverage, Delta, DiveKind, Expect, FoundTest, Marker, Outcome, ProbeCase,
-    Reach, Risk, TestCheck, TestSearch, Unit, UnitStatus, Visual,
+    Behavior, Cite, ClaimCheck, Coverage, Delta, DiveKind, Expect, FoundTest, Marker, Outcome,
+    ProbeCase, Reach, Risk, Side, TestCheck, TestSearch, Unit, UnitStatus, Visual,
 };
 use crate::review::visual::{DARK, LIGHT, edge_line};
+use crate::security::{Audit, Fact, Finding, Origin, Proof, Weight, audit};
 use crate::session::names;
 use crate::session::tools::{self, may_read_tests, pending, tool_key};
 use crate::util::{truncate, wrap};
@@ -461,6 +462,321 @@ pub(super) fn disagree_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>
     lines
 }
 
+/// The Security tile's audit of `u`, when there is one.
+pub(super) fn audit_of(u: &Unit) -> Option<&Audit> {
+    u.dive
+        .results
+        .get(&DiveKind::Security)
+        .and_then(|r| r.audit.as_ref())
+}
+
+/// Is something more on its way about `u`'s findings: the second model's
+/// check, or their proof.
+pub(super) fn security_busy(u: &Unit) -> bool {
+    audit_of(u).is_some_and(|a| a.checking || a.proving)
+}
+
+/// May `<space>p` prove `u`'s findings: there are some, and they aren't
+/// being proven.
+pub(super) fn may_prove(u: &Unit) -> bool {
+    audit_of(u).is_some_and(|a| !a.findings.is_empty() && !a.proving)
+}
+
+/// How a severity shows: the level it would raise the unit to.
+fn severity_glyph(r: Risk) -> &'static str {
+    match r {
+        Risk::High => "▲",
+        Risk::Medium => "◆",
+        Risk::Low => "●",
+    }
+}
+
+/// Where a cite is, short: `AssetController.php:41`, `x.go:3-9`.
+fn place(c: &Cite) -> String {
+    let name = c.file.file_name().map_or_else(
+        || c.file.display().to_string(),
+        |n| n.to_string_lossy().into(),
+    );
+    if c.end > c.start {
+        format!("{name}:{}-{}", c.start, c.end)
+    } else {
+        format!("{name}:{}", c.start)
+    }
+}
+
+/// `lead` and `what` on the left of a row `w` cells wide, `at` on its
+/// right (muted); `what` is cut to make room. Without `what`, `at` follows
+/// the lead.
+fn located(app: &App, lead: &str, what: &str, style: Style, at: &str, w: usize) -> Line<'static> {
+    let t = &app.theme;
+    let mut spans = vec![Span::styled(lead.to_string(), style)];
+    if what.is_empty() {
+        spans.push(Span::styled(
+            truncate(at, w.saturating_sub(lead.width())),
+            t.muted(),
+        ));
+        return Line::from(spans);
+    }
+    let room = w.saturating_sub(lead.width() + at.width() + 2);
+    let what = truncate(what, room.max(8));
+    let pad = w.saturating_sub(lead.width() + what.width() + at.width());
+    spans.push(Span::styled(what, style));
+    spans.push(Span::raw(" ".repeat(pad.max(2))));
+    spans.push(Span::styled(at.to_string(), t.muted()));
+    Line::from(spans)
+}
+
+/// `text` wrapped under a three-cell indent.
+fn indented(text: &str, w: usize, style: Style) -> Vec<Line<'static>> {
+    wrap(text, w.saturating_sub(4))
+        .into_iter()
+        .map(|l| Line::styled(format!("   {l}"), style))
+        .collect()
+}
+
+/// A spinner line saying what is on its way.
+fn spinning(app: &App, text: &str, w: usize) -> Vec<Line<'static>> {
+    wrap(text, w.saturating_sub(4))
+        .into_iter()
+        .enumerate()
+        .map(|(k, l)| {
+            let lead = if k == 0 { app.spinner() } else { " " };
+            Line::styled(format!(" {lead} {l}"), app.theme.muted())
+        })
+        .collect()
+}
+
+/// A fact teer found: a glyph by its weight, the fact, its class and where.
+fn fact_lines(app: &App, u: &Unit, f: &Fact, w: usize) -> Vec<Line<'static>> {
+    let t = &app.theme;
+    let (glyph, style) = match f.weight {
+        Weight::Attention => ("▲", t.risk(Risk::High)),
+        Weight::Look => ("◆", t.risk(Risk::Medium)),
+        Weight::Note => ("·", t.muted()),
+    };
+    let mut lines = marked(glyph, &f.text, w, style);
+    let mut at = vec![f.class.word().to_string()];
+    if !f.subject.is_empty() {
+        at.push(f.subject.clone());
+    }
+    if let Some(r) = f.lines {
+        let side = if f.side == Side::Old { " (old)" } else { "" };
+        let name = u
+            .file
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into());
+        at.push(format!("{name}:{}{side}", r.start));
+    }
+    if let Origin::Import { tool, rule } = &f.origin {
+        at.push(format!("{tool} {rule}"));
+    }
+    lines.extend(indented(&at.join(" · "), w, t.muted()));
+    lines
+}
+
+/// One finding: a glyph by severity and its title (severity · class);
+/// where the input enters, each call, where it does harm; what's missing;
+/// the exploit; whether the path is verified; the second model's word;
+/// and what proving it showed.
+fn finding_lines(app: &App, f: &Finding, w: usize) -> Vec<Line<'static>> {
+    let t = &app.theme;
+    let style = if f.stands() {
+        t.risk(f.severity)
+    } else {
+        t.muted()
+    };
+    let title = format!("{} ({} · {})", f.title, f.severity.word(), f.class.word());
+    let mut lines: Vec<Line<'static>> = wrap(&title, w.saturating_sub(4))
+        .into_iter()
+        .enumerate()
+        .map(|(k, l)| {
+            let lead = if k == 0 {
+                Span::styled(format!(" {} ", severity_glyph(f.severity)), style)
+            } else {
+                Span::raw("   ")
+            };
+            Line::from(vec![lead, Span::styled(l, t.bold())])
+        })
+        .collect();
+    let g = &app.review.graph;
+    let name = |c: &Cite| audit::symbol_at(g, c).unwrap_or("").to_string();
+    let plain = Style::default();
+    lines.push(located(
+        app,
+        "   source  ",
+        &name(&f.source),
+        plain,
+        &place(&f.source),
+        w,
+    ));
+    for h in &f.path {
+        lines.push(located(app, "   → ", &h.symbol, plain, &place(&h.cite), w));
+    }
+    lines.push(located(
+        app,
+        "   sink    ",
+        &name(&f.sink),
+        plain,
+        &place(&f.sink),
+        w,
+    ));
+    if !f.missing.is_empty() {
+        for (k, l) in wrap(&f.missing, w.saturating_sub(6))
+            .into_iter()
+            .enumerate()
+        {
+            let lead = if k == 0 { "   ✗ " } else { "     " };
+            lines.push(Line::styled(format!("{lead}{l}"), t.needs_fix()));
+        }
+    }
+    if !f.exploit.is_empty() {
+        lines.extend(indented(&f.exploit, w, t.muted()));
+    }
+    if !f.path_verified {
+        lines.extend(indented(
+            "path not verified: teer's call graph doesn't confirm every call",
+            w,
+            t.risk(Risk::Medium),
+        ));
+    }
+    match &f.second {
+        Some(s) if s.agree => lines.push(Line::styled("   second model agrees", t.ok())),
+        Some(s) => {
+            let at = s
+                .evidence
+                .as_ref()
+                .map(|c| format!(" ({})", place(c)))
+                .unwrap_or_default();
+            let text = format!("⚠ second model disputes: {}{at}", s.why);
+            lines.extend(indented(&text, w, t.needs_fix()));
+        }
+        None => {}
+    }
+    match &f.proof {
+        Some(Proof::Proven {
+            case,
+            before,
+            after,
+        }) => {
+            lines.extend(indented(&format!("proven: {case}"), w, t.needs_fix()));
+            lines.extend(indented(
+                &format!("before: {before} · after: {after}"),
+                w,
+                t.muted(),
+            ));
+        }
+        Some(Proof::NotShown {
+            case,
+            before,
+            after,
+        }) => {
+            lines.extend(indented(&format!("not shown: {case}"), w, t.muted()));
+            lines.extend(indented(
+                &format!("before: {before} · after: {after}"),
+                w,
+                t.muted(),
+            ));
+        }
+        Some(Proof::Unproven { why }) => {
+            lines.extend(indented(&format!("unproven: {why}"), w, t.muted()));
+        }
+        None => {}
+    }
+    lines
+}
+
+/// The agent's audit: the head, its summary, each finding (those that
+/// stand first, most severe first), what is on its way, the controls in
+/// place, then what was checked and what not, and what was dropped.
+fn audit_lines(app: &App, a: &Audit, note: &str, w: usize) -> Vec<Line<'static>> {
+    let t = &app.theme;
+    let mut lines = vec![Line::styled(format!(" {}", audit::head(a)), t.bold())];
+    for l in wrap(note, w.saturating_sub(1)) {
+        lines.push(Line::raw(format!(" {l}")));
+    }
+    let mut findings: Vec<&Finding> = a.findings.iter().collect();
+    findings.sort_by_key(|f| (!f.stands(), std::cmp::Reverse(f.severity)));
+    for f in findings {
+        lines.push(Line::default());
+        lines.extend(finding_lines(app, f, w));
+    }
+    if a.checking || a.proving {
+        lines.push(Line::default());
+    }
+    if a.checking {
+        lines.extend(spinning(app, audit::CHECKING, w));
+    }
+    if a.proving {
+        lines.extend(spinning(app, audit::PROVING, w));
+    }
+    if !a.holds.is_empty() {
+        lines.push(Line::default());
+        for h in &a.holds {
+            lines.push(located(app, " ✓ ", &h.what, t.ok(), &place(&h.cite), w));
+        }
+    }
+    lines.push(Line::default());
+    let checked: Vec<&str> = a.checked.iter().map(|c| c.word()).collect();
+    let mut footer = vec![format!("checked: {}", checked.join(" · "))];
+    if !a.not_checked.is_empty() {
+        footer.push(format!("not: {}", a.not_checked.join(" · ")));
+    }
+    for l in footer.iter().flat_map(|f| wrap(f, w.saturating_sub(1))) {
+        lines.push(Line::styled(format!(" {l}"), t.muted()));
+    }
+    if a.dropped > 0 {
+        let n = a.dropped;
+        let text = format!(
+            "{n} finding{} dropped: {} lines didn't check out (teer.log says which)",
+            if n == 1 { "" } else { "s" },
+            if n == 1 { "its" } else { "their" }
+        );
+        for l in wrap(&text, w.saturating_sub(1)) {
+            lines.push(Line::styled(format!(" {l}"), t.muted()));
+        }
+    }
+    lines
+}
+
+/// The Security tile: what teer found in the change (its facts, there
+/// before the agent answers, and without one), then the agent's audit, or
+/// that it is on its way, or that findings need an agent.
+fn security_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
+    let t = &app.theme;
+    let kind = DiveKind::Security;
+    let mut lines = Vec::new();
+    if !u.security.is_empty() {
+        lines.push(Line::styled(" teer found", t.bold()));
+        for f in &u.security {
+            lines.extend(fact_lines(app, u, f, w));
+        }
+        lines.push(Line::default());
+    }
+    let result = u.dive.results.get(&kind);
+    match result.and_then(|r| r.audit.as_ref()) {
+        Some(a) => {
+            let note = result.map_or("", |r| r.text.as_str());
+            lines.extend(audit_lines(app, a, note, w));
+        }
+        None if pending(u, kind) => {}
+        None if !app.can_ask() => lines.extend(marked("·", audit::NO_AGENT, w, t.muted())),
+        None => {
+            let key = tool_key(app, kind);
+            lines.push(Line::styled(
+                format!(" No answer. {key} asks again."),
+                t.muted(),
+            ));
+        }
+    }
+    if pending(u, kind) {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.extend(spinning(app, &tools::waiting(app, u, kind), w));
+    }
+    lines
+}
+
 /// Rows the picture needs at least; with fewer the text list is shown.
 const PICTURE_MIN_ROWS: usize = 4;
 
@@ -469,6 +785,9 @@ const PICTURE_MIN_ROWS: usize = 4;
 pub(super) fn section_body(app: &App, u: &Unit, kind: DiveKind, w: usize) -> Vec<Line<'static>> {
     let t = &app.theme;
     let mut lines = Vec::new();
+    if kind == DiveKind::Security {
+        return security_lines(app, u, w);
+    }
     if kind == DiveKind::Disagree {
         lines = disagree_lines(app, u, w);
     } else if let Some(res) = u.dive.results.get(&kind) {

@@ -2408,6 +2408,10 @@ impl App {
                     return Vec::new();
                 }
                 if self.review.apply_dive(&ev) {
+                    // A security finding that stands raises its unit's level.
+                    if matches!(ev, DiveEvent::Audit { .. } | DiveEvent::AuditChecked { .. }) {
+                        self.rebuild_order();
+                    }
                     return vec![Effect::Save];
                 }
                 return Vec::new();

@@ -35,6 +35,7 @@
     { action: "tool.tests", label: "Tests", tile: "Tests" },
     { action: "tool.run_old_new", label: "Old vs new", tile: "Behavior" },
     { action: "tool.diagram", label: "Diagram", tile: "Visualize" },
+    { action: "tool.security", label: "Security", tile: "Security" },
   ];
 </script>
 

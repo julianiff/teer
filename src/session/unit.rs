@@ -644,6 +644,11 @@ impl App {
             self.focus_tile(Some(tile));
             return Vec::new();
         }
+        if kind == DiveKind::Security && !self.can_ask() {
+            // teer's own facts show without an agent; findings need one.
+            self.open_tile(tile);
+            return Vec::new();
+        }
         if kind != DiveKind::Tests && !self.can_ask() {
             let (name, _) = tools::light(kind);
             self.status = format!("No agent: {name} needs one (`teer setup` picks it).");

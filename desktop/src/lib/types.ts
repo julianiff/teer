@@ -9,7 +9,7 @@ export type Prep = "NotRequested" | "Pending" | "Ready" | "Unavailable" | "Skipp
 export type Risk = "low" | "medium" | "high";
 export type Marker = "added" | "changed" | "removed";
 export type Side = "old" | "new";
-export type DiveKind = "Recommend" | "Visualize" | "Behavior" | "Disagree" | "Tests";
+export type DiveKind = "Recommend" | "Visualize" | "Behavior" | "Disagree" | "Tests" | "Security";
 export type RowKind = "Context" | "Removed" | "Added" | "Gap";
 export type Class =
   | "Keyword"
@@ -19,7 +19,7 @@ export type Class =
   | "String"
   | "Comment"
   | "Constant";
-export type TileId = "Advice" | "Ask" | "Tests" | "Behavior" | "Visualize" | "Outside";
+export type TileId = "Advice" | "Ask" | "Tests" | "Behavior" | "Visualize" | "Security" | "Outside";
 export type Step =
   | "KeepReviewing"
   | "SendNotes"
@@ -271,12 +271,83 @@ export interface Coverage {
   gaps: { case: string; danger: string; risk: Risk; evidence: Cite[] }[];
 }
 
+/** What a security fact or finding is about (`security::Class`). */
+export type SecurityClass =
+  | "authorization"
+  | "entry_point"
+  | "injection"
+  | "secret"
+  | "exposure"
+  | "supply_chain"
+  | "ci"
+  | "config"
+  | "crypto"
+  | "llm";
+
+/** A security fact teer found in the change without an agent. */
+export interface Fact {
+  class: SecurityClass;
+  weight: "note" | "look" | "attention";
+  text: string;
+  side: Side;
+  lines?: { start: number; end: number };
+  subject?: string;
+  /** Absent: teer's own; else another tool's finding. */
+  origin?: { from: "import"; tool: string; rule: string };
+}
+
+/** A call on a finding's path. */
+export interface Hop {
+  symbol: string;
+  cite: Cite;
+}
+
+/** The second model's word on a finding. */
+export interface SecondCheck {
+  agree: boolean;
+  why: string;
+  evidence?: Cite;
+}
+
+/** What running a finding's attacker case old against new showed. */
+export type Proof =
+  | { state: "proven"; case: string; before: string; after: string }
+  | { state: "not_shown"; case: string; before: string; after: string }
+  | { state: "unproven"; why: string };
+
+/** One way the change can be abused, with the path that shows it. */
+export interface Finding {
+  class: SecurityClass;
+  severity: Risk;
+  confidence: Risk;
+  title: string;
+  source: Cite;
+  path: Hop[];
+  sink: Cite;
+  missing: string;
+  exploit: string;
+  /** Every call on the path is one teer's graph knows. */
+  path_verified: boolean;
+  second?: SecondCheck;
+  proof?: Proof;
+}
+
+/** The Security tile's answer. "No finding" never means safe. */
+export interface Audit {
+  findings: Finding[];
+  holds: { what: string; cite: Cite }[];
+  checked: SecurityClass[];
+  not_checked: string[];
+  dropped: number;
+}
+
 export interface DiveResult {
   text: string;
   sources: string[];
   visual?: unknown;
   behavior?: Behavior;
   coverage?: Coverage;
+  audit?: Audit;
 }
 
 export interface SecondModel {
@@ -297,6 +368,8 @@ export interface AnswerTile {
   ask: Hint | null;
   none: string | null;
   second: SecondModel | null;
+  /** The Security tile: the facts teer found in the change itself. */
+  facts?: Fact[];
 }
 
 export type AskingState =

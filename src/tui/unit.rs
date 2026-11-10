@@ -12,14 +12,15 @@
 //! description; with the tile closed, the text shows it at its end.
 //! The rest are added to the ones open: `K` asks about the unit
 //! (the conversation is kept with it), `<space>t` `<space>r` `<space>v`
-//! show the tests (teer's search; the tile then asks whether the agent
-//! reads them), old against new and the diagram, and `gd` shows what the
-//! unit calls outside the review, read-only. Under them the keys tile says
-//! what can be done here. The text takes a tall column on the left (on top
-//! when narrow), the tiles the rest. `tab` and `shift+tab` move the focus,
-//! `zz` zooms the tile in focus, `h` closes it. Deciding here moves on to
-//! the next pending unit and stays in the view; `h` on the text goes back
-//! to the queue.
+//! `<space>x` show the tests (teer's search; the tile then asks whether
+//! the agent reads them), old against new, the diagram and the security
+//! findings (teer's facts first; `<space>p` proves them), and `gd` shows
+//! what the unit calls outside the review, read-only. Under them the keys
+//! tile says what can be done here. The text takes a tall column on the
+//! left (on top when narrow), the tiles the rest. `tab` and `shift+tab`
+//! move the focus, `zz` zooms the tile in focus, `h` closes it. Deciding
+//! here moves on to the next pending unit and stays in the view; `h` on
+//! the text goes back to the queue.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -512,12 +513,16 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
                 Span::styled(format!(" {}", tool_key(app, kind)), t.accent()),
                 Span::styled(format!(" {name} "), t.bold()),
             ];
-            if tools::pending(u, kind) {
+            if tools::pending(u, kind) || (kind == DiveKind::Security && answers::security_busy(u))
+            {
                 title.push(Span::styled(format!("{} ", app.spinner()), t.muted()));
             }
             let mut keys = format!(" {next} · {} close ", k(Action::ViewBack));
             if kind == DiveKind::Visualize {
                 keys = format!(" {} browser ·{keys}", k(Action::GotoBrowser));
+            }
+            if kind == DiveKind::Security && answers::may_prove(u) {
+                keys = format!(" {} prove ·{keys}", k(Action::ToolProve));
             }
             if kind == DiveKind::Tests && tools::may_read_tests(app, u) {
                 let none = (u.dive.results.get(&kind))
@@ -549,9 +554,18 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
     if focus {
         block = block.title_bottom(Line::styled(keys, t.muted()).right_aligned());
     }
-    // Who gave the advice.
-    if p == Panel::Recommend && u.dive.results.contains_key(&DiveKind::Recommend) {
-        let by = crate::session::tools::answer_label(app, u, DiveKind::Recommend);
+    // Who gave the advice, or the findings.
+    let by = match p {
+        Panel::Recommend if u.dive.results.contains_key(&DiveKind::Recommend) => {
+            Some(DiveKind::Recommend)
+        }
+        Panel::Tool(DiveKind::Security) if answers::audit_of(u).is_some() => {
+            Some(DiveKind::Security)
+        }
+        _ => None,
+    };
+    if let Some(kind) = by {
+        let by = crate::session::tools::answer_label(app, u, kind);
         let room = (area.width as usize).saturating_sub(keys_w + 6);
         block = block.title_bottom(
             Line::styled(format!(" {} ", truncate(&by, room)), t.muted()).left_aligned(),
