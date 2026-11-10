@@ -51,6 +51,9 @@ fn app_with(review: Review, keys: Keymap) -> App {
     app.start(false, None, Vec::new(), None);
     app.grouping = Grouping::File;
     app.rebuild_order();
+    // The list's geometry alone: the attack-surface card over it is
+    // security_queue.rs's.
+    app.security.enabled = false;
     app
 }
 

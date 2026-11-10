@@ -166,7 +166,11 @@ expression: json(&app)
     "skipped": [],
     "auto_line": "3 units accepted for you, za shows them",
     "sel": 0,
-    "show_auto": false
+    "show_auto": false,
+    "surface": {
+      "checked": "auth · entry points · injection · secrets · exposure · packages · ci · config",
+      "not": "denial of service · business logic · crypto details"
+    }
   },
   "preview": {
     "id": "checkout.py::charge_order",
@@ -572,7 +576,7 @@ expression: json(&app)
       "keys": "zs",
       "what": "list by level or by exposure",
       "off": false,
-      "on": null
+      "on": false
     },
     "toggle.zoom": {
       "keys": "zz",

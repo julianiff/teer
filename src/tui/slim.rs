@@ -11,7 +11,10 @@
 //! how many, and `za` lists them, behind `○`, in an "Accepted for you" box.
 //! A muted box closes the list: changed files teer can't show. Each box is
 //! a rounded box with a titled top edge, drawn by hand as plain lines so
-//! scrolling and click mapping stay line based.
+//! scrolling and click mapping stay line based. By exposure (`zs`), a
+//! "Security" box above the level boxes holds the units with security
+//! facts or findings, most exposed first, each still behind its level's
+//! icon (see [`crate::session::exposure`]).
 //!
 //! Also the pieces other screens draw units with: names, places, levels'
 //! styles, statements and the models that wrote them.
@@ -366,7 +369,7 @@ pub fn fit_width(app: &App) -> usize {
     // A title, its spaces, the corners and a few dashes.
     let title = boxes_of(app)
         .into_iter()
-        .map(|(level, files)| box_title(app, level, &files).width() + 7)
+        .map(|(kind, files)| box_title(app, kind, &files).width() + 7)
         .max()
         .unwrap_or(0);
     // Borders and the blank cell before the right one take 3.
@@ -378,23 +381,37 @@ pub fn fit_width(app: &App) -> usize {
         .unwrap_or(FIT_MAX)
 }
 
-/// The levels' boxes, most attention first: each level with the positions
-/// of the first units of the files in it.
-fn boxes_of(app: &App) -> Vec<(Level, Vec<usize>)> {
-    let mut boxes: Vec<(Level, Vec<usize>)> = Vec::new();
+/// What a box of the queue holds: the units with security facts or
+/// findings (by exposure), or a level's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Boxed {
+    Security,
+    Level(Level),
+}
+
+/// The boxes, the security box first (by exposure), then the levels' most
+/// attention first: each with the positions of the first units of the
+/// files in it.
+fn boxes_of(app: &App) -> Vec<(Boxed, Vec<usize>)> {
+    let mut boxes: Vec<(Boxed, Vec<usize>)> = Vec::new();
     for pos in (0..app.order.len()).filter(|&p| app.starts_file(p)) {
-        let level = app.file_level(pos);
+        let kind = if app.in_security_box(pos) {
+            Boxed::Security
+        } else {
+            Boxed::Level(app.file_level(pos))
+        };
         match boxes.last_mut() {
-            Some((l, files)) if *l == level => files.push(pos),
-            _ => boxes.push((level, vec![pos])),
+            Some((k, files)) if *k == kind => files.push(pos),
+            _ => boxes.push((kind, vec![pos])),
         }
     }
     boxes
 }
 
-/// A box's title: `Worth a look · 3 files`, or listed by unit `· 5 units`.
-/// `files`: the positions of the first units of its files.
-fn box_title(app: &App, level: Level, files: &[usize]) -> String {
+/// A box's title: `Worth a look · 3 files`, or listed by unit `· 5 units`;
+/// the security box's `Security · 2 units`. `files`: the positions of the
+/// first units of its files.
+fn box_title(app: &App, kind: Boxed, files: &[usize]) -> String {
     let n = match app.grouping {
         Grouping::File => plural(files.len(), "file"),
         Grouping::Unit => {
@@ -402,7 +419,20 @@ fn box_title(app: &App, level: Level, files: &[usize]) -> String {
             plural(units, "unit")
         }
     };
-    format!("{} · {n}", box_name(level))
+    let name = match kind {
+        Boxed::Security => "Security",
+        Boxed::Level(level) => box_name(level),
+    };
+    format!("{name} · {n}")
+}
+
+/// A box's title style: its level's, the security box's that of the most
+/// attention one of its units needs.
+fn box_style(app: &App, kind: Boxed) -> Style {
+    match kind {
+        Boxed::Security => level_style(app, app.security_box_level()),
+        Boxed::Level(level) => level_style(app, level),
+    }
 }
 
 /// What a level's box is called. Only units accepted for you are listed at
@@ -419,7 +449,7 @@ fn border(app: &App, text: String) -> Span<'static> {
 }
 
 /// Top edge of a box: `╭─ Title · N ────╮`.
-fn top_edge(app: &App, width: usize, title: &str, style: Style) -> Line<'static> {
+pub(super) fn top_edge(app: &App, width: usize, title: &str, style: Style) -> Line<'static> {
     let inner = width.saturating_sub(2);
     let lead = usize::from(inner >= 3);
     let t = truncate(&format!(" {title} "), inner.saturating_sub(lead));
@@ -433,7 +463,7 @@ fn top_edge(app: &App, width: usize, title: &str, style: Style) -> Line<'static>
     ])
 }
 
-fn bottom_edge(app: &App, width: usize) -> Line<'static> {
+pub(super) fn bottom_edge(app: &App, width: usize) -> Line<'static> {
     Line::from(vec![border(
         app,
         format!("╰{}╯", "─".repeat(width.saturating_sub(2))),
@@ -561,8 +591,8 @@ pub fn build_queue(app: &App, width: u16, padded: bool) -> Rows {
     let (name_w, count_w) = column_widths(inner, widest_count(app));
     // Listed by unit, a row names its file in front of its name.
     let path_w = super::queue::path_column(app, inner);
-    for (level, files) in boxes_of(app) {
-        let title = b.open_box(&box_title(app, level, &files), level_style(app, level));
+    for (kind, files) in boxes_of(app) {
+        let title = b.open_box(&box_title(app, kind, &files), box_style(app, kind));
         for &start in &files {
             if by_file {
                 b.file_gap(false);

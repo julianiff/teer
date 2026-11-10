@@ -5,7 +5,8 @@
 //! out of view hands the selection to the one at the top. `l` or `enter`
 //! looks closer (the unit view; `h` there comes back here), `a` accepts it
 //! (it leaves the list), `i` writes its note, `h` goes back. How it looks
-//! is the front end's.
+//! is the front end's. A unit with standing security findings, or facts
+//! worth a look, says so on one line ([`security_line`]).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -13,7 +14,70 @@ use std::ops::Range;
 
 use super::app::{App, Effect, Screen};
 use crate::keymap::Action;
-use crate::review::model::{Decision, Unit};
+use crate::review::model::{Decision, Risk, Unit};
+use crate::security::order::{class_name, facts_from, one_line, severity_of, standing};
+use crate::security::{Class, Weight};
+
+/// What a flagged unit's entry says about its security, on one line:
+/// `▲ security: high · authorization: the asset id reaches the query
+/// without the owner check`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityLine {
+    /// A finding's severity, or what a fact's weight stands for (a fact
+    /// that needs a close look is high).
+    pub severity: Risk,
+    pub class: Class,
+    /// The finding's title or the fact's sentence, on one line.
+    pub text: String,
+    /// It is the agent's finding, not a fact teer found.
+    pub finding: bool,
+    /// How many more standing findings and facts worth a look it has.
+    pub more: usize,
+}
+
+impl SecurityLine {
+    /// `security: high · authorization: the text (+1 more)`, without the
+    /// level's glyph.
+    pub fn line(&self) -> String {
+        format!("security: {} · {}", self.severity.word(), self.about())
+    }
+
+    /// What it is about: `authorization: the text (+1 more)`.
+    pub fn about(&self) -> String {
+        let more = match self.more {
+            0 => String::new(),
+            n => format!(" (+{n} more)"),
+        };
+        format!("{}: {}{more}", class_name(self.class), self.text)
+    }
+}
+
+/// The security line of `u`: its most severe standing finding, else its
+/// heaviest fact worth a look or more. `None` without either.
+pub fn security_line(u: &Unit) -> Option<SecurityLine> {
+    let findings = standing(u);
+    let facts = facts_from(u, Weight::Look);
+    let more = (findings.len() + facts.len()).saturating_sub(1);
+    let finding = findings.first().map(|f| SecurityLine {
+        severity: f.severity,
+        class: f.class,
+        text: one_line(&f.title),
+        finding: true,
+        more,
+    });
+    let fact = facts.first().map(|f| SecurityLine {
+        severity: severity_of(f.weight),
+        class: f.class,
+        text: one_line(&f.text),
+        finding: false,
+        more,
+    });
+    // A finding unless a fact is more severe.
+    match (finding, fact) {
+        (Some(a), Some(b)) => Some(if b.severity > a.severity { b } else { a }),
+        (a, b) => a.or(b),
+    }
+}
 
 /// The flagged list's state.
 #[derive(Debug, Default)]

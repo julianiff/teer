@@ -97,6 +97,9 @@ fn queue_of(review: Review) -> App {
     app.grouping = Grouping::Unit;
     app.rebuild_order();
     app.sel = 0;
+    // The rows where they always were: the attack-surface card over them
+    // is security_queue.rs's.
+    app.security.enabled = false;
     app
 }
 

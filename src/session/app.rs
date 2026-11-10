@@ -486,6 +486,9 @@ pub struct App {
     /// The action a click pressed ([`App::press`]), for the open panel to
     /// take instead of a key's.
     pressed: Option<Action>,
+    /// The security lens on the queue: on or off, and its order (`zs`, see
+    /// [`super::exposure`]).
+    pub security: super::exposure::SecurityLens,
 }
 
 impl App {
@@ -528,6 +531,7 @@ impl App {
             changed: HashSet::new(),
             ran: None,
             pressed: None,
+            security: super::exposure::SecurityLens::load(),
             cfg,
         };
         app.rebuild_order();
@@ -639,6 +643,7 @@ impl App {
             })
             .collect();
         self.order = order;
+        self.order_by_exposure();
         if let Some(id) = keep
             && let Some(pos) = self
                 .order
@@ -663,10 +668,12 @@ impl App {
     }
 
     /// Does a new file start at `pos`? Listed by unit, a file starts again
-    /// in each level's box it has units in.
+    /// in each level's box it has units in; by exposure, also below the
+    /// security box.
     pub fn starts_file(&self, pos: usize) -> bool {
         let level = |p: usize| self.shown_level(self.order[p]);
         pos == 0
+            || pos == self.security.exposed
             || self.file_at(pos - 1) != self.file_at(pos)
             || (self.grouping == Grouping::Unit && level(pos - 1) != level(pos))
     }

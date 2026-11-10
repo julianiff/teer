@@ -3,10 +3,12 @@
   // the cursor beside them. A click selects, a double click looks closer.
   // Over the list, how it is listed and finding a unit; on a row under
   // the mouse, accept and flag; on the preview, all the unit can do.
+  // Above the boxes, the attack-surface card: a click on an item opens its
+  // unit. By exposure (`zs`), a security box leads the boxes.
   import { api } from "../lib/api";
   import { tip, useActions } from "../lib/actions";
   import { ui } from "../lib/ui.svelte";
-  import type { Card as CardT, Queue, QueueRow } from "../lib/types";
+  import type { Card as CardT, Queue, QueueRow, SurfaceItem } from "../lib/types";
   import Act from "./Act.svelte";
   import Card from "./Card.svelte";
   import UnitActions from "./UnitActions.svelte";
@@ -30,6 +32,11 @@
   function name(r: QueueRow) {
     return byFile || !r.whole_file ? r.name : "whole file";
   }
+
+  const securityOrder = $derived(actions()["toggle.security"]);
+  const surfaceRows = $derived(queue.surface?.rows ?? []);
+  const weightClass = (it: SurfaceItem) =>
+    it.weight === "attention" ? "lvl-Attention" : it.weight === "look" ? "lvl-Look" : "";
 </script>
 
 <div class="queue">
@@ -41,14 +48,43 @@
         <button class:on={byFile} aria-pressed={byFile} onclick={() => listBy(true)}>Files</button>
       </div>
       {#if grouping?.keys}<kbd class="faint">{grouping.keys}</kbd>{/if}
+      {#if queue.surface && securityOrder}
+        <button
+          class="toggle"
+          class:on={securityOrder.on}
+          aria-pressed={!!securityOrder.on}
+          title={tip(securityOrder)}
+          onclick={() => api.action("toggle.security")}>Security first</button>
+      {/if}
       <span class="spacer"></span>
       <Act id="find.unit" label="Find a unit" icon="⌕" />
     </div>
     {/if}
-    {#each queue.boxes as box (box.level)}
+    {#if queue.surface && surfaceRows.length}
+      <section class="box surface" aria-label="Attack surface">
+        <h2>attack surface</h2>
+        {#each surfaceRows as row (row.class)}
+          <div class="srow">
+            <span class="slabel muted">{row.label}</span>
+            <span class="sitems">
+              {#each row.items as it, i (it.unit + it.text)}
+                {#if i > 0}<span class="faint"> · </span>{/if}
+                <button class="sitem {weightClass(it)}" onclick={() => api.click({ kind: "Open", id: it.unit })}>
+                  {#if it.finding}<b>! </b>{:else if it.gone}✗ {/if}{it.text}{#if it.units > 1}<span class="muted"> ×{it.units}</span>{/if}
+                </button>
+              {/each}
+            </span>
+          </div>
+        {/each}
+        <p class="checked muted">checked: {queue.surface.checked} <span class="faint">· not: {queue.surface.not}</span></p>
+      </section>
+    {:else if queue.surface}
+      <p class="checked muted nothing">security: nothing found · checked: {queue.surface.checked} <span class="faint">· not: {queue.surface.not}</span></p>
+    {/if}
+    {#each queue.boxes as box (box.security ? "security" : box.level)}
       <section class="box">
         <h2 class="lvl-{box.level}">{box.title}</h2>
-        {#each box.files as file (box.level + file.path)}
+        {#each box.files as file (file.rows[0]?.pos ?? file.path)}
           <div class="file">
             {#if byFile}
               <div class="file-name" class:done={file.done === file.total}>
@@ -175,6 +211,61 @@
   }
   .spacer {
     flex: 1;
+  }
+  .toggle {
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--sunken);
+    padding: 1px 10px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .toggle.on {
+    background: var(--panel);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  }
+  .surface {
+    padding: 4px 12px 6px;
+  }
+  .surface h2 {
+    margin: 4px 0;
+  }
+  .srow {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    padding: 1px 0;
+  }
+  .slabel {
+    flex: 0 0 96px;
+    font-size: 12px;
+  }
+  .sitems {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sitem {
+    border: 0;
+    background: none;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+  }
+  .sitem:hover {
+    text-decoration: underline;
+  }
+  .checked {
+    margin: 4px 0 0;
+    font-size: 12px;
+  }
+  .checked.nothing {
+    margin: 0 6px 10px;
   }
   .rowwrap {
     position: relative;
