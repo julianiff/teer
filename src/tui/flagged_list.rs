@@ -1,6 +1,8 @@
 //! The flagged units one after another (`<space>f`), each as the queue's
 //! preview shows it: why it has its level, what the agent said, the code
-//! change with the statements written in, the note. One is selected: the
+//! change with the statements written in, the note. Under its name, its
+//! most severe security finding or fact, when it has one (`▲ security:
+//! high · authorization: …`). One is selected: the
 //! `▌` bar and a background behind it. `j` `k` (and `n` `N`) select the
 //! next and previous one and scroll it to the top, `]c` `[c` go from hunk
 //! to hunk, the scroll keys and the wheel scroll; a selected unit
@@ -19,7 +21,9 @@ use super::app::{App, Target};
 use super::unit::{code_edge, code_row};
 use super::{diff, preview, slim};
 use crate::keymap::Action;
-use crate::review::model::Unit;
+use crate::review::attention::Level;
+use crate::review::model::{Risk, Unit};
+use crate::session::flagged_list::security_line;
 use crate::util::truncate;
 
 // ---- Drawing -----------------------------------------------------------
@@ -179,6 +183,9 @@ fn entry(
     let used: usize = head.iter().map(Span::width).sum();
     head.extend(preview::unit_head(app, u, w.saturating_sub(used)).spans);
     let mut out = vec![vec![Line::from(head)]];
+    if let Some(line) = security(app, u, w) {
+        out.push(vec![line]);
+    }
     // The code change in its box, when there is one; else its statements
     // and the note are said in the text, as the preview does.
     let code = diff::code_change_of(app, u, w.saturating_sub(5), diff::Notes::Inline);
@@ -222,6 +229,27 @@ fn entry(
         vec![Line::from(spans)]
     }));
     out
+}
+
+/// What `u`'s security says on one line of `w` cells, after a blank (see
+/// [`crate::session::flagged_list::security_line`]): the severity's glyph
+/// and word in its colour, the class and the text. `None` when it has no
+/// standing finding and no fact worth a look.
+pub(super) fn security(app: &App, u: &Unit, w: usize) -> Option<Line<'static>> {
+    let s = security_line(u)?;
+    let style = app.theme.risk(s.severity);
+    let glyph = match s.severity {
+        Risk::High => Level::Attention,
+        Risk::Medium => Level::Look,
+        Risk::Low => Level::Routine,
+    }
+    .icon();
+    let lead = format!(" {glyph} security: {}", s.severity.word());
+    let rest = truncate(&format!(" · {}", s.about()), w.saturating_sub(lead.width()));
+    Some(Line::from(vec![
+        Span::styled(lead, style),
+        Span::styled(rest, app.theme.text()),
+    ]))
 }
 
 /// Line `l` of an entry, `w` cells wide after the bar's column: the bar

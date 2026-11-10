@@ -131,7 +131,8 @@ pub struct NoteEditor {
     pub max: usize,
 }
 
-/// The queue: units in level boxes, most attention first.
+/// The queue: units in level boxes, most attention first; by exposure
+/// (`zs`), the security box above them.
 #[derive(Debug, Clone, Serialize)]
 pub struct Queue {
     pub grouping: Grouping,
@@ -144,14 +145,36 @@ pub struct Queue {
     pub sel: usize,
     /// The units accepted for you are listed.
     pub show_auto: bool,
+    /// The attack-surface card over the boxes, while the security lens is
+    /// on; absent when it is off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surface: Option<SurfaceView>,
+}
+
+/// The attack-surface card: a row per class the change touches, most
+/// severe first in each, then what was checked and what nobody did. No
+/// rows: nothing found, which never means safe.
+#[derive(Debug, Clone, Serialize)]
+pub struct SurfaceView {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rows: Vec<crate::security::surface::Row>,
+    /// `auth · entry points · injection · …`.
+    pub checked: String,
+    /// `denial of service · business logic · crypto details`.
+    pub not: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LevelBox {
     pub level: Level,
-    /// `Worth a look · 3 files`.
+    /// `Worth a look · 3 files`; the security box's `Security · 2 units`.
     pub title: String,
     pub files: Vec<FileGroup>,
+    /// The security box (by exposure): the units with security facts or
+    /// findings, most exposed first; `level` is the most attention one of
+    /// them needs.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub security: bool,
 }
 
 /// One file's units in a box. Listed by unit, the front end leaves the
@@ -848,11 +871,26 @@ pub fn auto_line(app: &App) -> Option<String> {
     ))
 }
 
+/// The attack-surface card while the security lens is on.
+fn surface(app: &App) -> Option<SurfaceView> {
+    use crate::security::surface::{CHECKED, NOT_CHECKED, surface};
+    app.security.enabled.then(|| SurfaceView {
+        rows: surface(&app.review).rows,
+        checked: CHECKED.join(" · "),
+        not: NOT_CHECKED.join(" · "),
+    })
+}
+
 fn queue(app: &App) -> Queue {
     let mut boxes: Vec<LevelBox> = Vec::new();
     let visual = app.visual_rows();
     for start in (0..app.order.len()).filter(|&p| app.starts_file(p)) {
-        let level = app.file_level(start);
+        let security = app.in_security_box(start);
+        let level = if security {
+            app.security_box_level()
+        } else {
+            app.file_level(start)
+        };
         let range = app.file_range(start);
         let units: Vec<&Unit> = range
             .clone()
@@ -899,11 +937,12 @@ fn queue(app: &App) -> Queue {
             rows,
         };
         match boxes.last_mut() {
-            Some(b) if b.level == level => b.files.push(group),
+            Some(b) if b.level == level && b.security == security => b.files.push(group),
             _ => boxes.push(LevelBox {
                 level,
                 title: String::new(),
                 files: vec![group],
+                security,
             }),
         }
     }
@@ -912,7 +951,12 @@ fn queue(app: &App) -> Queue {
             Grouping::File => plural(b.files.len(), "file"),
             Grouping::Unit => plural(b.files.iter().map(|f| f.total).sum(), "unit"),
         };
-        b.title = format!("{} · {n}", box_name(b.level));
+        let name = if b.security {
+            "Security"
+        } else {
+            box_name(b.level)
+        };
+        b.title = format!("{name} · {n}");
     }
     Queue {
         grouping: app.grouping,
@@ -929,6 +973,7 @@ fn queue(app: &App) -> Queue {
         auto_line: auto_line(app),
         sel: app.sel,
         show_auto: app.show_auto,
+        surface: surface(app),
     }
 }
 
@@ -1392,6 +1437,7 @@ fn window_actions(actions: &[Action]) -> Vec<Action> {
 fn toggled(app: &App, a: Action) -> Option<bool> {
     match a {
         Action::ToggleByFile => Some(app.grouping == Grouping::File),
+        Action::ToggleSecurityOrder => Some(app.security.by_exposure),
         Action::ToggleAutoAccepted => Some(app.show_auto),
         Action::ToggleZoom => Some(app.unit.zoom),
         _ => None,
@@ -1574,8 +1620,7 @@ fn finish(app: &App, sel: usize) -> FinishView {
                 Some(pr) => {
                     let needs_comment =
                         s == Step::ApproveWithComment && app.finish.summary.is_none();
-                    let notes = approve::collect_notes(&app.review, &app.order);
-                    let plan = approve::build_plan(&notes, &app.finish_summary(), true);
+                    let plan = approve::plan(&app.review, &app.order, &app.finish_summary(), true);
                     Details::Post {
                         head_check: head_check(pr),
                         needs_comment,

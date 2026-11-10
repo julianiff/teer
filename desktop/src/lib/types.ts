@@ -113,12 +113,59 @@ export interface Queue {
   auto_line: string | null;
   sel: number;
   show_auto: boolean;
+  /** The attack-surface card; absent while the security lens is off. */
+  surface?: Surface;
 }
 
 export interface LevelBox {
   level: Level;
   title: string;
   files: FileGroup[];
+  /** The security box (`zs`, by exposure): its units have security facts
+   *  or findings; `level` is the highest of theirs. */
+  security?: boolean;
+}
+
+/** The attack-surface card: a row per class the change touches. No rows:
+ *  nothing found, which never means safe. */
+export interface Surface {
+  rows?: SurfaceRow[];
+  /** What teer checked: `auth · entry points · …`. */
+  checked: string;
+  /** What nobody checked. */
+  not: string;
+}
+
+export interface SurfaceRow {
+  /** The security class, as `teer::security::Class` names it. */
+  class:
+    | "authorization"
+    | "entry_point"
+    | "injection"
+    | "secret"
+    | "exposure"
+    | "supply_chain"
+    | "ci"
+    | "config"
+    | "crypto"
+    | "llm";
+  /** `entry points`, `sinks`, `checks`. */
+  label: string;
+  /** Most severe first. */
+  items: SurfaceItem[];
+}
+
+export interface SurfaceItem {
+  /** The unit it is on, by id. */
+  unit: string;
+  text: string;
+  weight: "note" | "look" | "attention";
+  /** The agent's finding, standing; else a fact teer found. */
+  finding: boolean;
+  /** A check that is gone. */
+  gone: boolean;
+  /** How many units it is on. */
+  units: number;
 }
 
 export interface FileGroup {

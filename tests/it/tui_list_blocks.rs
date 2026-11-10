@@ -90,6 +90,9 @@ fn app(n: usize) -> App {
     let mut app = App::new(review, Config::default(), Keymap::default());
     app.grouping = Grouping::File;
     app.rebuild_order();
+    // The list's geometry alone: the attack-surface card over it is
+    // security_queue.rs's.
+    app.security.enabled = false;
     app
 }
 

@@ -623,9 +623,41 @@ fn the_v1_tile_keys_are_gone_from_the_queue_and_the_unit_view() {
 
 #[test]
 fn zs_switches_the_queue_to_the_security_order() {
-    // Phase 3 (the security order) asserts what it does.
-    let mut d = Driver::new(3);
+    use teer::security::{Class, Fact, Weight};
+    // u4 has a fact that leaves its level as it is: by level it stays in
+    // its file, by exposure it leads the queue.
+    let mut units = units(6);
+    units[4].security = vec![Fact {
+        class: Class::EntryPoint,
+        weight: Weight::Note,
+        text: "a new route".into(),
+        side: teer::review::model::Side::New,
+        lines: None,
+        subject: "POST /refunds".into(),
+        origin: Default::default(),
+    }];
+    let mut d = Driver::of(units);
+    let by_level = d.app.order.clone();
+    assert_eq!(d.app.review.units[by_level[4]].id, "u4");
+    d.app.sel = 2;
     d.keys("zs");
+    assert!(d.app.security.by_exposure);
+    assert_eq!(d.app.security.exposed, 1);
+    assert_eq!(d.app.review.units[d.app.order[0]].id, "u4");
+    // The rest keep their order, and the cursor its unit.
+    let rest: Vec<usize> = by_level.iter().copied().filter(|&i| i != 4).collect();
+    assert_eq!(d.app.order[1..], rest[..]);
+    assert_eq!(d.app.selected_id().as_deref(), Some("u2"));
+    assert!(
+        d.app.status.starts_with("By exposure: 1 unit"),
+        "{}",
+        d.app.status
+    );
+    d.keys("zs");
+    assert!(!d.app.security.by_exposure);
+    assert_eq!(d.app.order, by_level);
+    assert_eq!(d.app.security.exposed, 0);
+    assert_eq!(d.app.status, "Listed by level.");
 }
 
 #[test]

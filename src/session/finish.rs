@@ -716,10 +716,9 @@ teer; the review is saved."
             self.status = "Write the comment, then ⏎ approves with it.".into();
             return self.edit_finish_text(Some(step));
         }
-        let notes = approve::collect_notes(&self.review, &self.order);
         let intro = self.finish_summary();
-        let plan = approve::build_plan(&notes, &intro, true);
-        let flat_body = approve::build_plan(&notes, &intro, false).body;
+        let plan = approve::plan(&self.review, &self.order, &intro, true);
+        let flat_body = approve::plan(&self.review, &self.order, &intro, false).body;
         self.approving = true;
         self.overlay = Overlay::None;
         self.status = format!("{} on GitHub…", verdict.doing(pr.number));

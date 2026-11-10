@@ -80,6 +80,9 @@ async fn app() -> (App, FixtureRepo) {
     // Listed by file (`zf`): each file's units under its name.
     app.grouping = Grouping::File;
     app.rebuild_order();
+    // The list's geometry alone: the attack-surface card over it is
+    // security_queue.rs's.
+    app.security.enabled = false;
     (app, repo)
 }
 

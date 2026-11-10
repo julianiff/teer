@@ -369,8 +369,7 @@ fn post_details(app: &App, step: Step, w: usize) -> Vec<Line<'static>> {
         ));
         return out;
     }
-    let notes = approve::collect_notes(&app.review, &app.order);
-    let plan = approve::build_plan(&notes, &app.finish_summary(), true);
+    let plan = approve::plan(&app.review, &app.order, &app.finish_summary(), true);
     out.push(Line::styled("Summary comment", t.accent()));
     for l in wrap(&plan.body, w.saturating_sub(2)) {
         out.push(Line::from(format!("  {l}")));
@@ -458,6 +457,13 @@ fn note_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
             "    the code changed since this note",
             t.muted(),
         ));
+    }
+    // What goes with the notes about its security.
+    if u.decision == Decision::Investigate
+        && let Some(mut line) = super::flagged_list::security(app, u, w.saturating_sub(3))
+    {
+        line.spans.insert(0, Span::raw("   "));
+        out.push(line);
     }
     out
 }

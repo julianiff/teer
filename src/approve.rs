@@ -2,11 +2,15 @@
 //! `tui::finish`): approving it, requesting changes, or commenting.
 //!
 //! The user's notes on units become inline review comments (when their line
-//! is part of the PR diff) or lines of the review summary. The review is
-//! posted with `gh api` (JSON on stdin, never in argv), pinned to the head
-//! commit that was reviewed, and only after the remote still reports that
-//! same head. Nothing here runs a shell.
+//! is part of the PR diff) or lines of the review summary. A flagged unit's
+//! standing security findings go under its inline note, and the summary
+//! gets a "Security" section with the findings and the facts that need a
+//! close look of every flagged unit. The review is posted with `gh api`
+//! (JSON on stdin, never in argv), pinned to the head commit that was
+//! reviewed, and only after the remote still reports that same head.
+//! Nothing here runs a shell.
 
+use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 
@@ -16,7 +20,11 @@ use crate::editor::Editor;
 use crate::gh::{self, Output as GhOut};
 use crate::git::ChangedFile;
 use crate::pr;
-use crate::review::model::{PrInfo, Review, Side, Unit};
+use crate::review::model::{Decision, PrInfo, Review, Side, Unit};
+use crate::security::Weight;
+use crate::security::order::{
+    cite_text, class_name, fact_place, facts_from, one_line, path_text, standing,
+};
 use crate::util::{DiffOp, diff_lines, sanitize};
 
 /// First line of every approval summary (editable by the user).
@@ -29,6 +37,8 @@ pub const BODY_MAX_LINES: usize = 40;
 pub const INLINE_MAX_CHARS: usize = 2000;
 /// Most inline comments in one review; the rest go into the summary.
 pub const INLINE_MAX: usize = 50;
+/// Most lines of the summary's Security section.
+pub const SECURITY_MAX_LINES: usize = 15;
 
 /// The summary's first line for `review`: [`DEFAULT_INTRO`], and the files
 /// teer couldn't show, so the approval doesn't claim more than was seen.
@@ -225,6 +235,9 @@ pub struct NoteEntry {
     pub note: String,
     /// Inline target; `None` means the note can only go into the summary.
     pub target: Option<(u32, Side)>,
+    /// A flagged unit's standing security findings, a Markdown list item
+    /// each, for under its inline note (see [`finding_lines`]).
+    pub security: Vec<String>,
 }
 
 /// An inline review comment.
@@ -278,9 +291,97 @@ pub fn collect_notes(review: &Review, order: &[usize]) -> Vec<NoteEntry> {
                 line: u.display_line(),
                 note,
                 target,
+                security: finding_lines(u),
             })
         })
         .collect()
+}
+
+/// `text` in backticks, its own backticks made quotes.
+fn code(text: &str) -> String {
+    format!("`{}`", text.replace('`', "'"))
+}
+
+/// A flagged unit's standing security findings, most severe first, one
+/// Markdown list item each: severity and class, the title, the path from
+/// source to sink, what is missing. None when it isn't flagged.
+pub fn finding_lines(u: &Unit) -> Vec<String> {
+    if u.decision != Decision::Investigate {
+        return Vec::new();
+    }
+    standing(u)
+        .into_iter()
+        .map(|f| {
+            format!(
+                "- **{} · {}**: {} Path: {}. Missing: {}",
+                f.severity.word(),
+                class_name(f.class),
+                one_line(&f.title),
+                code(&path_text(f)),
+                one_line(&f.missing),
+            )
+        })
+        .collect()
+}
+
+/// The summary's "Security" section: for every flagged unit, in `order`
+/// (then those it doesn't list), its standing findings (severity, title,
+/// where they do harm) and its facts that need a close look (class, text,
+/// where). At most [`SECURITY_MAX_LINES`] lines. `None` when there is
+/// nothing to say.
+pub fn security_section(review: &Review, order: &[usize]) -> Option<String> {
+    let listed: HashSet<usize> = order.iter().copied().collect();
+    let flagged = order
+        .iter()
+        .copied()
+        .chain((0..review.units.len()).filter(|i| !listed.contains(i)))
+        .filter_map(|i| review.units.get(i))
+        .filter(|u| u.decision == Decision::Investigate);
+    let mut lines = Vec::new();
+    for u in flagged {
+        for f in standing(u) {
+            lines.push(format!(
+                "- **{}** · {}: {} ({})",
+                f.severity.word(),
+                class_name(f.class),
+                one_line(&f.title),
+                code(&cite_text(&f.sink)),
+            ));
+        }
+        for f in facts_from(u, Weight::Attention) {
+            lines.push(format!(
+                "- **found by teer** · {}: {} ({})",
+                class_name(f.class),
+                one_line(&f.text),
+                code(&fact_place(u, f)),
+            ));
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    if lines.len() > SECURITY_MAX_LINES {
+        let more = lines.len() - (SECURITY_MAX_LINES - 1);
+        lines.truncate(SECURITY_MAX_LINES - 1);
+        lines.push(format!("- … and {more} more"));
+    }
+    Some(format!("### Security\n\n{}", lines.join("\n")))
+}
+
+/// The review to post for `review` listed in `order`: [`build_plan`] of its
+/// notes ([`collect_notes`]), and the summary's [`security_section`] when
+/// there is one. The notes give way to the section when the summary is too
+/// long for both.
+pub fn plan(review: &Review, order: &[usize], intro: &str, inline_on: bool) -> Plan {
+    let notes = collect_notes(review, order);
+    let mut plan = build_plan(&notes, intro, inline_on);
+    if let Some(section) = security_section(review, order) {
+        let section = clamp_text(&section, BODY_MAX_CHARS / 2);
+        let room = BODY_MAX_CHARS.saturating_sub(section.chars().count() + 2);
+        let body = clamp_text(&plan.body, room);
+        plan.body = format!("{body}\n\n{section}");
+    }
+    plan
 }
 
 fn note_line(e: &NoteEntry) -> String {
@@ -312,9 +413,22 @@ fn compose_body(intro: &str, listed: &[&NoteEntry]) -> String {
     clamp_text(&out, BODY_MAX_CHARS)
 }
 
+/// An inline comment's body: the note, then the unit's security findings
+/// under a "Security" line.
+fn inline_body(e: &NoteEntry) -> String {
+    if e.security.is_empty() {
+        return e.note.clone();
+    }
+    let findings = e.security.join("\n");
+    clamp_text(
+        &format!("{}\n\n**Security** (teer)\n{findings}", e.note),
+        INLINE_MAX_CHARS,
+    )
+}
+
 /// The review to post: with `inline_on`, notes that have a target become
-/// inline comments (at most [`INLINE_MAX`]); everything else is listed in the
-/// summary.
+/// inline comments (at most [`INLINE_MAX`]), a flagged unit's security
+/// findings under its note; everything else is listed in the summary.
 pub fn build_plan(notes: &[NoteEntry], intro: &str, inline_on: bool) -> Plan {
     let mut inline = Vec::new();
     let mut listed = Vec::new();
@@ -324,7 +438,7 @@ pub fn build_plan(notes: &[NoteEntry], intro: &str, inline_on: bool) -> Plan {
                 path: e.file.clone(),
                 line,
                 side,
-                body: e.note.clone(),
+                body: inline_body(e),
                 symbol: e.symbol.clone(),
             }),
             _ => listed.push(e),
@@ -776,6 +890,7 @@ mod tests {
             line: i,
             note: format!("n{i}"),
             target: t.then_some((i, Side::New)),
+            security: Vec::new(),
         };
         let notes: Vec<_> = (1..=60).map(|i| mk(i, i != 2)).collect();
         let p = build_plan(&notes, DEFAULT_INTRO, true);

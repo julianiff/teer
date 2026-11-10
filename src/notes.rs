@@ -1,9 +1,13 @@
 //! The reviewer's notes, one per unit (`i`), taken out of teer: as Markdown
 //! for the clipboard and `teer notes`, and as the first message of a Claude
-//! Code or Codex session that works through them (the `:w` sheet).
+//! Code or Codex session that works through them (the `:w` sheet). Under a
+//! flagged unit's note, what the security lens found in it: its standing
+//! findings with their paths, and its facts that need a close look.
 
 use crate::review::diff::{self, Kind};
 use crate::review::model::{Decision, Review, Unit};
+use crate::security::Weight;
+use crate::security::order::{class_name, fact_place, facts_from, one_line, path_text, standing};
 use crate::util::sanitize;
 
 /// Most diff rows quoted per note.
@@ -133,9 +137,49 @@ fn hunk(review: &Review, u: &Unit) -> Option<String> {
     Some(format!("{fence}diff\n{}\n{fence}", lines.join("\n")))
 }
 
+/// What a flagged unit's notes say about its security, as a Markdown
+/// list under a "Security" line: each standing finding with its severity
+/// and class, its path from where the input enters to where it does harm,
+/// what is missing on it and how it is exploited; then each fact that
+/// needs a close look, on one line. Empty when the unit isn't flagged or
+/// has neither.
+pub fn security(u: &Unit) -> String {
+    if u.decision != Decision::Investigate {
+        return String::new();
+    }
+    let findings = standing(u);
+    let facts = facts_from(u, Weight::Attention);
+    if findings.is_empty() && facts.is_empty() {
+        return String::new();
+    }
+    let code = |s: &str| format!("`{}`", s.replace('`', "'"));
+    let mut out = String::from("\n**Security**\n\n");
+    for f in findings {
+        out.push_str(&format!(
+            "- **{} · {}**: {}\n  - path: {}\n  - missing: {}\n  - exploit: {}\n",
+            f.severity.word(),
+            class_name(f.class),
+            one_line(&f.title),
+            code(&path_text(f)),
+            one_line(&f.missing),
+            one_line(&f.exploit),
+        ));
+    }
+    for f in facts {
+        out.push_str(&format!(
+            "- **{}** (found by teer, {}): {}\n",
+            class_name(f.class),
+            code(&fact_place(u, f)),
+            one_line(&f.text),
+        ));
+    }
+    out
+}
+
 /// The notes as Markdown: what the review is of, then for each note where
 /// it is, the change it is about as a diff, and the note. A flagged unit
-/// without a note is listed too, saying so. Empty without either.
+/// without a note is listed too, saying so. Under a flagged unit, what the
+/// security lens found ([`security`]). Empty without notes or flags.
 pub fn markdown(review: &Review) -> String {
     let units = listed(review);
     if units.is_empty() {
@@ -162,23 +206,32 @@ pub fn markdown(review: &Review) -> String {
         for l in u.dive.note.trim().lines() {
             out.push_str(&format!("> {}\n", sanitize(l)));
         }
+        out.push_str(&security(u));
     }
     out
 }
 
 /// The first message for a Claude Code or Codex session that works
-/// through the notes. Empty without notes.
+/// through the notes. Empty without notes. With security findings or facts
+/// under a note, a word on what they are and what to do with them.
 pub fn agent_prompt(review: &Review) -> String {
     let notes = markdown(review);
     if notes.is_empty() {
         return notes;
     }
+    let lens = if listed(review).iter().any(|u| !security(u).is_empty()) {
+        "\n\nUnder some notes, a Security list says what teer's security lens found in that unit: \
+findings with the path from where the input enters to where it does harm, and facts teer read from \
+the code. Close the hole each one describes, or say why it can't happen there."
+    } else {
+        ""
+    };
     format!(
         "These are my review notes, written in teer. Each one names the code it is about.\n\n\
 Work through them one by one. Where a note asks for a change, make it; where it asks a question \
 or you disagree, answer it instead of changing the code. A unit flagged without a note is one I \
 found something wrong with: look at it and say what you found before changing it. Leave code that \
-no note is about alone. At the end, list each note with what you did.\n\n{notes}"
+no note is about alone. At the end, list each note with what you did.{lens}\n\n{notes}"
     )
 }
 
