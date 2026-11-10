@@ -1,6 +1,6 @@
 # teer features
 
-[how it works](#how-it-works) · [start](#start) · [agents](#agents) · [the queue](#the-queue) · [the unit view](#the-unit-view) · [finish](#finish) · [the fix loop](#the-fix-loop) · [notes](#notes) · [keys](#keys) · [config](#config) · [safety](#safety) · [limits](#limits)
+[how it works](#how-it-works) · [start](#start) · [agents](#agents) · [the queue](#the-queue) · [the unit view](#the-unit-view) · [security](#security) · [finish](#finish) · [the fix loop](#the-fix-loop) · [notes](#notes) · [keys](#keys) · [config](#config) · [safety](#safety) · [limits](#limits)
 
 ## how it works
 
@@ -17,8 +17,8 @@ your place is saved on every change: decisions, notes, undo history and the curs
 
 | | level | when |
 | --- | --- | --- |
-| `▲` | needs a close look | removed but still called · the agent rates it high risk |
-| `◆` | worth a look | signature changed and it has callers · 40+ changed lines · medium risk · the second model disputes it · expensive to undo · couldn't be described |
+| `▲` | needs a close look | removed but still called · the agent rates it high risk · a [security](#security) fact that needs it (an auth check gone, a secret, `pull_request_target`) · a high security finding that stands |
+| `◆` | worth a look | signature changed and it has callers · 40+ changed lines · medium risk · the second model disputes it · expensive to undo · couldn't be described · a security fact (a new route, a sink reachable from one) · a medium security finding that stands |
 | `●` | routine | everything else that changes behavior · removed with no callers · lock files, snapshots |
 | `○` | no behavior change | formatting or comments · renamed locals · renamed with the same body |
 
@@ -31,6 +31,7 @@ besides the rule that set its level, a unit can have reasons to look, each a sen
 - **expensive to undo** — deletes or rewrites data, changes a schema, sends, charges or publishes, changes a public api. files under `migrations/` always count.
 - **the second model disputes** a statement: the statement, quoted, and what it says instead. this one also shows as `⚠` on the unit's row.
 - **not mentioned in the commits or pr description** — a behavior change nobody wrote down.
+- **security** — each security fact teer found in the change, or another tool reported (see [security](#security)), prefixed `security:`.
 
 ## start
 
@@ -41,12 +42,14 @@ besides the rule that set its level, a unit can have reasons to look, each a sen
 | `teer 482` | pull request 482 of this repo |
 | `teer pr` | pick a pr waiting for your review, assigned to you, or yours |
 | `teer notes [url]` | print the notes of the last review as markdown |
+| `teer notes --sarif [url]` | print the last review's security facts and findings as sarif |
 
 | flag | |
 | --- | --- |
 | `--base <ref>` | review this branch since `<ref>`, instead of the base teer finds |
 | `--no-agent` | no agent: sort the change and review it yourself |
 | `--json` | prepare the review, print it as json, exit |
+| `--sarif <file>` | pin another tool's sarif findings to the units they fall in (repeat it for more files) |
 
 **the base** — `--base` if given, else the base of this branch's pull request if `gh` knows it, else `origin/HEAD`, else `main` or `master`. the queue's header names it: "feature since main, 6 commits".
 
@@ -123,6 +126,7 @@ each of these opens a tile, tmux style, next to the ones already open: the text 
 | `<space>t` | the tests that reach the unit, found by teer at once without an agent. with one, the tile then asks whether the agent reads them: `enter` (or a click on the question) and it says what each checks, and the dangerous cases none covers. with none found, it offers to look for tests itself |
 | `<space>r` | old and new side by side: the agent writes a small program, teer runs it before and after the change in a sandbox, then checks the statements against the runs and whether your tests notice the change. macos only |
 | `<space>v` | what talks to the unit and what the change adds or removes, as a diagram in the terminal (kitty, ghostty, iterm2, sixel). `gx` opens it in the browser |
+| `<space>x` | security: how the change can be abused, each way with its path, checked by a second model; `<space>p` then runs each attacker's case old against new. see [security](#security) |
 | `gd` | what the unit calls: in the review, a list to jump to; outside it, the definition, read-only |
 | `gr` | what calls the unit, to jump to |
 | `gf` | your editor, at the unit's first changed line |
@@ -132,6 +136,56 @@ each of these opens a tile, tmux style, next to the ones already open: the text 
 **flagged units** — `<space>f`, here or in the queue, lists every unit you flagged one after another, each as the queue's preview shows it: why it has its level, the agent's summary, the whole change in its box with the statements written in, your note under it. one is selected, with the `▌` bar and a background behind it. `j` `k` (or `n` `N`) select the next and previous one and scroll it to the top, a click selects one, `]c` `[c` jump from hunk to hunk, `<c-d>` `<c-u>` scroll. `l` or `enter` looks closer at the selected one (`h` comes back), `a` accepts it and it leaves the list, `i` writes its note, `h` or `<space>f` goes back.
 
 like statements, every claim in the advice and the tools must cite real lines. what doesn't is dropped and logged to `teer.log`.
+
+## security
+
+a lens over the review, not a scanner of the whole repo: teer finds security facts in the change itself, the agent looks for ways to abuse it only when you ask, every finding has to show its path, and you decide. no finding is never the same as safe: what was checked and what wasn't is always on screen.
+
+**facts, without an agent.** at prep, teer reads every change for security facts and puts each under "why this level", prefixed `security:`. in php, typescript/javascript and go:
+
+- an authorization check gone (`denyAccessUnlessGranted`, `#[IsGranted]`, `@UseGuards`, `requireAuth` middleware…): `▲` when the code is reachable
+- a new action or route without the check all its siblings have: `◆`
+- new routes, handlers, commands and server actions: `◆`
+- raw sql, shell, eval, file paths, outgoing requests or unescaped html given something that isn't a literal: `◆` when reachable from an entry point (up to four calls up), else a note
+
+in every file:
+
+- hard-coded secrets: `▲`, the value never shown
+- passwords or tokens logged
+- packages added or bumped, install scripts (`▲`), a lock changed without its manifest
+- `pull_request_target` and `${{ github.event… }}` in `run:` (`▲`), wider permissions, actions not pinned to a commit
+- open ingress and public buckets in terraform
+- cors `*`, cookie flags off, tls verification off, debug on
+- weak crypto: a note
+
+**the attack surface.** the queue opens with a card: the entry points, sinks, removed or missing checks, secrets, packages, ci and config the change touches, most severe first, and on its last line what teer checked and what nobody did. with nothing found it is one muted line that still says what was checked. on a short terminal it is one line; a click on an item selects its unit. `zs` puts the units with security facts or standing findings in a security box above the level boxes, most exposed first; `zs` again lists by level.
+
+**the security tile (`<space>x`).** asks the agent how the change can be abused. teer gives it the call chains into the unit from its call graph (up to four calls to the entry points), the checks its catalog finds along them, what the unit calls, and the facts teer found, as hints, not conclusions. each finding must show a path: where untrusted input enters, each call on the way, and where it does harm, every step citing real lines.
+
+- a finding whose lines don't exist, or whose path doesn't pass through the unit, is dropped and counted
+- a path whose calls teer's graph can't confirm shows "path not verified" and never raises the level
+- a second model checks each finding against the cited code, which teer reads itself; a disputed finding shows `⚠` and doesn't count
+- a finding that stands raises its unit: high `▲`, medium `◆`
+
+the tile also lists what holds (controls checked and found in place) and what was checked and what wasn't. denial of service, rate limits, resource exhaustion, input validation without impact and open redirects without a chain are left out unless `security.toml`'s `include` names them. until the agent answers, the tile is only as tall as teer's facts; without an agent it shows them alone.
+
+**prove it (`<space>p`).** on a unit whose security tile has findings, the agent writes an attacker's case for each finding not run yet (another tenant's id, `../` in a path, a crafted payload), and teer runs them old against new in the sandbox with the behavior probe runner. each finding then reads **proven** (the case came out as the agent predicted before anything ran), **not shown** (it ran and didn't), or **unproven** with why (no macos sandbox, no probe that works, or it needs a database or a framework kernel). the probe and both runs are kept under `~/.local/share/teer/proofs/`. the agent stays read-only; the probe never touches your checkout.
+
+**other tools' findings.** `teer --sarif codeql.sarif` (repeat it for more files) pins every result of a sarif 2.1.0 file, from codeql, semgrep, trivy or claude security, to the unit it falls in, as a security reason: a `security-severity` of 7 or an `error` needs a close look, 4 or a `warning` is worth a look. results outside the change are left out and counted in `teer.log`; a re-run reads the files again. reviewing a pull request, teer also asks github (`gh`) for the code-scanning alerts open on its head and pins them the same way; without code scanning, permission or `gh`, the review goes on without them. imports only add reasons, they never lower a level.
+
+**finishing.** in the flagged list, a flagged unit's most severe finding or fact sits under its name with its severity. the notes you copy (`y`, `teer notes`) or hand to your agent carry each flagged unit's findings, with the path from where the input enters to where it does harm, what's missing and how it's exploited. a pull request review gets a security section, and each finding goes under its flagged unit's inline note. `teer notes --sarif` prints teer's own facts and the standing findings as sarif 2.1.0 (one rule per class, each finding's path as a code flow), for github code scanning or another tool.
+
+**your own names** go in `security.toml`, next to the config (`~/.config/teer/security.toml`), per language. teer never reads it from the repository under review.
+
+```toml
+include = ["open_redirect"]       # redirects count like other sinks
+[php]
+checks = ["MyVoter::vote"]        # your voters and guards
+entry = ["AsWebhook"]             # attributes or decorators that make an entry point
+sinks.sql = ["Db::raw"]           # also: shell, eval, file, http, template, redirect, log, llm
+```
+
+`enabled = false` turns the lens off: no facts, no card, no security tile.
 
 ## finish
 
@@ -222,10 +276,13 @@ keys follow neovim, and a key does the same on every screen. a prefix (`g`, `]`,
 | `za` | `toggle.auto_accepted` | show units accepted for you |
 | `zf` | `toggle.by_file` | list by file or by level |
 | `zz` | `toggle.zoom` | zoom the tile in focus |
+| `zs` | `toggle.security` | list by level or by exposure |
 | `<space>a` | `tool.advice` | advice: what to do about the unit |
 | `<space>t` | `tool.tests` | tests that cover this unit |
 | `<space>r` | `tool.run_old_new` | run old and new |
 | `<space>v` | `tool.diagram` | diagram of the change |
+| `<space>x` | `tool.security` | security: how the change can be abused |
+| `<space>p` | `tool.prove` | prove the security findings, old against new |
 | `<space>c` | `tool.history` | commits and PR description |
 | `<space>n` | `tool.notes` | every note |
 | `<space>f` | `tool.flagged` | flagged units, one after another |
@@ -305,6 +362,7 @@ editor = "zed --wait {file}:{line}"           # zed
 - **pull requests are untrusted.** their own checkout, no web, and the repo's agent instructions (`CLAUDE.md`, `AGENTS.md`, skills, settings) aren't loaded.
 - **code runs only in `<space>r`**, on a separate checkout, in a macos sandbox: no network, no writes outside the checkout, no reads in your home folder beyond the checkout and language toolchains, no keys or tokens in its environment.
 - **git runs nothing of the repo's.** hooks, fsmonitor and lfs filters are off for every git command teer runs, except the commit you confirm.
+- **security rules are yours.** `security.toml` is read from teer's config folder, never from the repository under review, so a pull request can't switch off its own checks. facts and imported findings only ever raise a level.
 - **nothing is posted without you.** github sees a review only after `enter` on the `:w` sheet.
 - **what leaves your machine** is the changed code, plus what the agent reads in the repo to answer you. reviews, `teer.log`, diagrams and probe runs stay in `~/.local/share/teer`.
 
@@ -316,3 +374,6 @@ editor = "zed --wait {file}:{line}"           # zed
 - the small default model can miss a change; `prepare_model = "sonnet"` trades a little speed for depth.
 - inline pr comments are placed with teer's own diff. when github rejects a line, teer posts the summary only.
 - web search is told to send generic queries only; teer doesn't filter them.
+- security facts come from a catalog of names per language (php, typescript/javascript, go; rust and python get secrets, packages, ci and config only). a check done somewhere else (middleware, a voter elsewhere) can show as gone; the security tile is where that gets sorted out.
+- prove it runs on macos only, like `<space>r`, and only for units that run on their own.
+- code-scanning alerts: the first 100 per pull request. in a pr review, sarif paths must be relative to the repo.
