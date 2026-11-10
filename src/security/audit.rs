@@ -31,6 +31,7 @@ use crate::review::dive::DiveEvent;
 use crate::review::model::{Cite, DiveKind, Review, Risk, SessionRef, Side, Unit, UnitKind};
 use crate::review::prompts;
 use crate::review::validate::{Dropped, log_dropped, one_line, repo_path};
+use crate::units::lang::Lang;
 use crate::util::sanitize;
 
 /// Most calls followed up from the unit to its entry points.
@@ -273,19 +274,51 @@ pub fn chains(g: &GraphData, start: usize) -> Vec<Vec<usize>> {
     out
 }
 
-/// Hook for `security::catalog`: the authorization checks, sanitizers and
-/// entry-point markers teer finds on the symbols of `chains` (indexes into
-/// `job.graph.nodes`, outermost caller first), one line each, e.g.
-/// `isGranted('VIEW') in AssetController::show (src/AssetController.php:44)`.
-/// The prompt lists them under "Checks teer found along the path".
-///
-/// Returns nothing until the catalog is connected.
+/// The authorization checks teer's catalog finds in the code of the
+/// symbols on `chains` (indexes into `job.graph.nodes`, outermost caller
+/// first), the user's additions from `security.toml` included: one line
+/// each, e.g. `isGranted in AssetController::show (src/AssetController.php:41-60)`.
+/// The prompt lists them under "Checks teer found along the path", so the
+/// agent knows where a control already is before it calls one missing.
 fn checks_on_path(job: &Job, chains: &[Vec<usize>]) -> Vec<String> {
-    // TODO(catalog): match `security::catalog`'s checks for each symbol's
-    // language (and `job.config`'s additions) in the code of every node
-    // on `chains`.
-    let _ = (job, chains);
-    Vec::new()
+    let mut reader = Reader::new(&job.root, &job.files);
+    let mut catalogs: HashMap<Lang, crate::security::catalog::Catalog> = HashMap::new();
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for &i in chains.iter().flatten() {
+        if !seen.insert(i) {
+            continue;
+        }
+        let Some(n) = job.graph.nodes.get(i) else {
+            continue;
+        };
+        let Some(lang) = Lang::from_path(&n.file) else {
+            continue;
+        };
+        // The new text of a changed file, else the checkout's.
+        let Some(text) = reader.texts(&n.file).first() else {
+            continue;
+        };
+        let code: String = text
+            .lines()
+            .skip(n.range.start.saturating_sub(1) as usize)
+            .take(n.range.len() as usize)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let catalog = catalogs
+            .entry(lang)
+            .or_insert_with(|| crate::security::catalog::for_lang(lang, &job.config));
+        if let Some(check) = catalog.check_in(&code) {
+            out.push(format!(
+                "{check} in {} ({}:{}-{})",
+                n.symbol,
+                n.file.display(),
+                n.range.start,
+                n.range.end
+            ));
+        }
+    }
+    out
 }
 
 // ---- The prompt ------------------------------------------------------------

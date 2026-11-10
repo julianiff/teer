@@ -405,6 +405,32 @@ async fn a_finding_the_second_model_disputes_doesnt_stand() {
 }
 
 #[tokio::test]
+async fn the_prompt_names_the_checks_teers_catalog_finds_along_the_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let r = fixture(dir.path());
+    // The route checks access, on a line of its own range (3-6).
+    let routes = ROUTES.replace(
+        "$id = $request->get('id');",
+        "$this->denyAccessUnlessGranted('VIEW'); $id = $request->get('id');",
+    );
+    std::fs::write(dir.path().join("src/routes.php"), routes).unwrap();
+    let m = agent(answer(vec![]), agrees());
+    run(&m, job(&r, dir.path(), SecurityConfig::default(), false)).await;
+    let p = m.prompts.lock().unwrap()[0].clone();
+    assert!(p.contains("Checks teer found along the path:"), "{p}");
+    assert!(
+        p.contains("in AssetController::show (src/routes.php:3-6)"),
+        "{p}"
+    );
+    // Without one, no such list.
+    std::fs::write(dir.path().join("src/routes.php"), ROUTES).unwrap();
+    let m = agent(answer(vec![]), agrees());
+    run(&m, job(&r, dir.path(), SecurityConfig::default(), false)).await;
+    let p = m.prompts.lock().unwrap()[0].clone();
+    assert!(!p.contains("Checks teer found along the path:"), "{p}");
+}
+
+#[tokio::test]
 async fn the_prompt_has_the_marker_the_caller_chain_and_teers_facts() {
     let dir = tempfile::tempdir().unwrap();
     let mut r = fixture(dir.path());
