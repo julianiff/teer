@@ -103,9 +103,13 @@ pub fn surface(review: &Review) -> Surface {
                 Class::EntryPoint | Class::Injection if !f.subject.trim().is_empty() => {
                     one_line(&f.subject)
                 }
-                // Which unit lost or lacks the check matters most.
+                // Which unit lost or lacks the check matters most: a
+                // check that is gone by its name, else what is missing.
+                Class::Authorization if f.side == Side::Old && !f.subject.trim().is_empty() => {
+                    format!("{} gone from {}", one_line(&f.subject), names::row_name(u))
+                }
                 Class::Authorization => {
-                    format!("{} ({})", one_line(&f.text), names::row_name(u))
+                    format!("{} · {}", one_line(&f.text), names::row_name(u))
                 }
                 _ => one_line(&f.text),
             };
@@ -271,7 +275,7 @@ mod tests {
             ("b", Weight::Attention)
         );
         let check = &s.rows[2].items[0];
-        assert_eq!(check.text, "isGranted is gone (b)");
+        assert_eq!(check.text, "isGranted gone from b");
         assert!(check.gone);
     }
 }

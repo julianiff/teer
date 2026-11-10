@@ -349,14 +349,24 @@ fn advice_wait_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
 }
 
 /// Rows tile `p` needs `w` columns wide, borders included, when it is
-/// small: the advice tile while it [waits](advice_waits). None for the
-/// others.
+/// small: the advice tile while it [waits](advice_waits), and the
+/// Security tile until the agent's audit is there (teer's facts and a
+/// line or two: no empty box under them). None for the others.
 fn small_height(app: &App, u: &Unit, p: Panel, w: u16) -> Option<u16> {
-    if p != Panel::Recommend || !advice_waits(app, u) {
-        return None;
+    let inner = (w as usize).saturating_sub(4);
+    match p {
+        Panel::Recommend if advice_waits(app, u) => {
+            let lines = advice_wait_lines(app, u, inner).len() as u16;
+            Some(lines + 2 * ADVICE_AIR + 2)
+        }
+        Panel::Tool(DiveKind::Security) if answers::audit_of(u).is_none() => {
+            let lines = answers::section_body(app, u, DiveKind::Security, inner);
+            // Without a trailing blank row.
+            let n = lines.len() - lines.iter().rev().take_while(|l| l.width() == 0).count();
+            Some(n.max(1) as u16 + 2)
+        }
+        _ => None,
     }
-    let lines = advice_wait_lines(app, u, (w as usize).saturating_sub(4)).len() as u16;
-    Some(lines + 2 * ADVICE_AIR + 2)
 }
 
 /// The code box's edge `w` cells wide, one cell in: the top one titled

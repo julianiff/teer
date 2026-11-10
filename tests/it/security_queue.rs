@@ -171,7 +171,7 @@ fn the_surface_groups_by_class_and_lists_the_most_severe_first() {
     let checks = &s.rows[2].items;
     assert!(checks[0].finding && checks[0].text == IDOR, "{checks:?}");
     assert_eq!(checks[0].weight, Weight::Attention);
-    assert_eq!(checks[1].text, "denyAccessUnlessGranted is gone (s4)");
+    assert_eq!(checks[1].text, "denyAccessUnlessGranted gone from s4");
     assert!(checks[1].gone);
     assert!(surface(&review(units(3))).is_empty());
 }

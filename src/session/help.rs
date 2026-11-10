@@ -468,12 +468,12 @@ pub const KEY_GROUPS: &[(&str, &[KeyItem])] = &[
 ];
 
 /// Items of the keys tile that need an agent.
-pub const AGENT_KEYS: [Action; 6] = [
+/// (The Security tile isn't one: without an agent it shows teer's facts.)
+pub const AGENT_KEYS: [Action; 5] = [
     Action::ToolAdvice,
     Action::AskOpen,
     Action::ToolRunOldNew,
     Action::ToolDiagram,
-    Action::ToolSecurity,
     Action::ToolProve,
 ];
 
