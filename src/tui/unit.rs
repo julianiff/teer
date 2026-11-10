@@ -45,6 +45,9 @@ const KEY_GAP: usize = 2;
 const SIDE_BY_SIDE: u16 = 90;
 /// Two tiles share a row once each gets this many columns.
 const TILE_W: u16 = 48;
+/// Blank rows above and below the advice tile's text while it only asks
+/// or waits.
+const ADVICE_AIR: u16 = 1;
 
 // ---- Drawing -----------------------------------------------------------
 
@@ -97,7 +100,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .areas(body);
         (text, Vec::new(), keys)
     } else {
-        tile_areas(tiles, body, keys_h)
+        let small = |p: Panel, w: u16| small_height(app, u, p, w);
+        tile_areas(tiles, body, keys_h, small)
     };
     draw_text(f, app, u, text, focus.is_none());
     for (p, r) in cells {
@@ -112,12 +116,15 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 /// two fifths beside two (above more).
 /// The tiles fill the rest in the order they opened, two to a row where
 /// each gets [`TILE_W`] columns; the ask tile has a row of its own, twice
-/// as tall as the others. The keys tile is under them, as tall as
+/// as tall as the others. A tile `small` gives rows for (at the column's
+/// width) has a row of its own that tall; the room it leaves goes to the
+/// others, or stays blank. The keys tile is under them, as tall as
 /// `keys_h` says for the width and the room.
 fn tile_areas(
     tiles: &[Panel],
     area: Rect,
     keys_h: impl Fn(u16, u16) -> u16,
+    small: impl Fn(Panel, u16) -> Option<u16>,
 ) -> (Rect, Vec<(Panel, Rect)>, Rect) {
     let side = area.width >= SIDE_BY_SIDE;
     let two = side && tiles.len() > 1 && area.width * 3 / 5 >= 2 * TILE_W;
@@ -136,18 +143,19 @@ fn tile_areas(
         Constraint::Length(keys_h(rest.width, rest.height)),
     ])
     .areas(rest);
+    let small = |p: Panel| small(p, rest.width);
+    let alone = |p: Panel| p == Panel::Ask || small(p).is_some();
     let mut rows: Vec<Vec<Panel>> = Vec::new();
     for &p in tiles {
         match rows.last_mut() {
-            Some(row) if two && row.len() == 1 && p != Panel::Ask && row[0] != Panel::Ask => {
-                row.push(p);
-            }
+            Some(row) if two && row.len() == 1 && !alone(p) && !alone(row[0]) => row.push(p),
             _ => rows.push(vec![p]),
         }
     }
-    let heights = rows
-        .iter()
-        .map(|r| Constraint::Fill(if r[0] == Panel::Ask { 2 } else { 1 }));
+    let heights = rows.iter().map(|r| match small(r[0]) {
+        Some(h) => Constraint::Length(h),
+        None => Constraint::Fill(if r[0] == Panel::Ask { 2 } else { 1 }),
+    });
     let row_areas = Layout::vertical(heights).split(rest);
     let mut out = Vec::new();
     for (row, r) in rows.iter().zip(row_areas.iter()) {
@@ -301,13 +309,53 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<u
 /// The second model `w` cells wide, after a blank line, when it disputes
 /// the description (and there is an agent); else nothing.
 fn second_model_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
-    if !app.can_ask() || !disputed(app, u) {
+    if !second_model_shown(app, u) {
         return Vec::new();
     }
     let by = crate::session::tools::answer_label(app, u, DiveKind::Disagree);
     let mut lines = vec![Line::default(), heading_by(app, "Second model", by, w)];
     lines.extend(answers::disagree_lines(app, u, w));
     lines
+}
+
+/// Whether the second model shows: there is an agent and it disputes the
+/// description.
+fn second_model_shown(app: &App, u: &Unit) -> bool {
+    app.can_ask() && disputed(app, u)
+}
+
+/// Whether the advice tile only asks or waits: no advice yet, and no
+/// second model to show in it. Then it is small, its text in the middle.
+fn advice_waits(app: &App, u: &Unit) -> bool {
+    !u.dive.results.contains_key(&DiveKind::Recommend) && !second_model_shown(app, u)
+}
+
+/// What the advice tile says while it [waits](advice_waits), `w` cells
+/// wide: the question (or that the agent is asked), each line centred.
+fn advice_wait_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
+    answers::section_body(app, u, DiveKind::Recommend, w)
+        .into_iter()
+        .map(|mut l| {
+            // Without the indent the other tiles' text has.
+            if let Some(s) = l.spans.first_mut()
+                && let Some(rest) = s.content.strip_prefix(' ')
+            {
+                s.content = rest.to_string().into();
+            }
+            l.centered()
+        })
+        .collect()
+}
+
+/// Rows tile `p` needs `w` columns wide, borders included, when it is
+/// small: the advice tile while it [waits](advice_waits). None for the
+/// others.
+fn small_height(app: &App, u: &Unit, p: Panel, w: u16) -> Option<u16> {
+    if p != Panel::Recommend || !advice_waits(app, u) {
+        return None;
+    }
+    let lines = advice_wait_lines(app, u, (w as usize).saturating_sub(4)).len() as u16;
+    Some(lines + 2 * ADVICE_AIR + 2)
 }
 
 /// The code box's edge `w` cells wide, one cell in: the top one titled
@@ -524,9 +572,23 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
     match p {
         Panel::Recommend => {
             let w = inner.width as usize;
-            let mut lines = answers::section_body(app, u, DiveKind::Recommend, w);
-            lines.extend(second_model_lines(app, u, w));
-            draw_scrolled(f, app, p, lines, inner, focus);
+            if advice_waits(app, u) {
+                // The question in the middle, nothing to scroll.
+                let lines = advice_wait_lines(app, u, w);
+                let h = (lines.len() as u16).min(inner.height);
+                let top = (inner.height - h) / 2;
+                let at = Rect::new(inner.x, inner.y + top, inner.width, h);
+                f.render_widget(Paragraph::new(lines), at);
+                app.unit.scroll.borrow_mut().remove(&p);
+                if focus {
+                    app.detail_max_scroll.set(0);
+                    app.detail_rows.set(inner.height as usize);
+                }
+            } else {
+                let mut lines = answers::section_body(app, u, DiveKind::Recommend, w);
+                lines.extend(second_model_lines(app, u, w));
+                draw_scrolled(f, app, p, lines, inner, focus);
+            }
             // A click on the question asks.
             if tools::may_advise(app, u)
                 && let Some(r) = super::select::find(f.buffer_mut(), inner, answers::ASK_ADVICE)
@@ -1144,34 +1206,44 @@ mod tests {
     #[test]
     fn the_text_beside_its_tiles_wide_and_above_them_narrow() {
         let none = |_: u16, _: u16| 0;
+        let big = |_: Panel, _: u16| None;
         let wide = Rect::new(0, 0, 120, 30);
-        let (text, cells, _) = tile_areas(&[TESTS], wide, none);
+        let (text, cells, _) = tile_areas(&[TESTS], wide, none, big);
         assert_eq!((text.width, cells[0].1.x), (60, 60));
         assert_eq!(cells[0].1.height, 30);
         // Two tiles stack in one column beside the text.
-        let (text, cells, _) = tile_areas(&[TESTS, RUN], wide, none);
+        let (text, cells, _) = tile_areas(&[TESTS, RUN], wide, none, big);
         assert_eq!(text.width, 60);
         assert_eq!(cells[0].1.x, cells[1].1.x);
         assert!(cells[0].1.y < cells[1].1.y);
         // Room for two to a row: they share it; the ask tile has its own,
         // twice as tall.
         let room = Rect::new(0, 0, 200, 30);
-        let (text, cells, _) = tile_areas(&[TESTS, RUN, Panel::Ask], room, none);
+        let (text, cells, _) = tile_areas(&[TESTS, RUN, Panel::Ask], room, none, big);
         assert_eq!(text.width, 80);
         assert_eq!(cells[0].1.y, cells[1].1.y);
         assert!(cells[0].1.x < cells[1].1.x);
         assert_eq!(cells[2].1.width, 120);
         assert_eq!(cells[2].1.height, 2 * cells[0].1.height);
         // Narrow: the text on top.
-        let (text, cells, _) = tile_areas(&[TESTS], Rect::new(0, 0, 80, 30), none);
+        let (text, cells, _) = tile_areas(&[TESTS], Rect::new(0, 0, 80, 30), none, big);
         assert_eq!((text.width, text.height), (80, 15));
         assert_eq!((cells[0].1.y, cells[0].1.width), (15, 80));
         // The keys tile under the tiles, as tall as it says.
-        let (text, cells, keys) = tile_areas(&[REC, TESTS], wide, |w, _| w / 10);
+        let (text, cells, keys) = tile_areas(&[REC, TESTS], wide, |w, _| w / 10, big);
         assert_eq!((keys.x, keys.width, keys.height), (60, 60, 6));
         assert_eq!(keys.bottom(), 30);
         assert_eq!(cells[1].1.bottom(), keys.y);
         assert_eq!(text.height, 30);
+        // A small tile: a row of its own that tall, the room left to the
+        // others, or blank.
+        let small = |p: Panel, _: u16| (p == REC).then_some(6);
+        let (_, cells, _) = tile_areas(&[REC, TESTS, RUN], room, none, small);
+        assert_eq!((cells[0].1.height, cells[0].1.width), (6, 120));
+        assert_eq!(cells[1].1.y, 6);
+        assert_eq!((cells[1].1.height, cells[1].1.y), (24, cells[2].1.y));
+        let (_, cells, _) = tile_areas(&[REC], wide, none, small);
+        assert_eq!((cells[0].1.y, cells[0].1.height), (0, 6));
     }
 
     #[test]
@@ -1198,6 +1270,15 @@ mod tests {
         // The keys tile under it: what can be done here.
         let keys = rows.iter().position(|r| r.contains("╭ Keys")).unwrap();
         assert!(keys > head, "{text}");
+        // Small while it only asks, the question in the middle of it.
+        let (left, right) = tile_edges(&rows, head);
+        let foot = advice_foot(&rows, head, left);
+        // The question, its explanation on two rows, a blank row around.
+        assert_eq!(foot - head, 6, "{text}");
+        let q = rows[head + 2];
+        let start = q.find("␣a ask").map(|i| q[..i].chars().count()).unwrap();
+        let end = start + "␣a ask the agent what to do about it:".chars().count();
+        assert!((start - left - 1).abs_diff(right - end) <= 1, "{text}");
         for item in [
             "a accept",
             "f flag",
@@ -1231,6 +1312,8 @@ mod tests {
         assert_eq!(recommends(&effects), [a.unit.id.clone()]);
         let text = render(&a, 120, 40);
         assert!(text.contains("asking the agent"), "{text}");
+        let rows: Vec<&str> = text.lines().collect();
+        assert_eq!(advice_foot(&rows, head, left) - head, 4, "{text}");
         // Answered: who wrote it on its bottom edge.
         let id = a.unit.id.clone();
         let u = a.review.unit_mut(&id).unwrap();
@@ -1245,6 +1328,26 @@ mod tests {
         let text = render(&a, 120, 40);
         assert!(text.contains("Keep the retry, log the failure."), "{text}");
         assert!(text.contains("╰ agent ("), "{text}");
+        // Then it grows down to the keys tile.
+        let rows: Vec<&str> = text.lines().collect();
+        assert_eq!(advice_foot(&rows, head, left) + 1, keys, "{text}");
+    }
+
+    /// The columns of the left and right edge of the tile whose top is on
+    /// `row`, beside the text.
+    fn tile_edges(rows: &[&str], row: usize) -> (usize, usize) {
+        let cells: Vec<char> = rows[row].chars().collect();
+        let left = (40..cells.len()).find(|&i| cells[i] == '╭').unwrap();
+        let right = (left..cells.len()).find(|&i| cells[i] == '╮').unwrap();
+        (left, right)
+    }
+
+    /// The row of the bottom edge of the tile whose top is on `head`, its
+    /// left edge in column `left`.
+    fn advice_foot(rows: &[&str], head: usize, left: usize) -> usize {
+        (head + 1..rows.len())
+            .find(|&i| rows[i].chars().nth(left) == Some('╰'))
+            .unwrap()
     }
 
     #[test]
