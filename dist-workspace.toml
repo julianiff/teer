@@ -28,3 +28,8 @@ install-updater = false
 # Build only the CLI (`--package teer`), not the whole workspace: Teer.app
 # needs GTK on Linux and has its own release job.
 precise-builds = true
+
+# GitHub retired the macos-14 image on 2026-11-02; dist 0.33 still picks it
+# for Apple Silicon.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
