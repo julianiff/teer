@@ -1,6 +1,6 @@
 # Security review in teer: proposal
 
-2026-11-10 · status: proposal, nothing built
+2026-11-10 · status: built on `feat/security-review` (phases 1–5); phase 6, `teer audit <path>`, not built
 
 ## In short
 
