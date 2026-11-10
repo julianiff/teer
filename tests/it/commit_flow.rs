@@ -261,6 +261,7 @@ fn the_sheet_does_not_offer_commit_for_prs_or_base_reviews() {
     let opts = BuildOptions {
         base: Some("HEAD~1".into()),
         languages: None,
+        ..Default::default()
     };
     let mut rv = build_review(&r2.path(), &opts).unwrap();
     assert!(!rv.files.is_empty());
@@ -556,6 +557,7 @@ fn runtime(
             build: BuildOptions {
                 base: None,
                 languages: None,
+                ..Default::default()
             },
             tools: Default::default(),
         },

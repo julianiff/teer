@@ -70,6 +70,7 @@ fn base_mode_compares_branch_to_merge_base() {
     let opts = BuildOptions {
         base: Some("main".into()),
         languages: None,
+        ..Default::default()
     };
     let review = build_review(&repo.path(), &opts).unwrap();
     let paths: Vec<_> = review.files.iter().map(|f| f.path.clone()).collect();

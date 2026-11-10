@@ -226,13 +226,15 @@ pub fn writer_session(review: &Review) -> Option<SessionInfo> {
 
 /// A review ready to show: the review, the agent found (or why there is
 /// none), the session asked for (`--session`, or the Claude Code session
-/// that wrote the changes), the config and the keys.
+/// that wrote the changes), the config and the keys, and the SARIF files
+/// (`--sarif`) every re-run reads again.
 pub struct Launch {
     pub review: Review,
     pub agent: std::result::Result<Agent, String>,
     pub session_arg: Option<String>,
     pub cfg: Config,
     pub keymap: crate::keymap::Keymap,
+    pub sarif: Vec<PathBuf>,
 }
 
 /// A review begun: the app on its first screen, the runtime that carries
@@ -259,6 +261,7 @@ pub fn begin(l: Launch, by: &str) -> Result<Begun> {
     let build = crate::review::BuildOptions {
         base,
         languages: l.cfg.languages.clone(),
+        sarif: l.sarif,
     };
     let editor = l.cfg.editor()?;
     let mut app = crate::session::App::new(l.review, l.cfg, l.keymap);
@@ -347,6 +350,7 @@ pub fn open(cwd: &Path, what: &What, mut cfg: Config, no_agent: bool) -> Result<
             let opts = crate::review::BuildOptions {
                 base: target.base().map(String::from),
                 languages: cfg.languages.clone(),
+                ..Default::default()
             };
             let mut review = crate::review::build_review(cwd, &opts)?;
             if let git::Target::Branch { head, base } = &target {
@@ -395,6 +399,9 @@ pub fn open(cwd: &Path, what: &What, mut cfg: Config, no_agent: bool) -> Result<
             session_arg,
             cfg,
             keymap,
+            // Teer.app opens a review without other tools' SARIF files; a
+            // PR's code-scanning alerts come along all the same.
+            sarif: Vec::new(),
         }),
         worktree,
     })

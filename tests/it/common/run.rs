@@ -587,6 +587,7 @@ impl Session {
         let build = BuildOptions {
             base,
             languages: cfg.languages.clone(),
+            ..Default::default()
         };
         let mut app = App::new(review, cfg, keys);
         let initial = app.start(model.is_some(), note, sessions, Some(session));

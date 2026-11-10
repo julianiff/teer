@@ -32,6 +32,9 @@ use prepare::PrepareEvent;
 pub struct BuildOptions {
     pub base: Option<String>,
     pub languages: Option<Vec<String>>,
+    /// SARIF files of other tools' findings (`--sarif`), absolute: read on
+    /// every build, so a re-run pins them again (`security::sarif`).
+    pub sarif: Vec<std::path::PathBuf>,
 }
 
 /// Build a review from the repository: diff, units, call graph. No agent.
@@ -88,6 +91,10 @@ fn build(cwd: &Path, opts: &BuildOptions, tree: bool) -> Result<Review> {
         cursor: None,
     };
     crate::security::facts::annotate(&mut review, &crate::security::SecurityConfig::load());
+    // Other tools' findings, after teer's own facts (which start afresh).
+    if !opts.sarif.is_empty() {
+        crate::security::sarif::import_files(&mut review, &opts.sarif);
+    }
     Ok(review)
 }
 
