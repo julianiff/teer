@@ -813,6 +813,18 @@ pub fn path_connects(
     !reached.is_empty()
 }
 
+/// Does a finding's path pass through `unit`: its source, a hop or its
+/// sink cites lines of the unit's new code. A finding about other code
+/// isn't about this change, and must not raise this unit. A removed unit
+/// has no new code to pass through: any path will do.
+pub fn passes_through(unit: &Unit, source: &Cite, path: &[Hop], sink: &Cite) -> bool {
+    let Some(r) = unit.new_range else {
+        return true;
+    };
+    let inside = |c: &Cite| c.file == unit.file && c.start <= r.end && c.end >= r.start;
+    inside(source) || inside(sink) || path.iter().any(|h| inside(&h.cite))
+}
+
 // ---- Validating the answer -------------------------------------------------
 
 #[derive(Debug, Default, Deserialize)]
@@ -923,6 +935,9 @@ fn finding(
             continue;
         }
         path.push(Hop { symbol, cite });
+    }
+    if !passes_through(&job.unit, &source, &path, &sink) {
+        return Err("its path doesn't pass through the unit under review".into());
     }
     let path_verified = whole && path_connects(&job.graph, &job.units, &source, &path, &sink);
     let f = Finding {
@@ -1266,6 +1281,26 @@ mod tests {
             ],
             edges: vec![(0, 1), (1, 2), (3, 1)],
         }
+    }
+
+    #[test]
+    fn a_path_must_pass_through_the_unit() {
+        let u: Unit = serde_json::from_value(json!({
+            "id": "b.php::Repo::load", "file": "b.php", "symbol": "Repo::load",
+            "kind": "Method", "status": "Changed", "old_range": {"start": 1, "end": 10},
+            "new_range": {"start": 1, "end": 10}, "fingerprint": "x", "changes": [],
+            "callers": [], "callees": [], "decision": "Pending"
+        }))
+        .unwrap();
+        let hop = Hop {
+            symbol: "Repo::load".into(),
+            cite: cite("b.php", 5),
+        };
+        let (src, sink) = (cite("a.php", 3), cite("c.php", 4));
+        assert!(passes_through(&u, &src, std::slice::from_ref(&hop), &sink));
+        assert!(passes_through(&u, &cite("b.php", 10), &[], &sink));
+        assert!(!passes_through(&u, &src, &[], &sink));
+        assert!(!passes_through(&u, &src, &[], &cite("b.php", 11)));
     }
 
     #[test]

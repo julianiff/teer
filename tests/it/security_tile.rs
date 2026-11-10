@@ -326,6 +326,13 @@ async fn an_unverified_path_shows_but_raises_nothing() {
             // The sink is in code nothing on the path calls.
             finding(
                 "The id ends up in the audit log",
+                cite("src/repo.php", 4, 4),
+                json!([]),
+                cite("src/log.php", 3, 3),
+            ),
+            // Not through the unit at all: about other code, dropped.
+            finding(
+                "Elsewhere",
                 cite("src/routes.php", 4, 4),
                 json!([]),
                 cite("src/log.php", 3, 3),
@@ -344,7 +351,7 @@ async fn an_unverified_path_shows_but_raises_nothing() {
     assert_eq!(applied(&mut r, &events), before);
     let a = audit_of(&r);
     assert_eq!(a.findings.len(), 3);
-    assert_eq!(a.dropped, 0);
+    assert_eq!(a.dropped, 1, "the finding about other code");
     assert!(a.findings.iter().all(|f| !f.path_verified && !f.stands()));
     let ghost = a
         .findings
