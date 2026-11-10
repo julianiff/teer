@@ -166,10 +166,9 @@ impl Runtime {
                 tokio::task::spawn_blocking(move || {
                     let r = match pr {
                         // A pull request is fetched again: a pushed fix
-                        // shows up (Q14).
-                        Some(pr) if pr.repo_dir.is_some() => {
-                            crate::pr::refresh(&repo, &pr, opts.languages.clone())
-                        }
+                        // shows up (Q14). Its SARIF files and code-scanning
+                        // alerts are read again too.
+                        Some(pr) if pr.repo_dir.is_some() => crate::pr::refresh(&repo, &pr, &opts),
                         pr => crate::review::build_review(&repo, &opts).map(|mut r| {
                             r.pr = pr;
                             r
@@ -197,8 +196,57 @@ impl Runtime {
                 });
             }
             Effect::ProveFindings { unit_id } => {
-                // Phase 4 (`security::prove`) runs them.
-                crate::log::write(&format!("proving the findings of {unit_id}: not built yet"));
+                let tx = self.tx.clone();
+                let Some(unit) = app.review.unit(&unit_id).cloned() else {
+                    return false;
+                };
+                // The findings not run yet, by index into the audit's.
+                let findings: Vec<(usize, crate::security::Finding)> = app
+                    .review
+                    .audit_mut(&unit_id)
+                    .map(|a| {
+                        a.findings
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, f)| f.proof.is_none())
+                            .map(|(i, f)| (i, f.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // Whatever stops it here, every finding is told why, so
+                // `proving` clears.
+                let fail = |why: &str| {
+                    let _ = tx.send(AppEvent::Dive(DiveEvent::Proved {
+                        id: unit.id.clone(),
+                        fingerprint: unit.fingerprint.clone(),
+                        proofs: crate::security::prove::unproven(&findings, why),
+                    }));
+                };
+                let Some((adapter, session)) = self.agent(app) else {
+                    fail("no agent available");
+                    return false;
+                };
+                let Some(file) = app.review.file_of(&unit).cloned() else {
+                    fail("changed file not found");
+                    return false;
+                };
+                let job = crate::review::behavior::Job {
+                    repo: app
+                        .review
+                        .pr
+                        .as_ref()
+                        .and_then(|p| p.repo_dir.clone())
+                        .unwrap_or_else(|| app.review.repo_root.clone()),
+                    base: app.review.base.clone(),
+                    files: app.review.files.clone(),
+                    review_id: app.review.id.clone(),
+                    unit,
+                    file,
+                    timeout: Duration::from_secs(app.cfg.behavior_timeout.max(1)),
+                };
+                forward(tx, AppEvent::Dive, |dtx| {
+                    crate::security::prove::run(adapter, session, job, findings, dtx)
+                });
             }
             Effect::InterpretTests { unit_id } => {
                 let tx = self.tx.clone();

@@ -96,6 +96,7 @@ fn open(dir: &Path, base: Option<String>, cfg: Config) -> App {
     let opts = BuildOptions {
         base,
         languages: None,
+        ..Default::default()
     };
     let review = build_review(dir, &opts).unwrap();
     let mut a = App::new(review, cfg, Keymap::default());
@@ -109,6 +110,7 @@ fn runtime(tools: Tools, base: Option<String>) -> (Runtime, UnboundedReceiver<Ap
     let build = BuildOptions {
         base,
         languages: None,
+        ..Default::default()
     };
     let rt = Runtime {
         adapter: None,

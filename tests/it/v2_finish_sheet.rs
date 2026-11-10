@@ -84,6 +84,7 @@ fn branch(r: &FixtureRepo, d: Decision) -> App {
     let opts = BuildOptions {
         base: Some("main".into()),
         languages: None,
+        ..Default::default()
     };
     let mut rv = build_review(&r.path(), &opts).unwrap();
     assert!(!rv.units.is_empty());
@@ -677,6 +678,7 @@ async fn post(a: &mut App, fk: &Fakes, effects: Vec<Effect>) -> Vec<Effect> {
         build: BuildOptions {
             base: None,
             languages: None,
+            ..Default::default()
         },
         tools: fk.tools.clone(),
     };

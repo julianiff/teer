@@ -1132,6 +1132,7 @@ fn runtime(fk: &Fakes) -> (Runtime, tokio::sync::mpsc::UnboundedReceiver<AppEven
             build: BuildOptions {
                 base: None,
                 languages: None,
+                ..Default::default()
             },
             tools: fk.tools.clone(),
         },

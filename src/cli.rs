@@ -48,6 +48,13 @@ pub struct Args {
     #[arg(long, value_name = "REF")]
     pub base: Option<String>,
 
+    /// Another tool's findings (CodeQL, Semgrep…) as a SARIF file, pinned
+    /// to the units they fall in as security facts; repeat it for more
+    /// files. Read again on every re-run. Hidden, as `--session` is: the
+    /// help lists only the three flags a review takes.
+    #[arg(long, value_name = "FILE", hide = true)]
+    pub sarif: Vec<PathBuf>,
+
     /// The Claude Code session to ask (a throwaway fork of it) and hand the
     /// notes to, instead of the one teer finds: the newest session in this
     /// repository that edited the changed files in the last 24 hours.
@@ -104,13 +111,20 @@ pub enum Command {
     /// Each note comes with the file, the lines, and the change it is about as a diff,
     /// so an agent can work through them: run `! teer notes` in Claude Code, or let
     /// the agent run it. Prints nothing when the review has no notes.
+    ///
+    /// With --sarif, prints the review's security facts and the agent's standing
+    /// findings as SARIF 2.1.0 instead, for code scanning or another tool.
     #[command(
-        after_help = "Examples:\n  teer notes\n  teer notes | pbcopy\n  teer notes https://github.com/owner/repo/pull/123"
+        after_help = "Examples:\n  teer notes\n  teer notes | pbcopy\n  teer notes https://github.com/owner/repo/pull/123\n  teer notes --sarif > teer.sarif"
     )]
     Notes {
         /// The pull request whose review's notes to print, instead of the repository's.
         #[arg(value_name = "URL")]
         url: Option<String>,
+
+        /// Print the security facts and findings as SARIF 2.1.0 instead of the notes.
+        #[arg(long)]
+        sarif: bool,
     },
     /// Open this repository's review in Teer.app, the desktop app.
     ///
@@ -297,8 +311,8 @@ pub async fn run_on(args: Args, path: &Path, screens: &dyn Screens) -> Result<()
             "give either a pull request ('{}') or a command, not both",
             sanitize(&t)
         ),
-        (Some(Command::Notes { url }), None) => {
-            return print_notes(&cwd, url.as_deref(), &keymap);
+        (Some(Command::Notes { url, sarif }), None) => {
+            return print_notes(&cwd, url.as_deref(), sarif, &keymap);
         }
         (Some(Command::App { pr }), None) => {
             return open_app(&cwd, pr.as_deref(), args.base.as_deref());
@@ -335,6 +349,7 @@ pub async fn run_on(args: Args, path: &Path, screens: &dyn Screens) -> Result<()
         }
         _ => {}
     }
+    let sarif = sarif_files(&cwd, &args.sarif)?;
     let needs_agent = !args.no_agent;
     if needs_agent && !args.json && !path.exists() {
         // The first start: setup, then on into the review. Without a
@@ -366,6 +381,7 @@ pub async fn run_on(args: Args, path: &Path, screens: &dyn Screens) -> Result<()
             let opts = BuildOptions {
                 base: target.base().map(String::from),
                 languages: cfg.languages.clone(),
+                sarif,
             };
             let mut review = build_review(&cwd, &opts)?;
             if let Target::Branch { head, base } = &target {
@@ -375,17 +391,32 @@ pub async fn run_on(args: Args, path: &Path, screens: &dyn Screens) -> Result<()
                 });
             }
             store::restore(&mut review);
-            run_review(args, review, cfg, keymap, screens).await
+            run_review(args, review, cfg, keymap, opts.sarif, screens).await
         }
         Start::Pick => {
             let picked = pr_list(&cwd, args.json, &cfg, keymap.clone()).await?;
             let Some(pr) = picked else {
                 return Ok(());
             };
-            review_pr(args, cwd, pr.url, cfg, keymap, screens).await
+            review_pr(args, cwd, pr.url, cfg, keymap, sarif, screens).await
         }
-        Start::Pr(url) => review_pr(args, cwd, url, cfg, keymap, screens).await,
+        Start::Pr(url) => review_pr(args, cwd, url, cfg, keymap, sarif, screens).await,
     }
+}
+
+/// The SARIF files of `--sarif`, as absolute paths (a relative one is
+/// relative to `cwd`, where teer runs as if started), each read once here
+/// so a file that isn't SARIF stops teer before anything is built.
+fn sarif_files(cwd: &Path, given: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    given
+        .iter()
+        .map(|p| {
+            let path = cwd.join(p);
+            crate::security::sarif::load(&path)
+                .map_err(|e| anyhow::anyhow!("--sarif {}: {e}", p.display()))?;
+            Ok(path.canonicalize().unwrap_or(path))
+        })
+        .collect()
 }
 
 /// `teer pr list` for the repository at `cwd`. On a terminal the pull
@@ -444,9 +475,10 @@ fn open_app(cwd: &Path, pr: Option<&str>, base: Option<&str>) -> Result<()> {
 }
 
 /// `teer notes`: the notes of the repository's last review, or of the pull
-/// request at `url`, as Markdown on stdout. `keys` name the key that writes
-/// a note.
-fn print_notes(cwd: &Path, url: Option<&str>, keys: &Keymap) -> Result<()> {
+/// request at `url`, as Markdown on stdout; with `sarif`, its security
+/// facts and standing findings as SARIF 2.1.0 instead. `keys` name the key
+/// that writes a note.
+fn print_notes(cwd: &Path, url: Option<&str>, sarif: bool, keys: &Keymap) -> Result<()> {
     let pr = url.map(crate::pr::parse_url).transpose()?;
     let repo = match &pr {
         // A pull request's reviews are kept by the pull request.
@@ -459,6 +491,11 @@ fn print_notes(cwd: &Path, url: Option<&str>, keys: &Keymap) -> Result<()> {
             None => anyhow::bail!("no saved review of this repository; run teer first"),
         }
     };
+    if sarif {
+        let out = crate::security::sarif::write(&review);
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
     let notes = crate::notes::markdown(&review);
     if notes.is_empty() {
         eprintln!(
@@ -471,19 +508,27 @@ fn print_notes(cwd: &Path, url: Option<&str>, keys: &Keymap) -> Result<()> {
     Ok(())
 }
 
-/// Fetch the pull request at `url` into teer's worktree and review it.
+/// Fetch the pull request at `url` into teer's worktree and review it, with
+/// the SARIF files `sarif` pinned.
 async fn review_pr(
     args: Args,
     cwd: PathBuf,
     url: String,
     cfg: Config,
     keymap: Keymap,
+    sarif: Vec<PathBuf>,
     screens: &dyn Screens,
 ) -> Result<()> {
     // Fetching and checking out block; no TUI is up yet.
-    let langs = cfg.languages.clone();
-    let session =
-        tokio::task::spawn_blocking(move || crate::pr::prepare(&cwd, &url, langs)).await??;
+    let opts = BuildOptions {
+        languages: cfg.languages.clone(),
+        sarif,
+        ..Default::default()
+    };
+    let session = {
+        let opts = opts.clone();
+        tokio::task::spawn_blocking(move || crate::pr::prepare_with(&cwd, &url, &opts)).await??
+    };
     // The kept checkout stays for the next run; a throwaway one must go.
     watch_signals(
         session.worktree.repo().to_path_buf(),
@@ -493,7 +538,7 @@ async fn review_pr(
         review,
         mut worktree,
     } = session;
-    let result = run_review(args, review, cfg, keymap, screens).await;
+    let result = run_review(args, review, cfg, keymap, opts.sarif, screens).await;
     // The terminal is restored by now; the worktree is released on every path.
     worktree.release();
     exit_if_signalled();
@@ -562,12 +607,14 @@ fn exit_if_signalled() {
     }
 }
 
-/// Prepare and show a built review: `--json`, or the TUI.
+/// Prepare and show a built review: `--json`, or the TUI, whose re-runs pin
+/// the SARIF files `sarif` again.
 async fn run_review(
     args: Args,
     mut review: Review,
     mut cfg: Config,
     keymap: Keymap,
+    sarif: Vec<PathBuf>,
     screens: &dyn Screens,
 ) -> Result<()> {
     let repo = review.repo_root.clone();
@@ -640,6 +687,7 @@ async fn run_review(
             session_arg,
             cfg,
             keymap,
+            sarif,
         })
         .await
 }
@@ -657,8 +705,26 @@ mod tests {
     fn commands_stay_commands_and_anything_else_is_a_pull_request() {
         assert!(matches!(
             parse(&["notes"]).command,
-            Some(Command::Notes { url: None })
+            Some(Command::Notes {
+                url: None,
+                sarif: false
+            })
         ));
+        assert!(matches!(
+            parse(&["notes", "--sarif"]).command,
+            Some(Command::Notes {
+                url: None,
+                sarif: true
+            })
+        ));
+        // `--sarif <file>` before a review, repeated; `notes --sarif` is the
+        // command's own.
+        let a = parse(&["--sarif", "a.sarif", "--sarif", "b.sarif", "--json"]);
+        assert_eq!(
+            a.sarif,
+            [PathBuf::from("a.sarif"), PathBuf::from("b.sarif")]
+        );
+        assert!(a.command.is_none() && a.json);
         assert!(matches!(parse(&["setup"]).command, Some(Command::Setup)));
         assert!(matches!(
             parse(&["pr"]).command,

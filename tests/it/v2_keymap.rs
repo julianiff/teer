@@ -630,9 +630,127 @@ fn zs_switches_the_queue_to_the_security_order() {
 
 #[test]
 fn leader_p_proves_the_findings_of_the_unit() {
-    // Phase 4 (prove it) asserts what it does.
+    use teer::review::model::Cite;
+    use teer::security::{Audit, Class, Finding, Proof};
+
+    let cite = |line: u32| Cite {
+        file: PathBuf::from("f0.rs"),
+        start: line,
+        end: line,
+    };
+    let finding = |title: &str| Finding {
+        class: Class::Authorization,
+        severity: Risk::High,
+        confidence: Risk::Medium,
+        title: title.into(),
+        source: cite(1),
+        path: Vec::new(),
+        sink: cite(2),
+        missing: "the owner check".into(),
+        exploit: "tenant B reads tenant A's asset".into(),
+        path_verified: true,
+        second: None,
+        proof: None,
+    };
+    let audited = |d: &mut Driver, findings: Vec<Finding>| {
+        d.app.review.unit_mut("u0").unwrap().dive.results.insert(
+            DiveKind::Security,
+            DiveResult {
+                audit: Some(Audit {
+                    findings,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+    };
+    let proving = |d: &Driver| {
+        d.app.review.units[0].dive.results[&DiveKind::Security]
+            .audit
+            .as_ref()
+            .unwrap()
+            .proving
+    };
+
+    // No agent: nothing to prove with.
     let mut d = Driver::new(3);
-    d.keys("<space>p");
+    assert!(d.keys("<space>p").is_empty());
+    assert_eq!(d.status(), "No agent: proving needs one.");
+
+    // No findings: the Security tile asks for them first.
+    d.app.has_agent = true;
+    d.app.review.agent_session = Some(teer::review::model::SessionRef::default());
+    assert!(d.keys("<space>p").is_empty());
+    assert_eq!(d.status(), "No findings to prove: ␣x asks for them first.");
+    audited(&mut d, Vec::new());
+    assert!(d.keys("<space>p").is_empty());
+    assert!(
+        d.status().starts_with("No findings to prove"),
+        "{}",
+        d.status()
+    );
+
+    // From the queue: the unit under the cursor, the findings not run yet.
+    let mut done = finding("already run");
+    done.proof = Some(Proof::Unproven {
+        why: "needs a database".into(),
+    });
+    audited(
+        &mut d,
+        vec![finding("asset loads for another tenant"), done],
+    );
+    assert_eq!(d.selected().as_deref(), Some("u0"));
+    assert_eq!(
+        d.keys("<space>p"),
+        vec![Effect::ProveFindings {
+            unit_id: "u0".into()
+        }]
+    );
+    assert_eq!(d.screen(), Screen::Queue);
+    assert!(proving(&d));
+    assert_eq!(d.status(), "Proving 1 finding old against new…");
+    // One proof at a time.
+    assert!(d.keys("<space>p").is_empty());
+    assert!(d.status().starts_with("Already proving"), "{}", d.status());
+
+    // What came back clears it; every finding run, nothing is left.
+    d.app.on_app_event(teer::session::app::AppEvent::Dive(
+        teer::review::dive::DiveEvent::Proved {
+            id: "u0".into(),
+            fingerprint: "fp0".into(),
+            proofs: vec![(
+                0,
+                Proof::NotShown {
+                    case: "c".into(),
+                    before: "1".into(),
+                    after: "1".into(),
+                },
+            )],
+        },
+    ));
+    assert!(!proving(&d));
+    assert!(d.keys("<space>p").is_empty());
+    assert!(
+        d.status().starts_with("Nothing left to prove"),
+        "{}",
+        d.status()
+    );
+
+    // In the unit view, with the Security tile open: it gets the focus.
+    audited(&mut d, vec![finding("asset loads for another tenant")]);
+    d.keys("<space>x");
+    assert_eq!(d.screen(), Screen::Unit);
+    assert_eq!(d.app.unit.panel, Some(Panel::Tool(DiveKind::Security)));
+    d.keys("<tab>");
+    assert_ne!(d.app.unit.panel, Some(Panel::Tool(DiveKind::Security)));
+    assert_eq!(
+        d.keys("<space>p"),
+        vec![Effect::ProveFindings {
+            unit_id: "u0".into()
+        }]
+    );
+    assert_eq!(d.app.unit.panel, Some(Panel::Tool(DiveKind::Security)));
+    assert!(proving(&d));
 }
 
 #[test]

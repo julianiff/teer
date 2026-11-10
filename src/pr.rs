@@ -1091,6 +1091,84 @@ pub fn fetch_meta(
     parse_meta(&String::from_utf8_lossy(&stdout))
 }
 
+/// Ask GitHub for the code-scanning alerts open on the PR's head: `gh api
+/// repos/<owner>/<repo>/code-scanning/alerts?ref=refs/pull/<n>/head&state=open&per_page=100`
+/// (with `--hostname` off github.com), no shell, no prompt, killed after
+/// `timeout`; each as an import ([`crate::security::sarif::from_alerts`]).
+/// The error (gh missing, code scanning off or not allowed: a 403 or 404)
+/// is tidied for the log.
+pub fn fetch_alerts(
+    gh: &std::ffi::OsStr,
+    cwd: &Path,
+    info: &PrInfo,
+    timeout: std::time::Duration,
+) -> std::result::Result<Vec<crate::security::sarif::Imported>, String> {
+    use crate::approve::tidy_output;
+    if !info_is_valid(info) {
+        return Err("invalid pull request".into());
+    }
+    let endpoint = format!(
+        "repos/{}/{}/code-scanning/alerts?ref=refs/pull/{}/head&state=open&per_page=100",
+        info.owner, info.repo, info.number
+    );
+    let mut cmd = std::process::Command::new(gh);
+    cmd.arg("api");
+    if info.host != "github.com" || info.port.is_some() {
+        let host = match info.port {
+            Some(p) => format!("{}:{p}", info.host),
+            None => info.host.clone(),
+        };
+        cmd.args(["--hostname", &host]);
+    }
+    cmd.arg(&endpoint)
+        .current_dir(cwd)
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("NO_COLOR", "1");
+    let done = crate::util::output_within(&mut cmd, timeout, 8 << 20).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            crate::gh::Error::NotInstalled.to_string()
+        } else {
+            format!("couldn't run gh: {}", tidy_output(&e.to_string()))
+        }
+    })?;
+    let Some((status, stdout, stderr)) = done else {
+        return Err(format!("gh timed out after {}s", timeout.as_secs()));
+    };
+    if !status.success() {
+        return Err(format!(
+            "gh failed: {}",
+            tidy_output(&String::from_utf8_lossy(&stderr))
+        ));
+    }
+    let v: Value = serde_json::from_slice(&stdout)
+        .map_err(|_| "gh printed something that isn't JSON".to_string())?;
+    if !v.is_array() {
+        return Err("gh printed no list of alerts".into());
+    }
+    Ok(crate::security::sarif::from_alerts(&v))
+}
+
+/// Pin what [`fetch_alerts`] found to the units of `review`. A failure is
+/// only logged: the review goes on without them.
+fn pin_alerts(
+    review: &mut Review,
+    number: u32,
+    alerts: std::result::Result<Vec<crate::security::sarif::Imported>, String>,
+) {
+    match alerts {
+        Ok(found) if found.is_empty() => {}
+        Ok(found) => {
+            let n = found.len();
+            let outside = crate::security::sarif::pin(review, found);
+            crate::log::write(&format!(
+                "PR #{number}: {} code-scanning alerts pinned, {outside} outside the change",
+                n - outside
+            ));
+        }
+        Err(e) => crate::log::write(&format!("PR #{number}: no code-scanning alerts: {e}")),
+    }
+}
+
 // ------------------------------------------------------------------- session
 
 /// A prepared PR review. Dropping it releases the worktree.
@@ -1103,6 +1181,17 @@ pub struct PrSession {
 /// earlier runs of this PR restored). No agent involved. Prints a status line
 /// per step to stderr.
 pub fn prepare(cwd: &Path, url: &str, languages: Option<Vec<String>>) -> Result<PrSession> {
+    let opts = BuildOptions {
+        languages,
+        ..Default::default()
+    };
+    prepare_with(cwd, url, &opts)
+}
+
+/// [`prepare`] with `opts`: its languages and SARIF files (`--sarif`); the
+/// base is the PR's. GitHub's code-scanning alerts on the PR's head are
+/// pinned to their units too ([`fetch_alerts`]), asked while git fetches.
+pub fn prepare_with(cwd: &Path, url: &str, opts: &BuildOptions) -> Result<PrSession> {
     let info = parse_url(url)?;
     let repo = crate::git::repo_root(cwd).with_context(|| {
         format!(
@@ -1110,20 +1199,29 @@ pub fn prepare(cwd: &Path, url: &str, languages: Option<Vec<String>>) -> Result<
             info.owner, info.repo
         )
     })?;
-    // GitHub's title and description, asked while git fetches. Without gh,
-    // or when it fails, the review goes on with the commits alone.
+    // GitHub's title and description, and its code-scanning alerts, asked
+    // while git fetches. Without gh, or when it fails, the review goes on
+    // with the commits alone.
     let meta = {
         let (info, repo) = (info.clone(), repo.clone());
         std::thread::spawn(move || fetch_meta(&crate::gh::program(), &repo, &info, META_TIMEOUT))
+    };
+    let alerts = {
+        let (info, repo) = (info.clone(), repo.clone());
+        std::thread::spawn(move || fetch_alerts(&crate::gh::program(), &repo, &info, META_TIMEOUT))
     };
     let plan = resolve(&repo, &info)?;
     let worktree = PrWorktree::create(&repo, info.number, &plan.head)?;
     eprintln!("teer: reading the changes…");
     let opts = BuildOptions {
         base: Some(plan.base.clone()),
-        languages,
+        ..opts.clone()
     };
     let mut review = build_commits_review(worktree.path(), &opts)?;
+    let alerts = alerts
+        .join()
+        .unwrap_or_else(|_| Err("asking for them failed".into()));
+    pin_alerts(&mut review, info.number, alerts);
     let mut info = info;
     info.base_assumed = plan.assumed_base_branch.clone();
     info.remote = Some(plan.remote.clone());
@@ -1147,9 +1245,10 @@ pub fn prepare(cwd: &Path, url: &str, languages: Option<Vec<String>>) -> Result<
 
 /// `:e` on a pull request: fetch the PR again, move its checkout `dir` to
 /// the head the PR has now (a pushed fix shows up), and build the review
-/// there; `info` comes along with the new head and base, unapproved. Says
+/// there with `opts` (the base is the PR's), its code-scanning alerts asked
+/// again; `info` comes along with the new head and base, unapproved. Says
 /// nothing on stderr: the review's screen has the terminal.
-pub fn refresh(dir: &Path, info: &PrInfo, languages: Option<Vec<String>>) -> Result<Review> {
+pub fn refresh(dir: &Path, info: &PrInfo, opts: &BuildOptions) -> Result<Review> {
     if !info_is_valid(info) {
         bail!("invalid pull request");
     }
@@ -1166,9 +1265,11 @@ pub fn refresh(dir: &Path, info: &PrInfo, languages: Option<Vec<String>>) -> Res
         .with_context(|| format!("couldn't move the checkout to PR #{}'s head", info.number))?;
     let opts = BuildOptions {
         base: Some(plan.base.clone()),
-        languages,
+        ..opts.clone()
     };
     let mut review = build_commits_review(dir, &opts)?;
+    let alerts = fetch_alerts(&crate::gh::program(), repo, info, META_TIMEOUT);
+    pin_alerts(&mut review, info.number, alerts);
     let mut info = info.clone();
     info.base_assumed = plan.assumed_base_branch;
     info.remote = Some(plan.remote);

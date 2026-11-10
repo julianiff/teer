@@ -37,7 +37,7 @@ use crate::pr::ProbeTree;
 use crate::sandbox::{self, Jail, RunOutput};
 
 /// Probes the agent may write before teer gives up.
-const ATTEMPTS: usize = 3;
+pub(crate) const ATTEMPTS: usize = 3;
 
 /// Installed dependency folders linked from the user's checkout into the
 /// probe checkout (read only in the sandbox), when they exist there.
@@ -171,7 +171,11 @@ fn plain_path(raw: &str) -> Option<PathBuf> {
 /// unknown prediction are dropped, and a claim number past the `claims`
 /// statements becomes 0; anything else wrong refuses the whole plan. A test
 /// command that can't be run is dropped, never the probe.
-fn validate_plan(raw: &Value, changed: &[ChangedFile], claims: usize) -> Result<Plan, String> {
+pub(crate) fn validate_plan(
+    raw: &Value,
+    changed: &[ChangedFile],
+    claims: usize,
+) -> Result<Plan, String> {
     let raw: RawPlan =
         serde_json::from_value(raw.clone()).map_err(|e| format!("not a probe: {e}"))?;
     if raw.files.is_empty() || raw.files.len() > MAX_PROBE_FILES {
@@ -293,7 +297,7 @@ fn parse_run(stdout: &str) -> HashMap<String, Outcome> {
 }
 
 /// The table: each planned case with what the two runs printed for it.
-fn build_cases(plan: &Plan, before: &str, after: &str) -> Vec<ProbeCase> {
+pub(crate) fn build_cases(plan: &Plan, before: &str, after: &str) -> Vec<ProbeCase> {
     let (mut b, mut a) = (parse_run(before), parse_run(after));
     plan.cases
         .iter()
@@ -338,7 +342,7 @@ fn tail(s: &str, lines: usize) -> String {
 }
 
 /// What the agent is told when its probe didn't work.
-fn retry_text(plan: &Plan, runs: &[(&str, &RunOutput)], why: &str) -> String {
+pub(crate) fn retry_text(plan: &Plan, runs: &[(&str, &RunOutput)], why: &str) -> String {
     let mut p = format!("Problem: {why}\ncommand: {:?}\n", plan.command);
     for f in &plan.files {
         let mut content = f.content.clone();
@@ -543,7 +547,7 @@ fn undo_unit(new: &str, old: Option<&str>, unit: &Unit) -> Option<String> {
     Some(lines[..start].concat() + &back + &lines[end..].concat())
 }
 
-enum RunError {
+pub(crate) enum RunError {
     /// The plan can't be carried out (a probe file already exists, ...): the agent may try again.
     Plan(String),
     /// teer couldn't run anything.
@@ -620,9 +624,15 @@ async fn run_side(
 
 /// `<data>/probes/<review>/<unit>/`: the probe and what each run printed.
 fn receipt_dir(review_id: &str, unit_id: &str) -> PathBuf {
+    receipt_dir_in("probes", review_id, unit_id)
+}
+
+/// `<data>/<folder>/<review>/<unit>/`: where a run of `folder`'s kind
+/// (`probes`, `proofs`) keeps its receipt.
+pub(crate) fn receipt_dir_in(folder: &str, review_id: &str, unit_id: &str) -> PathBuf {
     let page = super::visual::page_name(unit_id);
     super::store::data_dir()
-        .join("probes")
+        .join(folder)
         .join(super::visual::safe_name(review_id, 64))
         .join(page.trim_end_matches(".html"))
 }
@@ -633,7 +643,7 @@ fn save_run(dir: &Path, name: &str, r: &RunOutput) {
     let _ = std::fs::write(dir.join(format!("{name}.stderr")), status);
 }
 
-fn save_receipt(dir: &Path, plan: &Plan, before: &RunOutput, after: &RunOutput) {
+pub(crate) fn save_receipt(dir: &Path, plan: &Plan, before: &RunOutput, after: &RunOutput) {
     let _ = std::fs::remove_dir_all(dir);
     let probe = dir.join("probe");
     let write = |rel: &Path, text: &str| {
@@ -760,28 +770,39 @@ async fn check_tests(
     }
 }
 
-async fn behave(
-    adapter: Arc<dyn AgentAdapter>,
-    session: &SessionRef,
-    job: Arc<Job>,
-    progress: &Progress,
-) -> Result<Behavior, String> {
+/// Where probes run: teer's probe checkout, the dependency folders linked
+/// into it, and what a prompt says about the place.
+pub(crate) struct Bench {
+    tree: Arc<ProbeTree>,
+    deps: Arc<Vec<(&'static str, PathBuf)>>,
+    pub setting: ProbeSetting,
+}
+
+/// What a run tells while it goes on.
+pub(crate) type Say<'a> = &'a (dyn Fn(String) + Send + Sync);
+
+/// Wait for the run going on in this process to end (one at a time: a
+/// Behavior run or a proof), then set up the probe checkout for `job`. The
+/// bench is the caller's while the guard that comes with it lives. No
+/// sandbox, no bench.
+pub(crate) async fn bench(
+    job: &Job,
+    say: Say<'_>,
+) -> Result<(tokio::sync::MutexGuard<'static, ()>, Bench), String> {
     if !sandbox::available() {
         return Err(sandbox::UNAVAILABLE.into());
     }
     if RUNS.try_lock().is_err() {
-        progress.say("waiting for another Behavior run to finish…");
+        say("waiting for another Behavior run to finish…".into());
     }
-    let _one = RUNS.lock().await;
-    progress.say("preparing the probe checkout…");
+    let one = RUNS.lock().await;
+    say("preparing the probe checkout…".into());
     let (repo, base) = (job.repo.clone(), job.base.clone());
     let tree = tokio::task::spawn_blocking(move || crate::pr::probe_tree(&repo, &base))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| format!("{e:#}"))?;
-    let tree = Arc::new(tree);
-    let repo = job.repo.clone();
-    let deps = Arc::new(dep_sources(&repo));
+    let deps = Arc::new(dep_sources(&job.repo));
     let setting = ProbeSetting {
         programs: tokio::task::spawn_blocking(programs)
             .await
@@ -789,6 +810,49 @@ async fn behave(
         deps: deps.iter().map(|(n, _)| n.to_string()).collect(),
         timeout_secs: job.timeout.as_secs(),
     };
+    let bench = Bench {
+        tree: Arc::new(tree),
+        deps,
+        setting,
+    };
+    Ok((one, bench))
+}
+
+/// Run `plan` on the code before the change, then after it: what each run
+/// printed.
+pub(crate) async fn run_both(
+    bench: &Bench,
+    job: &Arc<Job>,
+    plan: &Plan,
+    say: Say<'_>,
+) -> Result<(RunOutput, RunOutput), RunError> {
+    let mut runs = Vec::new();
+    for side in [Side::Before, Side::After] {
+        let word = if side == Side::Before {
+            "before"
+        } else {
+            "after"
+        };
+        say(format!(
+            "running `{}` {word} the change…",
+            plan.command.join(" ")
+        ));
+        let files = plan.files.clone();
+        runs.push(run_side(&bench.tree, job, files, &plan.command, &bench.deps, side).await?);
+    }
+    let after = runs.pop().unwrap_or_default();
+    let before = runs.pop().unwrap_or_default();
+    Ok((before, after))
+}
+
+async fn behave(
+    adapter: Arc<dyn AgentAdapter>,
+    session: &SessionRef,
+    job: Arc<Job>,
+    progress: &Progress,
+) -> Result<Behavior, String> {
+    let say = |text: String| progress.say(text);
+    let (_one, bench) = bench(&job, &say).await?;
     let claims: Vec<String> = job
         .unit
         .changes
@@ -804,13 +868,14 @@ async fn behave(
             format!(" (try {attempt} of {ATTEMPTS})")
         };
         progress.say(format!("the agent writes a probe{of}…"));
-        let prompt = prompts::behavior_prompt(&job.unit, &job.file, &setting, retry.as_deref());
+        let prompt =
+            prompts::behavior_prompt(&job.unit, &job.file, &bench.setting, retry.as_deref());
         let raw = adapter
             .ask_probe(session, &prompt, &prompts::behavior_schema())
             .await
             .map_err(|e| format!("{e:#}"))?;
         let plan = match validate_plan(&raw, &job.files, claims.len()) {
-            Ok(p) => Arc::new(p),
+            Ok(p) => p,
             Err(why) => {
                 crate::log::write(&format!("probe {attempt} for {}: {why}", job.unit.id));
                 retry = Some(format!("Problem: your answer was refused: {why}"));
@@ -818,41 +883,23 @@ async fn behave(
                 continue;
             }
         };
-        let mut runs = Vec::new();
-        let mut refused = None;
-        for side in [Side::Before, Side::After] {
-            let word = if side == Side::Before {
-                "before"
-            } else {
-                "after"
-            };
-            progress.say(format!(
-                "running `{}` {word} the change…",
-                plan.command.join(" ")
-            ));
-            match run_side(&tree, &job, plan.files.clone(), &plan.command, &deps, side).await {
-                Ok(r) => runs.push(r),
-                Err(RunError::Setup(e)) => return Err(e),
-                Err(RunError::Plan(why)) => {
-                    refused = Some(why);
-                    break;
-                }
+        let (before, after) = match run_both(&bench, &job, &plan, &say).await {
+            Ok(runs) => runs,
+            Err(RunError::Setup(e)) => return Err(e),
+            Err(RunError::Plan(why)) => {
+                crate::log::write(&format!("probe {attempt} for {}: {why}", job.unit.id));
+                retry = Some(format!("Problem: {why}"));
+                last = why;
+                continue;
             }
-        }
-        if let Some(why) = refused {
-            crate::log::write(&format!("probe {attempt} for {}: {why}", job.unit.id));
-            retry = Some(format!("Problem: {why}"));
-            last = why;
-            continue;
-        }
-        let after = runs.pop().unwrap_or_default();
-        let before = runs.pop().unwrap_or_default();
+        };
         let dir = receipt_dir(&job.review_id, &job.unit.id);
         save_receipt(&dir, &plan, &before, &after);
         let cases = build_cases(&plan, &before.stdout, &after.stdout);
         match judge(job.unit.status, &cases) {
             Ok(()) => {
-                let tests = check_tests(&tree, &job, &plan, &deps, &dir, progress).await;
+                let tests =
+                    check_tests(&bench.tree, &job, &plan, &bench.deps, &dir, progress).await;
                 return Ok(Behavior {
                     cases,
                     command: plan.command.clone(),
