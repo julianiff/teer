@@ -62,7 +62,7 @@ fn build(cwd: &Path, opts: &BuildOptions, tree: bool) -> Result<Review> {
     } else {
         intent::read(&repo, &spec.base, &spec.head)
     };
-    Ok(Review {
+    let mut review = Review {
         id: hash_hex(&[
             repo.to_string_lossy().as_bytes(),
             spec.base.as_bytes(),
@@ -86,7 +86,9 @@ fn build(cwd: &Path, opts: &BuildOptions, tree: bool) -> Result<Review> {
         history: Default::default(),
         branch: None,
         cursor: None,
-    })
+    };
+    crate::security::facts::annotate(&mut review, &crate::security::SecurityConfig::load());
+    Ok(review)
 }
 
 impl Review {

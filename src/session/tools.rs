@@ -9,7 +9,7 @@ use crate::review::model::{DiveKind, Unit};
 
 /// Each tool: its kind, the key that opens its panel, its name, and what
 /// it brings to light, in the order the ask panel suggests them.
-pub const TOOLS: [(DiveKind, Action, &str, &str); 3] = [
+pub const TOOLS: [(DiveKind, Action, &str, &str); 4] = [
     (
         DiveKind::Tests,
         Action::ToolTests,
@@ -27,6 +27,12 @@ pub const TOOLS: [(DiveKind, Action, &str, &str); 3] = [
         Action::ToolDiagram,
         "Visualize",
         "a picture of what it talks to and what changes",
+    ),
+    (
+        DiveKind::Security,
+        Action::ToolSecurity,
+        "Security",
+        "how the change can be abused, each way with its path",
     ),
 ];
 

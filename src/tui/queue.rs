@@ -324,6 +324,7 @@ mod tests {
             reasons: Vec::new(),
             dive_pending: Default::default(),
             checks: Default::default(),
+            security: Vec::new(),
         }
     }
 

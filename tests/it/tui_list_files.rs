@@ -58,6 +58,7 @@ fn unit(id: &str, file: &str, line: u32, kind: Kind) -> Unit {
         reasons: Vec::new(),
         dive_pending: Default::default(),
         checks: Default::default(),
+        security: Vec::new(),
     };
     match kind {
         Kind::Close => {

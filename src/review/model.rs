@@ -362,6 +362,9 @@ pub enum DiveKind {
     Disagree,
     /// Which existing tests cover the unit, and dangerous cases none does.
     Tests,
+    /// How the change can be abused: findings with the path that shows
+    /// each (`security::audit`).
+    Security,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -377,6 +380,9 @@ pub struct DiveResult {
     /// The covering tests and the gaps of a Tests answer (`text` holds its note).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage: Option<Coverage>,
+    /// The findings of a Security answer (`text` holds its summary).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit: Option<crate::security::Audit>,
 }
 
 /// An existing test that exercises the unit, at lines that exist.
@@ -877,6 +883,10 @@ pub struct Unit {
     /// Expensive to undo, and the second opinion.
     #[serde(default, skip_serializing_if = "Checks::is_empty")]
     pub checks: Checks,
+    /// Security facts teer found in the change, or imported (see
+    /// `security::facts`). Found again on every build.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub security: Vec<crate::security::Fact>,
 }
 
 impl Unit {
@@ -1059,6 +1069,7 @@ mod tests {
                 visual: None,
                 behavior: None,
                 coverage: None,
+                audit: None,
             },
         );
         u.dive.note = "n".into();
@@ -1101,6 +1112,7 @@ mod tests {
             }),
             behavior: None,
             coverage: None,
+            audit: None,
         };
         let json = serde_json::to_string(&v).unwrap();
         assert!(json.contains("\"status\":\"added\""), "{json}");

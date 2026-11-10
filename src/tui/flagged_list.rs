@@ -284,6 +284,7 @@ mod tests {
             reasons: Vec::new(),
             dive_pending: Default::default(),
             checks: Default::default(),
+            security: Vec::new(),
         };
         u.dive.note = note.into();
         u

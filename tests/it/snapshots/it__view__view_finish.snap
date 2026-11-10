@@ -568,6 +568,12 @@ expression: json(&app)
       "off": false,
       "on": false
     },
+    "toggle.security": {
+      "keys": "zs",
+      "what": "list by level or by exposure",
+      "off": false,
+      "on": null
+    },
     "toggle.zoom": {
       "keys": "zz",
       "what": "zoom the tile in focus",
@@ -604,9 +610,21 @@ expression: json(&app)
       "off": false,
       "on": null
     },
+    "tool.prove": {
+      "keys": "␣p",
+      "what": "prove the security findings, old against new",
+      "off": false,
+      "on": null
+    },
     "tool.run_old_new": {
       "keys": "␣r",
       "what": "run old and new",
+      "off": false,
+      "on": null
+    },
+    "tool.security": {
+      "keys": "␣x",
+      "what": "security: how the change can be abused",
       "off": false,
       "on": null
     },

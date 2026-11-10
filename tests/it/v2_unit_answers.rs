@@ -47,6 +47,7 @@ fn unit(i: usize) -> Unit {
         reasons: Vec::new(),
         dive_pending: Default::default(),
         checks: Default::default(),
+        security: Vec::new(),
     }
 }
 
@@ -103,6 +104,7 @@ fn result(text: &str) -> DiveResult {
         visual: None,
         behavior: None,
         coverage: None,
+        audit: None,
     }
 }
 

@@ -40,6 +40,7 @@ pub fn unit(i: usize, file: &str) -> Unit {
         reasons: Vec::new(),
         dive_pending: Default::default(),
         checks: Default::default(),
+        security: Vec::new(),
     }
 }
 

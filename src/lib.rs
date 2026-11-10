@@ -25,6 +25,7 @@ pub mod pr;
 pub mod pr_list;
 pub mod review;
 pub mod sandbox;
+pub mod security;
 pub mod session;
 pub mod setup;
 pub mod start;

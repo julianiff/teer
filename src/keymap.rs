@@ -78,11 +78,19 @@ pub enum Action {
     ToggleByFile,
     /// The unit view's tile in focus fills it, or no longer does.
     ToggleZoom,
+    /// The queue by level, or by how exposed each unit is (the security
+    /// order).
+    ToggleSecurityOrder,
     /// The agent's advice on the unit: what to do about it.
     ToolAdvice,
     ToolTests,
     ToolRunOldNew,
     ToolDiagram,
+    /// The Security tile: how the change can be abused.
+    ToolSecurity,
+    /// The unit's security findings, each attacker's case run old against
+    /// new in the sandbox.
+    ToolProve,
     ToolHistory,
     ToolNotes,
     /// The flagged units one after another, each with its note and diff.
@@ -260,6 +268,12 @@ const TABLE: &[(Action, &str, &[&str], &str)] = &[
         "zoom the tile in focus",
     ),
     (
+        Action::ToggleSecurityOrder,
+        "toggle.security",
+        &["zs"],
+        "list by level or by exposure",
+    ),
+    (
         Action::ToolAdvice,
         "tool.advice",
         &["<space>a"],
@@ -282,6 +296,18 @@ const TABLE: &[(Action, &str, &[&str], &str)] = &[
         "tool.diagram",
         &["<space>v"],
         "diagram of the change",
+    ),
+    (
+        Action::ToolSecurity,
+        "tool.security",
+        &["<space>x"],
+        "security: how the change can be abused",
+    ),
+    (
+        Action::ToolProve,
+        "tool.prove",
+        &["<space>p"],
+        "prove the security findings, old against new",
     ),
     (
         Action::ToolHistory,

@@ -550,6 +550,7 @@ fn unit(symbol: &str, lines: (u32, u32), d: Decision, note: &str) -> Unit {
         reasons: Vec::new(),
         dive_pending: Default::default(),
         checks: Default::default(),
+        security: Vec::new(),
     }
 }
 

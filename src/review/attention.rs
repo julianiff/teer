@@ -18,8 +18,11 @@ use std::collections::HashSet;
 
 use serde::Serialize;
 
-use super::model::{AcceptedBy, Decision, Doubt, Prep, Review, Risk, Unit, UnitKind, UnitStatus};
+use super::model::{
+    AcceptedBy, Decision, DiveKind, Doubt, Prep, Review, Risk, Unit, UnitKind, UnitStatus,
+};
 use crate::config::AutoAccept;
+use crate::security::Weight;
 use crate::units::whole;
 use crate::util::{DiffOp, diff_lines};
 
@@ -235,6 +238,33 @@ pub fn assess(review: &Review, u: &Unit) -> Assessment {
             reasons.push("not described, read the code".into());
         }
         _ => {}
+    }
+    // Security: facts from the code (or another tool's), then the agent's
+    // findings that stand (a path the graph confirms, not disputed).
+    for f in &u.security {
+        match f.weight {
+            Weight::Attention => level = Level::Attention,
+            Weight::Look => level = level.max(Level::Look),
+            Weight::Note => {}
+        }
+        reasons.push(format!("security: {}", f.text));
+    }
+    let audit = u
+        .dive
+        .results
+        .get(&DiveKind::Security)
+        .and_then(|r| r.audit.as_ref());
+    for finding in audit
+        .iter()
+        .flat_map(|a| &a.findings)
+        .filter(|f| f.stands())
+    {
+        match finding.severity {
+            Risk::High => level = Level::Attention,
+            Risk::Medium => level = level.max(Level::Look),
+            Risk::Low => continue,
+        }
+        reasons.push(format!("agent: {}", finding.title));
     }
     // Expensive to undo, and a second opinion that disagrees.
     let cost = match &u.checks.cost {

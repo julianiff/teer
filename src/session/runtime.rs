@@ -196,6 +196,10 @@ impl Runtime {
                     let _ = tx.send(AppEvent::Dive(ev));
                 });
             }
+            Effect::ProveFindings { unit_id } => {
+                // Phase 4 (`security::prove`) runs them.
+                crate::log::write(&format!("proving the findings of {unit_id}: not built yet"));
+            }
             Effect::InterpretTests { unit_id } => {
                 let tx = self.tx.clone();
                 let fail = |u: &crate::review::model::Unit, error: &str| {

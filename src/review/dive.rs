@@ -12,6 +12,7 @@ use super::model::{
 use super::{prompts, test_search, validate, visual};
 use crate::agent::AgentAdapter;
 use crate::git::ChangedFile;
+use crate::security::{Audit, Proof, SecondCheck};
 
 /// What came back about unit `id`. `fingerprint` is the unit's code as it
 /// was asked about: an answer holds for that code only (see
@@ -43,6 +44,29 @@ pub enum DiveEvent {
         kind: DiveKind,
         text: String,
     },
+    /// The Security tile's answer (`DiveKind::Security`): `text` is its
+    /// summary.
+    Audit {
+        id: String,
+        fingerprint: String,
+        text: String,
+        audit: Box<Audit>,
+    },
+    /// The second model's word on findings of the unit's audit, by index
+    /// into `Audit::findings`; `None` when the check failed (it is then
+    /// no longer on its way).
+    AuditChecked {
+        id: String,
+        fingerprint: String,
+        checks: Option<Vec<(usize, SecondCheck)>>,
+    },
+    /// What running findings old against new showed (`<space>p`), by
+    /// index into `Audit::findings`.
+    Proved {
+        id: String,
+        fingerprint: String,
+        proofs: Vec<(usize, Proof)>,
+    },
 }
 
 impl DiveEvent {
@@ -54,6 +78,15 @@ impl DiveEvent {
                 id, fingerprint, ..
             }
             | DiveEvent::Failed {
+                id, fingerprint, ..
+            }
+            | DiveEvent::Audit {
+                id, fingerprint, ..
+            }
+            | DiveEvent::AuditChecked {
+                id, fingerprint, ..
+            }
+            | DiveEvent::Proved {
                 id, fingerprint, ..
             } => Some((id, fingerprint)),
             DiveEvent::Progress { .. } => None,
@@ -294,6 +327,16 @@ pub async fn run_dive(
 }
 
 impl Review {
+    /// The audit of unit `id`, when it has one.
+    pub fn audit_mut(&mut self, id: &str) -> Option<&mut Audit> {
+        self.unit_mut(id)?
+            .dive
+            .results
+            .get_mut(&DiveKind::Security)?
+            .audit
+            .as_mut()
+    }
+
     /// Is `ev` about the code of its unit as it is now? An answer asked
     /// about code a re-run changed since (or about a unit it removed) is
     /// not, and is dropped.
@@ -334,8 +377,50 @@ impl Review {
                         visual: visual.as_deref().cloned(),
                         behavior: behavior.as_deref().cloned(),
                         coverage: coverage.as_deref().cloned(),
+                        audit: None,
                     },
                 );
+                true
+            }
+            DiveEvent::Audit {
+                id, text, audit, ..
+            } => {
+                let Some(u) = self.unit_mut(id) else {
+                    return false;
+                };
+                u.dive_pending.remove(&DiveKind::Security);
+                u.dive.results.insert(
+                    DiveKind::Security,
+                    DiveResult {
+                        text: text.clone(),
+                        audit: Some((**audit).clone()),
+                        ..Default::default()
+                    },
+                );
+                true
+            }
+            DiveEvent::AuditChecked { id, checks, .. } => {
+                let Some(audit) = self.audit_mut(id) else {
+                    return false;
+                };
+                audit.checking = false;
+                for (i, c) in checks.iter().flatten() {
+                    if let Some(f) = audit.findings.get_mut(*i) {
+                        f.second = Some(c.clone());
+                    }
+                }
+                true
+            }
+            DiveEvent::Proved { id, proofs, .. } => {
+                let Some(audit) = self.audit_mut(id) else {
+                    return false;
+                };
+                audit.proving = false;
+                for (i, p) in proofs {
+                    if let Some(f) = audit.findings.get_mut(*i) {
+                        f.proof = Some(p.clone());
+                    }
+                }
                 true
             }
             DiveEvent::Failed {

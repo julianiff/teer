@@ -225,6 +225,7 @@ fn waiting_allows(a: Action) -> bool {
                 | Action::ReviewReset
                 | Action::ToggleAutoAccepted
                 | Action::ToggleByFile
+                | Action::ToggleSecurityOrder
         )
 }
 
@@ -266,6 +267,12 @@ pub enum Effect {
     /// Have the agent read the tests teer's search found for a unit: which
     /// cover it and what dangerous cases none does (the Tests panel).
     InterpretTests {
+        unit_id: String,
+    },
+    /// Run the security findings of a unit old against new: the agent
+    /// writes an attacker's case for each, teer runs them in the sandbox
+    /// (`security::prove`).
+    ProveFindings {
         unit_id: String,
     },
     /// Open the unit's Visualize page in the browser (written again from the
@@ -1258,9 +1265,11 @@ impl App {
             Action::ToolAdvice
             | Action::ToolTests
             | Action::ToolRunOldNew
-            | Action::ToolDiagram => {
+            | Action::ToolDiagram
+            | Action::ToolSecurity => {
                 return self.open_tool(a);
             }
+            Action::ToolProve => return self.prove_findings(),
             _ => {}
         }
         match self.screen {
@@ -1546,6 +1555,7 @@ impl App {
             Action::MoveNextFile => return self.jump_file(true, times),
             Action::MovePrevFile => return self.jump_file(false, times),
             Action::ToggleByFile => self.switch_grouping(),
+            Action::ToggleSecurityOrder => self.toggle_security_order(),
             Action::ViewClose => return vec![Effect::Save, Effect::Quit],
             _ => {}
         }
@@ -2381,6 +2391,10 @@ impl App {
                     DiveEvent::Ready { id, kind, .. } => {
                         self.progress.remove(&(id.clone(), *kind));
                     }
+                    DiveEvent::Audit { id, .. } => {
+                        self.progress.remove(&(id.clone(), DiveKind::Security));
+                    }
+                    DiveEvent::AuditChecked { .. } | DiveEvent::Proved { .. } => {}
                     DiveEvent::Failed {
                         id, kind, error, ..
                     } => {
@@ -2436,6 +2450,7 @@ pub(crate) mod tests {
                 reasons: Vec::new(),
                 dive_pending: Default::default(),
                 checks: Default::default(),
+                security: Vec::new(),
             })
             .collect();
         let review = Review {

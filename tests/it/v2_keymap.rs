@@ -587,6 +587,7 @@ fn leader_tools_on_the_queue_open_the_unit_view_with_that_panel() {
         ("<space>t", DiveKind::Tests),
         ("<space>r", DiveKind::Behavior),
         ("<space>v", DiveKind::Visualize),
+        ("<space>x", DiveKind::Security),
     ] {
         // Any unit, flagged or not; old against new and the diagram need
         // an agent.
@@ -618,6 +619,20 @@ fn the_v1_tile_keys_are_gone_from_the_queue_and_the_unit_view() {
         assert!(d.keys(keys).is_empty(), "{keys}");
         assert_eq!(d.app.unit.panel, None, "{keys}");
     }
+}
+
+#[test]
+fn zs_switches_the_queue_to_the_security_order() {
+    // Phase 3 (the security order) asserts what it does.
+    let mut d = Driver::new(3);
+    d.keys("zs");
+}
+
+#[test]
+fn leader_p_proves_the_findings_of_the_unit() {
+    // Phase 4 (prove it) asserts what it does.
+    let mut d = Driver::new(3);
+    d.keys("<space>p");
 }
 
 #[test]

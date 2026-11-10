@@ -692,6 +692,10 @@ and mark the connections the change adds or removes."
             "Write a small probe program that calls this unit on a few concrete inputs, so the reviewer can compare \
 what it does before and after the change without reading the code."
         }
+        DiveKind::Security => {
+            "Find how this change can be abused: for each way, the path from where untrusted input enters to where it \
+does harm, and the control missing on it."
+        }
     }
 }
 
