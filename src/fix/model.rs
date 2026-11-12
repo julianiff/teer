@@ -75,6 +75,44 @@ pub struct ProposedHunk {
     pub state: HunkState,
 }
 
+impl ProposedHunk {
+    /// The hunk as diff lines, without a header: the lines `old` and
+    /// `new` share at the start and the end as context (` `), the rest
+    /// removed (`-`) and added (`+`). Each line keeps its text as is.
+    pub fn diff_lines(&self) -> Vec<String> {
+        let old: Vec<&str> = self.old.lines().collect();
+        let new: Vec<&str> = self.new.lines().collect();
+        let head = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+        let tail = old[head..]
+            .iter()
+            .rev()
+            .zip(new[head..].iter().rev())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let mut out: Vec<String> = old[..head].iter().map(|l| format!(" {l}")).collect();
+        out.extend(old[head..old.len() - tail].iter().map(|l| format!("-{l}")));
+        out.extend(new[head..new.len() - tail].iter().map(|l| format!("+{l}")));
+        out.extend(old[old.len() - tail..].iter().map(|l| format!(" {l}")));
+        out
+    }
+
+    /// [`Self::diff_lines`] under a `file:start-end` header, for notes,
+    /// the clipboard and the agent.
+    pub fn diff(&self) -> String {
+        let mut s = format!(
+            "--- {}:{}-{}\n",
+            self.file.display(),
+            self.lines.start,
+            self.lines.end
+        );
+        for l in self.diff_lines() {
+            s.push_str(&l);
+            s.push('\n');
+        }
+        s
+    }
+}
+
 /// Where a proposed hunk stands.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -85,4 +123,41 @@ pub enum HunkState {
     Applied,
     /// On a pull request: to be posted as a suggestion.
     Suggested,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hunk(old: &str, new: &str) -> ProposedHunk {
+        ProposedHunk {
+            file: "a.php".into(),
+            lines: Range::new(3, 5),
+            old: old.into(),
+            new: new.into(),
+            why: String::new(),
+            parses: true,
+            state: HunkState::Proposed,
+        }
+    }
+
+    #[test]
+    fn a_hunk_keeps_what_old_and_new_share_as_context() {
+        let h = hunk(
+            "function show($id) {\n    return $this->find($id);\n}",
+            "function show($id) {\n    $this->denyAccessUnlessGranted('VIEW');\n    return $this->find($id);\n}",
+        );
+        assert_eq!(
+            h.diff_lines(),
+            [
+                " function show($id) {",
+                "+    $this->denyAccessUnlessGranted('VIEW');",
+                "     return $this->find($id);",
+                " }",
+            ]
+        );
+        assert!(h.diff().starts_with("--- a.php:3-5\n"));
+        let h = hunk("a\nb", "c");
+        assert_eq!(h.diff_lines(), ["-a", "-b", "+c"]);
+    }
 }
