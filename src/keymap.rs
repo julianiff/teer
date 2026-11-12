@@ -91,6 +91,13 @@ pub enum Action {
     /// The unit's security findings, each attacker's case run old against
     /// new in the sandbox.
     ToolProve,
+    /// The agent proposes a change to the unit, shown as hunks in its text.
+    ToolFix,
+    /// Put the proposed hunk at the top of the unit's text into the code
+    /// (`p`, as Neovim puts).
+    FixApply,
+    /// Put every proposed hunk of the unit into the code (`P`).
+    FixApplyAll,
     ToolHistory,
     ToolNotes,
     /// The flagged units one after another, each with its note and diff.
@@ -308,6 +315,24 @@ const TABLE: &[(Action, &str, &[&str], &str)] = &[
         "tool.prove",
         &["<space>p"],
         "prove the security findings, old against new",
+    ),
+    (
+        Action::ToolFix,
+        "tool.fix",
+        &["<space>e"],
+        "propose a change: the agent writes it, teer checks it",
+    ),
+    (
+        Action::FixApply,
+        "fix.apply",
+        &["p"],
+        "put the proposed hunk into the code",
+    ),
+    (
+        Action::FixApplyAll,
+        "fix.apply_all",
+        &["P"],
+        "put every proposed hunk into the code",
     ),
     (
         Action::ToolHistory,
@@ -1199,7 +1224,8 @@ impl Keymap {
                 }
             }
         }
-        const NEOVIM_UPPER: &[char] = &['G', 'N', 'K', 'V'];
+        // `P` puts, as Neovim's does: every proposed hunk.
+        const NEOVIM_UPPER: &[char] = &['G', 'N', 'K', 'V', 'P'];
         for (action, trigger) in &self.bindings {
             let Trigger::Keys(keys) = trigger else {
                 if !action.finishes() {

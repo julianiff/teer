@@ -365,6 +365,9 @@ pub enum DiveKind {
     /// How the change can be abused: findings with the path that shows
     /// each (`security::audit`).
     Security,
+    /// A change the agent proposes, shown as hunks in the unit's text
+    /// (`fix::propose`).
+    Fix,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -383,6 +386,9 @@ pub struct DiveResult {
     /// The findings of a Security answer (`text` holds its summary).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit: Option<crate::security::Audit>,
+    /// The hunks of a Fix answer (`text` holds its summary).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<crate::fix::Proposal>,
 }
 
 /// An existing test that exercises the unit, at lines that exist.
@@ -1070,6 +1076,7 @@ mod tests {
                 behavior: None,
                 coverage: None,
                 audit: None,
+                proposal: None,
             },
         );
         u.dive.note = "n".into();
@@ -1113,6 +1120,7 @@ mod tests {
             behavior: None,
             coverage: None,
             audit: None,
+            proposal: None,
         };
         let json = serde_json::to_string(&v).unwrap();
         assert!(json.contains("\"status\":\"added\""), "{json}");

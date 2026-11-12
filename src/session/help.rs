@@ -42,6 +42,7 @@ pub const QUEUE: &[Action] = &[
     Action::ToolRunOldNew,
     Action::ToolDiagram,
     Action::ToolSecurity,
+    Action::ToolFix,
     Action::ToggleAutoAccepted,
     Action::ToggleByFile,
     Action::ToggleSecurityOrder,
@@ -98,6 +99,9 @@ pub const UNIT: &[Action] = &[
     Action::ToolDiagram,
     Action::ToolSecurity,
     Action::ToolProve,
+    Action::ToolFix,
+    Action::FixApply,
+    Action::FixApplyAll,
     Action::ToolHistory,
     Action::ToolNotes,
     Action::ToolFlagged,
@@ -141,6 +145,7 @@ pub const FLAGGED: &[Action] = &[
     Action::ToolRunOldNew,
     Action::ToolDiagram,
     Action::ToolSecurity,
+    Action::ToolFix,
     Action::ToolFlagged,
     Action::ToolHistory,
     Action::ToolNotes,
@@ -276,10 +281,10 @@ pub fn group_of(a: Action) -> usize {
         | MoveNextHunk | MovePrevHunk | MoveNextFile | MovePrevFile | ScrollHalfDown
         | ScrollHalfUp | ScrollPageDown | ScrollPageUp | FindUnit | ViewBack => 0,
         DecideAccept | DecideFlag | NoteEdit | DecideAcceptFile | DecideFlagFile | VisualStart
-        | HistoryUndo | HistoryRedo | HistoryRepeat | NoteDelete => 1,
+        | HistoryUndo | HistoryRedo | HistoryRepeat | NoteDelete | FixApply | FixApplyAll => 1,
         ViewOpen | AskOpen | GotoDefinition | GotoCallers | GotoEditor | GotoBrowser
         | ToolAdvice | ToolTests | ToolRunOldNew | ToolDiagram | ToolSecurity | ToolProve
-        | ToolFlagged | MoveNextTile | MovePrevTile | ToggleZoom => 2,
+        | ToolFix | ToolFlagged | MoveNextTile | MovePrevTile | ToggleZoom => 2,
         ToggleAutoAccepted | ToggleByFile | ToggleSecurityOrder | ToolHistory | ToolNotes
         | ToolSettings | HelpOpen => 3,
         FinishOpen | FinishYank | FinishApp | ReviewRerun | ReviewReset | ViewClose => 4,
@@ -439,6 +444,7 @@ pub const KEY_GROUPS: &[(&str, &[KeyItem])] = &[
             (&[Action::ToolRunOldNew], "old vs new"),
             (&[Action::ToolDiagram], "diagram"),
             (&[Action::ToolSecurity], "security"),
+            (&[Action::ToolFix], "fix"),
             (&[Action::GotoDefinition], "calls"),
             (&[Action::GotoCallers], "callers"),
             (&[Action::GotoEditor], "editor"),
@@ -469,12 +475,13 @@ pub const KEY_GROUPS: &[(&str, &[KeyItem])] = &[
 
 /// Items of the keys tile that need an agent.
 /// (The Security tile isn't one: without an agent it shows teer's facts.)
-pub const AGENT_KEYS: [Action; 5] = [
+pub const AGENT_KEYS: [Action; 6] = [
     Action::ToolAdvice,
     Action::AskOpen,
     Action::ToolRunOldNew,
     Action::ToolDiagram,
     Action::ToolProve,
+    Action::ToolFix,
 ];
 
 #[cfg(test)]

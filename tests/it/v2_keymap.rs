@@ -786,6 +786,21 @@ fn leader_p_proves_the_findings_of_the_unit() {
 }
 
 #[test]
+fn leader_e_asks_for_a_proposed_change() {
+    // The UI of proposed changes asserts what it does.
+    let mut d = Driver::new(3);
+    d.keys("<space>e");
+}
+
+#[test]
+fn p_and_shift_p_put_proposed_hunks_into_the_code() {
+    // The UI of proposed changes asserts what they do.
+    let mut d = Driver::new(3);
+    d.keys("p");
+    d.keys("P");
+}
+
+#[test]
 fn leader_c_opens_the_commits_or_says_there_are_none() {
     let mut d = Driver::new(3);
     d.keys("<space>c");

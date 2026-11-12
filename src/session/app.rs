@@ -269,6 +269,12 @@ pub enum Effect {
     InterpretTests {
         unit_id: String,
     },
+    /// Write proposed hunks `hunks` (indexes into the unit's proposal) to
+    /// the working tree: each found again on disk first (`fix::apply`).
+    ApplyHunks {
+        unit_id: String,
+        hunks: Vec<usize>,
+    },
     /// Run the security findings of a unit old against new: the agent
     /// writes an attacker's case for each, teer runs them in the sandbox
     /// (`security::prove`).
@@ -366,6 +372,13 @@ pub enum AppEvent {
     Tree {
         seen: Result<crate::watch::Snapshot, String>,
         at: Instant,
+    },
+    /// Proposed hunks `hunks` of unit `unit_id` were written: the files
+    /// written, or why nothing was.
+    FixApplied {
+        unit_id: String,
+        hunks: Vec<usize>,
+        result: Result<Vec<PathBuf>, String>,
     },
 }
 
@@ -1277,6 +1290,9 @@ impl App {
                 return self.open_tool(a);
             }
             Action::ToolProve => return self.prove_findings(),
+            Action::ToolFix => return self.propose_fix(),
+            Action::FixApply => return self.apply_hunks(false),
+            Action::FixApplyAll => return self.apply_hunks(true),
             _ => {}
         }
         match self.screen {
@@ -2387,6 +2403,11 @@ impl App {
             AppEvent::Rerun(Ok(new)) => return self.reran(*new),
             AppEvent::Rerun(Err(e)) => self.status = format!("Re-run failed: {e}"),
             AppEvent::Tree { seen, at } => return self.tree_seen(seen, at),
+            AppEvent::FixApplied {
+                unit_id,
+                hunks,
+                result,
+            } => return self.fix_applied(&unit_id, &hunks, result),
             AppEvent::Dive(ev) => {
                 // About code a re-run changed since it was asked: dropped
                 // without a word (see `Review::apply_dive`).
@@ -2400,6 +2421,9 @@ impl App {
                     }
                     DiveEvent::Audit { id, .. } => {
                         self.progress.remove(&(id.clone(), DiveKind::Security));
+                    }
+                    DiveEvent::Proposed { id, .. } => {
+                        self.progress.remove(&(id.clone(), DiveKind::Fix));
                     }
                     DiveEvent::AuditChecked { .. } | DiveEvent::Proved { .. } => {}
                     DiveEvent::Failed {
@@ -2415,11 +2439,14 @@ impl App {
                     return Vec::new();
                 }
                 if self.review.apply_dive(&ev) {
-                    // A security finding that stands raises its unit's level.
-                    if matches!(ev, DiveEvent::Audit { .. } | DiveEvent::AuditChecked { .. }) {
+                    let mut effects = vec![Effect::Save];
+                    // A security finding that stands raises its unit's level,
+                    // and one of high severity has the agent propose a change.
+                    if let DiveEvent::Audit { id, .. } | DiveEvent::AuditChecked { id, .. } = &ev {
                         self.rebuild_order();
+                        effects.extend(self.propose_if_important(id));
                     }
-                    return vec![Effect::Save];
+                    return effects;
                 }
                 return Vec::new();
             }

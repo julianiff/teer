@@ -105,6 +105,7 @@ fn result(text: &str) -> DiveResult {
         behavior: None,
         coverage: None,
         audit: None,
+        proposal: None,
     }
 }
 

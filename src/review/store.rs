@@ -489,6 +489,7 @@ mod tests {
                 behavior: None,
                 coverage: None,
                 audit: None,
+                proposal: None,
             },
         );
         dive.note = "check".into();

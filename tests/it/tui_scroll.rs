@@ -573,11 +573,12 @@ fn the_tests_panel_scrolls_to_its_end() {
     let (mut app, _repo) = unit_view();
     keys(&mut app, "<space>t");
     assert_eq!(app.unit.panel, Some(Panel::Tool(DiveKind::Tests)));
-    let (w, h) = (100, 30);
+    let (w, h) = (100, 40);
     let first = screen(&app, w, h);
     assert!(has(&first, "25 tests cover it"), "{}", first.join("\n"));
     assert!(!has(&first, "test_case_25"), "{}", first.join("\n"));
-    for _ in 0..30 {
+    // Half a tile at a time, however tall the keys tile leaves it.
+    for _ in 0..80 {
         keys(&mut app, "<c-d>");
     }
     let end = screen(&app, w, h);

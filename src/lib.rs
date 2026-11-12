@@ -15,6 +15,7 @@ pub mod clipboard;
 pub mod commit;
 pub mod config;
 pub mod editor;
+pub mod fix;
 pub mod gh;
 pub mod git;
 pub mod graph;

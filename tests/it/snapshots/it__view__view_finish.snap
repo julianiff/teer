@@ -500,6 +500,18 @@ expression: json(&app)
       "off": false,
       "on": null
     },
+    "fix.apply": {
+      "keys": "p",
+      "what": "put the proposed hunk into the code",
+      "off": false,
+      "on": null
+    },
+    "fix.apply_all": {
+      "keys": "P",
+      "what": "put every proposed hunk into the code",
+      "off": false,
+      "on": null
+    },
     "goto.callers": {
       "keys": "gr",
       "what": "what calls this unit",
@@ -593,6 +605,12 @@ expression: json(&app)
     "tool.diagram": {
       "keys": "␣v",
       "what": "diagram of the change",
+      "off": false,
+      "on": null
+    },
+    "tool.fix": {
+      "keys": "␣e",
+      "what": "propose a change: the agent writes it, teer checks it",
       "off": false,
       "on": null
     },

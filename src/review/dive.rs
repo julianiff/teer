@@ -11,6 +11,7 @@ use super::model::{
 };
 use super::{prompts, test_search, validate, visual};
 use crate::agent::AgentAdapter;
+use crate::fix::Proposal;
 use crate::git::ChangedFile;
 use crate::security::{Audit, Proof, SecondCheck};
 
@@ -67,6 +68,13 @@ pub enum DiveEvent {
         fingerprint: String,
         proofs: Vec<(usize, Proof)>,
     },
+    /// A proposed change (`DiveKind::Fix`): `text` is its summary.
+    Proposed {
+        id: String,
+        fingerprint: String,
+        text: String,
+        proposal: Box<Proposal>,
+    },
 }
 
 impl DiveEvent {
@@ -87,6 +95,9 @@ impl DiveEvent {
                 id, fingerprint, ..
             }
             | DiveEvent::Proved {
+                id, fingerprint, ..
+            }
+            | DiveEvent::Proposed {
                 id, fingerprint, ..
             } => Some((id, fingerprint)),
             DiveEvent::Progress { .. } => None,
@@ -327,6 +338,16 @@ pub async fn run_dive(
 }
 
 impl Review {
+    /// The proposed change of unit `id`, when it has one.
+    pub fn proposal_mut(&mut self, id: &str) -> Option<&mut Proposal> {
+        self.unit_mut(id)?
+            .dive
+            .results
+            .get_mut(&DiveKind::Fix)?
+            .proposal
+            .as_mut()
+    }
+
     /// The audit of unit `id`, when it has one.
     pub fn audit_mut(&mut self, id: &str) -> Option<&mut Audit> {
         self.unit_mut(id)?
@@ -378,6 +399,7 @@ impl Review {
                         behavior: behavior.as_deref().cloned(),
                         coverage: coverage.as_deref().cloned(),
                         audit: None,
+                        proposal: None,
                     },
                 );
                 true
@@ -409,6 +431,23 @@ impl Review {
                         f.second = Some(c.clone());
                     }
                 }
+                true
+            }
+            DiveEvent::Proposed {
+                id, text, proposal, ..
+            } => {
+                let Some(u) = self.unit_mut(id) else {
+                    return false;
+                };
+                u.dive_pending.remove(&DiveKind::Fix);
+                u.dive.results.insert(
+                    DiveKind::Fix,
+                    DiveResult {
+                        text: text.clone(),
+                        proposal: Some((**proposal).clone()),
+                        ..Default::default()
+                    },
+                );
                 true
             }
             DiveEvent::Proved { id, proofs, .. } => {

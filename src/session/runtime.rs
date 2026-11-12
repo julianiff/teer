@@ -195,6 +195,14 @@ impl Runtime {
                     let _ = tx.send(AppEvent::Dive(ev));
                 });
             }
+            Effect::ApplyHunks { unit_id, hunks } => {
+                // The core of proposed changes (`fix::apply`) writes them.
+                let _ = self.tx.send(AppEvent::FixApplied {
+                    unit_id,
+                    hunks,
+                    result: Err("applying isn't built yet".into()),
+                });
+            }
             Effect::ProveFindings { unit_id } => {
                 let tx = self.tx.clone();
                 let Some(unit) = app.review.unit(&unit_id).cloned() else {

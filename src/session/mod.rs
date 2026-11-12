@@ -7,6 +7,7 @@
 pub mod app;
 pub mod exposure;
 pub mod finish;
+pub mod fix;
 pub mod flagged_list;
 pub mod help;
 pub mod jump;

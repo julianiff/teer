@@ -72,6 +72,18 @@ pub enum AutoAccept {
     NoBehaviorChange,
 }
 
+/// When the agent proposes a change on its own (`<space>e` always asks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ProposeFixes {
+    /// When a high security finding stands (its path verified, not
+    /// disputed): something very important has to change.
+    #[default]
+    High,
+    /// Only when asked.
+    Never,
+}
+
 /// What prepares the reviews: a coding agent's headless mode, or a model
 /// API with teer's own read-only tools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -263,6 +275,8 @@ pub struct Config {
     pub timeoutlen: u64,
     /// Waiting for the changes to copied notes.
     pub fix_loop: FixLoop,
+    /// When the agent proposes a change without being asked.
+    pub propose_fixes: ProposeFixes,
     /// Action id to its keys (see [`crate::keymap`]).
     pub keys: HashMap<String, KeySpec>,
 }
@@ -289,6 +303,7 @@ impl Default for Config {
             editor: crate::editor::DEFAULT.into(),
             timeoutlen: 1000,
             fix_loop: FixLoop::default(),
+            propose_fixes: ProposeFixes::default(),
             keys: HashMap::new(),
         }
     }
