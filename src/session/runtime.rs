@@ -199,12 +199,22 @@ impl Runtime {
                 let tx = self.tx.clone();
                 let repo = app.review.repo_root.clone();
                 tokio::task::spawn_blocking(move || {
-                    let targets = crate::send::list(&crate::send::Dirs::from_env(), &repo);
+                    let dirs = crate::send::Dirs::from_env();
+                    let targets = crate::send::list(&dirs, &repo);
+                    let pi = crate::send::pi::state(&dirs);
                     let _ = tx.send(AppEvent::Sessions {
                         targets,
+                        pi,
                         text,
                         what,
                     });
+                });
+            }
+            Effect::InstallPiExtension => {
+                let tx = self.tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let result = crate::send::pi::install(&crate::send::Dirs::from_env());
+                    let _ = tx.send(AppEvent::PiExtension(result));
                 });
             }
             Effect::SendToSession { target, text } => {

@@ -60,6 +60,15 @@ pub struct Target {
     pub socket: Option<PathBuf>,
 }
 
+/// Whether pi sessions can be reached: pi isn't installed, or is without
+/// teer's extension, or has it (sessions started since register).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum PiState {
+    NotFound,
+    NoExtension,
+    Ready,
+}
+
 /// Where each agent keeps its sessions: `$TEER_CLAUDE_DIR` (else
 /// `~/.claude`), `$TEER_CODEX_DIR` (else `$CODEX_HOME`, else `~/.codex`),
 /// `$TEER_PI_DIR` (else `~/.pi/agent`). Tests point them elsewhere.

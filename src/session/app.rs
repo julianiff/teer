@@ -290,6 +290,8 @@ pub enum Effect {
         text: String,
         what: String,
     },
+    /// Write teer's pi extension where pi finds it (`send::pi::install`).
+    InstallPiExtension,
     /// Send `text` to agent session `target`.
     SendToSession {
         target: Box<crate::send::Target>,
@@ -400,12 +402,15 @@ pub enum AppEvent {
         at: Instant,
     },
     /// The agent sessions running in this repository, for `text` (the
-    /// result of `what`).
+    /// result of `what`), and whether pi sessions can be reached.
     Sessions {
         targets: Vec<crate::send::Target>,
+        pi: crate::send::PiState,
         text: String,
         what: String,
     },
+    /// teer's pi extension was written there, or why it wasn't.
+    PiExtension(Result<PathBuf, String>),
     /// `text` went to `target`, or why it didn't.
     Sent {
         target: Box<crate::send::Target>,
@@ -2466,9 +2471,11 @@ impl App {
             AppEvent::Tree { seen, at } => return self.tree_seen(seen, at),
             AppEvent::Sessions {
                 targets,
+                pi,
                 text,
                 what,
-            } => return self.sessions_found(targets, text, what),
+            } => return self.sessions_found(targets, pi, text, what),
+            AppEvent::PiExtension(result) => return self.pi_installed(result),
             AppEvent::Sent {
                 target,
                 text,

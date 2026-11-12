@@ -16,12 +16,15 @@ impl App {
     }
 
     /// The sessions found for `text`: the picker, or why there is none.
+    /// `pi` says whether pi sessions could be among them.
     pub(crate) fn sessions_found(
         &mut self,
         targets: Vec<Target>,
+        pi: crate::send::PiState,
         text: String,
         what: String,
     ) -> Vec<Effect> {
+        let _ = pi;
         if targets.is_empty() {
             self.status = "No agent session runs in this repository.".into();
             return Vec::new();
@@ -39,6 +42,21 @@ impl App {
     pub(crate) fn send_key(&mut self, k: Key) -> Vec<Effect> {
         let _ = k;
         self.overlay = Overlay::None;
+        Vec::new()
+    }
+
+    /// teer's pi extension was written (or not): say so.
+    pub(crate) fn pi_installed(
+        &mut self,
+        result: Result<std::path::PathBuf, String>,
+    ) -> Vec<Effect> {
+        self.status = match result {
+            Ok(p) => format!(
+                "Installed {}: pi sessions started from now on can be reached.",
+                p.display()
+            ),
+            Err(e) => format!("teer's pi extension isn't installed: {e}"),
+        };
         Vec::new()
     }
 
