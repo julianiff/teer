@@ -622,14 +622,14 @@ pub fn schema() -> Value {
 /// Reads what a cite names: a file of the change from the review's text of
 /// it (new, else old: a removed check is cited on the old side), any other
 /// file from the checkout under `root`.
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     root: &'a Path,
     files: &'a [ChangedFile],
     read: HashMap<PathBuf, Vec<String>>,
 }
 
 impl<'a> Reader<'a> {
-    fn new(root: &'a Path, files: &'a [ChangedFile]) -> Self {
+    pub(crate) fn new(root: &'a Path, files: &'a [ChangedFile]) -> Self {
         Reader {
             root,
             files,
@@ -661,7 +661,7 @@ impl<'a> Reader<'a> {
 
     /// A cite of lines `start..=end` of `file` that exist in the
     /// repository, or why not.
-    fn check(&mut self, file: &str, start: i64, end: i64) -> Result<Cite, String> {
+    pub(crate) fn check(&mut self, file: &str, start: i64, end: i64) -> Result<Cite, String> {
         let name = one_line(file, 120);
         let Some(path) = repo_path(file, self.root) else {
             return Err(format!("'{name}' is outside the repository"));

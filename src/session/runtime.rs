@@ -196,11 +196,36 @@ impl Runtime {
                 });
             }
             Effect::ApplyHunks { unit_id, hunks } => {
-                // The core of proposed changes (`fix::apply`) writes them.
-                let _ = self.tx.send(AppEvent::FixApplied {
-                    unit_id,
-                    hunks,
-                    result: Err("applying isn't built yet".into()),
+                let tx = self.tx.clone();
+                let refuse = |unit_id: String, hunks: Vec<usize>, why: &str| {
+                    let _ = tx.send(AppEvent::FixApplied {
+                        unit_id,
+                        hunks,
+                        result: Err(why.into()),
+                    });
+                };
+                // A pull request's hunks become suggestions in the review.
+                if app.review.pr.is_some() {
+                    refuse(unit_id, hunks, "a pull request's code isn't changed here");
+                    return false;
+                }
+                let Some(proposal) = app
+                    .review
+                    .unit(&unit_id)
+                    .and_then(|u| u.dive.results.get(&DiveKind::Fix))
+                    .and_then(|r| r.proposal.clone())
+                else {
+                    refuse(unit_id, hunks, "there is no proposed change");
+                    return false;
+                };
+                let root = app.review.repo_root.clone();
+                tokio::task::spawn_blocking(move || {
+                    let result = crate::fix::apply::apply(&root, &proposal, &hunks);
+                    let _ = tx.send(AppEvent::FixApplied {
+                        unit_id,
+                        hunks,
+                        result,
+                    });
                 });
             }
             Effect::ProveFindings { unit_id } => {
@@ -357,6 +382,20 @@ impl Runtime {
                     );
                     forward(tx, AppEvent::Dive, |dtx| {
                         crate::security::audit::run(adapter, session, job, dtx)
+                    });
+                    return false;
+                }
+                if kind == DiveKind::Fix {
+                    // Hunks are looked up where the agent reads the code.
+                    let job = crate::fix::propose::Job::new(
+                        &app.review,
+                        unit,
+                        file,
+                        session.cwd.clone(),
+                        app.cfg.second_opinion,
+                    );
+                    forward(tx, AppEvent::Dive, |dtx| {
+                        crate::fix::propose::run(adapter, session, job, dtx)
                     });
                     return false;
                 }
