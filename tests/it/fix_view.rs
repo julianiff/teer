@@ -545,13 +545,22 @@ fn written_they_are_put_in_and_the_review_runs_again() {
         [HunkState::Applied, HunkState::Proposed, HunkState::Applied]
     );
     assert_eq!(d.status(), "Put into 2 files; reviewing again.");
+    // The re-run says what it did: the unit is as at the base again.
+    let mut again = d.app.review.clone();
+    again.units.retain(|u| u.id != "u0");
+    d.app.on_app_event(AppEvent::Rerun(Ok(Box::new(again))));
+    assert_eq!(
+        d.status(),
+        "1 unit left the review by the proposed change: as at the base again."
+    );
+    propose(&mut d, "u1", three());
     let effects = d.app.on_app_event(AppEvent::FixApplied {
-        unit_id: "u0".into(),
+        unit_id: "u1".into(),
         hunks: vec![1],
         result: Err("a.rs changed: the text isn't there once".into()),
     });
     assert!(effects.is_empty());
-    assert_eq!(states(&d, "u0")[1], HunkState::Proposed);
+    assert_eq!(states(&d, "u1")[1], HunkState::Proposed);
     assert_eq!(
         d.status(),
         "Not put in: a.rs changed: the text isn't there once"

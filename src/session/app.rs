@@ -397,6 +397,8 @@ pub enum ChangedBy {
     /// Whoever got them from the clipboard (`y` on the sheet, or the model
     /// API's copy): the files going quiet is the signal.
     Copied,
+    /// Proposed hunks the reviewer put in (`p`, `P`).
+    Proposal,
 }
 
 impl ChangedBy {
@@ -405,6 +407,7 @@ impl ChangedBy {
         match self {
             ChangedBy::Agent(p) => format!("by {}", p.title()),
             ChangedBy::Copied => "since the notes were copied".into(),
+            ChangedBy::Proposal => "by the proposed change".into(),
         }
     }
 }
@@ -2338,6 +2341,13 @@ impl App {
         crate::review::store::merge_previous(&mut new, &self.review);
         new.agent_session = self.review.agent_session.clone();
         let changed = crate::review::store::changed_units(&new, &self.review);
+        // Units no longer in the change: as they were at the base again.
+        let gone = self
+            .review
+            .units
+            .iter()
+            .filter(|u| !u.auto_accepted() && new.unit(&u.id).is_none())
+            .count();
         // Positions in the old order mean nothing in the new review:
         // remember ids, drop the positions, restore by id.
         let keep = self.selected().map(|u| u.id.clone());
@@ -2364,9 +2374,15 @@ impl App {
             .fix_by
             .take()
             .map_or("since the last run".to_string(), ChangedBy::words);
-        self.status = match self.changed.len() {
-            0 => format!("Nothing changed {by}."),
-            n => format!("{} changed {by}.", units(n)),
+        self.status = match (self.changed.len(), gone) {
+            (0, 0) => format!("Nothing changed {by}."),
+            (n, 0) => format!("{} changed {by}.", units(n)),
+            (0, g) => format!("{} left the review {by}: as at the base again.", units(g)),
+            (n, g) => format!(
+                "{} changed {by}; {} left the review, as at the base again.",
+                units(n),
+                g
+            ),
         };
         let mut effects = vec![Effect::Save];
         effects.extend(self.prepare_start());

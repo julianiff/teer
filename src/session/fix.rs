@@ -392,6 +392,8 @@ impl App {
                     }
                 }
                 self.status = format!("Put into {}; reviewing again.", plural(files.len(), "file"));
+                // The re-run's status says what the change did.
+                self.fix_by = Some(super::app::ChangedBy::Proposal);
                 vec![Effect::Save, Effect::Rerun]
             }
             Err(e) => {

@@ -1,6 +1,6 @@
 # teer features
 
-[how it works](#how-it-works) · [start](#start) · [agents](#agents) · [the queue](#the-queue) · [the unit view](#the-unit-view) · [security](#security) · [finish](#finish) · [the fix loop](#the-fix-loop) · [notes](#notes) · [keys](#keys) · [config](#config) · [safety](#safety) · [limits](#limits)
+[how it works](#how-it-works) · [start](#start) · [agents](#agents) · [the queue](#the-queue) · [the unit view](#the-unit-view) · [security](#security) · [proposed changes](#proposed-changes) · [finish](#finish) · [the fix loop](#the-fix-loop) · [notes](#notes) · [keys](#keys) · [config](#config) · [safety](#safety) · [limits](#limits)
 
 ## how it works
 
@@ -127,6 +127,7 @@ each of these opens a tile, tmux style, next to the ones already open: the text 
 | `<space>r` | old and new side by side: the agent writes a small program, teer runs it before and after the change in a sandbox, then checks the statements against the runs and whether your tests notice the change. macos only |
 | `<space>v` | what talks to the unit and what the change adds or removes, as a diagram in the terminal (kitty, ghostty, iterm2, sixel). `gx` opens it in the browser |
 | `<space>x` | security: how the change can be abused, each way with its path, checked by a second model; `<space>p` then runs each attacker's case old against new. see [security](#security) |
+| `<space>e` | the agent proposes a change, shown as hunks under the code change; `p` puts one in, `P` all. see [proposed changes](#proposed-changes) |
 | `gd` | what the unit calls: in the review, a list to jump to; outside it, the definition, read-only |
 | `gr` | what calls the unit, to jump to |
 | `gf` | your editor, at the unit's first changed line |
@@ -186,6 +187,29 @@ sinks.sql = ["Db::raw"]           # also: shell, eval, file, http, template, red
 ```
 
 `enabled = false` turns the lens off: no facts, no card, no security tile.
+
+## proposed changes
+
+when something important has to change in a unit, the agent proposes the code, and you put it in from the unit's text.
+
+**what it answers.** the most severe security finding that stands; else your note; else the advice. `<space>e` asks; with nothing to fix it says how to get something. once a high security finding stands (its path verified, the second model agreeing), teer asks on its own; `propose_fixes = "never"` turns that off.
+
+**what teer checks.** the agent only reads: it answers with exact text to replace, at most 8 hunks, each with one line on why. teer keeps a hunk only when:
+
+- its text is in the file exactly once, as reviewed
+- the file is inside the repository, never under `.git`
+- it has no control characters and adds no bidi overrides
+- it doesn't overlap another hunk
+
+what it drops is counted and logged to `teer.log`. a hunk whose file has a new syntax error with it says "doesn't parse", for the languages teer splits. a second model then says whether the change fixes what it should and changes nothing else.
+
+**in the unit's text.** under the code change, **proposed change**: what it answers and who wrote it, the summary, the second model's word, then each hunk in a box like the code change: its file and lines, its state (proposed, put in, suggested), why, and the lines it removes and adds. `]c` `[c` stop at each after the code change's hunks. the one you jumped to, else the one nearest the top, has the accent border and `p put · P put all` on its edge. the queue's preview says `✎ a change is proposed: 2 hunks · ␣e shows it`.
+
+**putting it in.** `p` puts the current hunk into your working tree, `P` every open one, after a y/n question. each hunk's text is found again on disk first; if a file changed since, nothing is written. files are written whole and atomically, keeping their permissions, and symlinks are never followed. then teer reviews again and says what the change did, e.g. "1 unit left the review by the proposed change: as at the base again".
+
+**on a pull request** nothing is written. `p` and `P` make the hunks suggestions and flag the unit (`u` takes that back). on `:w` a suggested hunk is posted as a github suggestion on its lines when they're in the pr diff, so the author can commit it with one click; it replaces whole lines even when the change starts mid-line, and joins your note when that sits on the same lines. a hunk outside the diff, in another file, or past the 50 inline comments goes into the summary's "proposed changes" as a diff, and so does every suggestion when github refuses inline comments. hunks you never suggested stay out of the post.
+
+**in the notes.** the notes you copy (`y`, `teer notes`) or hand to your agent carry each proposed change not put in yet: what it answers, what it does, the second model's word, and each hunk as a diff. your agent is asked to put them in, or say why not. the flagged list says `✎ change proposed: 2 hunks` under a unit that has some.
 
 ## finish
 
@@ -282,6 +306,9 @@ keys follow neovim, and a key does the same on every screen. a prefix (`g`, `]`,
 | `<space>r` | `tool.run_old_new` | run old and new |
 | `<space>v` | `tool.diagram` | diagram of the change |
 | `<space>x` | `tool.security` | security: how the change can be abused |
+| `<space>e` | `tool.fix` | propose a change: the agent writes it, teer checks it |
+| `p` | `fix.apply` | put the proposed hunk into the code |
+| `P` | `fix.apply_all` | put every proposed hunk into the code |
 | `<space>p` | `tool.prove` | prove the security findings, old against new |
 | `<space>c` | `tool.history` | commits and PR description |
 | `<space>n` | `tool.notes` | every note |
@@ -330,6 +357,7 @@ second_opinion = false
 | `second_model` | per agent | the second model |
 | `prepare_effort` · `second_effort` | `low` | how hard each model thinks |
 | `second_opinion` | `true` | check every description with the second model |
+| `propose_fixes` | `high` | the agent proposes a change on its own when a high security finding stands, or `never` (`<space>e` always asks) |
 | `[api]` | | `format` (`anthropic` or `openai`), `base_url`, `key_env` (the variable holding the key) |
 | `editor` | `nvim +{line} {file}` | what `gf` runs, and `i` on the `:w` sheet; `{file}` and `{line}` are filled in |
 | `theme` | `dark` | `dark`, `light` or `mono` (`NO_COLOR` means mono) |
@@ -358,6 +386,7 @@ editor = "zed --wait {file}:{line}"           # zed
 ## safety
 
 - **the agent only reads.** claude code runs without shell or write tools, codex in its read-only sandbox, a model api with teer's own list, read and grep, kept inside the repo. only the advice and `K` may search the web, and only after you allow it.
+- **teer writes only what you put in.** a proposed change is text the agent answered with. teer writes it to your working tree only on `p` or `P` and your `y`, only files inside the repository (never `.git`, never through a symlink), all of them or none, and never for a pull request.
 - **the fix loop is your agent.** `:w` opens claude code or codex in your terminal as if you had started it, with its usual permissions. never for a pull request.
 - **pull requests are untrusted.** their own checkout, no web, and the repo's agent instructions (`CLAUDE.md`, `AGENTS.md`, skills, settings) aren't loaded.
 - **code runs only in `<space>r`**, on a separate checkout, in a macos sandbox: no network, no writes outside the checkout, no reads in your home folder beyond the checkout and language toolchains, no keys or tokens in its environment.
