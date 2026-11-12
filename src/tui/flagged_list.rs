@@ -2,7 +2,8 @@
 //! preview shows it: why it has its level, what the agent said, the code
 //! change with the statements written in, the note. Under its name, its
 //! most severe security finding or fact, when it has one (`▲ security:
-//! high · authorization: …`). One is selected: the
+//! high · authorization: …`), and its proposed change not put in yet
+//! (`✎ change proposed: 2 hunks`). One is selected: the
 //! `▌` bar and a background behind it. `j` `k` (and `n` `N`) select the
 //! next and previous one and scroll it to the top, `]c` `[c` go from hunk
 //! to hunk, the scroll keys and the wheel scroll; a selected unit
@@ -23,7 +24,7 @@ use super::{diff, preview, slim};
 use crate::keymap::Action;
 use crate::review::attention::Level;
 use crate::review::model::{Risk, Unit};
-use crate::session::flagged_list::security_line;
+use crate::session::flagged_list::{proposal_line, security_line};
 use crate::util::truncate;
 
 // ---- Drawing -----------------------------------------------------------
@@ -186,6 +187,9 @@ fn entry(
     if let Some(line) = security(app, u, w) {
         out.push(vec![line]);
     }
+    if let Some(line) = proposed(app, u, w) {
+        out.push(vec![line]);
+    }
     // The code change in its box, when there is one; else its statements
     // and the note are said in the text, as the preview does.
     let code = diff::code_change_of(app, u, w.saturating_sub(5), diff::Notes::Inline);
@@ -249,6 +253,21 @@ pub(super) fn security(app: &App, u: &Unit, w: usize) -> Option<Line<'static>> {
     Some(Line::from(vec![
         Span::styled(lead, style),
         Span::styled(rest, app.theme.text()),
+    ]))
+}
+
+/// What `u`'s proposed change says on one line of `w` cells (see
+/// [`crate::session::flagged_list::proposal_line`]): `✎ change proposed:
+/// 2 hunks`. `None` when it has no hunk left to put in.
+pub(super) fn proposed(app: &App, u: &Unit, w: usize) -> Option<Line<'static>> {
+    let text = proposal_line(u)?;
+    let lead = " ✎ ";
+    Some(Line::from(vec![
+        Span::styled(lead, app.theme.accent()),
+        Span::styled(
+            truncate(&text, w.saturating_sub(lead.width())),
+            app.theme.text(),
+        ),
     ]))
 }
 

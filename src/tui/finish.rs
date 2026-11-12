@@ -371,37 +371,92 @@ fn post_details(app: &App, step: Step, w: usize) -> Vec<Line<'static>> {
     }
     let plan = approve::plan(&app.review, &app.order, &app.finish_summary(), true);
     out.push(Line::styled("Summary comment", t.accent()));
-    for l in wrap(&plan.body, w.saturating_sub(2)) {
-        out.push(Line::from(format!("  {l}")));
-    }
+    out.extend(posted(app, &plan.body, w.saturating_sub(2), "  ", "  "));
     out.push(Line::default());
     if plan.inline.is_empty() {
         out.push(Line::styled("No inline comments.", t.muted()));
         return out;
     }
-    out.push(Line::styled(
-        format!(
-            "{} inline comment{}",
-            plan.inline.len(),
-            if plan.inline.len() == 1 { "" } else { "s" }
-        ),
-        t.accent(),
-    ));
-    for c in &plan.inline {
+    let n = plan.inline.len();
+    let mut head = format!("{n} inline comment{}", if n == 1 { "" } else { "s" });
+    match plan.inline.iter().filter(|c| c.suggestion).count() {
+        0 => {}
+        1 => head.push_str(" · 1 suggests a change"),
+        k => head.push_str(&format!(" · {k} suggest a change")),
+    }
+    out.push(Line::styled(head, t.accent()));
+    for (i, c) in plan.inline.iter().enumerate() {
         let side = if c.side == Side::Old { " (old)" } else { "" };
-        let text = format!("{}:{}{side}  {}", sanitize(&c.path), c.line, c.body);
-        for (i, l) in wrap(&text, w.saturating_sub(4)).into_iter().enumerate() {
-            out.push(Line::from(format!(
-                "{}{l}",
-                if i == 0 { "  " } else { "    " }
-            )));
+        let lines = match c.start_line {
+            Some(s) => format!("{s}-{}", c.line),
+            None => c.line.to_string(),
+        };
+        let text = format!("{}:{lines}{side}  {}", sanitize(&c.path), c.body);
+        out.extend(posted(app, &text, w.saturating_sub(4), "  ", "    "));
+        // A suggestion's block ends it: a blank before the next comment.
+        if c.suggestion && i + 1 < plan.inline.len() {
+            out.push(Line::default());
         }
     }
     out
 }
 
-/// The notes overview: every flagged or noted unit, its level and place,
-/// and its note.
+/// Text that is posted as the sheet shows it, `w` cells wide after its
+/// indent (`first` on the first line, `indent` on the rest): prose
+/// wrapped, a fenced block (a suggestion, a diff) line by line as it is,
+/// cut at the edge, a diff's lines in their colours.
+fn posted(app: &App, text: &str, w: usize, first: &str, indent: &str) -> Vec<Line<'static>> {
+    let t = &app.theme;
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut prose: Vec<&str> = Vec::new();
+    // The open fence and whether it holds a diff.
+    let mut fence: Option<(String, bool)> = None;
+    let wrapped = |prose: &mut Vec<&str>, rows: &mut Vec<Line<'static>>| {
+        if !prose.is_empty() {
+            rows.extend(wrap(&prose.join("\n"), w).into_iter().map(Line::from));
+            prose.clear();
+        }
+    };
+    for l in text.split('\n') {
+        let bare = l.trim();
+        let ticks = bare.chars().take_while(|c| *c == '`').count();
+        let code = |style| Line::styled(truncate(&l.replace('\t', "    "), w), style);
+        match &fence {
+            None if ticks >= 3 => {
+                wrapped(&mut prose, &mut rows);
+                fence = Some((bare[..ticks].to_string(), bare[ticks..].trim() == "diff"));
+                rows.push(code(t.muted()));
+            }
+            None => prose.push(l),
+            Some((f, diff)) => {
+                let style = match l.chars().next() {
+                    Some('+') if *diff => Style::new().fg(t.added),
+                    Some('-') if *diff => Style::new().fg(t.removed),
+                    _ => t.text(),
+                };
+                if ticks >= f.len() && ticks == bare.len() {
+                    fence = None;
+                    rows.push(code(t.muted()));
+                } else {
+                    rows.push(code(style));
+                }
+            }
+        }
+    }
+    wrapped(&mut prose, &mut rows);
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let lead = if i == 0 { first } else { indent };
+            let mut spans = vec![Span::raw(lead.to_string())];
+            spans.extend(l.spans);
+            Line::from(spans).style(l.style)
+        })
+        .collect()
+}
+
+/// The notes overview: every flagged or noted unit, or one with a proposed
+/// change not put in yet, its level and place, and its note.
 fn notes(app: &App, w: usize) -> Vec<Line<'static>> {
     let t = &app.theme;
     let listed = crate::notes::listed(&app.review);
@@ -458,10 +513,14 @@ fn note_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
             t.muted(),
         ));
     }
-    // What goes with the notes about its security.
+    // What goes with the notes about its security, and its proposed change.
     if u.decision == Decision::Investigate
         && let Some(mut line) = super::flagged_list::security(app, u, w.saturating_sub(3))
     {
+        line.spans.insert(0, Span::raw("   "));
+        out.push(line);
+    }
+    if let Some(mut line) = super::flagged_list::proposed(app, u, w.saturating_sub(3)) {
         line.spans.insert(0, Span::raw("   "));
         out.push(line);
     }

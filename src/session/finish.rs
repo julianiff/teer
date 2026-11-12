@@ -686,10 +686,13 @@ teer; the review is saved."
             .unwrap_or_else(|| approve::intro_for(&self.review))
     }
 
-    /// `⏎` on a post: the notes as inline comments and the summary, with
-    /// the step's verdict. "Approve with a comment" opens the editor on the
-    /// comment until there is one. The PR head is checked again before
-    /// anything is sent (`approve::post`).
+    /// `⏎` on a post: the notes as inline comments and the summary, the
+    /// suggested hunks of proposed changes as suggestions on their lines or
+    /// diffs in the summary (`approve::plan`), with the step's verdict.
+    /// Should GitHub refuse the inline comments, the summary that goes
+    /// instead holds every note and every suggested hunk. "Approve with a
+    /// comment" opens the editor on the comment until there is one. The PR
+    /// head is checked again before anything is sent (`approve::post`).
     fn post(&mut self, step: Step) -> Vec<Effect> {
         let Some(verdict) = step.verdict() else {
             return Vec::new();
