@@ -3,7 +3,7 @@ source: tests/it/tui.rs
 expression: "render(&app, 90, 20).backend()"
 ---
 " your changes                                                                             "
-" security: nothing found · checked: auth · entry points · injection · secrets · exposure …"
+"╭─ Needs a close look · 1 unit ──────────────────────────────────────────────────────────╮"
 "│   ▲ checkout.py  charge_order                                                 accepted │"
 "╰────────────────────────────────────────────────────────────────────────────────────────╯"
 "╭─ Worth a look · 1 unit ────────────────────────────────────────────────────────────────╮"

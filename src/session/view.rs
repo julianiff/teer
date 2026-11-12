@@ -932,7 +932,7 @@ pub fn auto_line(app: &App) -> Option<String> {
 /// The attack-surface card while the security lens is on.
 fn surface(app: &App) -> Option<SurfaceView> {
     use crate::security::surface::{CHECKED, NOT_CHECKED, surface};
-    app.security.enabled.then(|| SurfaceView {
+    (app.security.enabled && app.security.by_exposure).then(|| SurfaceView {
         rows: surface(&app.review).rows,
         checked: CHECKED.join(" · "),
         not: NOT_CHECKED.join(" · "),

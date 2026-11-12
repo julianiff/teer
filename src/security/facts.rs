@@ -315,6 +315,11 @@ impl<'a> Reach<'a> {
             }
             return dedupe(out);
         }
+        // A test is no entry point, and what it calls isn't reached from
+        // outside: only its secrets count.
+        if added.in_tests() {
+            return dedupe(out);
+        }
         let ns = self.scan(&u.file, true);
         if let Some((ns, ni)) = ns.and_then(|s| s.sym(&u.symbol).map(|i| (s, i))) {
             let os = if u.status == UnitStatus::Changed {

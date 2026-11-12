@@ -703,3 +703,32 @@ fn nothing_else_is_found() {
     want.sort();
     assert_eq!(got, want);
 }
+
+#[test]
+fn a_test_is_no_entry_point_and_its_calls_are_no_sinks() {
+    let _env = isolate_env();
+    let repo = FixtureRepo::new();
+    repo.write("api/util.go", "package api\n\nfunc Noop() {}\n")
+        .commit("init");
+    // A Go test with a handler in it, and a TS spec that runs raw SQL.
+    repo.write(
+        "api/send_test.go",
+        "package api\n\nimport (\n\t\"net/http\"\n\t\"net/http/httptest\"\n\t\"os/exec\"\n\t\"testing\"\n)\n\n\
+func TestSendsAssetID(t *testing.T) {\n\tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\tw.Write([]byte(r.URL.Query().Get(\"id\")))\n\t}))\n\tdefer srv.Close()\n\tname := t.Name()\n\t_ = exec.Command(\"echo\", name).Run()\n}\n",
+    )
+    .write(
+        "src/answers.spec.ts",
+        "import { db } from './db';\n\nexport async function answers(req: any, res: any) {\n  const id = req.query.id;\n  return db.query(`SELECT * FROM a WHERE id = ${id}`);\n}\n",
+    );
+    let review = build_review(&repo.path(), &BuildOptions::default()).unwrap();
+    let facts: Vec<(String, String)> = review
+        .units
+        .iter()
+        .flat_map(|u| {
+            u.security
+                .iter()
+                .map(move |f| (u.id.clone(), f.text.clone()))
+        })
+        .collect();
+    assert!(facts.is_empty(), "{facts:?}");
+}

@@ -149,6 +149,8 @@ a lens over the review, not a scanner of the whole repo: teer finds security fac
 - new routes, handlers, commands and server actions: `◆`
 - raw sql, shell, eval, file paths, outgoing requests or unescaped html given something that isn't a literal: `◆` when reachable from an entry point (up to four calls up), else a note
 
+tests, fixtures and mocks are no entry points and reach no sinks: only real keys count there.
+
 in every file:
 
 - hard-coded secrets: `▲`, the value never shown
@@ -159,7 +161,7 @@ in every file:
 - cors `*`, cookie flags off, tls verification off, debug on
 - weak crypto: a note
 
-**the attack surface.** the queue opens with a card: the entry points, sinks, removed or missing checks, secrets, packages, ci and config the change touches, most severe first, and on its last line what teer checked and what nobody did. with nothing found it is one muted line that still says what was checked. on a short terminal it is one line; a click on an item selects its unit. `zs` puts the units with security facts or standing findings in a security box above the level boxes, most exposed first; `zs` again lists by level.
+**the security order.** `zs` puts the units with security facts or standing findings in a security box above the level boxes, most exposed first, under an attack-surface card: the entry points, sinks, removed or missing checks, secrets, packages, ci and config the change touches, most severe first, and on its last line what teer checked and what nobody did. with nothing found the card is one muted line that still says what was checked. on a short terminal it is one line; a click on an item selects its unit. `zs` again lists by level, without the card: there each fact is a reason under its unit.
 
 **the security tile (`<space>x`).** asks the agent how the change can be abused. teer gives it the call chains into the unit from its call graph (up to four calls to the entry points), the checks its catalog finds along them, what the unit calls, and the facts teer found, as hints, not conclusions. each finding must show a path: where untrusted input enters, each call on the way, and where it does harm, every step citing real lines.
 

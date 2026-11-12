@@ -70,10 +70,16 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// Draw the attack-surface card on top of `area` while the lens is on,
-/// each item a click target that selects its unit; what is left of `area`.
+/// Draw the attack-surface card on top of `area` in the security order
+/// (`zs`), each item a click target that selects its unit; what is left
+/// of `area`. Listed by level, the queue shows no card: the facts are in
+/// each unit's reasons, and the card would only repeat them.
 fn draw_surface(f: &mut Frame, app: &App, area: Rect) -> Rect {
-    if !app.security.enabled || area.height < CARD_MIN_AREA || area.width < 4 {
+    if !app.security.enabled
+        || !app.security.by_exposure
+        || area.height < CARD_MIN_AREA
+        || area.width < 4
+    {
         return area;
     }
     let s = surface::surface(&app.review);

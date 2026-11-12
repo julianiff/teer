@@ -179,8 +179,20 @@ fn the_surface_groups_by_class_and_lists_the_most_severe_first() {
 // ---- The card -----------------------------------------------------------------
 
 #[test]
+fn listed_by_level_there_is_no_card() {
+    let mut d = Driver::of(exposed());
+    assert!(!d.render(160, 40).contains("attack surface"));
+    d.keys("zs");
+    assert!(d.render(160, 40).contains("attack surface"));
+    d.keys("zs");
+    assert!(!d.render(160, 40).contains("attack surface"));
+}
+
+#[test]
 fn the_card_sits_over_the_boxes_with_its_rows_and_what_was_checked() {
-    let d = Driver::of(exposed());
+    let mut d = Driver::of(exposed());
+    // The card is on the security order's screen.
+    d.keys("zs");
     let s = d.render(160, 40);
     let c = card(&s);
     assert!(c[0].starts_with("╭─ attack surface ─"), "{}", c[0]);
@@ -211,17 +223,16 @@ fn the_card_sits_over_the_boxes_with_its_rows_and_what_was_checked() {
     // The boxes start under it.
     let ls = lines(&s);
     let card_end = ls.iter().position(|l| l.starts_with('╰')).unwrap();
-    let first_box = ls
-        .iter()
-        .position(|l| l.contains("Needs a close look"))
-        .unwrap();
+    let first_box = ls.iter().position(|l| l.contains("Security ·")).unwrap();
     assert!(first_box > card_end, "{s}");
     assert!(!s.to_lowercase().contains("safe"), "{s}");
 }
 
 #[test]
 fn with_nothing_found_the_card_is_one_muted_line_that_says_what_was_checked() {
-    let d = Driver::new(3);
+    let mut d = Driver::new(3);
+    // The card is on the security order's screen.
+    d.keys("zs");
     let s = d.render(160, 30);
     let ls = lines(&s);
     assert!(
@@ -238,7 +249,9 @@ fn with_nothing_found_the_card_is_one_muted_line_that_says_what_was_checked() {
 
 #[test]
 fn a_short_terminal_gets_the_card_on_one_line() {
-    let d = Driver::of(exposed());
+    let mut d = Driver::of(exposed());
+    // The card is on the security order's screen.
+    d.keys("zs");
     let s = d.render(100, 16);
     let ls = lines(&s);
     assert!(
@@ -274,7 +287,9 @@ fn many_classes_keep_the_card_to_eight_rows() {
         };
         u.security = vec![fact(c, w, "", &format!("{} thing", c.id()))];
     }
-    let d = Driver::of(us);
+    let mut d = Driver::of(us);
+    // The card is on the security order's screen.
+    d.keys("zs");
     let c = card(&d.render(140, 60));
     assert!(c.len() <= 8, "{c:#?}");
     assert!(c.iter().any(|l| l.starts_with("│ secrets")), "{c:#?}");
@@ -297,7 +312,9 @@ fn many_items_end_in_how_many_more() {
             "a new route",
         )];
     }
-    let d = Driver::of(us);
+    let mut d = Driver::of(us);
+    // The card is on the security order's screen.
+    d.keys("zs");
     let c = card(&d.render(110, 40));
     let row = &c[1];
     assert!(row.contains("POST /a-rather-long-route-name-0"), "{row}");
@@ -324,6 +341,8 @@ fn with_the_lens_off_there_is_no_card() {
 #[test]
 fn a_click_on_an_item_selects_its_unit() {
     let mut d = Driver::of(exposed());
+    // The card is on the security order's screen.
+    d.keys("zs");
     d.app.sel = d.pos("u0");
     let s = d.render(120, 40);
     let c = card(&s);
@@ -359,7 +378,9 @@ fn a_click_on_an_item_selects_its_unit() {
 
 #[test]
 fn the_desktop_gets_the_card_compact_and_whole() {
-    let d = Driver::new(2);
+    let mut d = Driver::new(2);
+    // The card is on the security order's screen.
+    d.keys("zs");
     let json = serde_json::to_value(snapshot(&d.app, None).queue).unwrap();
     // Nothing found: what was checked, no rows.
     assert_eq!(
@@ -369,7 +390,8 @@ fn the_desktop_gets_the_card_compact_and_whole() {
             "not": "denial of service · business logic · crypto details",
         })
     );
-    let d = Driver::of(exposed());
+    let mut d = Driver::of(exposed());
+    d.keys("zs");
     let v = snapshot(&d.app, None).queue.surface.unwrap();
     let want: Surface = surface(&d.app.review);
     assert_eq!(v.rows, want.rows);

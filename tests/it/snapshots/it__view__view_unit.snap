@@ -166,11 +166,7 @@ expression: json(&app)
     "skipped": [],
     "auto_line": "3 units accepted for you, za shows them",
     "sel": 0,
-    "show_auto": false,
-    "surface": {
-      "checked": "auth · entry points · injection · secrets · exposure · packages · ci · config",
-      "not": "denial of service · business logic · crypto details"
-    }
+    "show_auto": false
   },
   "preview": null,
   "unit": {
