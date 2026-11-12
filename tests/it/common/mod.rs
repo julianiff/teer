@@ -95,10 +95,61 @@ pub fn isolate_env() -> Env {
             std::env::set_var("TEER_CONFIG", d.path().join("config.toml"));
             // `teer pr` asks gh for the PR's title: never the real one in tests.
             std::env::set_var("TEER_GH", d.path().join("no-gh"));
+            // `s` (send to a session) finds no real Claude Code, Codex or pi
+            // session, and runs no real codex or pi.
+            std::env::set_var("TEER_CLAUDE_DIR", d.path().join("agents/claude"));
+            std::env::set_var("TEER_CODEX_DIR", d.path().join("agents/codex"));
+            std::env::set_var("TEER_PI_DIR", d.path().join("agents/pi"));
+            std::env::set_var("TEER_CODEX_BIN", d.path().join("no-codex"));
+            std::env::set_var("TEER_PI_BIN", d.path().join("no-pi"));
         }
         d
     });
     Env(d.path())
+}
+
+/// What [`send_env`] set up.
+pub struct SendEnv {
+    /// Where the stand-in `codex` writes what each run was given:
+    /// `<thread>.args` (NUL-separated), `<thread>.cwd`, `<thread>.home`
+    /// (its `CODEX_HOME`).
+    pub codex_calls: PathBuf,
+}
+
+/// Stand-ins for the programs `s` runs, set once per test process over
+/// [`isolate_env`]'s: `$TEER_CODEX_BIN` is a `codex` that records its
+/// arguments by thread (see [`SendEnv`]) and fails for a thread named
+/// `fail-*`, saying so on stderr; `$TEER_PI_BIN` is a `pi` that does
+/// nothing. The agents' folders stay [`isolate_env`]'s; tests give the
+/// backends their own `Dirs`.
+pub fn send_env() -> SendEnv {
+    static BIN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let bin = BIN.get_or_init(|| {
+        let bin = isolate_env().path().join("send-bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        sandbox::script(
+            &bin.join("codex"),
+            r#"dir="$(dirname "$0")/codex-calls"
+mkdir -p "$dir"
+thread=none
+for a in "$@"; do case "$a" in --thread=*) thread="${a#--thread=}";; esac; done
+for a in "$@"; do printf '%s\0' "$a"; done > "$dir/$thread.args"
+pwd -P > "$dir/$thread.cwd"
+printf '%s' "$CODEX_HOME" > "$dir/$thread.home"
+case "$thread" in fail-*) echo "error: no session named $thread" >&2; exit 2;; esac
+exit 0"#,
+        );
+        sandbox::script(&bin.join("pi"), "exit 0");
+        // SAFETY: set once, as `isolate_env` does.
+        unsafe {
+            std::env::set_var("TEER_CODEX_BIN", bin.join("codex"));
+            std::env::set_var("TEER_PI_BIN", bin.join("pi"));
+        }
+        bin
+    });
+    SendEnv {
+        codex_calls: bin.join("codex-calls"),
+    }
 }
 
 pub fn teer_bin() -> &'static Path {
