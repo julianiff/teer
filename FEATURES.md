@@ -1,6 +1,6 @@
 # teer features
 
-[how it works](#how-it-works) · [start](#start) · [agents](#agents) · [the queue](#the-queue) · [the unit view](#the-unit-view) · [security](#security) · [proposed changes](#proposed-changes) · [finish](#finish) · [the fix loop](#the-fix-loop) · [notes](#notes) · [keys](#keys) · [config](#config) · [safety](#safety) · [limits](#limits)
+[how it works](#how-it-works) · [start](#start) · [agents](#agents) · [the queue](#the-queue) · [the unit view](#the-unit-view) · [security](#security) · [proposed changes](#proposed-changes) · [send to your agent](#send-to-your-agent) · [finish](#finish) · [the fix loop](#the-fix-loop) · [notes](#notes) · [keys](#keys) · [config](#config) · [safety](#safety) · [limits](#limits)
 
 ## how it works
 
@@ -213,6 +213,30 @@ what it drops is counted and logged to `teer.log`. a hunk whose file has a new s
 
 **in the notes.** the notes you copy (`y`, `teer notes`) or hand to your agent carry each proposed change not put in yet: what it answers, what it does, the second model's word, and each hunk as a diff. your agent is asked to put them in, or say why not. the flagged list says `✎ change proposed: 2 hunks` under a unit that has some.
 
+## send to your agent
+
+`s` on a tile sends what it says to an agent session running now in this repository: claude code, codex or pi. the agent there changes the code. only text goes this way; proposed hunks are put in with `p` and `P`.
+
+**what is sent.** the tile in focus decides:
+
+- **advice**: its text and sources
+- **security**: the findings that stand, each with its path from source to sink, what's missing and the exploit; with none standing, teer's facts
+- **tests**: the dangerous cases no test covers, as "add tests that cover these"
+- **old vs new**: the statements the runs disprove and the cases that surprised
+- **ask**: the last answer with its question
+
+the message names the review and the unit (`file:lines`) and ends with "change the code to address this. keep it small and say what you changed, or why not." a tile with nothing yet, the diagram, and the text itself send nothing. on a pull request nothing is sent: `:w` posts the review.
+
+**the picker.** the sessions running in this repository, most recently active first: agent, name, idle or busy, how long since active, its folder when not the root. the one that wrote the change is chosen first, else the one you chose last. `enter` sends, `esc` cancels; the bottom shows the start of the message.
+
+**how it gets there.**
+
+- **claude code**: teer reads the session registry in `~/.claude/sessions` and writes the message to the session's own messaging socket, with its key. the session sees "another claude session sent a message" and acts on it within its own permissions. this isn't a documented interface (protocol 1, claude code 2.1.x): when it fails, the message goes to your clipboard.
+- **codex**: threads of this repository active in the last two hours get it through `codex queue`.
+- **pi**: through teer's small pi extension, `~/.pi/agent/extensions/teer-inbox.ts`. with pi installed and the extension missing, the picker's last row installs it after a question; pi sessions started after that can be reached. it opens a private socket per session, registered with a random key; the message arrives as if typed, once the agent is done.
+
+`CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `PI_CODING_AGENT_DIR` are followed. a message is at most 32 kb. when it can't be sent, it goes to the clipboard with the reason.
+
 ## finish
 
 `:w` opens one sheet that reads your decisions and offers one next step. `enter` does it; `j` `k` pick another.
@@ -311,6 +335,7 @@ keys follow neovim, and a key does the same on every screen. a prefix (`g`, `]`,
 | `<space>e` | `tool.fix` | propose a change: the agent writes it, teer checks it |
 | `p` | `fix.apply` | put the proposed hunk into the code |
 | `P` | `fix.apply_all` | put every proposed hunk into the code |
+| `s` | `send.session` | send the tile's result to an agent session |
 | `<space>p` | `tool.prove` | prove the security findings, old against new |
 | `<space>c` | `tool.history` | commits and PR description |
 | `<space>n` | `tool.notes` | every note |
@@ -388,6 +413,7 @@ editor = "zed --wait {file}:{line}"           # zed
 ## safety
 
 - **the agent only reads.** claude code runs without shell or write tools, codex in its read-only sandbox, a model api with teer's own list, read and grep, kept inside the repo. only the advice and `K` may search the web, and only after you allow it.
+- **messages go only where you send them.** `s` sends a tile's text to the session you pick, on this machine, and nowhere else; the message names its session, so a session that took over another's process drops it.
 - **teer writes only what you put in.** a proposed change is text the agent answered with. teer writes it to your working tree only on `p` or `P` and your `y`, only files inside the repository (never `.git`, never through a symlink), all of them or none, and never for a pull request.
 - **the fix loop is your agent.** `:w` opens claude code or codex in your terminal as if you had started it, with its usual permissions. never for a pull request.
 - **pull requests are untrusted.** their own checkout, no web, and the repo's agent instructions (`CLAUDE.md`, `AGENTS.md`, skills, settings) aren't loaded.
@@ -407,4 +433,5 @@ editor = "zed --wait {file}:{line}"           # zed
 - web search is told to send generic queries only; teer doesn't filter them.
 - security facts come from a catalog of names per language (php, typescript/javascript, go; rust and python get secrets, packages, ci and config only). a check done somewhere else (middleware, a voter elsewhere) can show as gone; the security tile is where that gets sorted out.
 - prove it runs on macos only, like `<space>r`, and only for units that run on their own.
+- sending to claude code uses its local messaging socket, which isn't documented and may change with an update; the clipboard is the fallback. codex picks a queued message up when the thread next takes input; that a running codex tui does so on its own isn't confirmed.
 - code-scanning alerts: the first 100 per pull request. in a pr review, sarif paths must be relative to the repo.

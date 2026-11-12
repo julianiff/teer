@@ -23,6 +23,7 @@ mod fix_view;
 mod live_behavior;
 mod live_claude;
 mod live_providers;
+mod live_send;
 mod live_untrusted;
 mod m0_m1;
 mod m2;
