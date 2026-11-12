@@ -16,7 +16,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use super::app::App;
 use super::preview;
-use crate::review::diff::{DIFF_LEVEL, Kind, anchor, expand_tabs, rows_around};
+use crate::fix::ProposedHunk;
+use crate::review::diff::{DIFF_LEVEL, Kind, Row, anchor, expand_tabs, rows_around};
 use crate::review::model::{Change, LineRef, Marker, Prep, Unit};
 use crate::syntax::Class;
 use crate::util::sanitize;
@@ -229,73 +230,10 @@ pub fn code_change_of(app: &App, u: &Unit, w: usize, notes: Notes) -> CodeChange
     let mut hunks: Vec<usize> = (0..rows.len())
         .filter(|&k| changes(k) && (k == 0 || !changes(k - 1)))
         .collect();
-    let t = &app.theme;
-    let digits = rows
-        .iter()
-        .filter_map(|r| r.line.or(r.old))
-        .max()
-        .map_or(1, |n| n.to_string().len())
-        .max(3);
-    // "123 + code": line number, sign, then the code.
-    let code_w = w.saturating_sub(digits + 3);
+    let digits = digits_of(&rows);
     // Each row as its lines: long code wraps instead of being cut.
-    let mut blocks: Vec<Vec<Line<'static>>> = rows
-        .iter()
-        .map(|r| {
-            // Code keeps its syntax colours; the sign says what changed, and
-            // a removed line is tinted as well.
-            let (sign, sign_fg, line_style) = match r.kind {
-                Kind::Added => ("+", t.added, Style::new()),
-                Kind::Removed => ("-", t.removed, t.removed_line()),
-                Kind::Context => (" ", t.text, Style::new()),
-                // Left out, quietly: dots under the numbers.
-                Kind::Gap => {
-                    return vec![Line::styled(format!("{:>digits$}", "..."), t.muted())];
-                }
-            };
-            // A removed line has only its old number.
-            let (num, num_style) = match r.kind {
-                Kind::Removed => (r.old, t.old_line_no()),
-                _ => (r.line, t.line_no()),
-            };
-            let num = num.map(|n| n.to_string()).unwrap_or_default();
-            let code_style = t.text().patch(line_style);
-            let sign_style = code_style.fg(sign_fg);
-            // Colours only for code that is drawn as it is in the file.
-            let text = sanitize(&r.text);
-            let chars: Vec<char> = text.chars().collect();
-            let classes = if text == r.text { &r.classes[..] } else { &[] };
-            wrap_ranges(&chars, code_w)
-                .into_iter()
-                .enumerate()
-                .map(|(k, (indent, range))| {
-                    // Continuations leave the number and sign columns empty.
-                    let (num, sign) = if k == 0 {
-                        (num.as_str(), sign)
-                    } else {
-                        ("", " ")
-                    };
-                    let mut spans = vec![
-                        Span::styled(format!("{num:>digits$} "), num_style),
-                        Span::styled(format!("{sign} "), sign_style),
-                        Span::styled(" ".repeat(indent), code_style),
-                    ];
-                    let piece = &chars[range.clone()];
-                    let piece_classes = classes.get(range.start..).unwrap_or_default();
-                    spans.extend(painted(app, piece, piece_classes, code_style));
-                    // A tinted line is tinted to the edge.
-                    if r.kind == Kind::Removed {
-                        use unicode_width::UnicodeWidthChar;
-                        let used: usize =
-                            indent + piece.iter().map(|c| c.width().unwrap_or(0)).sum::<usize>();
-                        let fill = " ".repeat(code_w.saturating_sub(used));
-                        spans.push(Span::styled(fill, code_style));
-                    }
-                    Line::from(spans)
-                })
-                .collect()
-        })
-        .collect();
+    let mut blocks: Vec<Vec<Line<'static>>> =
+        rows.iter().map(|r| row_lines(app, r, digits, w)).collect();
     if said {
         // Each statement under the row it is anchored to, in their order;
         // inserted from the back so the row indices stay right.
@@ -323,6 +261,84 @@ pub fn code_change_of(app: &App, u: &Unit, w: usize, notes: Notes) -> CodeChange
         gutter: (digits + 3) as u16,
         hunks,
     }
+}
+
+/// Columns the line numbers of `rows` take: three at least.
+fn digits_of(rows: &[Row]) -> usize {
+    rows.iter()
+        .filter_map(|r| r.line.or(r.old))
+        .max()
+        .map_or(1, |n| n.to_string().len())
+        .max(3)
+}
+
+/// Row `r` of a code change as the lines it wraps into at `w` cells,
+/// `digits` columns for its number: "123 + code". Code keeps its syntax
+/// colours; the sign says what changed, and a removed line is tinted as
+/// well and has only its old number. A gap is quiet dots under the
+/// numbers.
+fn row_lines(app: &App, r: &Row, digits: usize, w: usize) -> Vec<Line<'static>> {
+    let t = &app.theme;
+    let code_w = w.saturating_sub(digits + 3);
+    let (sign, sign_fg, line_style) = match r.kind {
+        Kind::Added => ("+", t.added, Style::new()),
+        Kind::Removed => ("-", t.removed, t.removed_line()),
+        Kind::Context => (" ", t.text, Style::new()),
+        // Left out, quietly: dots under the numbers.
+        Kind::Gap => {
+            return vec![Line::styled(format!("{:>digits$}", "..."), t.muted())];
+        }
+    };
+    let (num, num_style) = match r.kind {
+        Kind::Removed => (r.old, t.old_line_no()),
+        _ => (r.line, t.line_no()),
+    };
+    let num = num.map(|n| n.to_string()).unwrap_or_default();
+    let code_style = t.text().patch(line_style);
+    let sign_style = code_style.fg(sign_fg);
+    // Colours only for code that is drawn as it is in the file.
+    let text = sanitize(&r.text);
+    let chars: Vec<char> = text.chars().collect();
+    let classes = if text == r.text { &r.classes[..] } else { &[] };
+    wrap_ranges(&chars, code_w)
+        .into_iter()
+        .enumerate()
+        .map(|(k, (indent, range))| {
+            // Continuations leave the number and sign columns empty.
+            let (num, sign) = if k == 0 {
+                (num.as_str(), sign)
+            } else {
+                ("", " ")
+            };
+            let mut spans = vec![
+                Span::styled(format!("{num:>digits$} "), num_style),
+                Span::styled(format!("{sign} "), sign_style),
+                Span::styled(" ".repeat(indent), code_style),
+            ];
+            let piece = &chars[range.clone()];
+            let piece_classes = classes.get(range.start..).unwrap_or_default();
+            spans.extend(painted(app, piece, piece_classes, code_style));
+            // A tinted line is tinted to the edge.
+            if r.kind == Kind::Removed {
+                use unicode_width::UnicodeWidthChar;
+                let used: usize =
+                    indent + piece.iter().map(|c| c.width().unwrap_or(0)).sum::<usize>();
+                let fill = " ".repeat(code_w.saturating_sub(used));
+                spans.push(Span::styled(fill, code_style));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// A hunk the agent proposes as blocks drawn as the code change's rows
+/// are, each at most `w` cells: the lines it removes and adds, with the
+/// context they share, numbered and in their syntax colours (see
+/// [`crate::session::fix::hunk_rows`]).
+pub fn proposed_rows(app: &App, h: &ProposedHunk, w: usize) -> Vec<Vec<Line<'static>>> {
+    let rows = crate::session::fix::hunk_rows(h, Some(&app.syntax));
+    let digits = digits_of(&rows);
+    rows.iter().map(|r| row_lines(app, r, digits, w)).collect()
 }
 
 /// A statement as a comment in the code, under the row above it: a small

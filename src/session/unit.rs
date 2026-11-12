@@ -5,7 +5,9 @@
 //! and what the unit calls outside the review (`gd`). `tab` and
 //! `shift+tab` move the focus, `zz` zooms, `h` closes the tile in focus,
 //! then goes back. Deciding here moves on to the next pending unit and
-//! stays in the view. How it looks is the front end's.
+//! stays in the view. `]c` `[c` stop at the code change's hunks, then at
+//! each hunk of the change the agent proposes (see [`super::fix`]). How it
+//! looks is the front end's.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -70,6 +72,15 @@ pub struct UnitView {
     /// Where each hunk of the diff starts, in lines of the text, as last
     /// drawn.
     pub hunks: RefCell<Vec<usize>>,
+    /// Where each proposed hunk's box starts, in lines of the text, by
+    /// hunk, as last drawn: `]c` `[c` stop there after the code change's.
+    pub fixes: RefCell<Vec<usize>>,
+    /// The proposed hunk a jump (or a click) made current; `None` goes by
+    /// the scroll (see [`App::fix_at`]).
+    pub fix: Option<usize>,
+    /// Scroll the text to `fix` when it is next drawn: where its box is
+    /// wasn't known yet.
+    pub reveal: Cell<bool>,
     /// How far the text can scroll and its rows, as last drawn.
     pub text_max: Cell<usize>,
     pub text_rows: Cell<usize>,
@@ -144,6 +155,7 @@ impl App {
         if id != self.unit.id {
             self.close_tiles();
             self.unit.outside.clear();
+            self.unit.fixes.borrow_mut().clear();
         }
         if self.can_ask() && !self.unit.tiles.contains(&Panel::Recommend) {
             self.unit.tiles.insert(0, Panel::Recommend);
@@ -168,6 +180,9 @@ impl App {
         self.unit.zoom = false;
         self.focus_tile(None);
         self.ask.chat_scroll.set(None);
+        // The text starts at the top again: so does the proposed hunk.
+        self.unit.fix = None;
+        self.unit.reveal.set(false);
     }
 
     /// Give tile `p` the focus (`None`: the text); typing in the ask tile
@@ -568,10 +583,12 @@ impl App {
     }
 
     fn scroll_text(&mut self, by: isize) {
-        let to = self
-            .detail_offset()
-            .saturating_add_signed(by)
-            .min(self.unit.text_max.get());
+        let at = self.detail_offset();
+        let to = at.saturating_add_signed(by).min(self.unit.text_max.get());
+        // Scrolled: the proposed hunk at the top is the current one.
+        if to != at {
+            self.unit.fix = None;
+        }
         self.detail_scroll.borrow_mut().1 = to;
     }
 
@@ -582,33 +599,48 @@ impl App {
     }
 
     /// `]c` (`[c`): scroll the text to the `times`-th hunk below (above)
-    /// the top, as far as there are.
+    /// the top, as far as there are: the code change's, then each proposed
+    /// one. A proposed hunk jumped to is the current one (`p` puts it in),
+    /// even where the text can't scroll it to the top; a hunk of the code
+    /// change the text can't scroll to is passed over.
     fn jump_hunk(&mut self, forward: bool, times: usize) {
-        let hunks = self.unit.hunks.borrow().clone();
-        if hunks.is_empty() {
+        let code = self.unit.hunks.borrow().clone();
+        let fixes = self.unit.fixes.borrow().clone();
+        if code.is_empty() && fixes.is_empty() {
             self.status = "No code change to jump in.".into();
             return;
         }
-        let at = self.detail_offset();
-        let mut to = at;
-        for _ in 0..times.max(1) {
-            let next = if forward {
-                hunks.iter().copied().find(|&h| h > to)
-            } else {
-                hunks.iter().rev().copied().find(|&h| h < to)
-            };
-            match next {
-                Some(h) => to = h,
-                None => break,
+        // Each stop: its row, and which proposed hunk it is.
+        let mut stops: Vec<(usize, Option<usize>)> = code.iter().map(|&r| (r, None)).collect();
+        stops.extend(fixes.iter().enumerate().map(|(i, &r)| (r, Some(i))));
+        stops.sort();
+        if !forward {
+            stops.reverse();
+        }
+        let max = self.unit.text_max.get();
+        // From the proposed hunk jumped to last, else from the top.
+        let mut fix = self.unit.fix.filter(|&i| i < fixes.len());
+        let from = fix.map_or(self.detail_offset(), |i| fixes[i]);
+        let mut view = self.detail_offset();
+        let mut left = times.max(1);
+        let ahead = |r: usize| if forward { r > from } else { r < from };
+        for &(row, which) in stops.iter().filter(|s| ahead(s.0)) {
+            if left == 0 {
+                break;
             }
+            // A stop counts when it changes the hunk that is current or
+            // what the text shows.
+            if which.is_none() && fix.is_none() && row.min(max) == view {
+                continue;
+            }
+            fix = which;
+            view = row.min(max);
+            left -= 1;
         }
-        let to = to.min(self.unit.text_max.get());
-        if self.unit.text_max.get() == 0 {
-            self.status = "The whole change is on screen.".into();
-            return;
-        }
-        if to == at {
-            self.status = if forward {
+        if left == times.max(1) {
+            self.status = if max == 0 && fixes.is_empty() {
+                "The whole change is on screen."
+            } else if forward {
                 "No more hunks below."
             } else {
                 "No more hunks above."
@@ -616,7 +648,32 @@ impl App {
             .into();
             return;
         }
-        self.detail_scroll.borrow_mut().1 = to;
+        self.unit.fix = fix;
+        self.detail_scroll.borrow_mut().1 = view;
+    }
+
+    /// Show proposed hunk `i` of the unit on show: the text gets the focus
+    /// (a tile's zoom ends) and scrolls to the hunk's box, now or, not
+    /// drawn yet, when it is; it is the current one.
+    pub(crate) fn show_fix(&mut self, i: usize) {
+        if self.unit.panel.is_some() {
+            self.unit.zoom = false;
+        }
+        self.focus_tile(None);
+        self.unit.fix = Some(i);
+        let row = self.unit.fixes.borrow().get(i).copied();
+        let n = self
+            .review
+            .unit(&self.unit.id)
+            .and_then(super::fix::proposal)
+            .map_or(0, |p| p.hunks.len());
+        match row.filter(|_| self.unit.fixes.borrow().len() == n) {
+            Some(row) => {
+                self.detail_offset();
+                self.detail_scroll.borrow_mut().1 = row.min(self.unit.text_max.get());
+            }
+            None => self.unit.reveal.set(true),
+        }
     }
 
     /// A leader tool (`<space>a` `<space>t` `<space>r` `<space>v`): its tile opens

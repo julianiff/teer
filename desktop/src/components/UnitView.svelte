@@ -3,12 +3,14 @@
   // both, the way back, the pending units before and after, and the closer
   // looks, each opening its tile; on the card, the decision; on the code,
   // its hunks and where it leads; on a tile, zoom and close. A click
-  // focuses a tile; zoom fills the view with it.
+  // focuses a tile; zoom fills the view with it. Under the card, the change
+  // the agent proposes, with buttons that put its hunks in.
   import { api } from "../lib/api";
   import { ui } from "../lib/ui.svelte";
   import type { TileId, UnitScreen } from "../lib/types";
   import Act from "./Act.svelte";
   import Card from "./Card.svelte";
+  import Proposal from "./Proposal.svelte";
   import TileView from "./TileView.svelte";
   import UnitActions from "./UnitActions.svelte";
 
@@ -51,6 +53,7 @@
     {#each LOOKS as l (l.action)}
       <Act id={l.action} label={l.label} current={open(l.tile)} />
     {/each}
+    <Act id="tool.fix" label="Propose a change" current={!!unit.proposal} />
   </nav>
   {/if}
 
@@ -67,7 +70,7 @@
         aria-label="The unit"
         onmousedown={() => unit.focus !== null && focus(null)}
       >
-        <Card card={unit.card} second={unit.second} sticky>
+        <Card card={unit.card} second={unit.second} sticky proposed={false}>
           {#snippet actions()}<UnitActions on="unit" />{/snippet}
           {#snippet codeTools()}
             <Act id="move.prev_hunk" icon="↑" kind="icon" showKey={false} />
@@ -77,6 +80,9 @@
             <Act id="goto.editor" label="Editor" kind="icon" />
           {/snippet}
         </Card>
+        {#if unit.proposal}
+          <Proposal proposal={unit.proposal} />
+        {/if}
       </div>
     {/if}
     {#if unit.tiles.length}

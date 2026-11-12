@@ -787,17 +787,83 @@ fn leader_p_proves_the_findings_of_the_unit() {
 
 #[test]
 fn leader_e_asks_for_a_proposed_change() {
-    // The UI of proposed changes asserts what it does.
+    // From the queue: the unit view opens on the unit; no agent, no change.
     let mut d = Driver::new(3);
     d.keys("<space>e");
+    assert_eq!(d.screen(), Screen::Unit);
+    assert_eq!(d.app.unit.id, "u0");
+    assert_eq!(d.status(), "No agent: proposing a change needs one.");
+    // With an agent and something to fix (a note): the agent is asked.
+    d.app.has_agent = true;
+    d.app.review.agent_session = Some(teer::review::model::SessionRef::default());
+    d.app.review.unit_mut("u0").unwrap().dive.note = "check the owner".into();
+    assert_eq!(
+        d.keys("<space>e"),
+        vec![Effect::Dive {
+            unit_id: "u0".into(),
+            kind: DiveKind::Fix,
+            web: false
+        }]
+    );
 }
 
 #[test]
 fn p_and_shift_p_put_proposed_hunks_into_the_code() {
-    // The UI of proposed changes asserts what they do.
+    use teer::fix::{HunkState, Proposal, ProposedHunk, Reason};
+
     let mut d = Driver::new(3);
-    d.keys("p");
+    assert!(d.keys("p").is_empty());
+    assert_eq!(d.status(), "No proposed change: ␣e asks for one.");
+    let hunk = |line: u32| ProposedHunk {
+        file: PathBuf::from("f0.rs"),
+        lines: Range::new(line, line),
+        old: format!("l{line}"),
+        new: format!("L{line}"),
+        why: String::new(),
+        parses: true,
+        state: HunkState::Proposed,
+    };
+    d.app.review.unit_mut("u0").unwrap().dive.results.insert(
+        DiveKind::Fix,
+        DiveResult {
+            proposal: Some(Proposal {
+                reason: Reason::Note,
+                summary: "s".into(),
+                hunks: vec![hunk(2), hunk(9)],
+                second: None,
+                dropped: 0,
+            }),
+            ..Default::default()
+        },
+    );
+    // `p`: the unit view at its first hunk, asking; yes puts it in.
+    assert!(d.keys("p").is_empty());
+    assert_eq!(d.screen(), Screen::Unit);
+    assert_eq!(
+        d.overlay(),
+        &Overlay::ConfirmApply {
+            id: "u0".into(),
+            hunks: vec![0]
+        }
+    );
+    assert_eq!(
+        d.keys("y"),
+        vec![Effect::ApplyHunks {
+            unit_id: "u0".into(),
+            hunks: vec![0]
+        }]
+    );
+    // `P`: every one; esc says no.
     d.keys("P");
+    assert_eq!(
+        d.overlay(),
+        &Overlay::ConfirmApply {
+            id: "u0".into(),
+            hunks: vec![0, 1]
+        }
+    );
+    assert!(d.keys("<esc>").is_empty());
+    assert_eq!(d.overlay(), &Overlay::None);
 }
 
 #[test]

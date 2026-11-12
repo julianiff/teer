@@ -272,6 +272,9 @@ pub struct Card {
     /// Answers to questions asked about it, newest first.
     pub answers: Vec<AnswerCard>,
     pub disputed: bool,
+    /// Hunks of a change the agent proposed that aren't put in yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposed: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -358,6 +361,48 @@ pub struct UnitScreen {
     pub zoom: bool,
     /// Keys go into the ask tile's question.
     pub typing: bool,
+    /// The change the agent proposes, or that one is on its way: after
+    /// the code change (and the second model).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<ProposalView>,
+}
+
+/// A change the agent proposes for the unit, as its text shows it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProposalView {
+    /// What it answers: the finding's title, `your note`, `the advice`;
+    /// with a finding, its severity.
+    pub answers: Option<String>,
+    pub severity: Option<Risk>,
+    /// Who wrote it: `agent (opus)`.
+    pub label: String,
+    /// One line: what it changes, and what it leaves alone.
+    pub summary: String,
+    /// The second model's word: does it fix what it says, and nothing else.
+    pub second: Option<crate::security::SecondCheck>,
+    /// Hunks dropped: their text wasn't found once.
+    pub dropped: usize,
+    pub hunks: Vec<HunkView>,
+    /// The hunk `fix.apply` puts in.
+    pub current: Option<usize>,
+    /// A change is on its way, and what it is doing.
+    pub waiting: Option<String>,
+    /// On a pull request: the hunks become suggestions for the review.
+    pub suggest: bool,
+}
+
+/// One proposed hunk, in a box like the code change's.
+#[derive(Debug, Clone, Serialize)]
+pub struct HunkView {
+    /// `src/x.php:3-5`.
+    pub place: String,
+    /// Why this hunk, one line.
+    pub why: String,
+    /// The file still parses with it.
+    pub parses: bool,
+    pub state: crate::fix::HunkState,
+    /// Its rows: the lines it removes and adds, and the context they share.
+    pub code: Code,
 }
 
 /// Which tile.
@@ -579,6 +624,11 @@ pub enum OverlayView {
         name: String,
     },
     ConfirmWeb,
+    /// Asks before proposed hunks are written to the working tree:
+    /// "Put this hunk into src/x.php? (+3 −1)".
+    ConfirmApply {
+        question: String,
+    },
     Commits(CommitsView),
     Finish(FinishView),
     Jump(JumpView),
@@ -1089,6 +1139,9 @@ fn card(app: &App, u: &Unit, notes: Notes, syntax: Option<&Cache>) -> Card {
             })
             .collect(),
         disputed: a.is_some_and(|a| !a.doubts.is_empty()),
+        proposed: super::fix::proposal(u)
+            .map(|p| p.open().len())
+            .filter(|&n| n > 0),
     }
 }
 
@@ -1529,6 +1582,60 @@ fn unit_screen(app: &App, syntax: Option<&Cache>) -> Option<UnitScreen> {
         focus: app.unit.panel.map(TileId::of),
         zoom: app.unit.zoom,
         typing: app.unit.typing,
+        proposal: proposal_view(app, u, syntax),
+    })
+}
+
+/// The change the agent proposes for `u`, or that one is on its way;
+/// `None` with neither.
+fn proposal_view(app: &App, u: &Unit, syntax: Option<&Cache>) -> Option<ProposalView> {
+    use super::fix;
+    let p = fix::proposal(u);
+    let waiting = tools::pending(u, DiveKind::Fix).then(|| tools::waiting(app, u, DiveKind::Fix));
+    if p.is_none() && waiting.is_none() {
+        return None;
+    }
+    let reason = p.map(|p| p.reason.clone()).or_else(|| fix::target(u));
+    let (answers, severity) = match reason.as_ref().map(fix::answers) {
+        Some((a, s)) => (Some(a), s),
+        None => (None, None),
+    };
+    let hunks = p.map_or_else(Vec::new, |p| {
+        p.hunks
+            .iter()
+            .map(|h| {
+                let rows = fix::hunk_rows(h, syntax);
+                let (added, removed) = fix::counts(h);
+                let first = rows
+                    .iter()
+                    .position(|r| matches!(r.kind, Kind::Added | Kind::Removed));
+                HunkView {
+                    place: fix::place(h),
+                    why: sanitize(&h.why),
+                    parses: h.parses,
+                    state: h.state,
+                    code: Code {
+                        added,
+                        removed,
+                        rows: rows.iter().map(code_row).collect(),
+                        notes: Vec::new(),
+                        hunks: first.into_iter().collect(),
+                    },
+                }
+            })
+            .collect()
+    });
+    Some(ProposalView {
+        answers,
+        severity,
+        label: tools::answer_label(app, u, DiveKind::Fix),
+        summary: p.map(|p| p.summary.clone()).unwrap_or_default(),
+        second: p.and_then(|p| p.second.clone()),
+        dropped: p.map_or(0, |p| p.dropped),
+        current: (u.id == app.unit.id).then(|| app.current_fix()).flatten(),
+        hunks,
+        waiting,
+        suggest: app.review.pr.is_some(),
     })
 }
 
@@ -1598,6 +1705,9 @@ fn overlay(app: &App) -> OverlayView {
             name: app.review.unit(id).map(names::row_name).unwrap_or_default(),
         },
         Overlay::ConfirmWeb => OverlayView::ConfirmWeb,
+        Overlay::ConfirmApply { id, hunks } => OverlayView::ConfirmApply {
+            question: app.apply_question(id, hunks),
+        },
         Overlay::Commits { sel, unit } => OverlayView::Commits(CommitsView {
             sel: *sel,
             unit: *unit,

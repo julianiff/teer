@@ -61,6 +61,8 @@ pub enum Click {
     Link { i: usize },
     /// An item of the overlay's list: a step of the sheet, a note, a jump.
     Item { i: usize },
+    /// A proposed hunk of the unit on show: `fix.apply` then puts it in.
+    Fix { i: usize },
 }
 
 /// What a handoff the window ran came back with.
@@ -367,6 +369,10 @@ impl Session {
                 }
                 Click::Link { i } => app.follow_ask_link(i),
                 Click::Item { i } => app.pick(i),
+                Click::Fix { i } => {
+                    app.select_fix(i);
+                    Vec::new()
+                }
             },
             Input::Paste(text) => text
                 .chars()
