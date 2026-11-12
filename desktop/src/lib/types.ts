@@ -573,6 +573,37 @@ export interface FinishView {
 
 export type JumpKind = "Find" | { Definition: { of: string } } | { Callers: { of: string } };
 
+/** An agent session running in the repository, to send a tile's result
+ *  to (`s`). */
+export interface SendTarget {
+  agent: "ClaudeCode" | "Codex" | "Pi";
+  id: string;
+  /** Its name as the agent shows it, else its id cut short. */
+  name: string;
+  cwd: string;
+  /** `idle`, `busy`, or empty when the agent doesn't say. */
+  status: string;
+  /** Last active, in ms since the epoch; 0 when unknown. */
+  active_at: number;
+  socket?: string;
+}
+
+/** The sessions to send a tile's result to: `what` it is, the message,
+ *  the one selected. `inside` is where each runs relative to the
+ *  repository ("" at its root), `wrote` the one that wrote the change;
+ *  with `pi_install` a last row (index `targets.length`) installs teer's
+ *  pi extension, after the question `confirm`. */
+export interface SendToView {
+  what: string;
+  targets: SendTarget[];
+  sel: number;
+  text: string;
+  inside: string[];
+  wrote: number | null;
+  pi_install: boolean;
+  confirm: string | null;
+}
+
 export type Overlay =
   | { kind: "None" }
   | ({ kind: "Help" } & { of: string; groups: { name: string; rows: { keys: string; what: string; each: Hint[] }[] }[] })
@@ -591,7 +622,8 @@ export type Overlay =
       units: JumpItem[];
     }
   | ({ kind: "Finish" } & FinishView)
-  | { kind: "Jump"; list: JumpKind; query: string; sel: number; items: JumpItem[] };
+  | { kind: "Jump"; list: JumpKind; query: string; sel: number; items: JumpItem[] }
+  | ({ kind: "SendTo" } & SendToView);
 
 export type Click =
   | { kind: "Row"; pos: number }
@@ -602,7 +634,8 @@ export type Click =
   | { kind: "Flagged"; i: number }
   | { kind: "Link"; i: number }
   | { kind: "Item"; i: number }
-  | { kind: "Fix"; i: number };
+  | { kind: "Fix"; i: number }
+  | { kind: "Send"; i: number };
 
 export interface Recent {
   path: string;

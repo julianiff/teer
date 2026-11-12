@@ -633,12 +633,20 @@ pub enum OverlayView {
     Finish(FinishView),
     Jump(JumpView),
     /// The agent sessions to send a tile's result to (`s`): `what` it is,
-    /// the sessions, the one selected, and the message.
+    /// the sessions, the one selected, and the message. `inside` is where
+    /// each session runs, relative to the repository (empty at its root);
+    /// `wrote` is the session that wrote the change, by index; with
+    /// `pi_install` a last row (index `targets.len()`) installs teer's pi
+    /// extension, and `confirm` is the question asked before it does.
     SendTo {
         what: String,
         targets: Vec<crate::send::Target>,
         sel: usize,
         text: String,
+        inside: Vec<String>,
+        wrote: Option<usize>,
+        pi_install: bool,
+        confirm: Option<String>,
     },
 }
 
@@ -1727,6 +1735,21 @@ fn overlay(app: &App) -> OverlayView {
             targets: targets.clone(),
             sel: *sel,
             text: text.clone(),
+            inside: targets
+                .iter()
+                .map(|t| {
+                    t.cwd
+                        .strip_prefix(&app.review.repo_root)
+                        .map(|p| sanitize(&p.display().to_string()))
+                        .unwrap_or_default()
+                })
+                .collect(),
+            wrote: targets.iter().position(|t| app.wrote_change(t)),
+            pi_install: app.send.pi_offer,
+            confirm: app
+                .send
+                .confirm_pi
+                .then(|| super::send::PI_QUESTION.to_string()),
         },
         Overlay::Commits { sel, unit } => OverlayView::Commits(CommitsView {
             sel: *sel,

@@ -1,11 +1,12 @@
 <script lang="ts">
   // What is open over the screen: the keys, a question, the notes, a jump
-  // list, the commits, the `:w` sheet. Keys still go to teer; a click picks,
-  // and a key named here is pressed by a click on it (the panel's keys
-  // under its list, every key in the help).
+  // list, the commits, the `:w` sheet, the sessions to send a result to.
+  // Keys still go to teer; a click picks, and a key named here is pressed
+  // by a click on it (the panel's keys under its list, every key in the
+  // help).
   import { api } from "../lib/api";
   import { ui } from "../lib/ui.svelte";
-  import type { Hint, Overlay } from "../lib/types";
+  import type { Hint, Overlay, SendTarget } from "../lib/types";
 
   let { overlay, panel = [] }: { overlay: Overlay; panel?: Hint[] } = $props();
   let box: HTMLElement | undefined = $state();
@@ -22,6 +23,18 @@
   };
   const press = (h: Hint) => void api.action(h.action);
   const stateWord = (d: string) => (d === "Investigate" ? "flagged" : d.toLowerCase());
+  // A session row: a click chooses it, a double click (or Send) sends.
+  const send = (i: number) => void api.click({ kind: "Send", i });
+  const AGENT: Record<SendTarget["agent"], string> = { ClaudeCode: "Claude Code", Codex: "Codex", Pi: "pi" };
+  const ago = (ms: number) => {
+    if (!ms) return "";
+    const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+    if (s < 60) return "just now";
+    if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+    return `${Math.floor(s / 86400)} d ago`;
+  };
+  const meta = (t: SendTarget) => [t.status, ago(t.active_at)].filter(Boolean).join(" · ");
   const jumpTitle = (o: Extract<Overlay, { kind: "Jump" }>) =>
     o.list === "Find"
       ? "Find a unit"
@@ -214,6 +227,45 @@
         <button class="btn" onclick={() => api.keys("<esc>")}>Close</button>
       </div>
       {@render keys(panel.filter((h) => h.action !== "view.back"))}
+    {:else if overlay.kind === "SendTo"}
+      {@const piRow = overlay.pi_install && overlay.sel === overlay.targets.length}
+      <h2>Send {overlay.what} to</h2>
+      {#if overlay.confirm}
+        <p>{overlay.confirm}</p>
+        <div class="buttons">
+          <button class="btn primary" onclick={() => api.keys("y")}>Install</button>
+          <button class="btn" onclick={() => api.keys("<esc>")}>Not now</button>
+        </div>
+      {:else}
+        <ul class="list sessions">
+          {#each overlay.targets as t, i (t.agent + t.id)}
+            <li>
+              <button class:selected={i === overlay.sel} onclick={() => pick(i)} ondblclick={() => send(i)}>
+                <strong>{AGENT[t.agent]}</strong>
+                <span class="mono">{t.name}</span>
+                {#if meta(t)}<span class="muted small">{meta(t)}</span>{/if}
+                {#if overlay.wrote === i}<span class="default">wrote this change</span>{/if}
+                {#if overlay.inside[i]}<span class="muted small right">in {overlay.inside[i]}</span>{/if}
+              </button>
+            </li>
+          {:else}
+            <li class="muted note">No agent session runs in this repository.</li>
+          {/each}
+          {#if overlay.pi_install}
+            {@const i = overlay.targets.length}
+            <li>
+              <button class:selected={i === overlay.sel} onclick={() => pick(i)} ondblclick={() => send(i)}>
+                <span class="muted">pi: install teer's extension so pi sessions can be reached</span>
+              </button>
+            </li>
+          {/if}
+        </ul>
+        <pre class="message preview">{overlay.text}</pre>
+        <div class="buttons">
+          <button class="btn primary" onclick={() => send(overlay.sel)}>{piRow ? "Install…" : "Send"} ⏎</button>
+          <button class="btn" onclick={() => api.keys("<esc>")}>Cancel</button>
+        </div>
+      {/if}
     {/if}
   </div>
 </div>
@@ -419,5 +471,9 @@
   }
   .note {
     padding: 2px 8px;
+  }
+  .preview {
+    max-height: 220px;
+    overflow: auto;
   }
 </style>

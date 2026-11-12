@@ -706,6 +706,15 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
     app.targets.borrow_mut().push((area, Target::Panel(p)));
     let k = |a: Action| app.keys.label(a);
     let next = format!("{} next", k(Action::MoveNextTile));
+    // `s send` where the tile in focus has a result to send to an agent
+    // session.
+    let send = |keys: String| {
+        if focus && app.can_send(u, p) {
+            format!(" {} send ·{keys}", k(Action::SendSession))
+        } else {
+            keys
+        }
+    };
     let (title, keys) = match p {
         Panel::Recommend => {
             let mut title = vec![
@@ -715,7 +724,7 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
             if tools::pending(u, DiveKind::Recommend) {
                 title.push(Span::styled(format!("{} ", app.spinner()), t.muted()));
             }
-            let mut keys = format!(" {next} · {} close ", k(Action::ViewBack));
+            let mut keys = send(format!(" {next} · {} close ", k(Action::ViewBack)));
             if tools::may_advise(app, u) {
                 keys = format!(" {} ask ·{keys}", k(Action::ViewOpen));
             }
@@ -751,11 +760,11 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
                     super::ui::fixed::ESC
                 )
             } else {
-                format!(
+                send(format!(
                     " {} type · {next} · {} close ",
                     k(Action::AskOpen),
                     k(Action::ViewBack)
-                )
+                ))
             };
             (Line::from(title), keys)
         }
@@ -769,7 +778,7 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
             {
                 title.push(Span::styled(format!("{} ", app.spinner()), t.muted()));
             }
-            let mut keys = format!(" {next} · {} close ", k(Action::ViewBack));
+            let mut keys = send(format!(" {next} · {} close ", k(Action::ViewBack)));
             if kind == DiveKind::Visualize {
                 keys = format!(" {} browser ·{keys}", k(Action::GotoBrowser));
             }

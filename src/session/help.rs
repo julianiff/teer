@@ -446,6 +446,7 @@ pub const KEY_GROUPS: &[(&str, &[KeyItem])] = &[
             (&[Action::ToolDiagram], "diagram"),
             (&[Action::ToolSecurity], "security"),
             (&[Action::ToolFix], "fix"),
+            (&[Action::SendSession], "send to agent"),
             (&[Action::GotoDefinition], "calls"),
             (&[Action::GotoCallers], "callers"),
             (&[Action::GotoEditor], "editor"),

@@ -868,9 +868,35 @@ fn p_and_shift_p_put_proposed_hunks_into_the_code() {
 
 #[test]
 fn s_sends_the_tiles_result_to_an_agent_session() {
-    // The UI slice asserts what it does.
     let mut d = Driver::new(3);
-    d.keys("s");
+    assert!(d.keys("s").is_empty());
+    assert_eq!(
+        d.status(),
+        "Open a unit and focus a tile to send its result."
+    );
+    d.app.has_agent = true;
+    d.app.review.agent_session = Some(teer::review::model::SessionRef::fresh(
+        "mock",
+        PathBuf::from("/r"),
+    ));
+    d.app.review.unit_mut("u0").unwrap().dive.results.insert(
+        DiveKind::Recommend,
+        DiveResult {
+            text: "Retry once.".into(),
+            ..Default::default()
+        },
+    );
+    d.keys("l");
+    assert!(d.keys("s").is_empty());
+    assert_eq!(d.status(), "Focus a tile (tab) to send its result.");
+    // On the advice: the sessions are looked for, with the message.
+    d.keys("<tab>");
+    let effects = d.keys("s");
+    let [Effect::ListSessions { text, what }] = effects.as_slice() else {
+        panic!("{effects:?}");
+    };
+    assert_eq!(what, "the advice");
+    assert!(text.contains("The advice:\nRetry once.\n"), "{text}");
 }
 
 #[test]

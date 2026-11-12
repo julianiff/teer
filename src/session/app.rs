@@ -549,6 +549,9 @@ pub struct App {
     /// The security lens on the queue: on or off, and its order (`zs`, see
     /// [`super::exposure`]).
     pub security: super::exposure::SecurityLens,
+    /// `s`: the session a result went to last, and the picker's pi row
+    /// (see [`super::send`]).
+    pub send: super::send::SendState,
 }
 
 impl App {
@@ -592,6 +595,7 @@ impl App {
             ran: None,
             pressed: None,
             security: super::exposure::SecurityLens::load(),
+            send: Default::default(),
             cfg,
         };
         app.rebuild_order();
@@ -1205,9 +1209,13 @@ impl App {
     }
 
     /// A click on item `i` of the list the overlay shows (the sheet's
-    /// steps, the notes, a jump list, the commits): it is selected, as the
-    /// keys that move there would select it.
+    /// steps, the notes, a jump list, the commits, the sessions to send
+    /// to): it is selected, as the keys that move there would select it.
     pub fn pick(&mut self, i: usize) -> Vec<Effect> {
+        if matches!(self.overlay, Overlay::SendTo { .. }) {
+            self.send_select(i);
+            return Vec::new();
+        }
         let steps = self.finish_steps().len();
         match &mut self.overlay {
             Overlay::Finish { sel } => {

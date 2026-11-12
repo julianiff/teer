@@ -1,9 +1,11 @@
 <script lang="ts">
   // A tile's inside: an answer (the advice, the tests, old against new,
   // the diagram, the security findings), the conversation, or what the
-  // unit calls outside. Everything the agent wrote is plain text.
+  // unit calls outside. Everything the agent wrote is plain text. A tile
+  // with a textual result can send it to an agent session (`s`).
   import { api } from "../lib/api";
-  import type { Audit, Cite, Finding, Outcome, Risk, SecurityClass, Tile } from "../lib/types";
+  import type { Audit, Cite, Finding, Outcome, ProbeCase, Risk, SecurityClass, Tile } from "../lib/types";
+  import Act from "./Act.svelte";
   import AskTile from "./AskTile.svelte";
   import Second from "./Second.svelte";
   import ShownCode from "./ShownCode.svelte";
@@ -44,6 +46,29 @@
   const ordered = (fs: Finding[]) =>
     [...fs].sort((a, b) => Number(stands(b)) - Number(stands(a)) || RANK[a.severity] - RANK[b.severity]);
   const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const surprise = (c: ProbeCase) =>
+    (JSON.stringify(c.before) !== JSON.stringify(c.after)) !== (c.expect === "different");
+  // What `s` sends from it: the advice, the findings that stand (else
+  // teer's facts), the gaps no test covers, the surprises, the last answer.
+  // teer says why when there is nothing after all.
+  const sendable = (t: Tile): boolean => {
+    const b = t.body;
+    if (b.kind === "Ask") return b.exchanges.some((e) => !!e.answer);
+    if (b.kind !== "Answer" || b.waiting) return false;
+    const r = b.result;
+    switch (t.id) {
+      case "Advice":
+        return !!r?.text.trim();
+      case "Security":
+        return !!r?.audit?.findings.some(stands) || !!b.facts?.length;
+      case "Tests":
+        return !!r?.coverage?.judged && r.coverage.gaps.length > 0;
+      case "Behavior":
+        return !!r?.behavior?.cases.some(surprise);
+      default:
+        return false;
+    }
+  };
   // Never "safe": no finding is only no finding.
   const head = (a: Audit) =>
     a.findings.length === 0
@@ -211,6 +236,11 @@
   {#if a.none}<p class="muted">{a.none}</p>{/if}
   {#if a.second}<Second second={a.second} />{/if}
 {/if}
+{#if sendable(tile)}
+  <div class="send">
+    <Act id="send.session" label="Send to session" before={() => api.click({ kind: "Tile", id: tile.id })} />
+  </div>
+{/if}
 
 <style>
   .label {
@@ -318,5 +348,8 @@
   .link {
     color: var(--accent);
     font-weight: 400;
+  }
+  .send {
+    margin-top: 10px;
   }
 </style>

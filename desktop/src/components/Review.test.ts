@@ -8,7 +8,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 const invoke = vi.hoisted(() => vi.fn(async (..._: unknown[]) => null));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
-import type { HunkState, HunkView, View } from "../lib/types";
+import type { HunkState, HunkView, SendTarget, View } from "../lib/types";
 import { ui } from "../lib/ui.svelte";
 import Review from "./Review.svelte";
 
@@ -166,5 +166,97 @@ describe("the review's buttons", () => {
     button(p, "Put all in")!.click();
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(3));
     expect(invoke.mock.calls[2]).toEqual(["action", { id: "fix.apply_all", count: null }]);
+  });
+
+  it("send a tile's result: the tile's button, then the sessions to send it to", async () => {
+    const v = view("unit");
+    const tests = v.unit!.tiles.find((t) => t.id === "Tests")!;
+    // Nothing to send while the tests are searched, nor without advice.
+    let root = draw(v);
+    expect(button(root, "Send to session")).toBeUndefined();
+    unmount(app!);
+    app = null;
+    document.body.innerHTML = "";
+    if (tests.body.kind !== "Answer") throw new Error("an answer tile");
+    tests.body.waiting = null;
+    tests.body.result = {
+      text: "",
+      sources: [],
+      coverage: {
+        judged: true,
+        covered: [],
+        gaps: [{ case: "the card is declined twice", danger: "a double charge", risk: "high", evidence: [] }],
+      },
+    };
+    root = draw(v);
+    // It focuses its tile, then presses `s`.
+    const send = [...root.querySelectorAll<HTMLElement>(".tile")]
+      .map((t) => button(t, "Send to session"))
+      .find(Boolean)!;
+    send.click();
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+    expect(invoke.mock.calls[0]).toEqual(["click", { click: { kind: "Tile", id: "Tests" } }]);
+    expect(invoke.mock.calls[1]).toEqual(["action", { id: "send.session", count: null }]);
+  });
+
+  it("draw the sessions with the one that wrote the change, the message, and the pi row", () => {
+    const t = (agent: SendTarget["agent"], name: string, cwd: string): SendTarget => ({
+      agent,
+      id: name,
+      name,
+      cwd,
+      status: "idle",
+      active_at: Date.now() - 120_000,
+    });
+    const v = view("unit");
+    v.overlay = {
+      kind: "SendTo",
+      what: "the advice",
+      targets: [t("Codex", "019a2b", "/r"), t("ClaudeCode", "macos-7", "/r/web")],
+      sel: 1,
+      text: "teer, reviewing your changes: charge (src/pay.rs:10-24)\n\nThe advice:\nRetry once.",
+      inside: ["", "web"],
+      wrote: 1,
+      pi_install: true,
+      confirm: null,
+    };
+    const root = draw(v);
+    const modal = root.querySelector(".modal.SendTo") as HTMLElement;
+    expect(modal.querySelector("h2")!.textContent).toBe("Send the advice to");
+    const rows = [...modal.querySelectorAll<HTMLButtonElement>(".list button")];
+    expect(rows.map((r) => r.textContent!.replace(/\s+/g, " ").trim())).toEqual([
+      "Codex 019a2b idle · 2 min ago",
+      "Claude Code macos-7 idle · 2 min ago wrote this change in web",
+      "pi: install teer's extension so pi sessions can be reached",
+    ]);
+    expect(rows[1].classList.contains("selected")).toBe(true);
+    expect(modal.querySelector(".message")!.textContent).toContain("The advice:\nRetry once.");
+    // A click chooses a row; Send sends to the one chosen.
+    rows[0].click();
+    expect(invoke).toHaveBeenLastCalledWith("click", { click: { kind: "Item", i: 0 } });
+    button(modal, "Send ⏎")!.click();
+    expect(invoke).toHaveBeenLastCalledWith("click", { click: { kind: "Send", i: 1 } });
+    button(modal, "Cancel")!.click();
+    expect(invoke).toHaveBeenLastCalledWith("keys", { keys: "<esc>" });
+  });
+
+  it("ask before installing pi's extension", () => {
+    const v = view("unit");
+    v.overlay = {
+      kind: "SendTo",
+      what: "the advice",
+      targets: [],
+      sel: 0,
+      text: "teer",
+      inside: [],
+      wrote: null,
+      pi_install: true,
+      confirm: "Install teer's pi extension?",
+    };
+    const root = draw(v);
+    const modal = root.querySelector(".modal.SendTo") as HTMLElement;
+    expect(modal.textContent).toContain("Install teer's pi extension?");
+    button(modal, "Install")!.click();
+    expect(invoke).toHaveBeenLastCalledWith("keys", { keys: "y" });
   });
 });

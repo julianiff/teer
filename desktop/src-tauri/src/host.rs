@@ -63,6 +63,9 @@ pub enum Click {
     Item { i: usize },
     /// A proposed hunk of the unit on show: `fix.apply` then puts it in.
     Fix { i: usize },
+    /// A row of the sessions to send a tile's result to: it is chosen and
+    /// the result goes there (the pi row asks before installing).
+    Send { i: usize },
 }
 
 /// What a handoff the window ran came back with.
@@ -373,6 +376,7 @@ impl Session {
                     app.select_fix(i);
                     Vec::new()
                 }
+                Click::Send { i } => app.send_pick(i),
             },
             Input::Paste(text) => text
                 .chars()
