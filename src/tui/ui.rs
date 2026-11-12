@@ -64,6 +64,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             "Web search sends generic queries (never your code) to external services. Continue?"
                 .into(),
         ),
+        Overlay::ConfirmApply { id, hunks } => draw_confirm(f, app, app.apply_question(id, hunks)),
         Overlay::Finish { .. } => super::finish::draw(f, app),
         Overlay::Jump { kind, query, sel } => draw_jump(f, app, kind, query, *sel),
         Overlay::Commits { sel, unit } => super::commits::draw_commits(f, app, *sel, *unit),

@@ -66,6 +66,13 @@
         <button class="btn primary" onclick={() => api.keys("y")}>Yes</button>
         <button class="btn" onclick={() => api.keys("n")}>No</button>
       </div>
+    {:else if overlay.kind === "ConfirmApply"}
+      <h2>{overlay.question}</h2>
+      <p>teer writes it to the working tree, then reviews again.</p>
+      <div class="buttons">
+        <button class="btn primary" onclick={() => api.keys("y")}>Put it in</button>
+        <button class="btn" onclick={() => api.keys("<esc>")}>Not now</button>
+      </div>
     {:else if overlay.kind === "ConfirmDeleteNote"}
       <h2>Delete the note on {overlay.name}?</h2>
       <div class="buttons">

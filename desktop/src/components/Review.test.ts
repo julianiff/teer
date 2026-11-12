@@ -8,7 +8,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 const invoke = vi.hoisted(() => vi.fn(async (..._: unknown[]) => null));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
-import type { View } from "../lib/types";
+import type { HunkState, HunkView, View } from "../lib/types";
 import { ui } from "../lib/ui.svelte";
 import Review from "./Review.svelte";
 
@@ -112,5 +112,59 @@ describe("the review's buttons", () => {
   it("draw the sheet over the queue", () => {
     const root = draw(view("finish"));
     expect(root.querySelector(".modal.Finish")).not.toBeNull();
+  });
+
+  it("put a proposed change under the card, each hunk with its button", async () => {
+    const hunk = (place: string, state: HunkState): HunkView => ({
+      place,
+      why: "cast before it is used",
+      parses: true,
+      state,
+      code: {
+        added: 1,
+        removed: 1,
+        rows: [
+          { kind: "Removed", line: null, old: 5, pieces: [{ text: "l5", class: null }] },
+          { kind: "Added", line: 5, old: null, pieces: [{ text: "L5", class: null }] },
+        ],
+        notes: [],
+        hunks: [0],
+      },
+    });
+    const v = view("unit");
+    v.unit!.proposal = {
+      answers: "the id reaches the query unbound",
+      severity: "high",
+      label: "agent (opus)",
+      summary: "Casts the id before the query.",
+      second: { agree: false, why: "it also drops the log line" },
+      dropped: 0,
+      hunks: [hunk("a.php:4-6", "proposed"), hunk("a.php:11-13", "proposed"), hunk("b.php:9", "applied")],
+      current: 1,
+      waiting: null,
+      suggest: false,
+    };
+    const root = draw(v);
+    const p = root.querySelector(".text .proposal") as HTMLElement;
+    expect(p.textContent).toContain("▲ the id reaches the query unbound (high)");
+    expect(p.textContent).toContain("⚠ second model disputes: it also drops the log line");
+    const boxes = [...p.querySelectorAll<HTMLElement>(".code")];
+    expect(boxes.map((b) => b.querySelector(".head span")!.textContent)).toEqual([
+      "a.php:4-6",
+      "a.php:11-13",
+      "b.php:9",
+    ]);
+    expect(boxes.map((b) => b.classList.contains("current"))).toEqual([false, true, false]);
+    // Put in already: no button.
+    expect(boxes[2].textContent).toContain("put in");
+    expect(button(boxes[2], "Put in")).toBeUndefined();
+    // "Put in" picks its hunk, then presses `p`.
+    button(boxes[0], "Put in")!.click();
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+    expect(invoke.mock.calls[0]).toEqual(["click", { click: { kind: "Fix", i: 0 } }]);
+    expect(invoke.mock.calls[1]).toEqual(["action", { id: "fix.apply", count: null }]);
+    button(p, "Put all in")!.click();
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(3));
+    expect(invoke.mock.calls[2]).toEqual(["action", { id: "fix.apply_all", count: null }]);
   });
 });

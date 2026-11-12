@@ -317,6 +317,7 @@ pub fn unit_groups(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Vec<L
     // Why it matters comes first: the list only shows a dispute.
     let mut about = check_lines(app, u, w, 1, true);
     about.extend(commits_line(app, u, w, 1));
+    about.extend(proposed_line(app, u, w, 1));
     let mut said = agent_lines(app, u, w.saturating_sub(2), statements, 1);
     // Not described (yet): the spinner or why not. Why a unit has no
     // behavior change is said above.
@@ -366,6 +367,29 @@ pub fn commits_line(app: &App, u: &Unit, w: usize, indent: usize) -> Option<Line
         ),
         app.theme.muted(),
     ))
+}
+
+/// `✎ a change is proposed: 2 hunks · ␣e shows it`, `indent` cells in, cut
+/// to `w`: when the agent proposed a change to `u` with hunks not put in
+/// yet.
+pub fn proposed_line(app: &App, u: &Unit, w: usize, indent: usize) -> Option<Line<'static>> {
+    use crate::keymap::Action;
+    let open = crate::session::fix::proposal(u)?.open().len();
+    if open == 0 {
+        return None;
+    }
+    let s = if open == 1 { "" } else { "s" };
+    let text = format!(
+        "a change is proposed: {open} hunk{s} · {} shows it",
+        app.keys.label(Action::ToolFix)
+    );
+    Some(Line::from(vec![
+        Span::styled(format!("{}✎ ", " ".repeat(indent)), app.theme.accent()),
+        Span::styled(
+            truncate(&text, w.saturating_sub(indent + 2)),
+            app.theme.text(),
+        ),
+    ]))
 }
 
 /// `blocks` in `h` rows, from the detail area's scroll offset on. A block

@@ -1,10 +1,27 @@
 <script lang="ts">
   // A unit's code change: diff rows coloured by syntax class, each
-  // statement written in under the row it cites.
-  // `tools`: what can be done with it, on its head.
+  // statement written in under the row it cites. A proposed hunk is drawn
+  // the same way, under its own `title`; the `current` one (that
+  // `fix.apply` puts in) has the accent border.
+  // `tools`: what can be done with it, on its head; `caption`: a line
+  // under the head (why a proposed hunk is there).
   import type { Snippet } from "svelte";
   import type { Code, Statement } from "../lib/types";
-  let { code, statements, tools }: { code: Code; statements: Statement[]; tools?: Snippet } = $props();
+  let {
+    code,
+    statements,
+    tools,
+    caption,
+    title = "code change",
+    current = false,
+  }: {
+    code: Code;
+    statements: Statement[];
+    tools?: Snippet;
+    caption?: Snippet;
+    title?: string;
+    current?: boolean;
+  } = $props();
 
   const width = $derived(
     Math.max(3, ...code.rows.map((r) => String(r.line ?? r.old ?? "").length)),
@@ -13,12 +30,13 @@
   const hunk = (k: number) => code.hunks.includes(k);
 </script>
 
-<div class="code">
+<div class="code" class:current>
   <div class="head">
-    <span>code change</span>
+    <span>{title}</span>
     {#if tools}<span class="tools">{@render tools()}</span>{/if}
     <span class="counts"><span class="add">+{code.added}</span> <span class="del">−{code.removed}</span></span>
   </div>
+  {#if caption}<div class="caption">{@render caption()}</div>{/if}
   <div class="rows" style="--digits: {width}ch">
     {#each code.rows as row, k (k)}
       {#if row.kind === "Gap"}
@@ -58,6 +76,10 @@
     background: var(--panel);
     margin: 10px 0;
   }
+  .code.current {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
   .head {
     display: flex;
     align-items: center;
@@ -67,6 +89,13 @@
     color: var(--muted);
     border-bottom: 1px solid var(--border);
     background: var(--sunken);
+  }
+  .caption {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 4px 10px 0;
+    font-size: 12px;
   }
   .tools {
     display: flex;

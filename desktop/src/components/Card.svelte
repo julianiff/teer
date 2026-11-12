@@ -5,8 +5,11 @@
   // wrote is plain text. What can be done with the unit goes under its
   // name (`actions`), staying in view as the card scrolls when `sticky`;
   // what can be done with its code goes on the code's head (`codeTools`).
+  // A change the agent proposed is said in a line, with `proposed` (the
+  // unit view shows the change itself instead).
   import type { Snippet } from "svelte";
   import type { Card } from "../lib/types";
+  import Act from "./Act.svelte";
   import Code from "./Code.svelte";
   import Second from "./Second.svelte";
   import type { SecondModel } from "../lib/types";
@@ -16,6 +19,7 @@
     second = null,
     title = true,
     sticky = false,
+    proposed = true,
     actions,
     codeTools,
   }: {
@@ -23,6 +27,7 @@
     second?: SecondModel | null;
     title?: boolean;
     sticky?: boolean;
+    proposed?: boolean;
     actions?: Snippet;
     codeTools?: Snippet;
   } = $props();
@@ -55,6 +60,12 @@
   {/if}
   {#if card.commits.length}
     <p class="commits muted">commits: {card.commits.map((c) => `${c.short} ${c.subject}`).join(" · ")}</p>
+  {/if}
+  {#if proposed && card.proposed}
+    <p class="proposed">
+      <span class="pen">✎</span> a change is proposed: {card.proposed} hunk{card.proposed === 1 ? "" : "s"}
+      <Act id="tool.fix" label="Show it" kind="link" />
+    </p>
   {/if}
 
   <h3 class="section">What changed</h3>
@@ -157,6 +168,12 @@
   }
   .commits {
     font-size: 12px;
+  }
+  .proposed {
+    font-size: 13px;
+  }
+  .pen {
+    color: var(--accent);
   }
   .agent-said .label {
     font-size: 12px;

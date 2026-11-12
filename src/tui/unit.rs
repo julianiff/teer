@@ -3,7 +3,10 @@
 //!
 //! One text scrolls under a title row: "Why this level" and "What changed"
 //! (the summary, then the diff in its box with each statement under the
-//! lines it cites; `]c` `[c` jump between hunks).
+//! lines it cites; `]c` `[c` jump between hunks), then "Proposed change"
+//! when the agent proposes one: each hunk boxed like the diff, where `]c`
+//! `[c` stop too. The hunk at the top of the text is the current one, its
+//! border in the accent: `p` puts it into the code, `P` every one.
 //!
 //! Beside it tiles open, tmux style. "Advice" is open as the unit opens,
 //! when there is an agent, and says which key asks the agent what to do
@@ -32,11 +35,12 @@ use unicode_width::UnicodeWidthStr;
 use super::answers;
 use super::app::{App, Target};
 use super::{ask, diff, preview, slim};
+use crate::fix::{HunkState, Proposal};
 use crate::keymap::Action;
-use crate::review::model::{AcceptedBy, Decision, DiveKind, Prep, Unit};
-use crate::session::help;
+use crate::review::model::{AcceptedBy, Decision, DiveKind, Prep, Risk, Unit};
 use crate::session::tools::{self, TOOLS, tool_key};
 use crate::session::unit::{Panel, TileScroll};
+use crate::session::{fix, help};
 use crate::util::{truncate, wrap};
 
 /// Blanks between two items of the keys tile.
@@ -229,9 +233,10 @@ fn disputed(app: &App, u: &Unit) -> bool {
     app.assessment(&u.id).is_some_and(|a| !a.doubts.is_empty())
 }
 
-/// The unit's text `w` cells wide as blocks a scroll keeps whole, and the
-/// line each hunk of its diff starts at.
-fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<usize>) {
+/// The unit's text `w` cells wide as blocks a scroll keeps whole, the
+/// line each hunk of its diff starts at, and the line each proposed hunk's
+/// box starts at.
+fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<usize>, Vec<usize>) {
     let t = &app.theme;
     let mut blocks: Vec<Vec<Line<'static>>> = Vec::new();
     // Text scrolls a line at a time.
@@ -304,7 +309,218 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<u
     if !app.unit.tiles.contains(&Panel::Recommend) {
         add(&mut blocks, second_model_lines(app, u, w));
     }
-    (blocks, hunks)
+
+    // The change the agent proposes, its hunks boxed like the code change.
+    let at = blocks.iter().map(Vec::len).sum();
+    let (proposed, fixes) = proposed_blocks(app, u, w, at);
+    blocks.extend(proposed);
+    (blocks, hunks, fixes)
+}
+
+/// The "Proposed change" section `w` cells wide, its first line at row
+/// `at` of the text, as blocks; and the row each hunk's box starts at.
+/// Its heading says what it answers and who wrote it, then the summary,
+/// the second model's word and how many hunks were dropped; then each
+/// hunk in a box. The current one (`p` puts it in) has the accent border
+/// and the keys on its bottom edge. While a change is on its way, the
+/// heading with a spinner and what it is doing. Nothing with neither.
+fn proposed_blocks(
+    app: &App,
+    u: &Unit,
+    w: usize,
+    at: usize,
+) -> (Vec<Vec<Line<'static>>>, Vec<usize>) {
+    let t = &app.theme;
+    let p = fix::proposal(u);
+    let pending = tools::pending(u, DiveKind::Fix);
+    if p.is_none() && !pending {
+        return (Vec::new(), Vec::new());
+    }
+    let mut lines = vec![Line::default()];
+    lines.extend(proposed_heading(app, u, pending, w));
+    if pending {
+        let wait = tools::waiting(app, u, DiveKind::Fix);
+        lines.extend(
+            wrap(&wait, w.saturating_sub(2))
+                .into_iter()
+                .map(|l| Line::styled(format!(" {l}"), t.muted())),
+        );
+    }
+    let Some(p) = p else {
+        return (lines.into_iter().map(|l| vec![l]).collect(), Vec::new());
+    };
+    lines.extend(
+        wrap(&p.summary, w.saturating_sub(1))
+            .into_iter()
+            .map(|l| Line::raw(format!(" {l}"))),
+    );
+    match &p.second {
+        Some(s) if s.agree => lines.push(Line::styled(" ✓ second model agrees", t.ok())),
+        Some(s) => lines.extend(
+            wrap(
+                &format!("⚠ second model disputes: {}", s.why),
+                w.saturating_sub(1),
+            )
+            .into_iter()
+            .map(|l| Line::styled(format!(" {l}"), t.risk(Risk::Medium))),
+        ),
+        None => {}
+    }
+    if p.dropped > 0 {
+        let s = if p.dropped == 1 { "" } else { "s" };
+        lines.push(Line::styled(
+            format!(" {} hunk{s} dropped (teer.log says why)", p.dropped),
+            t.muted(),
+        ));
+    }
+    let mut blocks: Vec<Vec<Line<'static>>> = lines.into_iter().map(|l| vec![l]).collect();
+    // Each box after a blank row; where it starts decides the current one.
+    let mut row = at + blocks.len();
+    let mut starts = Vec::with_capacity(p.hunks.len());
+    let mut boxes = Vec::with_capacity(p.hunks.len());
+    for i in 0..p.hunks.len() {
+        row += 1;
+        starts.push(row);
+        let b = hunk_box(app, p, i, w, false);
+        row += b.iter().map(Vec::len).sum::<usize>();
+        boxes.push(b);
+    }
+    if u.id == app.unit.id
+        && let Some(c) = app.fix_at(&starts)
+    {
+        boxes[c] = hunk_box(app, p, c, w, true);
+    }
+    for b in boxes {
+        blocks.push(vec![Line::default()]);
+        blocks.extend(b);
+    }
+    (blocks, starts)
+}
+
+/// The heading of the proposed change `w` cells wide: what it answers
+/// (the finding, wrapped under itself; the note; the advice), and who
+/// wrote it after it, or on a line of its own where it doesn't fit; a
+/// spinner while one is on its way.
+fn proposed_heading(app: &App, u: &Unit, pending: bool, w: usize) -> Vec<Line<'static>> {
+    let t = &app.theme;
+    let mut spans = vec![Span::styled(" Proposed change", t.bold())];
+    if pending {
+        spans.push(Span::styled(format!(" {}", app.spinner()), t.muted()));
+    }
+    let mut lines = Vec::new();
+    let reason = fix::proposal(u)
+        .map(|p| p.reason.clone())
+        .or_else(|| fix::target(u));
+    if let Some(r) = reason {
+        let (what, severity) = fix::answers(&r);
+        let (what, style) = match severity {
+            Some(s) => (
+                format!("{} {what} ({})", severity_glyph(s), s.word()),
+                t.risk(s),
+            ),
+            None => (what, t.text()),
+        };
+        spans.push(Span::styled(" for ", t.muted()));
+        let lead: usize = spans.iter().map(Span::width).sum();
+        let mut parts = wrap(&what, w.saturating_sub(lead).max(12)).into_iter();
+        spans.push(Span::styled(parts.next().unwrap_or_default(), style));
+        lines.push(Line::from(std::mem::take(&mut spans)));
+        lines.extend(parts.map(|l| Line::styled(format!("{}{l}", " ".repeat(lead)), style)));
+    } else {
+        lines.push(Line::from(std::mem::take(&mut spans)));
+    }
+    let by = tools::answer_label(app, u, DiveKind::Fix);
+    let last = lines.last_mut().expect("a heading line");
+    if last.width() + 2 + by.width() <= w {
+        last.spans.push(Span::styled(format!("  {by}"), t.muted()));
+    } else {
+        lines.push(Line::styled(
+            format!(" {}", truncate(&by, w.saturating_sub(1))),
+            t.muted(),
+        ));
+    }
+    lines
+}
+
+/// How a finding's severity shows, as the Security tile shows it.
+fn severity_glyph(r: Risk) -> &'static str {
+    match r {
+        Risk::High => "▲",
+        Risk::Medium => "◆",
+        Risk::Low => "●",
+    }
+}
+
+/// Hunk `i` of proposal `p` in a box `w` cells wide, one cell in, as
+/// blocks: titled with its place, its state on the right; why it is
+/// there, whether its file still parses, then its lines as the code
+/// change draws its own. The `current` one has the accent border and the
+/// keys that put it in on its bottom edge.
+fn hunk_box(app: &App, p: &Proposal, i: usize, w: usize, current: bool) -> Vec<Vec<Line<'static>>> {
+    let t = &app.theme;
+    let h = &p.hunks[i];
+    let border = if current { t.accent() } else { t.text() };
+    let (state, state_style) = match h.state {
+        HunkState::Proposed => (fix::state_word(h.state), t.muted()),
+        HunkState::Applied => (fix::state_word(h.state), t.ok()),
+        HunkState::Suggested => (fix::state_word(h.state), t.accent()),
+    };
+    let right = vec![Span::styled(format!(" {state} "), state_style)];
+    let room = w.saturating_sub(state.width() + 6);
+    let title = vec![Span::styled(
+        format!(" {} ", truncate(&fix::place(h), room)),
+        t.bold(),
+    )];
+    let inner = w.saturating_sub(4);
+    let mut out = vec![vec![box_top(w, title, right, border)]];
+    for l in wrap(&h.why, inner) {
+        out.push(vec![box_row(Line::styled(l, t.muted()), w, border)]);
+    }
+    if !h.parses {
+        let warn = Line::styled("⚠ doesn't parse", t.risk(Risk::Medium));
+        out.push(vec![box_row(warn, w, border)]);
+    }
+    out.extend(
+        diff::proposed_rows(app, h, inner)
+            .into_iter()
+            .map(|b| b.into_iter().map(|l| box_row(l, w, border)).collect()),
+    );
+    let keys = if current {
+        fix_keys(app, p, i)
+    } else {
+        Vec::new()
+    };
+    out.push(vec![box_bottom_with(w, keys, border)]);
+    out
+}
+
+/// The keys on the current hunk's bottom edge: `p put · P put all`
+/// (`suggest` on a pull request), as far as there is something to put in.
+fn fix_keys(app: &App, p: &Proposal, i: usize) -> Vec<Span<'static>> {
+    let t = &app.theme;
+    let verb = if app.review.pr.is_some() {
+        "suggest"
+    } else {
+        "put"
+    };
+    let mut items = Vec::new();
+    if p.hunks[i].state == HunkState::Proposed {
+        items.push((app.keys.label(Action::FixApply), verb.to_string()));
+    }
+    if !p.open().is_empty() {
+        items.push((app.keys.label(Action::FixApplyAll), format!("{verb} all")));
+    }
+    let mut spans = Vec::new();
+    for (k, (key, what)) in items.into_iter().filter(|(k, _)| !k.is_empty()).enumerate() {
+        let lead = if k == 0 { " " } else { " · " };
+        spans.push(Span::styled(lead, t.muted()));
+        spans.push(Span::styled(key, t.accent()));
+        spans.push(Span::styled(format!(" {what}"), t.muted()));
+    }
+    if !spans.is_empty() {
+        spans.push(Span::styled(" ", t.muted()));
+    }
+    spans
 }
 
 /// The second model `w` cells wide, after a blank line, when it disputes
@@ -416,6 +632,23 @@ pub(super) fn box_bottom(w: usize, border: Style) -> Line<'static> {
     ])
 }
 
+/// A box's bottom edge `w` cells wide, one cell in, drawn in `border`,
+/// with `right` on the right (nothing: [`box_bottom`]).
+fn box_bottom_with(w: usize, right: Vec<Span<'static>>, border: Style) -> Line<'static> {
+    if right.is_empty() {
+        return box_bottom(w, border);
+    }
+    let used = 2 + right.iter().map(Span::width).sum::<usize>();
+    let mut spans = vec![
+        Span::raw(" "),
+        Span::styled("╰", border),
+        Span::styled("─".repeat(w.saturating_sub(used)), border),
+    ];
+    spans.extend(right);
+    spans.push(Span::styled("╯", border));
+    Line::from(spans)
+}
+
 /// Row `l` inside a box `w` cells wide, one cell in, drawn in `border`: a
 /// border and a cell of padding on each side.
 pub(super) fn box_row(l: Line<'static>, w: usize, border: Style) -> Line<'static> {
@@ -442,8 +675,17 @@ fn draw_text(f: &mut Frame, app: &App, u: &Unit, area: Rect, focus: bool) {
     super::ui::text_area(app, area, 0);
     let w = (area.width as usize).saturating_sub(2);
     let h = area.height as usize;
-    let (blocks, hunks) = text_blocks(app, u, w);
+    let (blocks, hunks, fixes) = text_blocks(app, u, w);
     *app.unit.hunks.borrow_mut() = hunks;
+    // `<space>e` (or `p` from the queue) asked to see a proposed hunk
+    // before its box was drawn: scroll to it now.
+    if app.unit.reveal.take()
+        && let Some(&row) = app.unit.fix.and_then(|i| fixes.get(i))
+    {
+        app.detail_offset();
+        app.detail_scroll.borrow_mut().1 = row;
+    }
+    *app.unit.fixes.borrow_mut() = fixes;
     let s = preview::scroll_rows(app, blocks, w, h, 1, true, app.detail_offset());
     app.detail_scroll.borrow_mut().1 = s.offset;
     app.unit.text_max.set(s.max);

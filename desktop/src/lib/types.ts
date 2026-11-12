@@ -259,6 +259,8 @@ export interface Card {
   note: { text: string; stale: boolean } | null;
   answers: { question: string; answer: string; shown: number }[];
   disputed: boolean;
+  /** Hunks of a change the agent proposed that aren't put in yet. */
+  proposed?: number;
 }
 
 export interface Cite {
@@ -468,6 +470,40 @@ export interface UnitScreen {
   focus: TileId | null;
   zoom: boolean;
   typing: boolean;
+  /** The change the agent proposes, or that one is on its way. */
+  proposal?: ProposalView;
+}
+
+export type HunkState = "proposed" | "applied" | "suggested";
+
+/** One proposed hunk, in a box like the code change's. */
+export interface HunkView {
+  /** `src/x.php:3-5`. */
+  place: string;
+  why: string;
+  /** The file still parses with it. */
+  parses: boolean;
+  state: HunkState;
+  code: Code;
+}
+
+/** A change the agent proposes for the unit. */
+export interface ProposalView {
+  /** The finding's title, `your note`, `the advice`. */
+  answers: string | null;
+  severity: Risk | null;
+  /** Who wrote it: `agent (opus)`. */
+  label: string;
+  summary: string;
+  second: SecondCheck | null;
+  dropped: number;
+  hunks: HunkView[];
+  /** The hunk `fix.apply` puts in. */
+  current: number | null;
+  /** A change is on its way, and what it is doing. */
+  waiting: string | null;
+  /** On a pull request the hunks become suggestions. */
+  suggest: boolean;
 }
 
 export interface FlaggedScreen {
@@ -545,6 +581,7 @@ export type Overlay =
   | { kind: "Notes"; sel: number; notes: NoteItem[] }
   | { kind: "ConfirmDeleteNote"; id: string; name: string }
   | { kind: "ConfirmWeb" }
+  | { kind: "ConfirmApply"; question: string }
   | {
       kind: "Commits";
       sel: number;
@@ -564,7 +601,8 @@ export type Click =
   | { kind: "Back" }
   | { kind: "Flagged"; i: number }
   | { kind: "Link"; i: number }
-  | { kind: "Item"; i: number };
+  | { kind: "Item"; i: number }
+  | { kind: "Fix"; i: number };
 
 export interface Recent {
   path: string;

@@ -75,6 +75,12 @@ pub enum Overlay {
     /// Asks once per session before the first question of the unit view's
     /// ask panel may use the web.
     ConfirmWeb,
+    /// Asks before proposed hunks `hunks` of unit `id` are written to the
+    /// working tree (`p`, `P`; see [`super::fix`]).
+    ConfirmApply {
+        id: String,
+        hunks: Vec<usize>,
+    },
     /// The commits between base and head and the PR's description: the
     /// selected commit, and the selected one of the units it changed while
     /// the cursor is in that list.
@@ -1010,6 +1016,10 @@ impl App {
                 self.overlay = Overlay::None;
                 let yes = self.keys.confirm(k);
                 return Some(self.unit_answer_web(yes).unwrap_or_default());
+            }
+            Overlay::ConfirmApply { id, hunks } => {
+                self.overlay = Overlay::None;
+                return Some(self.apply_answer(id, hunks, self.keys.confirm(k)));
             }
             Overlay::ConfirmReset => {
                 self.overlay = Overlay::None;
