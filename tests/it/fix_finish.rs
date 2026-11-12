@@ -791,6 +791,8 @@ fn the_flagged_list_says_a_change_is_proposed() {
             .unwrap_or_else(|| panic!("{s}:\n{text}"))
     };
     assert_eq!(row("✎ change proposed: 2 hunks"), row(" s0") + 1, "{text}");
+    // Once: the preview's own line ("a change is proposed") isn't repeated here.
+    assert!(!text.contains("a change is proposed"), "{text}");
     assert_eq!(
         row("✎ change proposed: 1 suggested"),
         row(" s2") + 1,

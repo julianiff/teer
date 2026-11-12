@@ -142,6 +142,8 @@ pub fn unit_lines(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Line<'
     let mut lines = vec![Line::styled(format!(" {name}"), app.theme.bold())];
     let mut groups = unit_groups(app, u, w, statements).into_iter();
     lines.extend(groups.next().unwrap_or_default());
+    // The flagged list says it under the unit's name instead.
+    lines.extend(proposed_line(app, u, w, 1));
     for g in groups.filter(|g| !g.is_empty()) {
         lines.push(Line::default());
         lines.extend(g);
@@ -317,7 +319,6 @@ pub fn unit_groups(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Vec<L
     // Why it matters comes first: the list only shows a dispute.
     let mut about = check_lines(app, u, w, 1, true);
     about.extend(commits_line(app, u, w, 1));
-    about.extend(proposed_line(app, u, w, 1));
     let mut said = agent_lines(app, u, w.saturating_sub(2), statements, 1);
     // Not described (yet): the spinner or why not. Why a unit has no
     // behavior change is said above.

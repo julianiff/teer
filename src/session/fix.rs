@@ -26,36 +26,11 @@ pub fn proposal(u: &Unit) -> Option<&Proposal> {
     u.dive.results.get(&DiveKind::Fix)?.proposal.as_ref()
 }
 
-/// What a proposed change for `u` would answer: the first security
-/// finding that stands, else the reviewer's note, else the advice. `None`
-/// when there is nothing to fix yet.
-// TODO(merge): use fix::propose::target
+/// What a proposed change for `u` would answer (`fix::propose::target`):
+/// the most severe security finding that stands, else the reviewer's
+/// note, else the advice. `None` when there is nothing to fix yet.
 pub fn target(u: &Unit) -> Option<Reason> {
-    let audit = u
-        .dive
-        .results
-        .get(&DiveKind::Security)
-        .and_then(|r| r.audit.as_ref());
-    if let Some((index, f)) = audit
-        .into_iter()
-        .flat_map(|a| a.findings.iter().enumerate())
-        .find(|(_, f)| f.stands())
-    {
-        return Some(Reason::Finding {
-            index,
-            title: f.title.clone(),
-            severity: f.severity,
-        });
-    }
-    if !u.dive.note.trim().is_empty() {
-        return Some(Reason::Note);
-    }
-    let advised = u
-        .dive
-        .results
-        .get(&DiveKind::Recommend)
-        .is_some_and(|r| !r.text.trim().is_empty());
-    advised.then_some(Reason::Advice)
+    crate::fix::propose::target(u).map(|(reason, _)| reason)
 }
 
 /// What a proposal answers, in a few words: `your note`, `the advice`, or
