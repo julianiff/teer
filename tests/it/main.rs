@@ -36,6 +36,8 @@ mod security_facts;
 mod security_import;
 mod security_queue;
 mod security_tile;
+mod send_backends;
+mod send_ui;
 mod test_search;
 mod tui;
 mod tui_all_done;

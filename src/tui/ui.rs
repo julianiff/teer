@@ -67,6 +67,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         Overlay::ConfirmApply { id, hunks } => draw_confirm(f, app, app.apply_question(id, hunks)),
         Overlay::Finish { .. } => super::finish::draw(f, app),
         Overlay::Jump { kind, query, sel } => draw_jump(f, app, kind, query, *sel),
+        Overlay::SendTo {
+            targets, sel, what, ..
+        } => super::send::draw(f, app, targets, *sel, what),
         Overlay::Commits { sel, unit } => super::commits::draw_commits(f, app, *sel, *unit),
         Overlay::None => {}
     }

@@ -93,6 +93,15 @@ pub enum Overlay {
     Finish {
         sel: usize,
     },
+    /// The agent sessions running in this repository, to send `text` (the
+    /// result of `what`: "the advice") to; `sel` is the one chosen (see
+    /// [`super::send`]).
+    SendTo {
+        targets: Vec<crate::send::Target>,
+        sel: usize,
+        text: String,
+        what: String,
+    },
     /// Units to jump to (see [`super::jump`]): found by file or name as
     /// `query` is typed (`/`), or what the unit calls (`gd`) or what calls
     /// it (`gr`); `sel` indexes [`App::jump_items`].
@@ -275,6 +284,17 @@ pub enum Effect {
     InterpretTests {
         unit_id: String,
     },
+    /// Find the agent sessions running in this repository, to send `text`
+    /// (the result of `what`) to one (`s`, see [`super::send`]).
+    ListSessions {
+        text: String,
+        what: String,
+    },
+    /// Send `text` to agent session `target`.
+    SendToSession {
+        target: Box<crate::send::Target>,
+        text: String,
+    },
     /// Write proposed hunks `hunks` (indexes into the unit's proposal) to
     /// the working tree: each found again on disk first (`fix::apply`).
     ApplyHunks {
@@ -378,6 +398,19 @@ pub enum AppEvent {
     Tree {
         seen: Result<crate::watch::Snapshot, String>,
         at: Instant,
+    },
+    /// The agent sessions running in this repository, for `text` (the
+    /// result of `what`).
+    Sessions {
+        targets: Vec<crate::send::Target>,
+        text: String,
+        what: String,
+    },
+    /// `text` went to `target`, or why it didn't.
+    Sent {
+        target: Box<crate::send::Target>,
+        text: String,
+        result: Result<(), String>,
     },
     /// Proposed hunks `hunks` of unit `unit_id` were written: the files
     /// written, or why nothing was.
@@ -997,6 +1030,7 @@ impl App {
     fn overlay_key(&mut self, k: Key) -> Option<Vec<Effect>> {
         match self.overlay.clone() {
             Overlay::Jump { .. } => return Some(self.jump_key(k)),
+            Overlay::SendTo { .. } => return Some(self.send_key(k)),
             Overlay::Finish { .. } => return Some(self.finish_key(k)),
             Overlay::Note { .. } => return Some(self.note_key(k)),
             Overlay::Notes { sel } => return Some(self.notes_key(sel, k)),
@@ -1306,6 +1340,7 @@ impl App {
             Action::ToolFix => return self.propose_fix(),
             Action::FixApply => return self.apply_hunks(false),
             Action::FixApplyAll => return self.apply_hunks(true),
+            Action::SendSession => return self.send_to_session(),
             _ => {}
         }
         match self.screen {
@@ -2429,6 +2464,16 @@ impl App {
             AppEvent::Rerun(Ok(new)) => return self.reran(*new),
             AppEvent::Rerun(Err(e)) => self.status = format!("Re-run failed: {e}"),
             AppEvent::Tree { seen, at } => return self.tree_seen(seen, at),
+            AppEvent::Sessions {
+                targets,
+                text,
+                what,
+            } => return self.sessions_found(targets, text, what),
+            AppEvent::Sent {
+                target,
+                text,
+                result,
+            } => return self.sent(&target, text, result),
             AppEvent::FixApplied {
                 unit_id,
                 hunks,

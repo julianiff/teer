@@ -102,6 +102,7 @@ pub const UNIT: &[Action] = &[
     Action::ToolFix,
     Action::FixApply,
     Action::FixApplyAll,
+    Action::SendSession,
     Action::ToolHistory,
     Action::ToolNotes,
     Action::ToolFlagged,
@@ -284,7 +285,7 @@ pub fn group_of(a: Action) -> usize {
         | HistoryUndo | HistoryRedo | HistoryRepeat | NoteDelete | FixApply | FixApplyAll => 1,
         ViewOpen | AskOpen | GotoDefinition | GotoCallers | GotoEditor | GotoBrowser
         | ToolAdvice | ToolTests | ToolRunOldNew | ToolDiagram | ToolSecurity | ToolProve
-        | ToolFix | ToolFlagged | MoveNextTile | MovePrevTile | ToggleZoom => 2,
+        | ToolFix | ToolFlagged | MoveNextTile | MovePrevTile | ToggleZoom | SendSession => 2,
         ToggleAutoAccepted | ToggleByFile | ToggleSecurityOrder | ToolHistory | ToolNotes
         | ToolSettings | HelpOpen => 3,
         FinishOpen | FinishYank | FinishApp | ReviewRerun | ReviewReset | ViewClose => 4,

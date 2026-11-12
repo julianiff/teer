@@ -659,6 +659,12 @@ expression: json(&app)
       "off": false,
       "on": null
     },
+    "send.session": {
+      "keys": "s",
+      "what": "send the tile's result to an agent session",
+      "off": false,
+      "on": null
+    },
     "toggle.auto_accepted": {
       "keys": "za",
       "what": "show units accepted for you",

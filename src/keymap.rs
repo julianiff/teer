@@ -98,6 +98,9 @@ pub enum Action {
     FixApply,
     /// Put every proposed hunk of the unit into the code (`P`).
     FixApplyAll,
+    /// Send the result of the tile in focus to an agent session running
+    /// in this repository.
+    SendSession,
     ToolHistory,
     ToolNotes,
     /// The flagged units one after another, each with its note and diff.
@@ -333,6 +336,12 @@ const TABLE: &[(Action, &str, &[&str], &str)] = &[
         "fix.apply_all",
         &["P"],
         "put every proposed hunk into the code",
+    ),
+    (
+        Action::SendSession,
+        "send.session",
+        &["s"],
+        "send the tile's result to an agent session",
     ),
     (
         Action::ToolHistory,

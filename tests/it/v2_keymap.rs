@@ -867,6 +867,13 @@ fn p_and_shift_p_put_proposed_hunks_into_the_code() {
 }
 
 #[test]
+fn s_sends_the_tiles_result_to_an_agent_session() {
+    // The UI slice asserts what it does.
+    let mut d = Driver::new(3);
+    d.keys("s");
+}
+
+#[test]
 fn leader_c_opens_the_commits_or_says_there_are_none() {
     let mut d = Driver::new(3);
     d.keys("<space>c");

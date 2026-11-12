@@ -632,6 +632,14 @@ pub enum OverlayView {
     Commits(CommitsView),
     Finish(FinishView),
     Jump(JumpView),
+    /// The agent sessions to send a tile's result to (`s`): `what` it is,
+    /// the sessions, the one selected, and the message.
+    SendTo {
+        what: String,
+        targets: Vec<crate::send::Target>,
+        sel: usize,
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1469,6 +1477,7 @@ pub const BUTTONS: &[Action] = &[
     Action::ToolFix,
     Action::FixApply,
     Action::FixApplyAll,
+    Action::SendSession,
     Action::GotoDefinition,
     Action::GotoCallers,
     Action::GotoEditor,
@@ -1707,6 +1716,17 @@ fn overlay(app: &App) -> OverlayView {
         Overlay::ConfirmWeb => OverlayView::ConfirmWeb,
         Overlay::ConfirmApply { id, hunks } => OverlayView::ConfirmApply {
             question: app.apply_question(id, hunks),
+        },
+        Overlay::SendTo {
+            targets,
+            sel,
+            text,
+            what,
+        } => OverlayView::SendTo {
+            what: what.clone(),
+            targets: targets.clone(),
+            sel: *sel,
+            text: text.clone(),
         },
         Overlay::Commits { sel, unit } => OverlayView::Commits(CommitsView {
             sel: *sel,

@@ -195,6 +195,30 @@ impl Runtime {
                     let _ = tx.send(AppEvent::Dive(ev));
                 });
             }
+            Effect::ListSessions { text, what } => {
+                let tx = self.tx.clone();
+                let repo = app.review.repo_root.clone();
+                tokio::task::spawn_blocking(move || {
+                    let targets = crate::send::list(&crate::send::Dirs::from_env(), &repo);
+                    let _ = tx.send(AppEvent::Sessions {
+                        targets,
+                        text,
+                        what,
+                    });
+                });
+            }
+            Effect::SendToSession { target, text } => {
+                let tx = self.tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let result =
+                        crate::send::deliver(&crate::send::Dirs::from_env(), &target, &text);
+                    let _ = tx.send(AppEvent::Sent {
+                        target,
+                        text,
+                        result,
+                    });
+                });
+            }
             Effect::ApplyHunks { unit_id, hunks } => {
                 let tx = self.tx.clone();
                 let refuse = |unit_id: String, hunks: Vec<usize>, why: &str| {

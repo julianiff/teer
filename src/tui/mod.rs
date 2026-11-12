@@ -16,6 +16,7 @@ pub mod pr_pick;
 pub mod preview;
 pub mod queue;
 pub mod select;
+pub mod send;
 pub mod setup;
 pub mod slim;
 pub mod theme;
