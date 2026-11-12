@@ -2,10 +2,12 @@
 //! for the clipboard and `teer notes`, and as the first message of a Claude
 //! Code or Codex session that works through them (the `:w` sheet). Under a
 //! flagged unit's note, what the security lens found in it: its standing
-//! findings with their paths, and its facts that need a close look.
+//! findings with their paths, and its facts that need a close look. Under
+//! a unit with a proposed change not put in yet, its hunks as diffs.
 
+use crate::fix::{HunkState, Proposal, ProposedHunk, Reason};
 use crate::review::diff::{self, Kind};
-use crate::review::model::{Decision, Review, Unit};
+use crate::review::model::{Decision, DiveKind, Review, Unit};
 use crate::security::Weight;
 use crate::security::order::{class_name, fact_place, facts_from, one_line, path_text, standing};
 use crate::util::sanitize;
@@ -24,19 +26,44 @@ pub fn noted(review: &Review) -> Vec<&Unit> {
     units
 }
 
-/// What finishing takes out of teer: the units with a note and the flagged
-/// units without one, by file, then line.
+/// What finishing takes out of teer: the units with a note, the flagged
+/// units without one, and the units with a proposed change not put in yet
+/// ([`unapplied`]), by file, then line.
 pub fn listed(review: &Review) -> Vec<&Unit> {
     let mut units: Vec<&Unit> = review
         .units
         .iter()
-        .filter(|u| !u.dive.note.trim().is_empty() || u.decision == Decision::Investigate)
+        .filter(|u| {
+            !u.dive.note.trim().is_empty()
+                || u.decision == Decision::Investigate
+                || !unapplied(u).is_empty()
+        })
         .collect();
     units.sort_by(|a, b| (&a.file, a.display_line()).cmp(&(&b.file, b.display_line())));
     units
 }
 
-/// "1 note", "2 notes and 1 flagged unit without one": what [`listed`] holds.
+/// The change the agent proposed for `u`, when it has one.
+pub fn proposal(u: &Unit) -> Option<&Proposal> {
+    u.dive.results.get(&DiveKind::Fix)?.proposal.as_ref()
+}
+
+/// The hunks of `u`'s proposed change not put in yet: proposed, or
+/// suggested on a pull request.
+pub fn unapplied(u: &Unit) -> Vec<&ProposedHunk> {
+    proposal(u)
+        .map(|p| {
+            p.hunks
+                .iter()
+                .filter(|h| h.state != HunkState::Applied)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// "1 note", "2 notes and 1 flagged unit without one", "1 note and 1
+/// proposed change": what [`listed`] holds. A proposed change counts here
+/// when its unit has neither a note nor a flag.
 pub fn count(units: &[&Unit]) -> String {
     let plural = |n: usize, one: &str, many: &str| match n {
         1 => format!("1 {one}"),
@@ -46,15 +73,22 @@ pub fn count(units: &[&Unit]) -> String {
         .iter()
         .filter(|u| !u.dive.note.trim().is_empty())
         .count();
-    let bare = units.len() - noted;
-    match (noted, bare) {
-        (n, 0) => plural(n, "note", "notes"),
-        (0, b) => plural(b, "flagged unit", "flagged units"),
-        (n, b) => format!(
-            "{} and {} without one",
-            plural(n, "note", "notes"),
-            plural(b, "flagged unit", "flagged units")
-        ),
+    let flagged = units
+        .iter()
+        .filter(|u| u.dive.note.trim().is_empty() && u.decision == Decision::Investigate)
+        .count();
+    let proposed = units.len() - noted - flagged;
+    let notes = plural(noted, "note", "notes");
+    let flags = plural(flagged, "flagged unit", "flagged units");
+    let changes = plural(proposed, "proposed change", "proposed changes");
+    match (noted, flagged, proposed) {
+        (_, 0, 0) => notes,
+        (0, _, 0) => flags,
+        (_, _, 0) => format!("{notes} and {flags} without one"),
+        (0, 0, _) => changes,
+        (_, 0, _) => format!("{notes} and {changes}"),
+        (0, _, _) => format!("{flags} and {changes}"),
+        _ => format!("{notes}, {flags} without one and {changes}"),
     }
 }
 
@@ -126,15 +160,74 @@ fn hunk(review: &Review, u: &Unit) -> Option<String> {
     if rows.len() > MAX_ROWS {
         lines.push(format!(" … {} more lines", rows.len() - MAX_ROWS));
     }
-    // A fence longer than any run of backticks in the code.
+    let fence = fence(&lines);
+    Some(format!("{fence}diff\n{}\n{fence}", lines.join("\n")))
+}
+
+/// A code fence longer than any run of backticks in `lines`, three at
+/// least.
+pub fn fence<S: AsRef<str>>(lines: &[S]) -> String {
     let longest = lines
         .iter()
-        .flat_map(|l| l.split(|c| c != '`'))
-        .map(str::len)
+        .flat_map(|l| l.as_ref().split(|c| c != '`').map(str::len))
         .max()
         .unwrap_or(0);
-    let fence = "`".repeat(longest.max(2) + 1);
-    Some(format!("{fence}diff\n{}\n{fence}", lines.join("\n")))
+    "`".repeat(longest.max(2) + 1)
+}
+
+/// What a proposed change answers, in a few words: `the finding "…"
+/// (high)`, `the note`, `the advice`.
+pub fn answers(reason: &Reason) -> String {
+    match reason {
+        Reason::Finding {
+            title, severity, ..
+        } => format!("the finding \"{}\" ({})", one_line(title), severity.word()),
+        Reason::Note => "the note".into(),
+        Reason::Advice => "the advice".into(),
+    }
+}
+
+/// What a unit's notes say about its proposed change, as a Markdown list
+/// under a "Proposed change" line: what it answers, what it does, the
+/// second model's word when it has one, then each hunk not put in yet
+/// ([`unapplied`]) with its state and why, its diff under it. Empty
+/// without such hunks.
+pub fn proposed(u: &Unit) -> String {
+    let hunks = unapplied(u);
+    let Some(p) = proposal(u).filter(|_| !hunks.is_empty()) else {
+        return String::new();
+    };
+    let mut out = String::from("\n**Proposed change**\n\n");
+    out.push_str(&format!("- answers: {}\n", answers(&p.reason)));
+    let summary = one_line(&p.summary);
+    if !summary.is_empty() {
+        out.push_str(&format!("- what it does: {summary}\n"));
+    }
+    if let Some(s) = &p.second {
+        let word = if s.agree { "agrees" } else { "disagrees" };
+        match one_line(&s.why) {
+            why if why.is_empty() => out.push_str(&format!("- second model: {word}\n")),
+            why => out.push_str(&format!("- second model: {word}: {why}\n")),
+        }
+    }
+    for h in hunks {
+        let state = match h.state {
+            HunkState::Suggested => "suggested",
+            _ => "proposed",
+        };
+        match one_line(&h.why) {
+            why if why.is_empty() => out.push_str(&format!("- {state}\n\n")),
+            why => out.push_str(&format!("- {state}: {why}\n\n")),
+        }
+        let lines: Vec<String> = h.diff().lines().map(sanitize).collect();
+        let fence = fence(&lines);
+        out.push_str(&format!("  {fence}diff\n"));
+        for l in &lines {
+            out.push_str(&format!("  {l}\n"));
+        }
+        out.push_str(&format!("  {fence}\n"));
+    }
+    out
 }
 
 /// What a flagged unit's notes say about its security, as a Markdown
@@ -179,7 +272,9 @@ pub fn security(u: &Unit) -> String {
 /// The notes as Markdown: what the review is of, then for each note where
 /// it is, the change it is about as a diff, and the note. A flagged unit
 /// without a note is listed too, saying so. Under a flagged unit, what the
-/// security lens found ([`security`]). Empty without notes or flags.
+/// security lens found ([`security`]); under a unit with a proposed change
+/// not put in yet, its hunks ([`proposed`]). Empty without notes, flags or
+/// proposed changes.
 pub fn markdown(review: &Review) -> String {
     let units = listed(review);
     if units.is_empty() {
@@ -200,29 +295,44 @@ pub fn markdown(review: &Review) -> String {
         if u.note_is_stale() {
             out.push_str("_The code changed after this note was written; above is the code as it is now._\n\n");
         }
-        if u.dive.note.trim().is_empty() {
+        if u.dive.note.trim().is_empty() && u.decision == Decision::Investigate {
             out.push_str("_Flagged in the review, without a note._\n");
         }
         for l in u.dive.note.trim().lines() {
             out.push_str(&format!("> {}\n", sanitize(l)));
         }
         out.push_str(&security(u));
+        // Its own blank line first, unless one is there.
+        let fix = proposed(u);
+        if out.ends_with("\n\n") {
+            out.push_str(fix.strip_prefix('\n').unwrap_or(&fix));
+        } else {
+            out.push_str(&fix);
+        }
     }
     out
 }
 
 /// The first message for a Claude Code or Codex session that works
 /// through the notes. Empty without notes. With security findings or facts
-/// under a note, a word on what they are and what to do with them.
+/// under a note, a word on what they are and what to do with them; with a
+/// proposed change, to put it in.
 pub fn agent_prompt(review: &Review) -> String {
     let notes = markdown(review);
     if notes.is_empty() {
         return notes;
     }
-    let lens = if listed(review).iter().any(|u| !security(u).is_empty()) {
+    let listed = listed(review);
+    let lens = if listed.iter().any(|u| !security(u).is_empty()) {
         "\n\nUnder some notes, a Security list says what teer's security lens found in that unit: \
 findings with the path from where the input enters to where it does harm, and facts teer read from \
 the code. Close the hole each one describes, or say why it can't happen there."
+    } else {
+        ""
+    };
+    let fix = if listed.iter().any(|u| !proposed(u).is_empty()) {
+        "\n\nWhere a change is proposed, put it in unless you see a reason not to, and say why if \
+you don't."
     } else {
         ""
     };
@@ -231,7 +341,7 @@ the code. Close the hole each one describes, or say why it can't happen there."
 Work through them one by one. Where a note asks for a change, make it; where it asks a question \
 or you disagree, answer it instead of changing the code. A unit flagged without a note is one I \
 found something wrong with: look at it and say what you found before changing it. Leave code that \
-no note is about alone. At the end, list each note with what you did.{lens}\n\n{notes}"
+no note is about alone. At the end, list each note with what you did.{lens}{fix}\n\n{notes}"
     )
 }
 

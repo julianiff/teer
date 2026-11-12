@@ -5,22 +5,27 @@
 //! is part of the PR diff) or lines of the review summary. A flagged unit's
 //! standing security findings go under its inline note, and the summary
 //! gets a "Security" section with the findings and the facts that need a
-//! close look of every flagged unit. The review is posted with `gh api`
-//! (JSON on stdin, never in argv), pinned to the head commit that was
-//! reviewed, and only after the remote still reports that same head.
-//! Nothing here runs a shell.
+//! close look of every flagged unit. A hunk of a proposed change the
+//! reviewer suggested (`p` on a pull request) becomes a GitHub suggestion
+//! on its lines when they are in the PR diff, merged into the unit's note
+//! when that lands on them; otherwise it goes into the summary's "Proposed
+//! changes" as a diff. The review is posted with `gh api` (JSON on stdin,
+//! never in argv), pinned to the head commit that was reviewed, and only
+//! after the remote still reports that same head. Nothing here runs a
+//! shell.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 
 use serde_json::json;
 
 use crate::editor::Editor;
+use crate::fix::{HunkState, ProposedHunk};
 use crate::gh::{self, Output as GhOut};
 use crate::git::ChangedFile;
 use crate::pr;
-use crate::review::model::{Decision, PrInfo, Review, Side, Unit};
+use crate::review::model::{Decision, PrInfo, Range, Review, Side, Unit};
 use crate::security::Weight;
 use crate::security::order::{
     cite_text, class_name, fact_place, facts_from, one_line, path_text, standing,
@@ -39,6 +44,15 @@ pub const INLINE_MAX_CHARS: usize = 2000;
 pub const INLINE_MAX: usize = 50;
 /// Most lines of the summary's Security section.
 pub const SECURITY_MAX_LINES: usize = 15;
+/// Longest "Proposed changes" section, in characters, on top of the
+/// summary's [`BODY_MAX_CHARS`]: the code isn't cut to fit the notes.
+pub const PROPOSED_MAX_CHARS: usize = 4000;
+/// Longest suggestion comment, in characters; a longer one goes into the
+/// summary as a diff.
+pub const SUGGESTION_MAX_CHARS: usize = 8000;
+/// The unchanged lines a diff hunk shows around a change, as git and
+/// GitHub show them.
+pub const DIFF_CONTEXT: usize = 3;
 
 /// The summary's first line for `review`: [`DEFAULT_INTRO`], and the files
 /// teer couldn't show, so the approval doesn't claim more than was seen.
@@ -139,6 +153,20 @@ pub fn clamp_text(s: &str, max_chars: usize) -> String {
         .to_string()
 }
 
+/// Code to post: [`clamp_text`]'s cleaning without its cap, keeping tabs
+/// and leading or trailing whitespace, since a suggestion replaces lines
+/// with exactly this text.
+pub fn clean_code(s: &str) -> String {
+    s.chars()
+        .filter(|c| *c != '\r')
+        .map(|c| match c {
+            '\t' | '\n' => c,
+            c if c.is_control() || c == '\u{2028}' || c == '\u{2029}' => ' ',
+            c => c,
+        })
+        .collect()
+}
+
 /// Make text from gh or git safe to show in the status line: one line, no
 /// control characters, no URL credentials, no token-looking words, capped.
 pub fn tidy_output(s: &str) -> String {
@@ -224,11 +252,148 @@ pub fn inline_target(file: &ChangedFile, unit: &Unit) -> Option<(u32, Side)> {
         .map(|l| (l, Side::Old))
 }
 
+/// The lines of `file`'s new side the PR diff shows, hunk by hunk, as
+/// [`inline_target`]'s diff aligns them: the added lines and the
+/// [`DIFF_CONTEXT`] unchanged lines around each change, a hunk running on
+/// while the gap to the next change is no more than twice that, as git
+/// cuts them. A comment, one line or several, can only go on lines of one
+/// hunk. Empty when the file is gone or the diff is too big to compute
+/// here.
+pub fn right_hunks(file: &ChangedFile) -> Vec<Range> {
+    use DiffOp::{Delete, Equal};
+    let old: Vec<&str> = file
+        .old_content
+        .as_deref()
+        .map(|s| s.lines().collect())
+        .unwrap_or_default();
+    let Some(new) = file.new_content.as_deref() else {
+        return Vec::new();
+    };
+    let new: Vec<&str> = new.lines().collect();
+    let (n, m) = (old.len(), new.len());
+    let mut pre = 0;
+    while pre < n.min(m) && old[pre] == new[pre] {
+        pre += 1;
+    }
+    let mut suf = 0;
+    while suf < n - pre && suf < m - pre && old[n - 1 - suf] == new[m - 1 - suf] {
+        suf += 1;
+    }
+    let (om, nm) = (&old[pre..n - suf], &new[pre..m - suf]);
+    if om.len().saturating_mul(nm.len()) > 4_000_000 {
+        return Vec::new();
+    }
+    // Every line of the file as (op, its 0-based line on the new side).
+    let ops: Vec<(DiffOp, usize)> = (0..pre)
+        .map(|j| (Equal, j))
+        .chain(
+            diff_lines(om, nm)
+                .into_iter()
+                .map(|(op, _, j)| (op, pre + j)),
+        )
+        .chain((m - suf..m).map(|j| (Equal, j)))
+        .collect();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for (k, _) in ops.iter().enumerate().filter(|(_, (op, _))| *op != Equal) {
+        let (a, b) = (
+            k.saturating_sub(DIFF_CONTEXT),
+            (k + DIFF_CONTEXT).min(ops.len() - 1),
+        );
+        match spans.last_mut() {
+            Some(last) if a <= last.1 + 1 => last.1 = b,
+            _ => spans.push((a, b)),
+        }
+    }
+    spans
+        .into_iter()
+        .filter_map(|(a, b)| {
+            let mut lines = ops[a..=b]
+                .iter()
+                .filter(|(op, _)| *op != Delete)
+                .map(|(_, j)| *j as u32 + 1);
+            let first = lines.next()?;
+            Some(Range::new(first, lines.next_back().unwrap_or(first)))
+        })
+        .collect()
+}
+
+/// Lines `lines` (1-based, inclusive) of `content`, the last one's ending
+/// included. `None` when `content` doesn't have them.
+fn whole_lines(content: &str, lines: Range) -> Option<&str> {
+    if lines.start == 0 || lines.is_empty() {
+        return None;
+    }
+    let mut starts = vec![0];
+    starts.extend(
+        content
+            .bytes()
+            .enumerate()
+            .filter(|(_, b)| *b == b'\n')
+            .map(|(i, _)| i + 1),
+    );
+    let count = if content.ends_with('\n') {
+        starts.len() - 1
+    } else {
+        starts.len()
+    };
+    if lines.end as usize > count {
+        return None;
+    }
+    let from = starts[lines.start as usize - 1];
+    let to = starts
+        .get(lines.end as usize)
+        .copied()
+        .unwrap_or(content.len());
+    Some(&content[from..to])
+}
+
+/// `s` without one line ending at its end.
+fn without_ending(s: &str) -> &str {
+    let s = s.strip_suffix('\n').unwrap_or(s);
+    s.strip_suffix('\r').unwrap_or(s)
+}
+
+/// Lines `lines` (1-based, inclusive) of `content`, whole, with `old`
+/// replaced by `new` in them: what a suggestion on those lines puts there,
+/// even when `old` starts or ends inside a line. Without the last line's
+/// ending. `None` when the lines aren't in `content` or don't hold `old`
+/// exactly once.
+pub fn replaced_lines(content: &str, lines: Range, old: &str, new: &str) -> Option<String> {
+    let whole = whole_lines(content, lines)?;
+    if old.is_empty() || whole.matches(old).count() != 1 {
+        return None;
+    }
+    let out = whole.replacen(old, new, 1);
+    Some(without_ending(&out).to_string())
+}
+
+/// Hunk `h` as diff lines of whole lines, read from `content` (the file as
+/// reviewed) when it has them; else of its own text.
+fn whole_diff(content: Option<&str>, h: &ProposedHunk) -> Vec<String> {
+    let whole = content.and_then(|c| {
+        let old = without_ending(whole_lines(c, h.lines)?);
+        let new = replaced_lines(c, h.lines, &h.old, &h.new)?;
+        Some((old.to_string(), new))
+    });
+    let lines = match whole {
+        Some((old, new)) => ProposedHunk {
+            old,
+            new,
+            ..h.clone()
+        }
+        .diff_lines(),
+        None => h.diff_lines(),
+    };
+    lines.iter().map(|l| clean_code(l)).collect()
+}
+
 // ------------------------------------------------------------------ plan
 
 /// One unit's note, in list order, with where it can go.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoteEntry {
+    /// The unit's id: a suggestion of its own can join its comment.
+    pub id: String,
     pub symbol: String,
     pub file: String,
     pub line: u32,
@@ -240,14 +405,41 @@ pub struct NoteEntry {
     pub security: Vec<String>,
 }
 
+/// A suggested hunk of a unit's proposed change ([`HunkState::Suggested`]),
+/// in list order, with where it can go.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SuggestionEntry {
+    /// The unit's id, to join its note's comment.
+    pub id: String,
+    pub symbol: String,
+    /// The hunk's file, which can be another than the unit's.
+    pub file: String,
+    /// The lines of the head it replaces.
+    pub lines: Range,
+    /// Why this hunk, on one line.
+    pub why: String,
+    /// The hunk as diff lines, for the summary: of whole lines when the
+    /// file is in the review.
+    pub diff: Vec<String>,
+    /// The comment's body when it can go inline: the why, then the
+    /// suggestion. `None` when its lines aren't all in one hunk of the PR
+    /// diff, or the replacement can't be built.
+    pub inline: Option<String>,
+}
+
 /// An inline review comment.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Inline {
     pub path: String,
+    /// The comment's line, the last of its range when it has one.
     pub line: u32,
+    /// The first line, for a comment on several lines.
+    pub start_line: Option<u32>,
     pub side: Side,
     pub body: String,
     pub symbol: String,
+    /// It suggests a change: the body holds a suggestion block.
+    pub suggestion: bool,
 }
 
 /// What would be posted.
@@ -286,6 +478,7 @@ pub fn collect_notes(review: &Review, order: &[usize]) -> Vec<NoteEntry> {
                 _ => None,
             };
             Some(NoteEntry {
+                id: u.id.clone(),
                 symbol: sanitize(&u.symbol),
                 file: path.unwrap_or_else(|| sanitize(&u.file.to_string_lossy())),
                 line: u.display_line(),
@@ -295,6 +488,81 @@ pub fn collect_notes(review: &Review, order: &[usize]) -> Vec<NoteEntry> {
             })
         })
         .collect()
+}
+
+/// Every suggested hunk of the units' proposed changes, in `order` (then
+/// the units it doesn't list), with its suggestion when it can go inline
+/// ([`suggestion_body`]). Proposed hunks never suggested aren't posted.
+pub fn collect_suggestions(review: &Review, order: &[usize]) -> Vec<SuggestionEntry> {
+    // With a guessed base the diff is not the PR's: never inline.
+    let guessed = review.pr.as_ref().is_some_and(|p| p.base_assumed.is_some());
+    let listed: HashSet<usize> = order.iter().copied().collect();
+    let units = order
+        .iter()
+        .copied()
+        .chain((0..review.units.len()).filter(|i| !listed.contains(i)))
+        .filter_map(|i| review.units.get(i));
+    // Each file's diff hunks, worked out once.
+    let mut hunks: HashMap<&Path, Vec<Range>> = HashMap::new();
+    let mut out = Vec::new();
+    for u in units {
+        let Some(p) = crate::notes::proposal(u) else {
+            continue;
+        };
+        for h in p.hunks.iter().filter(|h| h.state == HunkState::Suggested) {
+            let path = safe_path(&h.file);
+            let file = review.files.iter().find(|f| f.path == h.file);
+            let inline = match (&path, file, guessed) {
+                (Some(_), Some(f), false) => {
+                    let shown = hunks
+                        .entry(f.path.as_path())
+                        .or_insert_with(|| right_hunks(f));
+                    suggestion_body(f, shown, h)
+                }
+                _ => None,
+            };
+            out.push(SuggestionEntry {
+                id: u.id.clone(),
+                symbol: sanitize(&u.symbol),
+                file: path.unwrap_or_else(|| sanitize(&h.file.to_string_lossy())),
+                lines: h.lines,
+                why: clamp_text(&one_line(&h.why), INLINE_MAX_CHARS),
+                diff: whole_diff(file.and_then(|f| f.new_content.as_deref()), h),
+                inline,
+            });
+        }
+    }
+    out
+}
+
+/// A suggested hunk's comment: its why, then a suggestion block holding
+/// the whole lines it covers in `file`'s new side, its old text replaced
+/// by the new. `None` when those lines aren't all in one of `shown` (the
+/// file's diff hunks, [`right_hunks`]), the lines don't hold the old text
+/// once, or the comment would be longer than [`SUGGESTION_MAX_CHARS`].
+fn suggestion_body(file: &ChangedFile, shown: &[Range], h: &ProposedHunk) -> Option<String> {
+    let r = h.lines;
+    if !shown
+        .iter()
+        .any(|s| s.contains(r.start) && s.contains(r.end))
+    {
+        return None;
+    }
+    let text = replaced_lines(file.new_content.as_deref()?, r, &h.old, &h.new)?;
+    let text = clean_code(&text);
+    let fence = crate::notes::fence(&[&text]);
+    let block = if text.is_empty() {
+        format!("{fence}suggestion\n{fence}")
+    } else {
+        format!("{fence}suggestion\n{text}\n{fence}")
+    };
+    let why = clamp_text(&one_line(&h.why), INLINE_MAX_CHARS);
+    let body = if why.is_empty() {
+        block
+    } else {
+        format!("{why}\n\n{block}")
+    };
+    (body.chars().count() <= SUGGESTION_MAX_CHARS).then_some(body)
 }
 
 /// `text` in backticks, its own backticks made quotes.
@@ -369,19 +637,71 @@ pub fn security_section(review: &Review, order: &[usize]) -> Option<String> {
 }
 
 /// The review to post for `review` listed in `order`: [`build_plan`] of its
-/// notes ([`collect_notes`]), and the summary's [`security_section`] when
-/// there is one. The notes give way to the section when the summary is too
-/// long for both.
+/// notes ([`collect_notes`]) and suggested hunks ([`collect_suggestions`]),
+/// the summary's [`security_section`] when there is one, then its
+/// [`proposed_section`]. The notes give way to the security section when
+/// the summary is too long for both; the proposed changes come on top.
 pub fn plan(review: &Review, order: &[usize], intro: &str, inline_on: bool) -> Plan {
     let notes = collect_notes(review, order);
-    let mut plan = build_plan(&notes, intro, inline_on);
+    let suggestions = collect_suggestions(review, order);
+    let (mut plan, rest) = place(&notes, &suggestions, intro, inline_on);
     if let Some(section) = security_section(review, order) {
         let section = clamp_text(&section, BODY_MAX_CHARS / 2);
         let room = BODY_MAX_CHARS.saturating_sub(section.chars().count() + 2);
         let body = clamp_text(&plan.body, room);
         plan.body = format!("{body}\n\n{section}");
     }
+    if let Some(section) = proposed_section(&rest) {
+        plan.body = format!("{}\n\n{section}", plan.body);
+    }
     plan
+}
+
+/// The summary's "Proposed changes": each suggested hunk that isn't
+/// inline, its unit, place and why, then its diff. As many as fit in
+/// [`PROPOSED_MAX_CHARS`], whole, then how many more there are. `None`
+/// without any.
+pub fn proposed_section(entries: &[&SuggestionEntry]) -> Option<String> {
+    if entries.is_empty() {
+        return None;
+    }
+    let mut out = String::from("### Proposed changes");
+    let mut shown = 0;
+    for e in entries {
+        let place = if e.lines.end > e.lines.start {
+            format!("{}:{}-{}", e.file, e.lines.start, e.lines.end)
+        } else {
+            format!("{}:{}", e.file, e.lines.start)
+        };
+        let why = if e.why.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", e.why)
+        };
+        let fence = crate::notes::fence(&e.diff);
+        let block = format!(
+            "\n\n- {} ({}){why}\n\n{fence}diff\n{}\n{fence}",
+            e.symbol,
+            code(&place),
+            e.diff.join("\n")
+        );
+        // Room kept for the line saying how many more.
+        if out.chars().count() + block.chars().count() > PROPOSED_MAX_CHARS - 60 {
+            break;
+        }
+        out.push_str(&block);
+        shown += 1;
+    }
+    if shown < entries.len() {
+        let more = entries.len() - shown;
+        let what = if shown == 0 {
+            format!("{more} too long to show here")
+        } else {
+            format!("and {more} more")
+        };
+        out.push_str(&format!("\n\n- … {what}"));
+    }
+    Some(out)
 }
 
 fn note_line(e: &NoteEntry) -> String {
@@ -430,39 +750,103 @@ fn inline_body(e: &NoteEntry) -> String {
 /// inline comments (at most [`INLINE_MAX`]), a flagged unit's security
 /// findings under its note; everything else is listed in the summary.
 pub fn build_plan(notes: &[NoteEntry], intro: &str, inline_on: bool) -> Plan {
+    place(notes, &[], intro, inline_on).0
+}
+
+/// [`build_plan`] with suggested hunks: with `inline_on`, the notes go
+/// first, then each suggestion that can go inline joins its unit's note
+/// comment when that lands on its lines, or becomes a comment of its own
+/// while there is room ([`INLINE_MAX`] counts both). The suggestions left
+/// come back, for the summary's [`proposed_section`].
+fn place<'a>(
+    notes: &[NoteEntry],
+    suggestions: &'a [SuggestionEntry],
+    intro: &str,
+    inline_on: bool,
+) -> (Plan, Vec<&'a SuggestionEntry>) {
     let mut inline = Vec::new();
+    // The unit of each inline comment.
+    let mut of = Vec::new();
     let mut listed = Vec::new();
     for e in notes {
         match e.target {
-            Some((line, side)) if inline_on && inline.len() < INLINE_MAX => inline.push(Inline {
-                path: e.file.clone(),
-                line,
-                side,
-                body: inline_body(e),
-                symbol: e.symbol.clone(),
-            }),
+            Some((line, side)) if inline_on && inline.len() < INLINE_MAX => {
+                inline.push(Inline {
+                    path: e.file.clone(),
+                    line,
+                    start_line: None,
+                    side,
+                    body: inline_body(e),
+                    symbol: e.symbol.clone(),
+                    suggestion: false,
+                });
+                of.push(e.id.as_str());
+            }
             _ => listed.push(e),
         }
     }
-    Plan {
+    let mut rest = Vec::new();
+    for s in suggestions {
+        let Some(body) = s.inline.as_ref().filter(|_| inline_on) else {
+            rest.push(s);
+            continue;
+        };
+        let (start, end) = (s.lines.start, s.lines.end);
+        let start_line = (start < end).then_some(start);
+        let note = inline.iter_mut().zip(&of).find(|(c, id)| {
+            **id == s.id
+                && !c.suggestion
+                && c.side == Side::New
+                && c.path == s.file
+                && s.lines.contains(c.line)
+        });
+        if let Some((c, _)) = note {
+            c.body = format!("{}\n\n{body}", c.body);
+            c.line = end;
+            c.start_line = start_line;
+            c.suggestion = true;
+        } else if inline.len() < INLINE_MAX {
+            inline.push(Inline {
+                path: s.file.clone(),
+                line: end,
+                start_line,
+                side: Side::New,
+                body: body.clone(),
+                symbol: s.symbol.clone(),
+                suggestion: true,
+            });
+            of.push(s.id.as_str());
+        } else {
+            rest.push(s);
+        }
+    }
+    let plan = Plan {
         body: compose_body(intro, &listed),
         inline,
-    }
+    };
+    (plan, rest)
 }
 
-/// The JSON for `POST /repos/{owner}/{repo}/pulls/{n}/reviews`.
+/// The JSON for `POST /repos/{owner}/{repo}/pulls/{n}/reviews`. A comment
+/// on several lines gets `start_line`, on the same side.
 pub fn review_json(commit: &str, verdict: Verdict, body: &str, inline: &[Inline]) -> String {
     let mut v = json!({"commit_id": commit, "event": verdict.event(), "body": body});
     if !inline.is_empty() {
         v["comments"] = inline
             .iter()
             .map(|c| {
-                json!({
+                let side = if c.side == Side::New { "RIGHT" } else { "LEFT" };
+                let mut j = json!({
                     "path": c.path,
                     "line": c.line,
-                    "side": if c.side == Side::New { "RIGHT" } else { "LEFT" },
+                    "side": side,
                     "body": c.body,
-                })
+                });
+                if let Some(start) = c.start_line {
+                    j["start_line"] = json!(start);
+                    j["start_side"] = json!(side);
+                }
+                j
             })
             .collect();
     }
@@ -851,9 +1235,11 @@ mod tests {
         let inl = Inline {
             path: "a.rs".into(),
             line: 3,
+            start_line: None,
             side: Side::New,
             body: "say \"hi\"\nnew line \\ ✓ 日本".into(),
             symbol: "f".into(),
+            suggestion: false,
         };
         let j = review_json(
             "abc",
@@ -885,6 +1271,7 @@ mod tests {
     #[test]
     fn plan_lists_notes_without_a_target_and_caps_inline() {
         let mk = |i: u32, t: bool| NoteEntry {
+            id: format!("u{i}"),
             symbol: format!("s{i}"),
             file: "a.rs".into(),
             line: i,
@@ -904,5 +1291,45 @@ mod tests {
         assert!(off.body.lines().count() <= BODY_MAX_LINES);
         assert!(off.body.contains("more notes"));
         assert_eq!(build_plan(&[], "", true).body, DEFAULT_INTRO);
+    }
+
+    #[test]
+    fn the_diff_shows_three_lines_around_each_change_and_joins_close_ones() {
+        let old: Vec<String> = (1..=30).map(|i| format!("l{i}")).collect();
+        let mut new = old.clone();
+        new[9] = "L10".into();
+        // Six unchanged lines between: one hunk.
+        new[16] = "L17".into();
+        // Seven: a hunk of its own.
+        new[24] = "L25".into();
+        let f = file(Some(&old.join("\n")), Some(&new.join("\n")));
+        assert_eq!(right_hunks(&f), [Range::new(7, 20), Range::new(22, 28)]);
+        // A line added at the top: its context below it only.
+        let f = file(Some("a\nb\nc\nd\ne\n"), Some("x\na\nb\nc\nd\ne\n"));
+        assert_eq!(right_hunks(&f), [Range::new(1, 4)]);
+        // A file removed has no new side.
+        assert!(right_hunks(&file(Some("a\n"), None)).is_empty());
+    }
+
+    #[test]
+    fn replaced_lines_are_whole_lines_even_for_text_inside_a_line() {
+        let src = "fn f() {\n\tlet x = a + b;\n\tx\n}\n";
+        assert_eq!(
+            replaced_lines(src, Range::new(2, 2), "a + b", "a - b").as_deref(),
+            Some("\tlet x = a - b;")
+        );
+        assert_eq!(
+            replaced_lines(src, Range::new(2, 3), "b;\n\tx", "b;\n\tx + 1").as_deref(),
+            Some("\tlet x = a + b;\n\tx + 1")
+        );
+        // The whole line, ending and all, removed: an empty suggestion.
+        assert_eq!(
+            replaced_lines(src, Range::new(3, 3), "\tx\n", "").as_deref(),
+            Some("")
+        );
+        // Not in those lines, twice in them, or past the end.
+        assert_eq!(replaced_lines(src, Range::new(1, 1), "a + b", "c"), None);
+        assert_eq!(replaced_lines("a a\n", Range::new(1, 1), "a", "b"), None);
+        assert_eq!(replaced_lines(src, Range::new(4, 5), "}", ""), None);
     }
 }

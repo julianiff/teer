@@ -6,13 +6,15 @@
 //! looks closer (the unit view; `h` there comes back here), `a` accepts it
 //! (it leaves the list), `i` writes its note, `h` goes back. How it looks
 //! is the front end's. A unit with standing security findings, or facts
-//! worth a look, says so on one line ([`security_line`]).
+//! worth a look, says so on one line ([`security_line`]); one with a
+//! proposed change not put in yet, on another ([`proposal_line`]).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::ops::Range;
 
 use super::app::{App, Effect, Screen};
+use crate::fix::HunkState;
 use crate::keymap::Action;
 use crate::review::model::{Decision, Risk, Unit};
 use crate::security::order::{class_name, facts_from, one_line, severity_of, standing};
@@ -77,6 +79,27 @@ pub fn security_line(u: &Unit) -> Option<SecurityLine> {
         (Some(a), Some(b)) => Some(if b.severity > a.severity { b } else { a }),
         (a, b) => a.or(b),
     }
+}
+
+/// What `u`'s entry says about its proposed change, on one line, without
+/// the glyph: `change proposed: 2 hunks`, `change proposed: 1 suggested`,
+/// or both. `None` when every hunk is in the code, or it has none.
+pub fn proposal_line(u: &Unit) -> Option<String> {
+    let hunks = crate::notes::unapplied(u);
+    let suggested = hunks
+        .iter()
+        .filter(|h| h.state == HunkState::Suggested)
+        .count();
+    let open = hunks.len() - suggested;
+    let what = match (open, suggested) {
+        (0, 0) => return None,
+        (1, 0) => "1 hunk".to_string(),
+        (n, 0) => format!("{n} hunks"),
+        (0, s) => format!("{s} suggested"),
+        (1, s) => format!("1 hunk, {s} suggested"),
+        (n, s) => format!("{n} hunks, {s} suggested"),
+    };
+    Some(format!("change proposed: {what}"))
 }
 
 /// The flagged list's state.
