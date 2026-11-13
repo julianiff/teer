@@ -423,7 +423,7 @@ async fn marks_become_reasons() {
     // `⚠`: the second model's words, quoted.
     let helper = id_of(&d, "new_helper");
     has(&helper, &|s| {
-        s.to_lowercase().contains("second model disputes")
+        s.to_lowercase().starts_with("disputed: ")
             && s.contains(DISPUTE.trim_end_matches('.'))
             && (s.contains('"') || s.contains('“'))
     });

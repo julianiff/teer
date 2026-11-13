@@ -485,14 +485,13 @@ fn the_preview_is_always_there_for_the_selected_unit() {
             .join("\n");
         let sym = &a.selected().unwrap().symbol;
         assert!(text.contains(&format!(" {sym} ")), "{w}x{h}\n{text}");
-        // Reasons come first, right under the head and "Why this level".
+        // The reasons are in the review box under the head.
         let lines: Vec<&str> = text.lines().collect();
         let head = lines.iter().position(|l| l.contains(sym)).unwrap();
-        assert!(lines[head + 1].contains("Why this level"), "{w}x{h}");
+        assert!(lines[head + 2].contains("╭ review "), "{w}x{h}\n{text}");
         assert!(
-            lines[head + 2].contains("not described") || lines[head + 2].contains("removed"),
-            "{w}x{h}: {:?}",
-            lines[head + 2]
+            text.contains("not described") || text.contains("removed"),
+            "{w}x{h}\n{text}"
         );
         // The list still has room for several rows.
         assert!(unit_rects(&a).len() >= 3, "{w}x{h}");

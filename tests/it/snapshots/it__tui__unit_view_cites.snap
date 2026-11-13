@@ -6,7 +6,7 @@ expression: card
 " ▲ charge_order  checkout.py:8-12                                       pending "
 "                                                                                "
 " Why this level                                                                 "
-" ▲ 3 callers · agent: high risk                                                 "
+" ▲ high risk                                                                    "
 "                                                                                "
 " What changed                                                                   "
 " ┃ agent (haiku, sonnet)                                                        "

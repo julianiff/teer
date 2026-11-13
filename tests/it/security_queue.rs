@@ -229,19 +229,18 @@ fn the_card_sits_over_the_boxes_with_its_rows_and_what_was_checked() {
 }
 
 #[test]
-fn with_nothing_found_the_card_is_one_muted_line_that_says_what_was_checked() {
+fn with_nothing_found_the_card_is_one_muted_line_that_says_only_that() {
     let mut d = Driver::new(3);
     // The card is on the security order's screen.
     d.keys("zs");
     let s = d.render(160, 30);
     let ls = lines(&s);
-    assert!(
-        ls[1].starts_with(
-            " security: nothing found · checked: auth · entry points · injection · secrets"
-        ),
-        "{s}"
+    // Only that: the lists of what was checked are in the card of a change
+    // with something found.
+    assert_eq!(
+        ls[1].split_whitespace().collect::<Vec<_>>().join(" "),
+        "🔒 nothing found"
     );
-    assert!(ls[1].contains("not: denial of service"), "{}", ls[1]);
     assert!(ls[2].starts_with("╭─ Routine"), "{s}");
     assert!(!s.contains("attack surface"));
     assert!(!s.to_lowercase().contains("safe"), "{s}");
@@ -329,7 +328,7 @@ fn with_the_lens_off_there_is_no_card() {
     d.app.security.enabled = false;
     let s = d.render(120, 40);
     assert!(
-        !s.contains("attack surface") && !s.contains("security: nothing found"),
+        !s.contains("attack surface") && !s.contains("nothing found"),
         "{s}"
     );
     assert!(snapshot(&d.app, None).queue.surface.is_none());

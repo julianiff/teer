@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 use super::app::{App, Effect, Overlay, Screen};
 use super::tools;
+use super::unit::Panel;
 use crate::config::ProposeFixes;
 use crate::fix::{HunkState, Proposal, ProposedHunk, Reason};
 use crate::keymap::Action;
@@ -140,6 +141,9 @@ pub fn hunk_rows(h: &ProposedHunk, syntax: Option<&Cache>) -> Vec<Row> {
     rows
 }
 
+/// The name of the tile that says why there is no change to propose.
+pub const TILE: &str = "Proposed change";
+
 /// "1 hunk", "3 hunks".
 fn plural(n: usize, word: &str) -> String {
     format!("{n} {word}{}", if n == 1 { "" } else { "s" })
@@ -176,9 +180,50 @@ impl App {
         self.dive_on(id, DiveKind::Fix)
     }
 
+    /// Why `<space>e` has nothing to do for `u`, when it has neither a
+    /// change nor one on its way: no agent, or nothing to fix yet (and the
+    /// keys that give it something). The status says it, and the "Proposed
+    /// change" tile that `<space>e` opens then.
+    pub fn fix_idle(&self, u: &Unit) -> Option<String> {
+        if proposal(u).is_some() || tools::pending(u, DiveKind::Fix) {
+            return None;
+        }
+        if !self.can_ask() {
+            return Some("No agent: proposing a change needs one.".into());
+        }
+        if target(u).is_some() {
+            return None;
+        }
+        let k = |a: Action| self.keys.label(a);
+        Some(format!(
+            "Nothing to fix yet: {} finds security issues, {} asks what to do, {} writes a note.",
+            k(Action::ToolSecurity),
+            k(Action::AskOpen),
+            k(Action::NoteEdit)
+        ))
+    }
+
+    /// What the "Proposed change" tile says about `u`: why there is no
+    /// change to propose ([`App::fix_idle`]); else, the state having
+    /// changed while it was open, where the change is or how to ask.
+    pub fn fix_tile_text(&self, u: &Unit) -> String {
+        if let Some(why) = self.fix_idle(u) {
+            return why;
+        }
+        if proposal(u).is_some() || tools::pending(u, DiveKind::Fix) {
+            return "The change is in the text, under the code change.".into();
+        }
+        format!(
+            "There is something to fix now: {} asks the agent for a change.",
+            self.keys.label(Action::ToolFix)
+        )
+    }
+
     /// `<space>e`: the agent proposes a change to the unit on show (or
     /// under the cursor, whose unit view opens first); with one there, the
-    /// text scrolls to its first hunk not put in yet.
+    /// text scrolls to its first hunk not put in yet; on its way or asked
+    /// for, to the "Proposed change" section. With nothing to do, a tile
+    /// opens beside the ones open and says why ([`Panel::Fix`]).
     pub(crate) fn propose_fix(&mut self) -> Vec<Effect> {
         let Some(id) = self.current_unit().map(|u| u.id.clone()) else {
             return Vec::new();
@@ -196,29 +241,26 @@ impl App {
                     "The proposed change has no hunk left: {} dropped.",
                     plural(p.dropped, "hunk")
                 );
+                self.show_fix_section();
                 return effects;
             }
             let i = p.open().first().copied().unwrap_or(0);
             self.show_fix(i);
             return effects;
         }
-        if tools::pending(u, DiveKind::Fix) {
+        let pending = tools::pending(u, DiveKind::Fix);
+        let idle = self.fix_idle(u);
+        if let Some(why) = idle {
+            self.status = why;
+            self.open_tile(Panel::Fix);
+            return effects;
+        }
+        // Something to show in the text: the tile has nothing more to say.
+        self.close_tile(Panel::Fix);
+        self.show_fix_section();
+        if pending {
             self.status =
                 "A change is on its way: the agent writes it, then teer checks it.".into();
-            return effects;
-        }
-        if !self.can_ask() {
-            self.status = "No agent: proposing a change needs one.".into();
-            return effects;
-        }
-        if target(u).is_none() {
-            let k = |a: Action| self.keys.label(a);
-            self.status = format!(
-                "Nothing to fix yet: {} finds security issues, {} asks what to do, {} writes a note.",
-                k(Action::ToolSecurity),
-                k(Action::AskOpen),
-                k(Action::NoteEdit)
-            );
             return effects;
         }
         effects.extend(self.dive_on(&id, DiveKind::Fix));

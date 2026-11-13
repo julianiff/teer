@@ -184,8 +184,7 @@ expression: json(&app)
     "accepted_for_you": false,
     "state": "⚑ flagged",
     "why": [
-      "3 callers",
-      "agent: high risk"
+      "high risk"
     ],
     "reasons": [],
     "commits": [],

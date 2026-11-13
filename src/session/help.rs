@@ -494,59 +494,7 @@ pub fn help_groups(app: &App, actions: &[Action]) -> Vec<(&'static str, Vec<Help
     groups
 }
 
-/// An item of the keys tile: the actions it stands for (the keys of all
-/// of them shown, the first one run on a click) and a word or two for it.
-pub type KeyItem = (&'static [Action], &'static str);
-
-/// What the keys tile lists, by group.
-pub const KEY_GROUPS: &[(&str, &[KeyItem])] = &[
-    (
-        "Decide",
-        &[
-            (&[Action::DecideAccept], "accept"),
-            (&[Action::DecideFlag], "flag"),
-            (&[Action::NoteEdit], "note"),
-            (&[Action::HistoryUndo], "undo"),
-        ],
-    ),
-    (
-        "Look closer",
-        &[
-            (&[Action::AskOpen], "ask"),
-            (&[Action::ToolTests], "tests"),
-            (&[Action::ToolSecurity], "security"),
-            (&[Action::ToolFix], "fix"),
-            (&[Action::SendSession], "send to agent"),
-            (&[Action::GotoDefinition], "calls"),
-            (&[Action::GotoCallers], "callers"),
-            (&[Action::GotoEditor], "editor"),
-            (&[Action::ToolFlagged], "all flagged"),
-        ],
-    ),
-    (
-        "Move",
-        &[
-            (
-                &[Action::MoveNextPending, Action::MovePrevPending],
-                "pending",
-            ),
-            (&[Action::MoveNextHunk, Action::MovePrevHunk], "hunks"),
-            (&[Action::MoveNextTile], "tiles"),
-            (&[Action::ToggleZoom], "zoom"),
-            (&[Action::ViewBack], "back"),
-        ],
-    ),
-    (
-        "Finish",
-        &[
-            (&[Action::FinishOpen], "finish"),
-            (&[Action::ToolMode], "mode"),
-            (&[Action::HelpOpen], "keys"),
-        ],
-    ),
-];
-
-/// Items of the keys tile that need an agent.
+/// Keys that need an agent.
 /// (The Security tile isn't one: without an agent it shows teer's facts.)
 pub const AGENT_KEYS: [Action; 3] = [Action::AskOpen, Action::ToolProve, Action::ToolFix];
 

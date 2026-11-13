@@ -36,6 +36,9 @@ pub enum Panel {
     Tool(DiveKind),
     /// `gd`: what the unit calls outside the review, read-only.
     Outside,
+    /// `<space>e` with no change to propose: why, and the keys that give
+    /// it something to fix (see [`App::fix_idle`]).
+    Fix,
 }
 
 /// How far a tile is scrolled, how far it can, and its rows, as last drawn.
@@ -79,7 +82,7 @@ pub struct UnitView {
     /// the scroll (see [`App::fix_at`]).
     pub fix: Option<usize>,
     /// Scroll the text to `fix` when it is next drawn: where its box is
-    /// wasn't known yet.
+    /// wasn't known yet. With no `fix`, to the "Proposed change" section.
     pub reveal: Cell<bool>,
     /// How far the text can scroll and its rows, as last drawn.
     pub text_max: Cell<usize>,
@@ -218,7 +221,7 @@ impl App {
     /// Open tile `p` after the ones open, its scroll at the top, and give it
     /// the focus; open already, it only gets the focus. A zoom ends, so it
     /// shows.
-    fn open_tile(&mut self, p: Panel) {
+    pub(crate) fn open_tile(&mut self, p: Panel) {
         if !self.unit.tiles.contains(&p) {
             self.unit.tiles.push(p);
             self.unit.scroll.borrow_mut().remove(&p);
@@ -234,7 +237,7 @@ impl App {
     /// to the text. The ask tile, when it is the first one (open from the
     /// start), never gets it this way: `h` again goes on to the text, then
     /// back.
-    fn close_tile(&mut self, p: Panel) {
+    pub(crate) fn close_tile(&mut self, p: Panel) {
         let Some(i) = self.unit.tiles.iter().position(|&t| t == p) else {
             return;
         };
@@ -713,6 +716,18 @@ impl App {
             }
             None => self.unit.reveal.set(true),
         }
+    }
+
+    /// Show the "Proposed change" section of the unit on show: the text
+    /// gets the focus (a tile's zoom ends) and scrolls to the section when
+    /// it is next drawn.
+    pub(crate) fn show_fix_section(&mut self) {
+        if self.unit.panel.is_some() {
+            self.unit.zoom = false;
+        }
+        self.focus_tile(None);
+        self.unit.fix = None;
+        self.unit.reveal.set(true);
     }
 
     /// A leader tool (`<space>t` `<space>x`): its tile opens

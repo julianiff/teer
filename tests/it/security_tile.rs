@@ -574,9 +574,9 @@ async fn space_x_asks_and_the_tile_draws_facts_findings_holds_and_what_was_check
     assert!(out.contains("routes.php:4"), "{out}");
     assert!(out.contains("repo.php:4-5"), "{out}");
     assert!(out.contains("✗ a bound parameter"), "{out}");
-    assert!(out.contains("second model agrees"), "{out}");
+    assert!(out.contains("check agrees"), "{out}");
     assert!(!out.contains("path not verified"), "{out}");
-    assert!(at("second model agrees") < at("✓ show is behind the login"));
+    assert!(at("check agrees") < at("✓ show is behind the login"));
     assert!(out.contains("checked: auth · entry points"), "{out}");
     assert!(out.contains("not: denial of service"), "{out}");
     assert!(!out.contains(audit::CHECKING), "{out}");

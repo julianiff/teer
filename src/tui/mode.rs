@@ -31,8 +31,8 @@ pub fn draw(f: &mut Frame, app: &App, sel: usize) {
         .map(|m| m.name().width())
         .max()
         .unwrap_or(0);
-    // The bar's column, the name, a gap.
-    let lead = 1 + name_w + 2;
+    // The bar's column, the icon and a space, the name, a gap.
+    let lead = 1 + 3 + name_w + 2;
     let text_w = w.saturating_sub(lead).max(1);
     let mut lines: Vec<Line<'static>> = Vec::new();
     for (i, m) in Mode::EVERY.into_iter().enumerate() {
@@ -53,6 +53,14 @@ pub fn draw(f: &mut Frame, app: &App, sel: usize) {
         let pad = w.saturating_sub(lead + about.width());
         lines.push(Line::from(vec![
             Span::styled(if on { "▌" } else { " " }, t.accent().patch(bg)),
+            // An icon is two cells; a mode without one keeps the column.
+            Span::styled(
+                match m.icon() {
+                    "" => "   ".to_string(),
+                    icon => format!("{icon} "),
+                },
+                bg,
+            ),
             Span::styled(format!("{:<name_w$}  ", m.name()), t.bold().patch(bg)),
             Span::styled(about, t.text().patch(bg)),
             Span::styled(" ".repeat(pad), bg),

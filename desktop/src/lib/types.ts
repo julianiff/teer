@@ -19,7 +19,7 @@ export type Class =
   | "String"
   | "Comment"
   | "Constant";
-export type TileId = "Ask" | "Tests" | "Security" | "Outside";
+export type TileId = "Ask" | "Tests" | "Security" | "Outside" | "Fix";
 export type Step =
   | "KeepReviewing"
   | "SendNotes"
@@ -467,7 +467,11 @@ export interface AskTile {
   tools: Hint[];
 }
 
-export type TileBody = AnswerTile | AskTile | { kind: "Outside"; shown: Shown[] };
+export type TileBody =
+  | AnswerTile
+  | AskTile
+  | { kind: "Outside"; shown: Shown[] }
+  | { kind: "Note"; text: string };
 
 export interface Tile {
   id: TileId;

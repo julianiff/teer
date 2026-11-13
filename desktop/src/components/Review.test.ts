@@ -147,7 +147,7 @@ describe("the review's buttons", () => {
     const root = draw(v);
     const p = root.querySelector(".text .proposal") as HTMLElement;
     expect(p.textContent).toContain("▲ the id reaches the query unbound (high)");
-    expect(p.textContent).toContain("⚠ second model disputes: it also drops the log line");
+    expect(p.textContent).toContain("⚠ disputed: it also drops the log line");
     const boxes = [...p.querySelectorAll<HTMLElement>(".code")];
     expect(boxes.map((b) => b.querySelector(".head span")!.textContent)).toEqual([
       "a.php:4-6",

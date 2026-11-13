@@ -67,7 +67,7 @@ fn statement(u: &Unit, c: &Change) -> Comment {
     let disputes = u.checks.second.iter().flat_map(|s| &s.verdicts);
     for v in disputes.filter(|v| !v.agree && v.statement == c.statement) {
         title.push_str(" · disputed");
-        text.push(format!("The second model disputes it: {}", v.why));
+        text.push(format!("Disputed: {}", v.why));
     }
     Comment {
         title,
@@ -88,10 +88,7 @@ fn judged(u: &Unit, out: &mut Vec<Comment>) {
                 title: format!("missed · {}", m.risk.word()),
                 risk: Some(m.risk),
                 marker: None,
-                text: vec![
-                    m.statement.clone(),
-                    "A second model found it; the description leaves it out.".into(),
-                ],
+                text: vec![m.statement.clone(), "The description leaves it out.".into()],
                 evidence: m.evidence.clone(),
             });
         }
@@ -248,7 +245,7 @@ fn finding(u: &Unit, f: &Finding, out: &mut Vec<Comment>) {
     };
     text.push(format!("Path: {hops}, {verified}."));
     if let Some(s) = f.second.as_ref().filter(|s| !s.agree) {
-        text.push(format!("The second model disputes it: {}", s.why));
+        text.push(format!("Disputed: {}", s.why));
     }
     match &f.proof {
         Some(Proof::Proven { case, .. }) => text.push(format!("Proven: {case}")),
@@ -413,10 +410,7 @@ mod tests {
             got.iter().map(|c| c.title.as_str()).collect::<Vec<_>>(),
             ["medium · disputed", "missed · high", "expensive to undo"]
         );
-        assert_eq!(
-            got[0].text[1],
-            "The second model disputes it: the test still runs first"
-        );
+        assert_eq!(got[0].text[1], "Disputed: the test still runs first");
         assert_eq!(got[1].marker, None);
     }
 

@@ -338,7 +338,7 @@ pub fn validate_second(unit: &Unit, raw: &Value) -> (SecondOpinion, Vec<Dropped>
         else {
             dropped.push(Dropped {
                 unit_id: unit.id.clone(),
-                statement: format!("second opinion: {why}"),
+                statement: format!("check: {why}"),
                 reason: format!("no statement {}", v.n),
             });
             continue;
@@ -361,7 +361,7 @@ pub fn validate_second(unit: &Unit, raw: &Value) -> (SecondOpinion, Vec<Dropped>
             Ok(_) => {}
             Err(reason) => dropped.push(Dropped {
                 unit_id: unit.id.clone(),
-                statement: format!("second opinion on \"{}\": {why}", change.statement),
+                statement: format!("check of \"{}\": {why}", change.statement),
                 reason,
             }),
         }

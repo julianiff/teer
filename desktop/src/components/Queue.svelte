@@ -109,7 +109,7 @@
                   {#if r.depth > 0}<span class="faint">{"  ".repeat(Math.min(r.depth, 3) - 1)}↳ </span>{/if}{name(r)}
                 </span>
                 {#if r.changed}<span class="tag">changed</span>{/if}
-                {#if r.disputed}<span class="warn" title="A second model disputes it">⚠</span>{/if}
+                {#if r.disputed}<span class="warn" title="Disputed">⚠</span>{/if}
                 {#if r.noted}<span class="pencil" title="Has a note">✎</span>{/if}
                 {#if r.preparing}<span class="dot" title="Being described"></span>{/if}
                 <span class="state">

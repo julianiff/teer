@@ -201,12 +201,7 @@ pub(super) fn disagree_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>
     let mut lines = Vec::new();
     let Some(o) = &u.checks.second else {
         if let Some(e) = &u.checks.second_failed {
-            lines.extend(marked(
-                "·",
-                &format!("No second opinion: {e}"),
-                w,
-                t.muted(),
-            ));
+            lines.extend(marked("·", &format!("No check: {e}"), w, t.muted()));
         }
         return lines;
     };
@@ -215,12 +210,12 @@ pub(super) fn disagree_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>
     let doubts = o.disagreements(&u.changes);
     let head = if doubts.is_empty() {
         format!(
-            "A second model agrees with the description. Its risk: {}, the description's: {first}.",
+            "The check agrees with the description. Its risk: {}, the description's: {first}.",
             word(o.risk)
         )
     } else {
         format!(
-            "A second model disagrees on {} point{}. Its risk: {}, the description's: {first}.",
+            "The check disputes {} point{}. Its risk: {}, the description's: {first}.",
             doubts.len(),
             if doubts.len() == 1 { "" } else { "s" },
             word(o.risk)
@@ -442,14 +437,14 @@ fn finding_lines(app: &App, f: &Finding, w: usize) -> Vec<Line<'static>> {
         ));
     }
     match &f.second {
-        Some(s) if s.agree => lines.push(Line::styled("   second model agrees", t.ok())),
+        Some(s) if s.agree => lines.push(Line::styled("   check agrees", t.ok())),
         Some(s) => {
             let at = s
                 .evidence
                 .as_ref()
                 .map(|c| format!(" ({})", place(c)))
                 .unwrap_or_default();
-            let text = format!("⚠ second model disputes: {}{at}", s.why);
+            let text = format!("⚠ disputed: {}{at}", s.why);
             lines.extend(indented(&text, w, t.needs_fix()));
         }
         None => {}

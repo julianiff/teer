@@ -34,7 +34,7 @@ use Decision::{Accepted as A, Investigate as F, Pending as P};
 const WHY: &str = "Why this level";
 const WHAT_CHANGED: &str = "What changed";
 const ADVICE: &str = "Advice";
-const SECOND: &str = "Second model";
+const SECOND: &str = "Check  agent";
 
 /// Units whose advice `effects` ask for (`Effect::Dive` of kind
 /// Recommend).

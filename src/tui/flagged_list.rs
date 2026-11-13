@@ -194,14 +194,7 @@ fn entry(
     // and the note are said in the text, as the preview does.
     let code = diff::code_change_of(app, u, w.saturating_sub(5), diff::Notes::Inline);
     let boxed = !code.blocks.is_empty();
-    let mut groups = preview::unit_groups(app, u, w, !boxed).into_iter();
-    out.extend(
-        groups
-            .next()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|l| vec![l]),
-    );
+    let groups = preview::unit_groups(app, u, w, !boxed).into_iter();
     for g in groups.filter(|g| !g.is_empty()) {
         out.push(vec![Line::default()]);
         out.extend(g.into_iter().map(|l| vec![l]));

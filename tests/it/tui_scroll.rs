@@ -147,7 +147,8 @@ fn the_preview_scrolls_down_to_the_cut_rows_and_back_up() {
     // Cut: the code's box has no bottom edge; its last row says how much is
     // left and how to see it. Nothing above.
     assert!(first[first.len() - 1].contains(MORE), "{text}");
-    assert!(!has(&first, "╰"), "{text}");
+    let closed = first.iter().filter(|l| l.contains('╰')).count();
+    assert_eq!(closed, 1, "only the review box closes: {text}");
     assert!(!has(&first, "above"), "{text}");
     assert!(has(&first, " long_one "), "{text}");
     assert!(!has(&first, "a15 = x + 15"), "{text}");
@@ -577,7 +578,7 @@ fn the_tests_panel_scrolls_to_its_end() {
     let first = screen(&app, w, h);
     assert!(has(&first, "25 tests cover it"), "{}", first.join("\n"));
     assert!(!has(&first, "test_case_25"), "{}", first.join("\n"));
-    // Half a tile at a time, however tall the keys tile leaves it.
+    // Half a tile at a time, however tall the tile is.
     for _ in 0..80 {
         keys(&mut app, "<c-d>");
     }

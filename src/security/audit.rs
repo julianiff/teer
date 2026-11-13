@@ -63,7 +63,7 @@ const MAX_NAMESAKES: usize = 6;
 pub const CHECK_MARKER: &str = "SECURITY CHECK";
 
 /// What the tile says while the second model checks the findings.
-pub const CHECKING: &str = "a second model checks the findings…";
+pub const CHECKING: &str = "checking the findings…";
 /// What the tile says while the findings are proven (`<space>p`).
 pub const PROVING: &str = "running the attacker's cases old against new…";
 /// What the tile says without an agent, under teer's own facts.
@@ -1220,7 +1220,7 @@ pub fn validate_checks(
             continue;
         };
         let why = one_line(&c.why, 200);
-        let what = format!("second model on finding {}: {why}", c.index);
+        let what = format!("check of finding {}: {why}", c.index);
         let Some(i) = usize::try_from(c.index)
             .ok()
             .and_then(|n| n.checked_sub(1))

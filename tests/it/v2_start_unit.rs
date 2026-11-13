@@ -606,10 +606,10 @@ async fn the_header_says_what_is_reviewed_and_that_there_is_no_agent() {
     let mut app = App::new(l.review, Config::default(), Keymap::default());
     app.agent_note = Some(NO_AGENT.into());
     let h = header(&app);
-    assert!(h.starts_with(" feature since main, 2 commits"), "{h}");
+    assert!(h.starts_with(" feature"), "{h}");
     assert!(h.ends_with("no agent"), "{h}");
 
-    // One commit: its subject follows.
+    // One commit: still only the branch's name.
     let fake = Fake::default();
     start(
         &r.path(),
@@ -620,7 +620,7 @@ async fn the_header_says_what_is_reviewed_and_that_there_is_no_agent() {
     .await
     .unwrap();
     let app = App::new(fake.launched().review, Config::default(), Keymap::default());
-    assert_eq!(header(&app), " feature since HEAD~1, 1 commit · add tax");
+    assert_eq!(header(&app), " feature");
 
     r.write("tax.py", "def tax(a):\n    return a * 0.3\n");
     let fake = Fake::default();

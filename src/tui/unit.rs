@@ -17,10 +17,14 @@
 //! ones open: `<space>t` shows the tests (teer's search; the tile then
 //! asks whether the agent reads them), `<space>x` the security findings
 //! (teer's facts first; `<space>p` proves them), and `gd` shows
-//! what the unit calls outside the review, read-only. Under them the keys
-//! tile says what can be done here. The text takes a tall column on the
+//! what the unit calls outside the review, read-only. The text takes a tall column on the
 //! left (on top when narrow), the tiles the rest. `tab` and `shift+tab`
-//! move the focus, `zz` zooms the tile in focus, `h` closes it. Deciding
+//! move the focus, `zz` zooms the tile in focus, `h` closes it. The tiles
+//! share their room as a terminal's panes do: each one opened takes a
+//! part of the room the one before had, under it, then beside it. `<space>e`
+//! with no change to propose opens one that says why. A lone
+//! tile takes two thirds of its column; under it "Inspect further" lists
+//! the keys that look closer at the code change (no focus). Deciding
 //! here moves on to the next pending unit and stays in the view; `h` on
 //! the text goes back to the queue.
 
@@ -37,18 +41,23 @@ use super::{ask, diff, preview, slim};
 use crate::fix::{HunkState, Proposal};
 use crate::keymap::Action;
 use crate::review::model::{AcceptedBy, Decision, DiveKind, Prep, Risk, Unit};
+use crate::session::fix;
 use crate::session::tools::{self, tool_key};
 use crate::session::unit::{Panel, TileScroll};
-use crate::session::{fix, help};
 use crate::util::{truncate, wrap};
-
-/// Blanks between two items of the keys tile.
-const KEY_GAP: usize = 2;
 
 /// From this width the text sits beside the tiles, else above them.
 const SIDE_BY_SIDE: u16 = 90;
-/// Two tiles share a row once each gets this many columns.
+/// With more than one tile, the text gives up room (two fifths, not half)
+/// once two tiles of this many columns fit beside it.
 const TILE_W: u16 = 48;
+/// The fewest rows and columns a pane keeps when the one after it opens
+/// (see [`dwindle`]).
+const PANE_H: u16 = 6;
+const PANE_W: u16 = 28;
+/// From this many rows a lone tile shares its column with "Inspect
+/// further".
+const INSPECT_FROM: u16 = 18;
 
 // ---- Drawing -----------------------------------------------------------
 
@@ -91,42 +100,126 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         }
         return;
     }
-    let keys_h = |w: u16, room: u16| keys_height(app, w).min(room / 2);
-    let (text, cells, keys) = if tiles.is_empty() {
-        // The keys tile under the text.
-        let [text, keys] = Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(keys_h(body.width, body.height)),
-        ])
-        .areas(body);
-        (text, Vec::new(), keys)
+    let (text, cells) = if tiles.is_empty() {
+        (body, Vec::new())
     } else {
         let small = |p: Panel, w: u16| small_height(app, u, p, w);
-        tile_areas(tiles, body, keys_h, small)
+        tile_areas(tiles, body, small)
     };
+    // One tile open: it takes two thirds of its column, and under it a
+    // tile says which keys look further into the code change.
+    if let [(p, r)] = cells[..] {
+        let column = Rect::new(r.x, r.y, r.width, body.bottom().saturating_sub(r.y));
+        if column.height >= INSPECT_FROM {
+            let [top, bottom] =
+                Layout::vertical([Constraint::Ratio(2, 3), Constraint::Ratio(1, 3)]).areas(column);
+            draw_text(f, app, u, text, focus.is_none());
+            draw_tile(f, app, u, p, top, focus == Some(p));
+            draw_inspect(f, app, bottom);
+            return;
+        }
+    }
     draw_text(f, app, u, text, focus.is_none());
     for (p, r) in cells {
         draw_tile(f, app, u, p, r, focus == Some(p));
     }
-    draw_keys(f, app, keys);
 }
 
-/// Where the text, each tile and the keys tile go in `area`. The text
-/// takes a tall column on the left, [`SIDE_BY_SIDE`] wide or more (on top
-/// otherwise): half the room beside one column of tiles (above one tile),
-/// two fifths beside two (above more).
-/// The tiles fill the rest in the order they opened, two to a row where
-/// each gets [`TILE_W`] columns; the ask tile has a row of its own, twice
-/// as tall as the others. A tile `small` gives rows for (at the column's
-/// width) has a row of its own that tall; the room it leaves goes to the
-/// others, or stays blank. The keys tile is under them, as tall as
-/// `keys_h` says for the width and the room.
+/// The title of the tile that says how to look further.
+pub const INSPECT_TITLE: &str = " Inspect further ";
+
+/// The keys that look further into the code change on show, each with
+/// what it does: the ones the mode has, the tools only with what they
+/// need.
+fn inspect_items(app: &App) -> Vec<(String, &'static str)> {
+    let k = |a: Action| app.keys.label(a);
+    let agent = app.can_ask();
+    let mut items = Vec::new();
+    let mut add = |on: bool, a: Action, what: &'static str| {
+        if on && app.mode.allows(a) {
+            items.push((k(a), what));
+        }
+    };
+    add(true, Action::ToolTests, "find the tests that reach it");
+    add(
+        app.security.enabled,
+        Action::ToolSecurity,
+        "check it for security issues",
+    );
+    add(agent, Action::ToolFix, "have the agent propose a change");
+    add(true, Action::GotoDefinition, "show what it calls");
+    add(
+        true,
+        Action::ToolHistory,
+        "show its commits and the PR text",
+    );
+    add(true, Action::GotoEditor, "open it in your editor");
+    items.push((
+        format!("{} {}", k(Action::MoveNextHunk), k(Action::MovePrevHunk)),
+        "go to the next or the last hunk",
+    ));
+    items
+}
+
+/// The "Inspect further" tile in `area`: a line that says what it is for,
+/// then each key of [`inspect_items`] with what it does. It has no focus.
+fn draw_inspect(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    if area.width < 12 || area.height < 3 {
+        return;
+    }
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(t.muted())
+        .title(Line::styled(INSPECT_TITLE, t.bold()));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let inner = Rect::new(
+        inner.x + 1,
+        inner.y,
+        inner.width.saturating_sub(2),
+        inner.height,
+    );
+    if inner.width < 4 || inner.height == 0 {
+        return;
+    }
+    super::ui::text_area(app, inner, 0);
+    let w = inner.width as usize;
+    let items = inspect_items(app);
+    let key_w = items.iter().map(|(k, _)| k.width()).max().unwrap_or(0);
+    let mut lines: Vec<Line<'static>> = wrap("These keys look further into this code change:", w)
+        .into_iter()
+        .map(|l| Line::styled(l, t.muted()))
+        .collect();
+    lines.push(Line::default());
+    for (key, what) in items {
+        let pad = " ".repeat(key_w.saturating_sub(key.width()) + 2);
+        let room = w.saturating_sub(key_w + 2);
+        lines.push(Line::from(vec![
+            Span::styled(key, t.accent()),
+            Span::raw(pad),
+            Span::raw(truncate(what, room)),
+        ]));
+    }
+    f.render_widget(
+        Paragraph::new(preview::cut(app, lines, inner.height as usize)),
+        inner,
+    );
+}
+
+/// Where the text and each tile go in `area`. The text takes a tall
+/// column on the left, [`SIDE_BY_SIDE`] wide or more (on top otherwise):
+/// half the room beside one tile (above one tile), two fifths beside
+/// more where two tiles fit side by side (above more).
+/// The tiles share the rest as a terminal's panes do (see [`dwindle`]):
+/// each one opened takes a part of the room the one before had. A lone
+/// tile `small` gives rows for (at the column's width) is that tall, the
+/// rest blank.
 fn tile_areas(
     tiles: &[Panel],
     area: Rect,
-    keys_h: impl Fn(u16, u16) -> u16,
     small: impl Fn(Panel, u16) -> Option<u16>,
-) -> (Rect, Vec<(Panel, Rect)>, Rect) {
+) -> (Rect, Vec<(Panel, Rect)>) {
     let side = area.width >= SIDE_BY_SIDE;
     let two = side && tiles.len() > 1 && area.width * 3 / 5 >= 2 * TILE_W;
     let split = if two || (!side && tiles.len() > 1) {
@@ -139,32 +232,44 @@ fn tile_areas(
     } else {
         Layout::vertical(split).areas(area)
     };
-    let [rest, keys] = Layout::vertical([
-        Constraint::Min(0),
-        Constraint::Length(keys_h(rest.width, rest.height)),
-    ])
-    .areas(rest);
-    let small = |p: Panel| small(p, rest.width);
-    let alone = |p: Panel| p == Panel::Ask || small(p).is_some();
-    let mut rows: Vec<Vec<Panel>> = Vec::new();
-    for &p in tiles {
-        match rows.last_mut() {
-            Some(row) if two && row.len() == 1 && !alone(p) && !alone(row[0]) => row.push(p),
-            _ => rows.push(vec![p]),
+    if let [p] = tiles[..] {
+        let h = small(p, rest.width).map_or(rest.height, |h| h.min(rest.height));
+        return (text, vec![(p, Rect::new(rest.x, rest.y, rest.width, h))]);
+    }
+    let cells = dwindle(rest, tiles.len());
+    (text, tiles.iter().copied().zip(cells).collect())
+}
+
+/// `area` cut into `n` panes, as tmux and kitty do when a pane opens: the
+/// newest one takes two fifths of the room the one before it had, which
+/// so gets smaller; under it first, then beside it, and so on in turn. A
+/// cut that would leave a pane under [`PANE_H`] rows or [`PANE_W`]
+/// columns goes the other way when that one has the room.
+fn dwindle(area: Rect, n: usize) -> Vec<Rect> {
+    let mut out = Vec::with_capacity(n);
+    let mut rest = area;
+    for i in 0..n {
+        if i + 1 == n {
+            out.push(rest);
+            break;
         }
+        let down = rest.height * 2 / 5 >= PANE_H;
+        let across = rest.width * 2 / 5 >= PANE_W;
+        let stack = match (down, across) {
+            (true, false) => true,
+            (false, true) => false,
+            _ => i % 2 == 0,
+        };
+        let parts = [Constraint::Ratio(3, 5), Constraint::Ratio(2, 5)];
+        let [first, next] = if stack {
+            Layout::vertical(parts).areas(rest)
+        } else {
+            Layout::horizontal(parts).areas(rest)
+        };
+        out.push(first);
+        rest = next;
     }
-    let heights = rows.iter().map(|r| match small(r[0]) {
-        Some(h) => Constraint::Length(h),
-        None => Constraint::Fill(if r[0] == Panel::Ask { 2 } else { 1 }),
-    });
-    let row_areas = Layout::vertical(heights).split(rest);
-    let mut out = Vec::new();
-    for (row, r) in rows.iter().zip(row_areas.iter()) {
-        let cells =
-            Layout::horizontal(vec![Constraint::Ratio(1, row.len() as u32); row.len()]).split(*r);
-        out.extend(row.iter().copied().zip(cells.iter().copied()));
-    }
-    (text, out, keys)
+    out
 }
 
 /// The title row: the level's icon, the name and where it is, and on the
@@ -229,10 +334,20 @@ fn disputed(app: &App, u: &Unit) -> bool {
     app.assessment(&u.id).is_some_and(|a| !a.doubts.is_empty())
 }
 
-/// The unit's text `w` cells wide as blocks a scroll keeps whole, the
-/// line each hunk of its diff starts at, and the line each proposed hunk's
-/// box starts at.
-fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<usize>, Vec<usize>) {
+/// The unit's text as blocks, and where its parts start, in lines.
+struct Text {
+    /// Blocks a scroll keeps whole.
+    blocks: Vec<Vec<Line<'static>>>,
+    /// The line each hunk of the diff starts at.
+    hunks: Vec<usize>,
+    /// The line each proposed hunk's box starts at.
+    fixes: Vec<usize>,
+    /// The line the "Proposed change" heading is on, when it shows.
+    proposed: Option<usize>,
+}
+
+/// The unit's text `w` cells wide.
+fn text_blocks(app: &App, u: &Unit, w: usize) -> Text {
     let t = &app.theme;
     let mut blocks: Vec<Vec<Line<'static>>> = Vec::new();
     // Text scrolls a line at a time.
@@ -247,18 +362,18 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<u
     };
 
     // Why this level: the rules that set it and the written reasons.
-    let mut why = preview::check_lines(app, u, w, 1, true);
-    if why.is_empty()
+    let mut why = vec![heading(app, preview::WHY_HEADING)];
+    let reasons = preview::check_lines(app, u, w, 1);
+    if reasons.is_empty()
         && let Some(a) = app.assessment(&u.id)
     {
         let level = a.level.shown(u.auto_accepted());
-        why.push(heading(app, preview::WHY_HEADING));
         why.push(Line::from(vec![
             Span::styled(format!(" {} ", level.icon()), slim::level_style(app, level)),
             Span::styled(level.title().to_string(), t.muted()),
         ]));
     }
-    why.extend(preview::commits_line(app, u, w, 1));
+    why.extend(reasons);
     add(&mut blocks, why);
 
     // What changed: the summary, then the diff in its box (one cell in,
@@ -307,10 +422,17 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<u
     }
 
     // The change the agent proposes, its hunks boxed like the code change.
-    let at = blocks.iter().map(Vec::len).sum();
-    let (proposed, fixes) = proposed_blocks(app, u, w, at);
-    blocks.extend(proposed);
-    (blocks, hunks, fixes)
+    let at: usize = blocks.iter().map(Vec::len).sum();
+    let (section, fixes) = proposed_blocks(app, u, w, at);
+    // After its blank row.
+    let proposed = (!section.is_empty()).then_some(at + 1);
+    blocks.extend(section);
+    Text {
+        blocks,
+        hunks,
+        fixes,
+        proposed,
+    }
 }
 
 /// The "Proposed change" section `w` cells wide, its first line at row
@@ -319,7 +441,8 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<u
 /// the second model's word and how many hunks were dropped; then each
 /// hunk in a box. The current one (`p` puts it in) has the accent border
 /// and the keys on its bottom edge. While a change is on its way, the
-/// heading with a spinner and what it is doing. Nothing with neither.
+/// heading with a spinner and what it is doing. Nothing with neither
+/// (`<space>e` then opens a tile that says why: [`Panel::Fix`]).
 fn proposed_blocks(
     app: &App,
     u: &Unit,
@@ -351,14 +474,11 @@ fn proposed_blocks(
             .map(|l| Line::raw(format!(" {l}"))),
     );
     match &p.second {
-        Some(s) if s.agree => lines.push(Line::styled(" ✓ second model agrees", t.ok())),
+        Some(s) if s.agree => lines.push(Line::styled(" ✓ check agrees", t.ok())),
         Some(s) => lines.extend(
-            wrap(
-                &format!("⚠ second model disputes: {}", s.why),
-                w.saturating_sub(1),
-            )
-            .into_iter()
-            .map(|l| Line::styled(format!(" {l}"), t.risk(Risk::Medium))),
+            wrap(&format!("⚠ disputed: {}", s.why), w.saturating_sub(1))
+                .into_iter()
+                .map(|l| Line::styled(format!(" {l}"), t.risk(Risk::Medium))),
         ),
         None => {}
     }
@@ -526,7 +646,7 @@ fn second_model_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
         return Vec::new();
     }
     let by = crate::session::tools::answer_label(app, u, DiveKind::Disagree);
-    let mut lines = vec![Line::default(), heading_by(app, "Second model", by, w)];
+    let mut lines = vec![Line::default(), heading_by(app, "Check", by, w)];
     lines.extend(answers::disagree_lines(app, u, w));
     lines
 }
@@ -685,12 +805,21 @@ fn draw_text(f: &mut Frame, app: &App, u: &Unit, area: Rect, focus: bool) {
     super::ui::text_area(app, area, 0);
     let w = (area.width as usize).saturating_sub(2);
     let h = area.height as usize;
-    let (blocks, hunks, fixes) = text_blocks(app, u, w);
+    let Text {
+        blocks,
+        hunks,
+        fixes,
+        proposed,
+    } = text_blocks(app, u, w);
     *app.unit.hunks.borrow_mut() = hunks;
     // `<space>e` (or `p` from the queue) asked to see a proposed hunk
-    // before its box was drawn: scroll to it now.
+    // before its box was drawn, or the section: scroll to it now.
     if app.unit.reveal.take()
-        && let Some(&row) = app.unit.fix.and_then(|i| fixes.get(i))
+        && let Some(row) = app
+            .unit
+            .fix
+            .and_then(|i| fixes.get(i).copied())
+            .or(proposed)
     {
         app.detail_offset();
         app.detail_scroll.borrow_mut().1 = row;
@@ -805,6 +934,13 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
             ]),
             format!(" read-only · {next} · {} close ", k(Action::ViewBack)),
         ),
+        Panel::Fix => (
+            Line::from(vec![
+                Span::styled(format!(" {}", k(Action::ToolFix)), t.accent()),
+                Span::styled(format!(" {} ", fix::TILE), t.bold()),
+            ]),
+            format!(" {next} · {} close ", k(Action::ViewBack)),
+        ),
     };
     let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -868,6 +1004,15 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
             }
             draw_scrolled(f, app, p, lines, inner, focus);
         }
+        Panel::Fix => {
+            // Why there is no change to propose, behind a bar.
+            let w = (inner.width as usize).saturating_sub(2);
+            let lines = wrap(&app.fix_tile_text(u), w)
+                .into_iter()
+                .map(|l| Line::styled(format!("▎ {l}"), t.accent()))
+                .collect();
+            draw_scrolled(f, app, p, lines, inner, focus);
+        }
     }
 }
 
@@ -899,124 +1044,6 @@ fn draw_scrolled(
         app.detail_rows.set(h);
     }
     f.render_widget(Paragraph::new(s.lines), area);
-}
-
-/// Where an item of the keys tile is: its line, column and width, and the
-/// action a click on it runs.
-struct KeyAt {
-    line: usize,
-    x: usize,
-    w: usize,
-    action: Action,
-}
-
-/// The keys tile's lines `w` cells wide: each group's name, then its
-/// items (`key what`) wrapped after it; and where each item is (line,
-/// column, width) with the action a click on it runs. Without an agent
-/// the items that need one are left out, and so is an item whose key was
-/// unbound.
-fn keys_lines(app: &App, w: usize) -> (Vec<Line<'static>>, Vec<KeyAt>) {
-    let t = &app.theme;
-    let label_w = help::KEY_GROUPS
-        .iter()
-        .map(|g| g.0.width())
-        .max()
-        .unwrap_or(0)
-        + 2;
-    // Too narrow for the names in a column of their own: none.
-    let label_w = if w >= label_w + 24 { label_w } else { 0 };
-    let mut lines = Vec::new();
-    let mut at = Vec::new();
-    for (name, items) in help::KEY_GROUPS {
-        let mut spans: Vec<Span<'static>> = Vec::new();
-        if label_w > 0 {
-            spans.push(Span::styled(format!("{name:<label_w$}"), t.muted()));
-        }
-        let mut x = label_w;
-        let mut first = true;
-        for (actions, what) in *items {
-            if !app.can_ask() && actions.iter().any(|a| help::AGENT_KEYS.contains(a)) {
-                continue;
-            }
-            // What the mode leaves out isn't listed.
-            if actions.iter().any(|&a| !app.allows(a)) {
-                continue;
-            }
-            let keys: Vec<String> = actions.iter().map(|&a| app.keys.label(a)).collect();
-            if keys.iter().any(String::is_empty) {
-                continue;
-            }
-            let keys = keys.join(" ");
-            let item_w = keys.width() + 1 + what.width();
-            let sep = if first { 0 } else { KEY_GAP };
-            if !first && x + sep + item_w > w {
-                lines.push(Line::from(std::mem::take(&mut spans)));
-                spans.push(Span::raw(" ".repeat(label_w)));
-                x = label_w;
-                first = true;
-            }
-            if !first {
-                spans.push(Span::raw(" ".repeat(KEY_GAP)));
-                x += KEY_GAP;
-            }
-            at.push(KeyAt {
-                line: lines.len(),
-                x,
-                w: item_w,
-                action: actions[0],
-            });
-            spans.push(Span::styled(keys, t.accent()));
-            spans.push(Span::raw(format!(" {what}")));
-            x += item_w;
-            first = false;
-        }
-        if !first {
-            lines.push(Line::from(spans));
-        }
-    }
-    (lines, at)
-}
-
-/// Rows the keys tile takes `w` columns wide, borders included.
-fn keys_height(app: &App, w: u16) -> u16 {
-    let inner = (w as usize).saturating_sub(4);
-    let rows = keys_lines(app, inner).0.len() + 2;
-    rows.min(u16::MAX as usize) as u16
-}
-
-/// The keys tile in `area`: what can be done in the unit view, by group,
-/// each item a click away. It never takes the focus; cut short, `?` lists
-/// every key.
-fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
-    let t = &app.theme;
-    if area.width < 12 || area.height < 3 {
-        return;
-    }
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(t.muted())
-        .title(Span::styled(" Keys ", t.bold()));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let inner = Rect::new(
-        inner.x + 1,
-        inner.y,
-        inner.width.saturating_sub(2),
-        inner.height,
-    );
-    if inner.width < 4 || inner.height == 0 {
-        return;
-    }
-    super::ui::text_area(app, inner, 0);
-    let (lines, at) = keys_lines(app, inner.width as usize);
-    let shown = (inner.height as usize).min(lines.len());
-    let mut targets = app.targets.borrow_mut();
-    for k in at.into_iter().filter(|k| k.line < shown) {
-        let w = (k.w as u16).min(inner.width.saturating_sub(k.x as u16));
-        let r = Rect::new(inner.x + k.x as u16, inner.y + k.line as u16, w, 1);
-        targets.push((r, Target::Action(k.action)));
-    }
-    f.render_widget(Paragraph::new(lines), inner);
 }
 
 /// The ask tile: the conversation about `u` (or, before the first
@@ -1302,7 +1329,7 @@ mod tests {
         for s in [preview::WHY_HEADING, "What changed", "K Ask"] {
             assert!(text.contains(s), "{s}:\n{text}");
         }
-        assert!(!text.contains("Second model"), "{text}");
+        assert!(!text.contains("Check  agent"), "{text}");
         // Short: the text scrolls.
         let text = render(&a, 100, 16);
         let hunks = a.unit.hunks.borrow().clone();
@@ -1478,49 +1505,47 @@ mod tests {
 
     #[test]
     fn the_text_beside_its_tiles_wide_and_above_them_narrow() {
-        let none = |_: u16, _: u16| 0;
         let big = |_: Panel, _: u16| None;
         let wide = Rect::new(0, 0, 120, 30);
-        let (text, cells, _) = tile_areas(&[TESTS], wide, none, big);
+        let (text, cells) = tile_areas(&[TESTS], wide, big);
         assert_eq!((text.width, cells[0].1.x), (60, 60));
         assert_eq!(cells[0].1.height, 30);
-        // Two tiles stack in one column beside the text.
-        let (text, cells, _) = tile_areas(&[TESTS, RUN], wide, none, big);
+        // Two tiles: the second takes two fifths of the first one's room,
+        // under it.
+        let (text, cells) = tile_areas(&[TESTS, RUN], wide, big);
         assert_eq!(text.width, 60);
         assert_eq!(cells[0].1.x, cells[1].1.x);
-        assert!(cells[0].1.y < cells[1].1.y);
-        // Room for two to a row: they share it; the ask tile has its own,
-        // twice as tall.
+        assert_eq!((cells[0].1.height, cells[1].1.height), (18, 12));
+        // A third takes its part of the second one's, beside it; a fourth
+        // of the third one's, under it.
         let room = Rect::new(0, 0, 200, 30);
-        let (text, cells, _) = tile_areas(&[TESTS, RUN, Panel::Ask], room, none, big);
+        let (text, cells) = tile_areas(&[Panel::Ask, TESTS, RUN, Panel::Fix], room, big);
         assert_eq!(text.width, 80);
-        assert_eq!(cells[0].1.y, cells[1].1.y);
-        assert!(cells[0].1.x < cells[1].1.x);
-        assert_eq!(cells[2].1.width, 120);
-        assert_eq!(cells[2].1.height, 2 * cells[0].1.height);
+        let r: Vec<Rect> = cells.iter().map(|c| c.1).collect();
+        assert_eq!((r[0].width, r[0].height), (120, 18));
+        assert_eq!((r[1].y, r[1].width, r[1].height), (18, 72, 12));
+        assert_eq!((r[2].x, r[2].y, r[2].width), (152, 18, 48));
+        assert_eq!((r[3].x, r[3].y), (152, r[2].y + r[2].height));
+        assert_eq!(r[2].height + r[3].height, 12);
+        // No room beside: under it again.
+        let (_, cells) = tile_areas(&[Panel::Ask, TESTS, RUN], Rect::new(0, 0, 100, 60), big);
+        assert_eq!(cells[1].1.x, cells[2].1.x);
+        assert!(cells[1].1.y < cells[2].1.y);
         // Narrow: the text on top.
-        let (text, cells, _) = tile_areas(&[TESTS], Rect::new(0, 0, 80, 30), none, big);
+        let (text, cells) = tile_areas(&[TESTS], Rect::new(0, 0, 80, 30), big);
         assert_eq!((text.width, text.height), (80, 15));
         assert_eq!((cells[0].1.y, cells[0].1.width), (15, 80));
-        // The keys tile under the tiles, as tall as it says.
-        let (text, cells, keys) = tile_areas(&[REC, TESTS], wide, |w, _| w / 10, big);
-        assert_eq!((keys.x, keys.width, keys.height), (60, 60, 6));
-        assert_eq!(keys.bottom(), 30);
-        assert_eq!(cells[1].1.bottom(), keys.y);
-        assert_eq!(text.height, 30);
-        // A small tile: a row of its own that tall, the room left to the
-        // others, or blank.
+        // A lone small tile is that tall, the rest blank; with others it
+        // shares the room as they do.
         let small = |p: Panel, _: u16| (p == REC).then_some(6);
-        let (_, cells, _) = tile_areas(&[REC, TESTS, RUN], room, none, small);
-        assert_eq!((cells[0].1.height, cells[0].1.width), (6, 120));
-        assert_eq!(cells[1].1.y, 6);
-        assert_eq!((cells[1].1.height, cells[1].1.y), (24, cells[2].1.y));
-        let (_, cells, _) = tile_areas(&[REC], wide, none, small);
+        let (_, cells) = tile_areas(&[REC, TESTS], wide, small);
+        assert_eq!(cells[0].1.height, 18);
+        let (_, cells) = tile_areas(&[REC], wide, small);
         assert_eq!((cells[0].1.y, cells[0].1.height), (0, 6));
     }
 
     #[test]
-    fn the_ask_tile_is_open_from_the_start_small_and_offers_the_advice() {
+    fn the_ask_tile_is_open_from_the_start_and_offers_the_advice() {
         use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
         let mut a = app();
         let id = a.selected_id().unwrap();
@@ -1544,25 +1569,14 @@ mod tests {
         assert!(!text.contains("asking the agent"), "{text}");
         assert!(!text.contains("Advice"), "no advice tile:\n{text}");
         assert!(!text.contains("␣a"), "no key of its own:\n{text}");
-        // The keys tile under it: what can be done here.
-        let keys = rows.iter().position(|r| r.contains("╭ Keys")).unwrap();
-        assert!(keys > head, "{text}");
-        // Small while nothing is asked: what it says, what it offers
-        // (the advice; with every tool, the full check on two rows), the
-        // rule, the question line.
+        // No keys tile: `?` lists the keys.
+        assert!(!text.contains("╭ Keys"), "{text}");
+        // Alone, it takes two thirds of its column; under it the tile
+        // with the keys that look further.
         let (left, _) = tile_edges(&rows, head);
-        assert_eq!(advice_foot(&rows, head, left) - head, 8, "{text}");
-        for item in [
-            "a accept",
-            "f flag",
-            "K ask",
-            "␣t tests",
-            "n N pending",
-            "]c [c hunks",
-            "? keys",
-        ] {
-            assert!(text.contains(item), "{item}:\n{text}");
-        }
+        let foot = advice_foot(&rows, head, left);
+        assert_eq!(foot - head, 23, "{text}");
+        assert!(rows[foot + 1].contains(INSPECT_TITLE), "{text}");
         // A click on the offer asks for the advice.
         let (row, line) = rows
             .iter()
@@ -1588,9 +1602,9 @@ mod tests {
         let text = render(&a, 120, 40);
         assert!(text.contains("Advice"), "{text}");
         assert!(text.contains("asking the agent"), "{text}");
-        // Asked for: the tile is as tall as the others, down to the keys.
+        // Asked for: the tile is as tall as the others, down to the bar.
         let rows: Vec<&str> = text.lines().collect();
-        assert_eq!(advice_foot(&rows, head, left) + 1, keys, "{text}");
+        assert!(advice_foot(&rows, head, left) - head > 8, "{text}");
         // Answered: the advice under its heading, with who wrote it.
         let id = a.unit.id.clone();
         let u = a.review.unit_mut(&id).unwrap();
@@ -1646,34 +1660,7 @@ mod tests {
     }
 
     #[test]
-    fn a_click_on_a_key_in_the_keys_tile_runs_it() {
-        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-        let mut a = app();
-        let id = a.selected_id().unwrap();
-        a.open_unit(id);
-        let text = render(&a, 120, 40);
-        let (row, line) = text
-            .lines()
-            .enumerate()
-            .find(|(_, l)| l.contains("␣t tests"))
-            .unwrap_or_else(|| panic!("{text}"));
-        let col = line[..line.find("␣t tests").unwrap()].chars().count() as u16;
-        for kind in [
-            MouseEventKind::Down(MouseButton::Left),
-            MouseEventKind::Up(MouseButton::Left),
-        ] {
-            a.on_mouse(MouseEvent {
-                kind,
-                column: col + 1,
-                row: row as u16,
-                modifiers: KeyModifiers::NONE,
-            });
-        }
-        assert_eq!(a.unit.panel, Some(TESTS));
-    }
-
-    #[test]
-    fn without_an_agent_no_recommendation_and_only_the_keys_that_work() {
+    fn without_an_agent_no_recommendation_and_no_tile() {
         let mut a = app();
         a.has_agent = false;
         a.review.agent_session = None;
@@ -1682,9 +1669,10 @@ mod tests {
         assert!(a.unit.tiles.is_empty());
         let text = render(&a, 120, 40);
         assert!(!text.contains("Advice"), "{text}");
-        assert!(text.contains("╭ Keys"), "{text}");
-        assert!(text.contains("␣t tests"), "{text}");
-        assert!(!text.contains("K ask"), "{text}");
+        assert!(
+            !text.contains("╭ Keys") && !text.contains("K ask"),
+            "{text}"
+        );
     }
 
     /// Unit `id`'s tests as teer's search found them, not yet read.

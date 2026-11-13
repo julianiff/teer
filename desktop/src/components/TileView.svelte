@@ -71,6 +71,8 @@
   {:else}
     <p class="muted">Nothing outside the review.</p>
   {/each}
+{:else if tile.body.kind === "Note"}
+  <p class="note">{tile.body.text}</p>
 {:else}
   {@const a = tile.body}
   <p class="label muted">{a.label}</p>
@@ -116,10 +118,10 @@
             <p class="risk-medium small">path not verified: teer's call graph doesn't confirm every call</p>
           {/if}
           {#if f.second?.agree}
-            <p class="ok small">second model agrees</p>
+            <p class="ok small">check agrees</p>
           {:else if f.second}
             <p class="bad small">
-              ⚠ second model disputes: {f.second.why}{f.second.evidence ? ` (${at(f.second.evidence)})` : ""}
+              ⚠ disputed: {f.second.why}{f.second.evidence ? ` (${at(f.second.evidence)})` : ""}
             </p>
           {/if}
           {#if f.proof?.state === "unproven"}

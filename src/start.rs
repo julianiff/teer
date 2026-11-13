@@ -95,6 +95,8 @@ or run with --no-agent to review without change statements."
             (Arc::new(adapter), Vec::new())
         }
     };
+    // Whatever model answers, in Simplified Technical English.
+    let adapter: Arc<dyn AgentAdapter> = Arc::new(crate::agent::ste::Ste(adapter));
     let adapter: Arc<dyn AgentAdapter> = if untrusted {
         Arc::new(crate::pr::UntrustedCode(adapter))
     } else {

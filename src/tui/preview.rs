@@ -132,22 +132,68 @@ pub fn layout_of(app: &App, area: Rect) -> (Rect, Option<(Rect, Pane)>) {
     layout_fit(area, code, ListSize::of(app, area))
 }
 
-/// The change itself as lines: its name, why it matters and its commits
-/// under it, then a blank row before each other group of [`unit_groups`].
-/// With `statements` its statements are listed too; the preview writes
-/// them into the code change instead when it shows one (see
-/// [`super::diff`]).
-pub fn unit_lines(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Line<'static>> {
+/// The change itself as lines: its name, then a blank row before each
+/// group of [`unit_groups`]. The review (what the agent wrote, the level
+/// and why) is in a box of its own (see [`review_box`]). With `statements`
+/// its statements are listed too; the preview writes them into the code
+/// change instead when it shows one (see [`super::diff`]).
+/// Not `framed` (no room for the box's edges): behind the bar instead.
+pub fn unit_lines(
+    app: &App,
+    u: &Unit,
+    w: usize,
+    statements: bool,
+    framed: bool,
+) -> Vec<Line<'static>> {
     let name = truncate(&names::row_name(u), w);
     let mut lines = vec![Line::styled(format!(" {name}"), app.theme.bold())];
-    let mut groups = unit_groups(app, u, w, statements).into_iter();
-    lines.extend(groups.next().unwrap_or_default());
     // The flagged list says it under the unit's name instead.
     lines.extend(proposed_line(app, u, w, 1));
-    for g in groups.filter(|g| !g.is_empty()) {
+    let mut groups = unit_groups(app, u, w, statements).into_iter();
+    let said = groups.next().unwrap_or_default();
+    let said = if framed {
+        review_box(app, u, w, statements)
+    } else {
+        said
+    };
+    for g in std::iter::once(said)
+        .chain(groups)
+        .filter(|g| !g.is_empty())
+    {
         lines.push(Line::default());
         lines.extend(g);
     }
+    lines
+}
+
+/// The title of the box around the review of a unit.
+pub const REVIEW_TITLE: &str = " review ";
+
+/// The review of `u` (see [`review_text`]) in a box `w` cells wide, one
+/// cell in, as the code change has its own: `review` on its top edge and
+/// who wrote it on the right. Empty when there is nothing to say (yet).
+pub fn review_box(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Line<'static>> {
+    let t = &app.theme;
+    let (by, text) = review_text(app, u, w.saturating_sub(4), statements);
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let border = t.muted();
+    let by = by.map_or_else(Vec::new, |by| {
+        let by = truncate(
+            &format!(" {} ", by.trim()),
+            w.saturating_sub(REVIEW_TITLE.width() + 4),
+        );
+        vec![Span::styled(by, t.muted())]
+    });
+    let mut lines = vec![super::unit::box_top(
+        w,
+        vec![Span::styled(REVIEW_TITLE, t.bold())],
+        by,
+        border,
+    )];
+    lines.extend(text.into_iter().map(|l| super::unit::box_row(l, w, border)));
+    lines.push(super::unit::box_bottom(w, border));
     lines
 }
 
@@ -225,39 +271,25 @@ fn marked(
 /// The heading of what says why a unit has its level.
 pub const WHY_HEADING: &str = "Why this level";
 
-/// Why `u` has its level, `indent` cells in: its written reasons
-/// (`Unit::reasons`: expensive to undo, what a second model disputes, what
-/// the commits or PR description don't mention), each wrapped behind a
-/// muted `·`. With `heading`, under [`WHY_HEADING`] and the rules that set
-/// the level, behind the level's icon.
-pub fn check_lines(
-    app: &App,
-    u: &Unit,
-    w: usize,
-    indent: usize,
-    heading: bool,
-) -> Vec<Line<'static>> {
+/// Why `u` has its level, `indent` cells in: the rules that set the level
+/// behind the level's icon, then its written reasons (`Unit::reasons`:
+/// expensive to undo, what the check disputes, what the commits or PR
+/// description don't mention), each wrapped behind a muted `·`.
+pub fn check_lines(app: &App, u: &Unit, w: usize, indent: usize) -> Vec<Line<'static>> {
     let t = &app.theme;
     let mut lines = Vec::new();
-    if heading && let Some(a) = app.assessment(&u.id) {
-        if a.reasons.is_empty() && u.reasons.is_empty() {
-            return lines;
-        }
-        lines.push(Line::styled(
-            format!("{}{WHY_HEADING}", " ".repeat(indent)),
-            t.bold(),
+    if let Some(a) = app.assessment(&u.id)
+        && !a.reasons.is_empty()
+    {
+        let level = a.level.shown(u.auto_accepted());
+        lines.extend(marked(
+            level.icon(),
+            &a.reasons.join(" · "),
+            w,
+            (slim::level_style(app, level), t.muted()),
+            indent,
+            (usize::MAX, ""),
         ));
-        if !a.reasons.is_empty() {
-            let level = a.level.shown(u.auto_accepted());
-            lines.extend(marked(
-                level.icon(),
-                &a.reasons.join(" · "),
-                w,
-                (slim::level_style(app, level), t.muted()),
-                indent,
-                (usize::MAX, ""),
-            ));
-        }
     }
     for r in &u.reasons {
         lines.extend(marked(
@@ -293,6 +325,16 @@ pub fn agent_lines(
     statements: bool,
     indent: usize,
 ) -> Vec<Line<'static>> {
+    agent_text(app, u, w, statements)
+        .into_iter()
+        .map(|l| barred(app, l, indent))
+        .collect()
+}
+
+/// What the agent wrote about `u`, `w` cells wide: a label naming the
+/// model, the summary and, with `statements`, the numbered statements.
+/// Empty when it said nothing (yet).
+fn agent_text(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Line<'static>> {
     let t = &app.theme;
     let listed = statements && u.prep == Prep::Ready && !u.changes.is_empty();
     if u.summary.is_none() && !listed {
@@ -308,23 +350,42 @@ pub fn agent_lines(
     if listed {
         lines.extend(slim::statement_lines(app, u, w, 0));
     }
-    lines.into_iter().map(|l| barred(app, l, indent)).collect()
+    lines
 }
 
-/// What `u` is, in groups: why it has its level (see [`check_lines`]) and
-/// its commits; what the agent said (see [`agent_lines`]), or a note while
-/// it hasn't; the reviewer's note; the answers to questions asked about it.
-/// Some may be empty.
-pub fn unit_groups(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Vec<Line<'static>>> {
-    // Why it matters comes first: the list only shows a dispute.
-    let mut about = check_lines(app, u, w, 1, true);
-    about.extend(commits_line(app, u, w, 1));
-    let mut said = agent_lines(app, u, w.saturating_sub(2), statements, 1);
+/// The review of `u`, `w` cells wide: who wrote it, when the agent did,
+/// and its text: what the agent wrote (the summary and, with `statements`,
+/// the numbered statements; or a note while it hasn't), then the level
+/// and why (see [`check_lines`]).
+fn review_text(
+    app: &App,
+    u: &Unit,
+    w: usize,
+    statements: bool,
+) -> (Option<String>, Vec<Line<'static>>) {
+    let mut text = agent_text(app, u, w, statements).into_iter();
+    let by = text.next().map(|l| l.to_string());
+    let mut text: Vec<_> = text.collect();
     // Not described (yet): the spinner or why not. Why a unit has no
-    // behavior change is said above.
+    // behavior change is said with its reasons.
     if u.prep != Prep::Ready && u.summary.is_none() && u.nbc_reason.is_none() {
-        said.extend(slim::statement_lines(app, u, w, 1));
+        text.extend(slim::statement_lines(app, u, w, 0));
     }
+    text.extend(check_lines(app, u, w, 0));
+    (by, text)
+}
+
+/// What `u` is, in groups: its review behind the bar (see
+/// [`review_text`]); the reviewer's note; the answers to questions asked
+/// about it. Some may be empty.
+pub fn unit_groups(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Vec<Line<'static>>> {
+    let (by, text) = review_text(app, u, w.saturating_sub(2), statements);
+    let by = by.map(|by| Line::styled(by, app.theme.muted()));
+    let said = by
+        .into_iter()
+        .chain(text)
+        .map(|l| barred(app, l, 1))
+        .collect();
     let indented = |lines: Vec<Line<'static>>| -> Vec<Line<'static>> {
         lines
             .into_iter()
@@ -343,31 +404,7 @@ pub fn unit_groups(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Vec<L
     };
     // Answers to questions asked about it, so they are seen.
     let asked = super::ask::note_lines(app, &u.id, w.saturating_sub(1));
-    vec![about, said, indented(card), indented(asked)]
-}
-
-/// `commits: c86f6fc Batch invalidate. · 1a2b3c4 Renames DTO.`: the commits
-/// that changed the unit, oldest first, `indent` cells in, cut to `w`.
-pub fn commits_line(app: &App, u: &Unit, w: usize, indent: usize) -> Option<Line<'static>> {
-    let commits = app.review.commits_of(u);
-    if commits.is_empty() {
-        return None;
-    }
-    let list: Vec<String> = commits
-        .iter()
-        .map(|c| format!("{} {}", c.short, c.subject))
-        .collect();
-    Some(Line::styled(
-        format!(
-            "{}{}",
-            " ".repeat(indent),
-            truncate(
-                &format!("commits: {}", list.join(" · ")),
-                w.saturating_sub(indent)
-            )
-        ),
-        app.theme.muted(),
-    ))
+    vec![said, indented(card), indented(asked)]
 }
 
 /// `✎ a change is proposed: 2 hunks · ␣e shows it`, `indent` cells in, cut
@@ -588,8 +625,12 @@ pub fn draw_preview(f: &mut Frame, app: &App, area: Rect, pane: Pane) {
     // What there is to say on top, the code change in its own box below,
     // taking the rest and scrolling on its own, with the statements in it.
     let boxed = super::diff::shows(app, u) && h > MIN_BOX_ROWS;
-    let head = unit_lines(app, u, w, !boxed);
+    let mut head = unit_lines(app, u, w, !boxed, true);
     if boxed {
+        // No room for all of it: without the box's edges.
+        if head.len() > h - MIN_BOX_ROWS {
+            head = unit_lines(app, u, w, false, false);
+        }
         let air = usize::from(h >= head.len() + 1 + MIN_BOX_ROWS);
         let head_h = head.len().min(h - MIN_BOX_ROWS);
         let [top, _, code] = Layout::vertical([
@@ -609,7 +650,7 @@ pub fn draw_preview(f: &mut Frame, app: &App, area: Rect, pane: Pane) {
             return;
         }
     }
-    let head = unit_lines(app, u, w, true);
+    let head = unit_lines(app, u, w, true, true);
     f.render_widget(
         Paragraph::new(scrolled(app, one(head), w, h, 1, false)),
         inner,

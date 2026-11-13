@@ -178,24 +178,21 @@ async fn a_disputed_statement_and_an_expensive_change_are_warnings() {
     assert_eq!(a.cost.as_deref(), Some("Charges the card again on retry."));
     assert_eq!(a.doubts.len(), 2);
 
-    // The queue's preview says why, a reason per line under "Why this
-    // level"; the row keeps only the dispute's ⚠.
+    // The queue's preview says why, a reason per line in the review box;
+    // the row keeps only the dispute's ⚠.
     let mut app = App::new(review, Config::default(), Keymap::default());
     assert_eq!(app.screen, Screen::Queue);
     while app.selected().is_some_and(|u| u.symbol != "charge_order") {
         press(&mut app, 'j');
     }
     let text = screen(&app, 120, 40);
-    assert!(text.contains("Why this level"), "{text}");
+    assert!(text.contains("╭ review "), "{text}");
     assert!(
         text.contains("· Expensive to undo: Charges the card"),
         "{text}"
     );
-    assert!(text.contains("· The second model disputes"), "{text}");
-    assert!(
-        text.contains("· The second model rates it high risk, not low."),
-        "{text}"
-    );
+    assert!(text.contains("· Disputed: "), "{text}");
+    assert!(text.contains("· Rated high risk, not low."), "{text}");
     assert!(text.contains('⚠') && !text.contains('$'), "{text}");
 }
 
@@ -219,14 +216,8 @@ async fn the_unit_view_shows_the_second_model_where_it_disputes() {
     // Already checked while preparing: the unit view shows it, the model
     // that wrote it named next to the heading.
     let text = open(&mut app, "charge_order");
-    assert!(
-        text.contains("Second model  second opinion (sonnet)"),
-        "{text}"
-    );
-    assert!(
-        text.contains("A second model disagrees on 2 points"),
-        "{text}"
-    );
+    assert!(text.contains("Check  agent (sonnet)"), "{text}");
+    assert!(text.contains("The check disputes 2 points"), "{text}");
     assert!(text.contains("✗ \"Does something new.\""), "{text}");
     assert!(
         text.contains("It also stops sending the receipt. (L8)"),
@@ -234,7 +225,7 @@ async fn the_unit_view_shows_the_second_model_where_it_disputes() {
     );
     // Where it agrees, there is nothing to say.
     let text = open(&mut app, "new_helper");
-    assert!(!text.contains("Second model"), "{text}");
+    assert!(!text.contains("Check  agent"), "{text}");
     // Nothing asks it again: it ran while preparing.
     assert!(app.review.units.iter().all(|u| !u.checks.second_pending));
 }

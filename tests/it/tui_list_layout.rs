@@ -330,14 +330,22 @@ async fn preview_shows_the_selected_symbol_and_follows_selection() {
             b.contains(" charge_order ") && !b.contains(" new_helper "),
             "{w}x{h}\n{b}"
         );
-        // The reasons come first, right under the head and "Why this level".
+        // The reasons are in the review box under the head.
         let lines: Vec<&str> = b.lines().collect();
         let head = lines
             .iter()
             .position(|l| l.contains(" charge_order "))
             .unwrap();
-        assert!(lines[head + 1].contains("Why this level"), "{w}x{h}\n{b}");
-        assert!(lines[head + 2].contains(" callers"), "{w}x{h}\n{b}");
+        // Boxed, or behind the bar when the pane is small.
+        let top = lines[head + 2];
+        assert!(
+            top.contains("╭ review ") || top.contains("┃ "),
+            "{w}x{h}\n{b}"
+        );
+        assert!(
+            b.contains("◆ ") || b.contains("▲ ") || b.contains('…'),
+            "{w}x{h}\n{b}"
+        );
         // Moving with the keyboard updates it too: `gg` is the first unit,
         // `j` the next.
         v2::press(&mut app, "gg");

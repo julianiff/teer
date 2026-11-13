@@ -129,6 +129,35 @@ impl Review {
         }
     }
 
+    /// What the header calls the change, and no more: the pull request's
+    /// title (without one its only commit's subject, else `PR #482`), the
+    /// branch's name, `your changes`, or `since <base>` when no branch is
+    /// named.
+    pub fn title(&self) -> String {
+        if let Some(pr) = &self.pr {
+            // Without the title (no gh), the only commit's subject names it.
+            let only = match &self.intent.commits[..] {
+                [c] => Some(c.subject.as_str()),
+                _ => None,
+            };
+            let title = self.intent.pr.as_ref().map(|m| m.title.as_str()).or(only);
+            return match title.map(sanitize).filter(|t| !t.trim().is_empty()) {
+                Some(t) => t,
+                None => format!("PR #{}", pr.number),
+            };
+        }
+        if self.head == git::WORKTREE {
+            return "your changes".into();
+        }
+        match &self.branch {
+            Some(b) => sanitize(&b.head),
+            None => {
+                let short: String = self.base.chars().take(7).collect();
+                format!("since {short}")
+            }
+        }
+    }
+
     pub fn file_of(&self, unit: &Unit) -> Option<&ChangedFile> {
         self.files.iter().find(|f| f.path == unit.file)
     }
@@ -265,6 +294,33 @@ mod tests {
         .unwrap();
         r.intent.commits = vec![Default::default(); 3];
         r
+    }
+
+    #[test]
+    fn the_title_is_the_prs_title_or_the_branchs_name() {
+        assert_eq!(review(git::WORKTREE, "b1").title(), "your changes");
+        let mut r = review("h2", "b2");
+        assert_eq!(r.title(), "since b2");
+        r.branch = Some(crate::review::model::BranchNames {
+            head: "feature".into(),
+            base: "origin/main".into(),
+        });
+        assert_eq!(r.title(), "feature");
+        let mut pr = review("h3", "b3");
+        pr.pr = Some(
+            serde_json::from_value(serde_json::json!({
+                "host": "github.com", "owner": "acme", "repo": "shop", "number": 482
+            }))
+            .unwrap(),
+        );
+        assert_eq!(pr.title(), "PR #482");
+        pr.intent.pr = Some(crate::review::model::PrMeta {
+            title: "Batch withdrawals".into(),
+            author: "octocat".into(),
+            body: String::new(),
+            size: Default::default(),
+        });
+        assert_eq!(pr.title(), "Batch withdrawals");
     }
 
     #[test]

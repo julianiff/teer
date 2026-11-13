@@ -5,7 +5,7 @@
 </script>
 
 <section class="second">
-  <h3 class="section">Second model <span class="muted by">{second.label}</span></h3>
+  <h3 class="section">Check <span class="muted by">{second.label}</span></h3>
   {#if second.failed}
     <p class="muted">{second.failed}</p>
   {:else}

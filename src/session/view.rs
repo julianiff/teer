@@ -424,6 +424,7 @@ pub enum TileId {
     Tests,
     Security,
     Outside,
+    Fix,
 }
 
 impl TileId {
@@ -431,6 +432,7 @@ impl TileId {
         match p {
             Panel::Ask => TileId::Ask,
             Panel::Outside => TileId::Outside,
+            Panel::Fix => TileId::Fix,
             Panel::Tool(DiveKind::Tests) => TileId::Tests,
             Panel::Tool(DiveKind::Security) => TileId::Security,
             Panel::Tool(_) => TileId::Tests,
@@ -441,6 +443,7 @@ impl TileId {
         match self {
             TileId::Ask => Panel::Ask,
             TileId::Outside => Panel::Outside,
+            TileId::Fix => Panel::Fix,
             TileId::Tests => Panel::Tool(DiveKind::Tests),
             TileId::Security => Panel::Tool(DiveKind::Security),
         }
@@ -463,6 +466,8 @@ pub enum TileBody {
     Ask(AskTile),
     /// What the unit calls outside the review (`gd`), read-only.
     Outside { shown: Vec<Shown> },
+    /// Asked for a change with nothing to do: why.
+    Note { text: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1252,19 +1257,19 @@ fn second_model(app: &App, u: &Unit) -> Option<SecondModel> {
             head: String::new(),
             verdicts: Vec::new(),
             missed: Vec::new(),
-            failed: Some(format!("No second opinion: {e}")),
+            failed: Some(format!("No check: {e}")),
         });
     };
     let first = u.highest_risk().map_or("none", Risk::word);
     let doubts = o.disagreements(&u.changes);
     let head = if doubts.is_empty() {
         format!(
-            "A second model agrees with the description. Its risk: {}, the description's: {first}.",
+            "The check agrees with the description. Its risk: {}, the description's: {first}.",
             o.risk.word()
         )
     } else {
         format!(
-            "A second model disagrees on {}. Its risk: {}, the description's: {first}.",
+            "The check disputes {}. Its risk: {}, the description's: {first}.",
             plural(doubts.len(), "point"),
             o.risk.word()
         )
@@ -1460,6 +1465,12 @@ fn tile(app: &App, u: &Unit, p: Panel) -> Tile {
             "Outside the review".to_string(),
             TileBody::Outside {
                 shown: app.unit.outside.clone(),
+            },
+        ),
+        Panel::Fix => (
+            super::fix::TILE.to_string(),
+            TileBody::Note {
+                text: app.fix_tile_text(u),
             },
         ),
     };

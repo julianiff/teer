@@ -222,11 +222,11 @@ pub fn assess(review: &Review, u: &Unit) -> Assessment {
         Prep::Ready => match u.highest_risk() {
             Some(Risk::High) => {
                 level = Level::Attention;
-                reasons.push("agent: high risk".into());
+                reasons.push("high risk".into());
             }
             Some(Risk::Medium) => {
                 level = level.max(Level::Look);
-                reasons.push("agent: medium risk".into());
+                reasons.push("medium risk".into());
             }
             _ => {}
         },
@@ -264,7 +264,7 @@ pub fn assess(review: &Review, u: &Unit) -> Assessment {
             Risk::Medium => level = level.max(Level::Look),
             Risk::Low => continue,
         }
-        reasons.push(format!("agent: {}", finding.title));
+        reasons.push(format!("security: {}", finding.title));
     }
     // Expensive to undo, and a second opinion that disagrees.
     let cost = match &u.checks.cost {
@@ -274,9 +274,6 @@ pub fn assess(review: &Review, u: &Unit) -> Assessment {
     let doubts = doubts_of(u);
     if cost.is_some() || !doubts.is_empty() {
         level = level.max(Level::Look);
-    }
-    if level >= Level::Look && n_callers > 0 && !reasons.iter().any(|r| r.contains("caller")) {
-        reasons.insert(0, callers(n_callers));
     }
     Assessment {
         level,
@@ -303,19 +300,17 @@ pub fn written_reasons(u: &Unit, a: &Assessment) -> Vec<String> {
         for d in second.doubts(&u.changes) {
             out.push(match d {
                 Doubt::Disputes { statement, why } => format!(
-                    "The second model disputes \"{}\": \"{}\"",
+                    "Disputed: \"{}\": \"{}\"",
                     crate::util::truncate(statement, 48),
                     why.trim()
                 ),
                 Doubt::Missed(statement) => format!(
-                    "The second model found a change the description leaves out: \"{}\"",
+                    "The description leaves out a change: \"{}\"",
                     statement.trim()
                 ),
-                Doubt::Risk { theirs, had } => format!(
-                    "The second model rates it {} risk, not {}.",
-                    theirs.word(),
-                    had.word()
-                ),
+                Doubt::Risk { theirs, had } => {
+                    format!("Rated {} risk, not {}.", theirs.word(), had.word())
+                }
             });
         }
     }
@@ -477,9 +472,9 @@ mod tests {
             written_reasons(&u, &a),
             [
                 "Expensive to undo: Charges the card again on retry.",
-                "The second model disputes \"Retries the charge.\": \"it also stops sending the receipt\"",
-                "The second model found a change the description leaves out: \"Drops the audit log entry.\"",
-                "The second model rates it high risk, not low.",
+                "Disputed: \"Retries the charge.\": \"it also stops sending the receipt\"",
+                "The description leaves out a change: \"Drops the audit log entry.\"",
+                "Rated high risk, not low.",
                 "Not mentioned in the commits or PR description: Also stops sending the receipt email.",
             ]
         );
@@ -508,7 +503,7 @@ mod tests {
         assert_eq!(
             written_reasons(&u, &a),
             [
-                "The second model disputes \"Only renames a variable.\": \"the retry wasn't removed, it moved to client.ts\""
+                "Disputed: \"Only renames a variable.\": \"the retry wasn't removed, it moved to client.ts\""
             ]
         );
     }

@@ -18,7 +18,7 @@ your place is saved on every change: decisions, notes, undo history and the curs
 | | level | when |
 | --- | --- | --- |
 | `▲` | needs a close look | removed but still called · the agent rates it high risk · a [security](#security) fact that needs it (an auth check gone, a secret, `pull_request_target`) · a high security finding that stands |
-| `◆` | worth a look | signature changed and it has callers · 40+ changed lines · medium risk · the second model disputes it · expensive to undo · couldn't be described · a security fact (a new route, a sink reachable from one) · a medium security finding that stands |
+| `◆` | worth a look | signature changed and it has callers · 40+ changed lines · medium risk · a disputed statement · expensive to undo · couldn't be described · a security fact (a new route, a sink reachable from one) · a medium security finding that stands |
 | `●` | routine | everything else that changes behavior · removed with no callers · lock files, snapshots |
 | `○` | no behavior change | formatting or comments · renamed locals · renamed with the same body |
 
@@ -29,7 +29,7 @@ your place is saved on every change: decisions, notes, undo history and the curs
 besides the rule that set its level, a unit can have reasons to look, each a sentence under "why this level":
 
 - **expensive to undo** — deletes or rewrites data, changes a schema, sends, charges or publishes, changes a public api. files under `migrations/` always count.
-- **the second model disputes** a statement: the statement, quoted, and what it says instead. this one also shows as `⚠` on the unit's row.
+- **disputed**, a statement the check disputes: the statement, quoted, and what it says instead. this one also shows as `⚠` on the unit's row.
 - **not mentioned in the commits or pr description** — a behavior change nobody wrote down.
 - **security** — each security fact teer found in the change, or another tool reported (see [security](#security)), prefixed `security:`.
 
@@ -62,7 +62,7 @@ besides the rule that set its level, a unit can have reasons to look, each a sen
 
 ## modes
 
-a review is for one thing, and teer keeps to the tools for it. the header names the mode and the key that changes it (`review ␣m`; a click on it works too). a key of a tool the mode leaves out does nothing but say so, and the help (`?`), the keys tile and the prefix hints don't list it.
+a review is for one thing, and teer keeps to the tools for it. the header shows the mode's icon (🔍 review, 🔒 security; `␣m` or a click on it changes the mode). a key of a tool the mode leaves out does nothing but say so, and the help (`?`) and the prefix hints don't list it.
 
 | mode | for | tools |
 | --- | --- | --- |
@@ -85,7 +85,7 @@ every mode has the queue, accept and flag, notes, undo, find, `gd` `gr` `gf`, th
 
 **comments in the code** follow the mode, each a small card under the rows it cites, its title on the top border in the colour of what it weighs.
 
-- `review`: what the unit now does. each statement under its risk (`╭ medium · disputed ─╮`, with the second model's reason), then a card for what the description missed, what is expensive to undo, what the author didn't mention, and each case no test covers (once the tests tile was asked).
+- `review`: what the unit now does. each statement under its risk (`╭ medium · disputed ─╮`, with the reason), then a card for what the description missed, what is expensive to undo, what the author didn't mention, and each case no test covers (once the tests tile was asked).
 - `security`: only what can be abused, and no statement. `╭ possible · auth · medium ─╮` is a risk the model that describes the units saw in this one, from the attacker's side ("a caller can pass any asset id"): a place to look, not a finding, and it raises no level. a card for each security fact teer found itself. after the full check, each finding at its `source`, its `hop 1/2` and its `sink`, with what is missing, the path and the proof. a unit with no risk has no card.
 - `all`: review's cards, then security's.
 
@@ -123,7 +123,7 @@ setup also checks what else teer needs: git, gh (and whether it's logged in), yo
 what teer opens on. one box per level, most critical first; in each, units by file, callers before callees (`↳`). the cursor starts on the first pending unit.
 
 - **header** — what you review ("your changes", "feature since main, 6 commits", "PR #482 by ana") and a line about the whole change. `<space>c` shows the pr's title and description and every commit, with its message and the units it changed.
-- **rows** — level, file, unit, `⚠` when the second model disputes it, and where it stands: pending, accepted, or flagged with the start of its note.
+- **rows** — level, file, unit, `⚠` when a statement is disputed, and where it stands: pending, accepted, or flagged with the start of its note.
 - **accepted for you** — a line under the boxes: "14 units accepted for you, za shows them".
 - **preview** — beside the list from 110 columns, else below: why the unit got its level, the agent's summary, and the change with each statement written under the lines it cites. `<c-d>` `<c-u>` scroll it.
 - **bottom bar** — `4 pending · 1 flagged · 37 accepted`, then a key sequence you started and what can follow it, `-- VISUAL --`, or the `:` line.
@@ -148,7 +148,7 @@ moving: `n` `N` go to the next and previous pending unit, `]f` `[f` to the next 
 1. **title** — level, file, unit, where it stands.
 2. **why this level** — the rule that set it and the [reasons](#reasons).
 3. **what changed** — the summary, then the diff in its box with each statement under the lines it cites. `]c` `[c` jump between hunks.
-4. **second model** — its verdict on every statement, only when it disputes one.
+4. **check** — the verdict on every statement, only when it disputes one.
 
 beside the text, two tiles are open from the start (in the `security` [mode](#modes), the security tile in place of the ask tile):
 
@@ -157,7 +157,7 @@ beside the text, two tiles are open from the start (in the `security` [mode](#mo
 
 with `--no-agent`, the second model and the ask tile are left out, and so are the keys that need an agent.
 
-each of these opens a tile (the ones the [mode](#modes) has), tmux style, next to the ones already open: the text keeps a tall column on the left (on top in a narrow terminal), the tiles share the rest in the order you opened them, the keys tile under them. the new tile gets the focus, and the scroll keys go to whatever has it. `tab` `shift+tab` (`gt` `gT`) move the focus, the text among the tiles; `zz` zooms what has it; `h` closes it. the same key on an open tile gives it the focus, and in focus closes it:
+each of these opens a tile (the ones the [mode](#modes) has), tmux style, next to the ones already open: the text keeps a tall column on the left (on top in a narrow terminal), the tiles share the rest in the order you opened them. the new tile gets the focus, and the scroll keys go to whatever has it. `tab` `shift+tab` (`gt` `gT`) move the focus, the text among the tiles; `zz` zooms what has it; `h` closes it. the same key on an open tile gives it the focus, and in focus closes it:
 
 | | |
 | --- | --- |
@@ -231,7 +231,7 @@ sinks.sql = ["Db::raw"]           # also: shell, eval, file, http, template, red
 
 when something important has to change in a unit, the agent proposes the code, and you put it in from the unit's text.
 
-**what it answers.** the most severe security finding that stands; else your note; else the advice. `<space>e` asks; with nothing to fix it says how to get something. once a high security finding stands (its path verified, the second model agreeing), teer asks on its own; `propose_fixes = "never"` turns that off.
+**what it answers.** the most severe security finding that stands; else your note; else the advice. `<space>e` asks, and the text scrolls to **proposed change**; with nothing to fix (or no agent) a **proposed change** tile opens beside the ones open and says so in the accent, with the keys that give it something; `h` closes it. every answer of a model is asked for in Simplified Technical English (ASD-STE100), whatever the provider; a commit message keeps git's conventions. once a high security finding stands (its path verified, the second model agreeing), teer asks on its own; `propose_fixes = "never"` turns that off.
 
 **what teer checks.** the agent only reads: it answers with exact text to replace, at most 8 hunks, each with one line on why. teer keeps a hunk only when:
 
@@ -242,13 +242,13 @@ when something important has to change in a unit, the agent proposes the code, a
 
 what it drops is counted and logged to `teer.log`. a hunk whose file has a new syntax error with it says "doesn't parse", for the languages teer splits. a second model then says whether the change fixes what it should and changes nothing else.
 
-**in the unit's text.** under the code change, **proposed change**: what it answers and who wrote it, the summary, the second model's word, then each hunk in a box like the code change: its file and lines, its state (proposed, put in, suggested), why, and the lines it removes and adds. `]c` `[c` stop at each after the code change's hunks. the one you jumped to, else the one nearest the top, has the accent border and `p put · P put all` on its edge. the queue's preview says `✎ a change is proposed: 2 hunks · ␣e shows it`.
+**in the unit's text.** under the code change, **proposed change**: what it answers and who wrote it, the summary, the check.s word, then each hunk in a box like the code change: its file and lines, its state (proposed, put in, suggested), why, and the lines it removes and adds. `]c` `[c` stop at each after the code change's hunks. the one you jumped to, else the one nearest the top, has the accent border and `p put · P put all` on its edge. the queue's preview says `✎ a change is proposed: 2 hunks · ␣e shows it`, and has what the agent wrote in a box titled **review**, apart from the commits above it. in the unit view a lone tile takes two thirds of its column; under it **inspect further** lists the keys that look closer at the code change. more tiles share the room as tmux and kitty panes do: each one opened takes two fifths of the room the one before had, under it first, then beside it, in turn.
 
 **putting it in.** `p` puts the current hunk into your working tree, `P` every open one, after a y/n question. each hunk's text is found again on disk first; if a file changed since, nothing is written. files are written whole and atomically, keeping their permissions, and symlinks are never followed. then teer reviews again and says what the change did, e.g. "1 unit left the review by the proposed change: as at the base again".
 
 **on a pull request** nothing is written. `p` and `P` make the hunks suggestions and flag the unit (`u` takes that back). on `:w` a suggested hunk is posted as a github suggestion on its lines when they're in the pr diff, so the author can commit it with one click; it replaces whole lines even when the change starts mid-line, and joins your note when that sits on the same lines. a hunk outside the diff, in another file, or past the 50 inline comments goes into the summary's "proposed changes" as a diff, and so does every suggestion when github refuses inline comments. hunks you never suggested stay out of the post.
 
-**in the notes.** the notes you copy (`y`, `teer notes`) or hand to your agent carry each proposed change not put in yet: what it answers, what it does, the second model's word, and each hunk as a diff. your agent is asked to put them in, or say why not. the flagged list says `✎ change proposed: 2 hunks` under a unit that has some.
+**in the notes.** the notes you copy (`y`, `teer notes`) or hand to your agent carry each proposed change not put in yet: what it answers, what it does, the check.s word, and each hunk as a diff. your agent is asked to put them in, or say why not. the flagged list says `✎ change proposed: 2 hunks` under a unit that has some.
 
 ## send to your agent
 

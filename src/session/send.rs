@@ -58,6 +58,7 @@ pub fn tile_name(p: Panel) -> &'static str {
     match p {
         Panel::Ask => "Ask",
         Panel::Outside => "Outside the review",
+        Panel::Fix => super::fix::TILE,
         Panel::Tool(kind) => match tools::light(kind).0 {
             "" => "This tile",
             name => name,
@@ -212,7 +213,7 @@ impl App {
             },
             Panel::Tool(DiveKind::Security) => self.security_body(u, p),
             Panel::Tool(DiveKind::Tests) => tests_body(u, p),
-            Panel::Tool(_) | Panel::Outside => nothing_yet(p),
+            Panel::Tool(_) | Panel::Outside | Panel::Fix => nothing_yet(p),
         };
         let (what, intro, body) = match body {
             Body::Some { what, intro, body } => (what, intro, body),

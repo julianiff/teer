@@ -1028,11 +1028,10 @@ fn an_assumed_base_is_noted_but_not_part_of_the_prs_identity() {
     let fx = Fx::new(true);
     let s = fx.prepare(&fx.url).unwrap();
     assert_eq!(s.review.pr.as_ref().unwrap().base_assumed, None);
-    // The header names the PR and its title: the PR's only commit names it
-    // while gh isn't there.
-    let pr_header = |r: &teer::review::model::Review| {
-        format!(" PR #{} · pr change", r.pr.as_ref().unwrap().number)
-    };
+    // The header names the PR by its title and number: the PR's only commit
+    // names it while gh isn't there.
+    let pr_header =
+        |r: &teer::review::model::Review| format!(" pr change #{}", r.pr.as_ref().unwrap().number);
     assert_eq!(header_of(&s.review).trim_end(), pr_header(&s.review));
     drop(s);
 

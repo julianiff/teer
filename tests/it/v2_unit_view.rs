@@ -218,7 +218,7 @@ fn sections_and_hunk_jumps() {
     assert!(at("What changed") < at("raise ValueError"));
     assert_eq!(app.unit.tiles, [Panel::Ask]);
     assert!(at("K Ask about it") < at("1 What should I do about this change"));
-    assert!(!text.contains("Second model"), "{text}");
+    assert!(!text.contains("Check  agent"), "{text}");
 
     // A dispute shows the second model in the advice tile, under the
     // recommendation.
@@ -244,7 +244,7 @@ fn sections_and_hunk_jumps() {
         text.find(s)
             .unwrap_or_else(|| panic!("{s:?} missing:\n{text}"))
     };
-    assert!(at("Check the currency.") < at("Second model"), "{text}");
+    assert!(at("Check the currency.") < at("Check  agent"), "{text}");
     assert!(text.contains("it also stops sending the receipt"), "{text}");
 
     // ]c and [c: from hunk to hunk, the text scrolled to each.
@@ -338,7 +338,7 @@ fn no_agent_hides_agent_sections() {
     let text = text(&app);
     assert!(text.contains("What changed"), "{text}");
     assert!(!text.contains("Advice"), "{text}");
-    assert!(!text.contains("Second model"), "{text}");
+    assert!(!text.contains("Check  agent"), "{text}");
     // No empty section is left: the text ends with what changed.
     let last = text
         .lines()

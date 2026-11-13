@@ -11,6 +11,7 @@ pub mod mock;
 pub mod repo_tools;
 pub mod schema;
 pub mod sessions;
+pub mod ste;
 
 use std::path::{Path, PathBuf};
 

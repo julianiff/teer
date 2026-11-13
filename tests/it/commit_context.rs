@@ -404,36 +404,34 @@ mod screen {
         let app = busy(r);
         let h = row(&render(&app, 120, 20), 0);
         assert!(
-            h.starts_with(
-                " PR #7 by jdoe · Distribute batching for withdrawals and invalidations  "
-            ),
+            h.starts_with(" Distribute batching for withdrawals and invalidations #7  "),
             "{h}"
         );
         // The rest is in the commits view.
-        for gone in ["@jdoe", "13 files", "acme/shop", "teer"] {
+        for gone in ["jdoe", "13 files", "acme/shop", "teer"] {
             assert!(!h.contains(gone), "{gone}: {h}");
         }
         status_keeps_its_place(&h, 120);
 
         // Short of room the title is cut, never the status.
         let h = row(&render(&app, 60, 24), 0);
-        assert!(h.starts_with(" PR #7 by jdoe · Distribute"), "{h}");
-        assert!(h.contains('…'), "{h}");
+        assert!(h.starts_with(" Distribute"), "{h}");
+        assert!(h.contains('…') && !h.contains("#7"), "{h}");
         status_keeps_its_place(&h, 60);
         let h = row(&render(&app, 30, 24), 0);
         status_keeps_its_place(&h, 30);
     }
 
     #[test]
-    fn without_gh_the_header_names_the_commits() {
+    fn without_gh_the_header_names_the_pr_by_its_number() {
         let (r, _repo) = pr_review(None);
         let app = App::new(r, Config::default(), Keymap::default());
         let h = row(&render(&app, 120, 20), 0);
-        assert_eq!(h.trim_end(), " PR #7 · 4 commits");
+        assert_eq!(h.trim_end(), " PR #7");
     }
 
     #[test]
-    fn a_branch_review_is_named_by_its_commits_and_uncommitted_changes_say_so() {
+    fn a_review_without_a_branch_is_named_by_its_base_and_uncommitted_changes_say_so() {
         let (repo, init) = history();
         let r = build_review(
             &repo.path(),
@@ -446,7 +444,7 @@ mod screen {
         let app = App::new(r, Config::default(), Keymap::default());
         assert_eq!(
             row(&render(&app, 120, 20), 0).trim_end(),
-            format!(" since {}, 4 commits", &init[..7])
+            format!(" since {}", &init[..7])
         );
 
         repo.write("a.py", "def f():\n    return 9\n");
@@ -691,35 +689,19 @@ mod preview {
     }
 
     #[test]
-    fn the_preview_and_the_unit_view_name_the_commits_that_touched_the_unit() {
+    fn neither_the_preview_nor_the_unit_view_lists_the_commits() {
         let (r, _repo) = pr_review(None);
-        let short: Vec<String> = r.intent.commits.iter().map(|c| c.short.clone()).collect();
         let mut app = App::new(r, Config::default(), Keymap::default());
-        select(&mut app, "g");
-        let s = text(&render(&app, 180, 30));
-        let want = format!(
-            "commits: {} Change g, drop old · {} fixup! Change g, drop old",
-            short[1], short[2]
-        );
-        assert!(s.contains(&want), "{s}");
-        // Cut to the pane, never wrapped.
-        let s = text(&render(&app, 60, 30));
-        let line = s.lines().find(|l| l.contains("commits: ")).unwrap();
-        assert!(line.trim_end().ends_with('…'), "{line}");
-
-        select(&mut app, "f");
-        let s = text(&render(&app, 140, 30));
-        assert!(
-            s.contains(&format!("commits: {} feat(api): add h [MD-732]", short[0])),
-            "{s}"
-        );
-
-        // The unit view too, under why it has its level.
+        for symbol in ["g", "f"] {
+            select(&mut app, symbol);
+            let s = text(&render(&app, 180, 30));
+            assert!(!s.contains("commits: "), "{s}");
+        }
         select(&mut app, "g");
         app.on_action(teer::keymap::Action::ViewOpen);
         assert_eq!(app.screen, Screen::Unit);
         let s = text(&render(&app, 180, 40));
-        assert!(s.contains(&want), "{s}");
+        assert!(!s.contains("commits: "), "{s}");
     }
 
     #[test]
@@ -904,7 +886,7 @@ mod agent {
         assert_eq!(unit(&back, "g").checks.unmentioned, Some(g));
 
         // The queue's preview and the unit view say it as a reason, under
-        // "Why this level".
+        // The review box.
         let want = "· Not mentioned in the commits or PR description: Also triples the result.";
         let text = |app: &App, w, h| {
             let t = render(app, w, h);
@@ -919,7 +901,7 @@ mod agent {
             "{}",
             text(&app, 160, 30)
         );
-        assert!(text(&app, 160, 30).contains("Why this level"));
+        assert!(text(&app, 160, 30).contains("╭ review "));
         assert!(!text(&app, 160, 30).contains('≠'));
         app.on_action(teer::keymap::Action::ViewOpen);
         assert_eq!(app.screen, Screen::Unit);

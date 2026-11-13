@@ -45,9 +45,9 @@
   {#if proposal.summary}<p class="summary">{proposal.summary}</p>{/if}
   {#if proposal.second}
     {#if proposal.second.agree}
-      <p class="ok small">✓ second model agrees</p>
+      <p class="ok small">✓ check agrees</p>
     {:else}
-      <p class="risk-medium small">⚠ second model disputes: {proposal.second.why}</p>
+      <p class="risk-medium small">⚠ disputed: {proposal.second.why}</p>
     {/if}
   {/if}
   {#if proposal.dropped}

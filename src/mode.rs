@@ -47,6 +47,16 @@ impl Mode {
         }
     }
 
+    /// Its icon: what the header shows in place of the name. Both are two
+    /// cells wide in every terminal. None for every tool at once.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Mode::Review => "🔍",
+            Mode::Security => "🔒",
+            Mode::All => "",
+        }
+    }
+
     pub fn from_name(name: &str) -> Option<Mode> {
         Mode::EVERY.into_iter().find(|m| m.name() == name)
     }

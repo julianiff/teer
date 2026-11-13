@@ -179,7 +179,7 @@ fn the_header_says_what_is_reviewed_with_the_summary_under_it() {
     assert!(s[1].ends_with('…'), "{}", s[1]);
     assert!(!s[2].contains("charges"), "{}", s[2]);
 
-    // A branch since its base, by its commits.
+    // A branch, by its name.
     let mut r = review(units());
     r.head = "feature".into();
     r.branch = Some(BranchNames {
@@ -189,11 +189,11 @@ fn the_header_says_what_is_reviewed_with_the_summary_under_it() {
     r.intent.commits = (0..6).map(|i| commit(&format!("step {i}"))).collect();
     let app = queue_of(r);
     let s = rows(&draw(&app, 120, 30));
-    assert_eq!(s[0].trim_end(), " feature/refunds since main, 6 commits");
+    assert_eq!(s[0].trim_end(), " feature/refunds");
     // No summary yet: the list starts under the header.
     assert!(s[1].starts_with("╭─ Needs a close look"), "{}", s[1]);
 
-    // A pull request, by its author, then its title.
+    // A pull request, by its title, then its number.
     let mut r = review(units());
     r.head = "pr".into();
     r.pr = Some(PrInfo {
@@ -209,7 +209,7 @@ fn the_header_says_what_is_reviewed_with_the_summary_under_it() {
     r.intent.summary = Some("Refunds a charge.".into());
     let app = queue_of(r);
     let s = rows(&draw(&app, 120, 30));
-    assert_eq!(s[0].trim_end(), " PR #482 by ana · Refunds");
+    assert_eq!(s[0].trim_end(), " Refunds #482");
     assert_eq!(s[1].trim_end(), " Refunds a charge.");
 }
 
@@ -383,19 +383,23 @@ fn the_preview_sits_beside_on_a_wide_terminal_and_below_on_a_narrow_one() {
     let s = screen(&app, 160, 40);
     let wide = preview_area(&app);
     assert!(wide.x > 0 && wide.y == 1, "{wide:?}");
-    // Why this level, then what the agent said.
-    let why = s.find("Why this level").expect(&s);
+    // The review box, with what the agent said in it.
+    let why = s.find("╭ review ").expect(&s);
     let said = s.find("Summary of refund.").expect(&s);
     assert!(why < said, "{s}");
-    let line = s.lines().find(|l| l.contains("Why this level")).unwrap();
-    assert!(line.contains("refund"), "the row beside it: {line}");
+    let line = s.lines().find(|l| l.contains("╭ review ")).unwrap();
+    let x = line.find("╭ review ").unwrap();
+    assert!(
+        line[..x].contains('│') || line[..x].contains('╯'),
+        "beside the list: {line}"
+    );
 
     let s = screen(&app, 100, 40);
     let narrow = preview_area(&app);
     assert!(narrow.x == 0 && narrow.y > 1, "{narrow:?}");
     assert!(s.contains("Summary of refund."), "{s}");
-    let line = s.lines().find(|l| l.contains("Why this level")).unwrap();
-    assert!(!line.contains('│'), "below the list: {line}");
+    let line = s.lines().find(|l| l.contains("╭ review ")).unwrap();
+    assert!(line.starts_with(" ╭ review "), "below the list: {line}");
 
     // The layout the queue draws is the one `layout_of` gives it.
     for w in [100u16, 160] {
@@ -427,14 +431,17 @@ fn a_change_with_code_previews_why_then_its_code() {
     let lines: Vec<&str> = s.lines().collect();
     let why = lines
         .iter()
-        .position(|l| l.contains("Why this level"))
+        .position(|l| l.contains("╭ review "))
         .expect(&s);
     let code = lines
         .iter()
         .position(|l| l.contains("╭ code change"))
         .expect(&s);
     assert!(why < code, "{s}");
-    assert!(lines[why].contains(&format!("{name}  pending │")), "{s}");
+    assert!(
+        lines[why - 1].contains(&format!("{name}  pending │")),
+        "{s}"
+    );
     let x = lines[code].find("╭ code change").unwrap();
     assert!(x > lines[code].find('│').unwrap_or(0), "{s}");
     // Below the rows on a narrow terminal.
@@ -442,7 +449,7 @@ fn a_change_with_code_previews_why_then_its_code() {
     let lines: Vec<&str> = s.lines().collect();
     let why = lines
         .iter()
-        .position(|l| l.contains("Why this level"))
+        .position(|l| l.contains("╭ review "))
         .expect(&s);
     let code = lines
         .iter()

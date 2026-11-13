@@ -53,7 +53,7 @@ pub const CHECK_MARKER: &str = "FIX CHECK";
 /// What the tile says while the agent writes the change.
 pub const WRITING: &str = "the agent writes a change…";
 /// What the tile says while the second model checks it.
-pub const CHECKING: &str = "a second model checks the change…";
+pub const CHECKING: &str = "checking the change…";
 /// Why nothing is asked: there is nothing important to fix yet.
 pub const NOTHING: &str =
     "nothing to fix yet: no security finding stands, and there's no note or advice";
@@ -722,11 +722,11 @@ pub fn validate_check(job: &Job, raw: &Value) -> (Option<SecondCheck>, Vec<Dropp
         })
     };
     let Ok(c) = serde_json::from_value::<RawCheck>(raw.clone()) else {
-        drop("the second model's check".into(), "malformed".into());
+        drop("the check".into(), "malformed".into());
         return (None, dropped);
     };
     let why = one_line(&c.why, 200);
-    let what = format!("the second model's check: {why}");
+    let what = format!("the check: {why}");
     let Some(agree) = c.agree else {
         drop(what, "neither agrees nor disagrees".into());
         return (None, dropped);

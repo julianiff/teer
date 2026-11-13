@@ -462,15 +462,12 @@ async fn units_get_their_level_from_code_facts_and_agent_risk() {
         old.reasons,
         vec![
             "removed, no callers found".to_string(),
-            "agent: medium risk".to_string()
+            "medium risk".to_string()
         ]
     );
     let charge = level("charge_order");
     assert_eq!(charge.level, Level::Attention);
-    assert_eq!(
-        charge.reasons,
-        vec!["3 callers".to_string(), "agent: high risk".to_string()]
-    );
+    assert_eq!(charge.reasons, vec!["high risk".to_string()]);
 
     // One file, most attention first, then as a story; no-behavior-change
     // units aren't listed as units.

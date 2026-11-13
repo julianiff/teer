@@ -212,7 +212,7 @@ fn header_says_what_is_reviewed() {
     let d = Driver::open(r, Config::default());
     let screen = d.render(120, 30);
     assert!(
-        screen.lines().next().unwrap().contains("PR #482 by ana"),
+        screen.lines().next().unwrap().contains("Refunds #482"),
         "{screen}"
     );
 }
@@ -295,8 +295,8 @@ fn preview_side_or_below() {
     });
     let d = queue_of(units);
     assert_eq!(d.selected().as_deref(), Some("u0"));
-    // Today's content: why this level, with the reason under it.
-    let (heading, reason) = ("Why this level", "Also stops sending");
+    // Today's content: the review box, with the reason in it.
+    let (heading, reason) = ("╭ review ", "Also stops sending");
 
     // Wide: beside the list.
     let wide = d.render(160, 30);

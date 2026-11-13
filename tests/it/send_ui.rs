@@ -734,8 +734,6 @@ fn a_focused_tile_with_something_to_send_says_s_send_on_its_edge() {
         screen.contains(" s send · K type · tab next · h close "),
         "{screen}"
     );
-    // The keys tile lists it too.
-    assert!(screen.contains("s send to agent"), "{screen}");
 
     // Nothing to send: no hint.
     let mut d = driver(charge());

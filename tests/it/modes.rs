@@ -104,10 +104,15 @@ fn driver(mode: Mode) -> Driver {
 #[test]
 fn the_header_names_the_mode_but_not_all() {
     let first = |d: &Driver| d.render(100, 20).lines().next().unwrap().to_string();
-    assert!(first(&driver(Mode::Review)).starts_with(" review ␣m · "));
-    assert!(first(&driver(Mode::Security)).starts_with(" security ␣m · "));
+    assert!(first(&driver(Mode::Review)).starts_with(" 🔍 "));
+    assert!(first(&driver(Mode::Security)).starts_with(" 🔒 "));
+    // The icon stands for the name: no name, no key.
+    for m in [Mode::Review, Mode::Security] {
+        let h = first(&driver(m));
+        assert!(!h.contains(m.name()) && !h.contains("␣m"), "{h}");
+    }
     let all = first(&driver(Mode::All));
-    assert!(!all.contains("all ·"), "{all}");
+    assert!(!all.contains("🔍") && !all.contains("🔒"), "{all}");
 }
 
 #[test]
@@ -127,10 +132,7 @@ fn the_help_and_the_keys_tile_list_only_what_the_mode_has() {
     ];
     for (mode, has, lacks) in cases {
         let mut d = driver(mode);
-        d.keys("l");
-        // The keys tile, beside the text.
-        let tile = d.render(160, 50);
-        d.keys("?");
+        d.keys("l?");
         let help = d.render(160, 60);
         for word in has {
             assert!(help.contains(word), "{mode:?} help lacks {word}:\n{help}");
@@ -139,9 +141,6 @@ fn the_help_and_the_keys_tile_list_only_what_the_mode_has() {
             assert!(!help.contains(word), "{mode:?} help has {word}:\n{help}");
         }
         assert!(help.contains("mode: review or security"), "{help}");
-        assert!(tile.contains("␣m mode"), "{mode:?}:\n{tile}");
-        let tests = tile.contains("␣t tests");
-        assert_eq!(tests, mode == Mode::Review, "{mode:?}:\n{tile}");
     }
 }
 
@@ -281,7 +280,7 @@ fn the_picker_lists_the_modes_and_enter_takes_one() {
     assert_eq!(d.app.mode, Mode::Security);
     assert_eq!(d.app.review.mode, Some(Mode::Security));
     assert_eq!(d.overlay(), &Overlay::None);
-    assert!(d.render(120, 30).starts_with(" security ␣m · "));
+    assert!(d.render(120, 30).starts_with(" 🔒 "));
     // A review of units only: every unit still listed.
     assert_eq!(d.app.order.len(), units(3).len());
 }

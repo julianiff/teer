@@ -45,7 +45,7 @@ fn removed_warning(name: &str) -> String {
 }
 
 /// The unit view's sections that need an agent, and the ones that don't.
-const AGENT_SECTIONS: [&str; 2] = ["Advice", "Second model"];
+const AGENT_SECTIONS: [&str; 2] = ["Advice", "Check  agent"];
 const CODE_SECTIONS: [&str; 2] = ["Why this level", "What changed"];
 
 // ---- Fixtures --------------------------------------------------------------------------
@@ -237,10 +237,7 @@ async fn branch_before_pr() {
     assert_eq!(s.app.review.base, main);
     assert_eq!(s.app.review.head, r.git(&["rev-parse", "HEAD"]).trim());
     let header = s.render(120, 12).lines().next().unwrap().to_string();
-    assert!(
-        header.contains("feature/fees since main, 2 commits"),
-        "{header}"
-    );
+    assert!(header.contains("feature/fees"), "{header}");
 }
 
 // ---- A4 --------------------------------------------------------------------------------

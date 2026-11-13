@@ -140,7 +140,7 @@ fn the_notes_carry_a_proposed_change_under_its_unit() {
         "",
         &format!("- answers: the finding \"{IDOR}\" (high)"),
         "- what it does: adds the owner check before the query, nothing else",
-        "- second model: agrees: it closes the hole and changes nothing else",
+        "- check: agrees: it closes the hole and changes nothing else",
         "- proposed: check the owner first",
         "",
         "  ```diff",

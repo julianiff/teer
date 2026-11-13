@@ -186,9 +186,7 @@ fn a_disputed_unit_with_no_behavior_change_is_routine_and_waits() {
     assert!(listed(&d).contains(&"u1".to_string()));
     assert_eq!(
         unit_of(&d, "u1").reasons,
-        [
-            "The second model disputes \"Only reformats.\": \"the retry wasn't removed, it moved to client.ts\""
-        ]
+        ["Disputed: \"Only reformats.\": \"the retry wasn't removed, it moved to client.ts\""]
     );
 }
 
@@ -228,7 +226,7 @@ fn marks_become_reasons_and_rows_show_only_the_dispute() {
         u.reasons,
         [
             "Expensive to undo: Charges the card again on retry.",
-            "The second model disputes \"Retries the charge.\": \"the retry wasn't removed, it moved to client.ts\"",
+            "Disputed: \"Retries the charge.\": \"the retry wasn't removed, it moved to client.ts\"",
             "Not mentioned in the commits or PR description: Also stops sending the receipt.",
         ]
     );
@@ -243,8 +241,8 @@ fn marks_become_reasons_and_rows_show_only_the_dispute() {
     for glyph in ['$', '≠'] {
         assert!(!screen.contains(glyph), "{glyph}:\n{screen}");
     }
-    // The preview says why under its heading.
-    assert!(screen.contains("Why this level"), "{screen}");
+    // The preview says why in the review box.
+    assert!(screen.contains("╭ review "), "{screen}");
     assert!(
         screen.contains("· Expensive to undo: Charges the card again on retry."),
         "{screen}"

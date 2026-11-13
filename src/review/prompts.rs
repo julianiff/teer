@@ -1039,7 +1039,7 @@ pub const MAX_CASES: usize = 10;
 pub const MAX_PROBE_BYTES: usize = 64 * 1024;
 
 /// Marker line of the commit-message prompt (the mock adapter keys on it).
-const COMMIT_MARKER: &str = "COMMITMSG";
+pub const COMMIT_MARKER: &str = "COMMITMSG";
 
 /// Schema for a drafted commit message: `{ "subject", "body" }`.
 pub fn commit_message_schema() -> Value {

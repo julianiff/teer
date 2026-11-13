@@ -76,7 +76,7 @@ pub fn pending(u: &Unit, kind: DiveKind) -> bool {
 
 pub const ASKING: &str = "asking the agent…";
 
-pub const CHECKING: &str = "a second model checks the description…";
+pub const CHECKING: &str = "checking the description…";
 
 pub const SEARCHING: &str = "searching the test files…";
 
@@ -106,7 +106,7 @@ pub fn answer_label(app: &App, u: &Unit, kind: DiveKind) -> String {
         DiveKind::Tests if tests.is_some_and(|c| c.search.is_some()) => {
             format!("found by teer, read by the agent ({agent})")
         }
-        DiveKind::Disagree => format!("second opinion ({})", app.cfg.model_label(Role::Second)),
+        DiveKind::Disagree => format!("agent ({})", app.cfg.model_label(Role::Second)),
         _ => format!("agent ({agent})"),
     }
 }

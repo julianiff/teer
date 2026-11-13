@@ -206,8 +206,8 @@ pub fn proposed(u: &Unit) -> String {
     if let Some(s) = &p.second {
         let word = if s.agree { "agrees" } else { "disagrees" };
         match one_line(&s.why) {
-            why if why.is_empty() => out.push_str(&format!("- second model: {word}\n")),
-            why => out.push_str(&format!("- second model: {word}: {why}\n")),
+            why if why.is_empty() => out.push_str(&format!("- check: {word}\n")),
+            why => out.push_str(&format!("- check: {word}: {why}\n")),
         }
     }
     for h in hunks {

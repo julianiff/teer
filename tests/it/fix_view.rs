@@ -22,6 +22,7 @@ use teer::review::model::{
 };
 use teer::security::{Audit, Class, Finding, SecondCheck};
 use teer::session::app::{AppEvent, Effect, Overlay, Screen};
+use teer::session::unit::Panel;
 use teer::session::view::{OverlayView, snapshot};
 
 /// Twenty lines `l1`..`l20`, changed at lines 2 and 17: a code change of
@@ -193,7 +194,7 @@ fn the_section_shows_what_it_answers_its_summary_and_each_hunk_in_a_box() {
     assert!(by == head || by == head + 1, "{text}");
     for s in [
         "Casts the id before the query; nothing else changes.",
-        "✓ second model agrees",
+        "✓ check agrees",
         "1 hunk dropped",
     ] {
         assert!(row_of(&text, s) > head, "{s}:\n{text}");
@@ -244,10 +245,10 @@ fn the_section_shows_what_it_answers_its_summary_and_each_hunk_in_a_box() {
     propose(&mut d, "u0", p);
     let text = d.render(100, 120);
     assert!(
-        text.contains("⚠ second model disputes: it also drops the log line"),
+        text.contains("⚠ disputed: it also drops the log line"),
         "{text}"
     );
-    assert!(!text.contains("second model agrees"), "{text}");
+    assert!(!text.contains("check agrees"), "{text}");
 }
 
 #[test]
@@ -620,6 +621,15 @@ fn leader_e_asks_for_a_change_when_there_is_something_to_fix() {
     assert!(dives(&d.keys("<space>e")).is_empty());
     assert_eq!(d.screen(), Screen::Unit);
     assert_eq!(d.status(), "No agent: proposing a change needs one.");
+    // A tile opens beside the text, has the focus and says so too.
+    assert_eq!(d.app.unit.tiles, [Panel::Fix]);
+    assert_eq!(d.app.unit.panel, Some(Panel::Fix));
+    let text = d.render(150, 40);
+    assert!(text.contains("╭ ␣e Proposed change"), "{text}");
+    assert!(
+        text.contains("▎ No agent: proposing a change needs one."),
+        "{text}"
+    );
 
     // Nothing to fix yet: how to get something.
     agent(&mut d);
@@ -628,6 +638,10 @@ fn leader_e_asks_for_a_change_when_there_is_something_to_fix() {
         d.status(),
         "Nothing to fix yet: ␣x finds security issues, K asks what to do, i writes a note."
     );
+    // The tile says what holds now; the text has no section for it.
+    let text = d.render(150, 40);
+    assert_eq!(text.matches("▎ Nothing to fix yet").count(), 1, "{text}");
+    assert_eq!(text.matches("Proposed change").count(), 1, "{text}");
     // A finding that doesn't stand isn't one.
     let mut disputed = finding(Risk::High);
     disputed.second = Some(SecondCheck {
@@ -638,9 +652,11 @@ fn leader_e_asks_for_a_change_when_there_is_something_to_fix() {
     audit(&mut d, vec![disputed]);
     assert!(dives(&d.keys("<space>e")).is_empty());
 
-    // A note: asked once; on its way, said so.
+    // A note: asked once; on its way, said so. The tile closes: the text
+    // has the change.
     d.app.review.unit_mut("u0").unwrap().dive.note = "check the owner".into();
     assert_eq!(dives(&d.keys("<space>e")), [("u0".into(), DiveKind::Fix)]);
+    assert!(!d.app.unit.tiles.contains(&Panel::Fix));
     assert!(
         d.app
             .review
@@ -848,4 +864,39 @@ fn not_for_medium_findings_alone() {
     d.app.has_agent = false;
     let effects = audited(&mut d, vec![finding(Risk::High)], false);
     assert!(dives(&effects).is_empty(), "{effects:?}");
+}
+
+#[test]
+fn a_lone_tile_shares_its_column_with_the_keys_that_look_further() {
+    let mut d = driver();
+    d.app.review.unit_mut("u0").unwrap().summary = Some("Casts the id.".into());
+    // The queue's preview: what the agent wrote is in a box of its own.
+    let text = d.render(150, 40);
+    assert!(text.contains("╭ review ─"), "{text}");
+    assert!(text.contains("│ Casts the id."), "{text}");
+
+    // The unit view: the ask tile, and under it the keys that look further.
+    d.keys("l");
+    let text = d.render(150, 40);
+    let (ask, inspect) = (
+        row_of(&text, "Ask about it"),
+        row_of(&text, "Inspect further"),
+    );
+    // Two thirds of the 38 rows under the title, then one third.
+    assert_eq!(inspect - ask, 24, "{text}");
+    for want in [
+        "These keys look further into this code change:",
+        "␣t     find the tests that reach it",
+        "␣e     have the agent propose a change",
+        "gd     show what it calls",
+    ] {
+        assert!(text.contains(want), "{want}:\n{text}");
+    }
+    // A second tile takes the room.
+    d.keys("<space>t");
+    assert!(!d.render(150, 40).contains("Inspect further"));
+    // Too short for both: the tile alone.
+    let mut d = driver();
+    d.keys("l");
+    assert!(!d.render(150, 16).contains("Inspect further"));
 }

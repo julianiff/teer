@@ -13,8 +13,8 @@
 //! Above them all, while the security lens is on, the attack-surface card
 //! (see [`crate::security::surface`]): a row per class the change touches
 //! (entry points, sinks, checks, packages, ci…), then what was checked and
-//! what nobody did. With nothing found it is one muted line that still says
-//! what was checked; on a short terminal, one line. A click on an item
+//! what nobody did. With nothing found it is one muted line that says only
+//! that; on a short terminal, one line. A click on an item
 //! selects its unit.
 
 use crate::session::names;
@@ -133,8 +133,8 @@ fn checked_texts() -> (String, String) {
 }
 
 /// The card for `s`, `width` cells wide, over a queue of `rows` rows. With
-/// nothing found, one muted line that says what was checked: never that it
-/// is safe. Else a rounded box titled "attack surface": a row per class
+/// nothing found, one muted line that says so: never that it is safe. Else
+/// a rounded box titled "attack surface": a row per class
 /// (at most [`CARD_MOST`] rows in all; past that, the most severe classes
 /// keep their rows and one row names the rest), then what was checked and
 /// what wasn't. When the box would take more than a third of the rows, or
@@ -142,7 +142,6 @@ fn checked_texts() -> (String, String) {
 /// then what was checked.
 pub(super) fn surface_card(app: &App, s: &Surface, width: usize, rows: usize) -> Card {
     let t = &app.theme;
-    let (checked, not) = checked_texts();
     let one = |spans: Vec<Span<'static>>| {
         let mut line = Line::from(spans);
         if line.width() > width {
@@ -155,10 +154,11 @@ pub(super) fn surface_card(app: &App, s: &Surface, width: usize, rows: usize) ->
     };
     if s.is_empty() {
         return one(vec![Span::styled(
-            format!(" security: nothing found · {checked} · {not}"),
+            format!(" {} nothing found", crate::mode::Mode::Security.icon()),
             t.muted(),
         )]);
     }
+    let (checked, not) = checked_texts();
     let inner = width.saturating_sub(4);
     // What was checked on one line when it fits, else two.
     let gap = "   ";

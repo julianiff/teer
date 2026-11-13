@@ -11,7 +11,6 @@ use unicode_width::UnicodeWidthStr;
 use super::app::{App, Target};
 use super::select;
 use super::slim;
-use crate::git::WORKTREE;
 use crate::keymap::{Action, Trigger};
 use crate::review::attention::Level;
 use crate::session::app::{JumpKind, Overlay, Screen};
@@ -216,10 +215,9 @@ fn header_rows(app: &App) -> u16 {
     1 + u16::from(summary_line(app).is_some())
 }
 
-/// The header: what is reviewed (`your changes`, `feature since main, 6
-/// commits`, `PR #482 by ana`) and what the change is called, with what
-/// teer is doing on the right; on the queue, the summary of the change
-/// under it.
+/// The header: the mode's icon and what the change is called (the pull
+/// request's title, the branch's name, `your changes`), with what teer is
+/// doing on the right; on the queue, the summary of the change under it.
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
     if let Some(summary) = summary_line(app)
@@ -231,13 +229,13 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     }
     let area = Rect::new(area.x, area.y, area.width, area.height.min(1));
     let r = &app.review;
-    // What is reviewed, then what the change is called (the PR's title, the
-    // only commit's subject): the commits view (`␣c`) has the rest.
-    let mut title = r.subject();
-    let named = r.pr.is_some() || (r.head != WORKTREE && r.intent.commits.len() == 1);
-    if let (true, Some(name)) = (named, crate::review::intent::headline(r).0) {
-        title = format!("{title} · {}", sanitize(&name));
-    }
+    // What the change is called, and for a titled pull request its number:
+    // the commits view (`␣c`) has the rest.
+    let title = r.title();
+    let number = match &r.pr {
+        Some(pr) if title != format!("PR #{}", pr.number) => format!(" #{}", pr.number),
+        _ => String::new(),
+    };
     let mut right = Vec::new();
     if !app.has_agent && app.agent_note.as_deref() == Some(crate::session::app::NO_AGENT) {
         right.push(Span::styled("no agent  ", t.muted()));
@@ -252,32 +250,32 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     // The status on the right is never cut and keeps a gap before it.
     let rw: usize = right.iter().map(|s| s.content.width()).sum();
     let budget = (area.width as usize).saturating_sub(if rw > 0 { rw + 2 } else { 0 });
-    // The mode leads, in the accent, with the key that changes it (a
-    // click on it does too); with every tool there is none to name.
-    let (mode, key) = match app.mode {
-        crate::mode::Mode::All => (String::new(), String::new()),
-        m => (
-            truncate(&format!(" {}", m.name()), budget),
-            format!(" {} ·", app.keys.label(Action::ToolMode)),
-        ),
-    };
-    let key = if mode.width() + key.width() <= budget {
-        key
-    } else {
+    // The mode's icon leads (a click on it changes the mode); with every
+    // tool there is none.
+    let icon = app.mode.icon();
+    let mode = if icon.is_empty() || icon.width() + 1 > budget {
         String::new()
+    } else {
+        format!(" {icon}")
     };
-    let lead = mode.width() + key.width();
+    let lead = mode.width();
     if lead > 0 {
         let at = Rect::new(area.x, area.y, (lead as u16).min(area.width), 1);
         target(app, at, Target::Action(Action::ToolMode));
     }
     let budget = budget.saturating_sub(lead);
     let title = truncate(&format!(" {title}"), budget);
-    let pad = (area.width as usize).saturating_sub(lead + title.width() + rw);
+    // The number only when all of it fits.
+    let number = if title.width() + number.width() <= budget {
+        number
+    } else {
+        String::new()
+    };
+    let pad = (area.width as usize).saturating_sub(lead + title.width() + number.width() + rw);
     let mut line = vec![
-        Span::styled(mode, t.accent().add_modifier(Modifier::BOLD)),
-        Span::styled(key, t.muted()),
+        Span::raw(mode),
         Span::styled(title, t.bold()),
+        Span::styled(number, t.muted()),
         Span::raw(" ".repeat(pad)),
     ];
     line.extend(right);
