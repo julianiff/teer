@@ -1,7 +1,7 @@
 {
   "name": "teer-desktop",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.4.0",
   "type": "module",
   "description": "Teer.app's window: draws teer's view model and sends keys and clicks back.",
   "scripts": {
