@@ -22,6 +22,7 @@ use crate::commit::{self, Branch};
 use crate::config::Role;
 use crate::keymap::{Action, Trigger};
 use crate::review::attention::Level;
+use crate::review::comments::comments;
 use crate::review::diff::{DIFF_LEVEL, Kind, Row, anchor, expand_tabs, rows_around};
 use crate::review::model::{
     Commit, Decision, DiveKind, DiveResult, LineRef, Marker, PrMeta, Prep, Risk, Shown, Side, Unit,
@@ -71,6 +72,8 @@ pub struct Header {
     pub title: Option<String>,
     /// The agent's summary of the whole change, on the queue.
     pub summary: Option<String>,
+    /// The mode the review is in: `check`, `review`, `security`, `all`.
+    pub mode: &'static str,
     /// Running with `--no-agent`.
     pub no_agent: bool,
     /// Why there is no agent, when it isn't `--no-agent`.
@@ -328,9 +331,18 @@ pub struct Piece {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CodeNote {
+    /// The row it is written under; `None` after the last.
     pub after: Option<usize>,
-    /// Into [`Card::statements`].
-    pub statement: usize,
+    /// On the card's head: `medium · disputed`, `sink · injection · high`.
+    /// Empty for a statement as it is.
+    pub title: String,
+    pub risk: Option<Risk>,
+    /// A statement's `+`, `~`, `−`.
+    pub symbol: Option<&'static str>,
+    /// A paragraph each.
+    pub text: Vec<String>,
+    /// `L168-172, old L192`.
+    pub cites: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -408,11 +420,8 @@ pub struct HunkView {
 /// Which tile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub enum TileId {
-    Advice,
     Ask,
     Tests,
-    Behavior,
-    Visualize,
     Security,
     Outside,
 }
@@ -420,24 +429,19 @@ pub enum TileId {
 impl TileId {
     pub fn of(p: Panel) -> TileId {
         match p {
-            Panel::Recommend => TileId::Advice,
             Panel::Ask => TileId::Ask,
             Panel::Outside => TileId::Outside,
             Panel::Tool(DiveKind::Tests) => TileId::Tests,
-            Panel::Tool(DiveKind::Behavior) => TileId::Behavior,
             Panel::Tool(DiveKind::Security) => TileId::Security,
-            Panel::Tool(_) => TileId::Visualize,
+            Panel::Tool(_) => TileId::Tests,
         }
     }
 
     pub fn panel(self) -> Panel {
         match self {
-            TileId::Advice => Panel::Recommend,
             TileId::Ask => Panel::Ask,
             TileId::Outside => Panel::Outside,
             TileId::Tests => Panel::Tool(DiveKind::Tests),
-            TileId::Behavior => Panel::Tool(DiveKind::Behavior),
-            TileId::Visualize => Panel::Tool(DiveKind::Visualize),
             TileId::Security => Panel::Tool(DiveKind::Security),
         }
     }
@@ -453,7 +457,7 @@ pub struct Tile {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind")]
 pub enum TileBody {
-    /// The advice, or a tool's answer: what came, what is on its way.
+    /// A tool's answer: what came, what is on its way.
     Answer(Box<AnswerTile>),
     /// The conversation about the unit.
     Ask(AskTile),
@@ -468,8 +472,6 @@ pub struct AnswerTile {
     /// Who wrote it: `agent (opus)`, `found by teer`.
     pub label: String,
     pub result: Option<DiveResult>,
-    /// The diagram of a Visualize answer.
-    pub svg: Option<Svg>,
     /// The answer is on its way, and what it is doing.
     pub waiting: Option<String>,
     /// The key that asks, and what it asks: before advice is asked, or
@@ -483,15 +485,6 @@ pub struct AnswerTile {
     /// there before the agent answers (and without one).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub facts: Vec<crate::security::Fact>,
-}
-
-/// A diagram: SVG whose colours are CSS variables (`var(--fg)`), and the
-/// declarations that set them for light and for dark mode.
-#[derive(Debug, Clone, Serialize)]
-pub struct Svg {
-    pub svg: String,
-    pub light: String,
-    pub dark: String,
 }
 
 /// What a second model said about the description.
@@ -523,6 +516,14 @@ pub struct MissedView {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AskTile {
+    /// Above the conversation: the advice (what to do about the unit),
+    /// what came or is on its way, or the key that asks for it; with it
+    /// the second model when it disputes the description. `None` where
+    /// the mode has no advice.
+    pub advice: Option<Box<AnswerTile>>,
+    /// The questions the tile offers to ask next, the first one what
+    /// `enter` on an empty question asks (see [`super::suggest`]).
+    pub suggestions: Vec<super::suggest::Suggestion>,
     /// Oldest first.
     pub exchanges: Vec<Exchange>,
     pub draft: String,
@@ -648,6 +649,21 @@ pub enum OverlayView {
         pi_install: bool,
         confirm: Option<String>,
     },
+    /// The mode picker (`<space>m`): the modes, the one selected.
+    Mode {
+        sel: usize,
+        modes: Vec<ModeItem>,
+    },
+}
+
+/// A mode in the picker: its name, what it is for, the tools it has, and
+/// whether the review is in it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModeItem {
+    pub name: &'static str,
+    pub about: &'static str,
+    pub tools: &'static str,
+    pub current: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -816,6 +832,7 @@ fn header(app: &App) -> Header {
         subject: r.subject(),
         title,
         summary,
+        mode: app.mode.name(),
         no_agent,
         agent_note,
         preparing: (done < total).then_some(Progress { done, total }),
@@ -844,7 +861,7 @@ fn bar(app: &App) -> Bar {
         app.keys
             .hint()
             .into_iter()
-            .filter(|(_, a)| unit_tiles || !TILES.contains(a))
+            .filter(|(_, a)| app.allows(*a) && (unit_tiles || !TILES.contains(a)))
             .map(|(keys, a)| Hint {
                 keys,
                 action: a.id(),
@@ -1191,15 +1208,12 @@ fn code(app: &App, u: &Unit, notes: Notes, syntax: Option<&Cache>) -> Option<Cod
     if app.assessment(&u.id).is_none_or(|a| a.level < DIFF_LEVEL) {
         return None;
     }
-    let said = u.prep == Prep::Ready;
-    let cites: Vec<LineRef> = if said {
-        u.changes
-            .iter()
-            .flat_map(|c| c.evidence.iter().copied())
-            .collect()
-    } else {
-        Vec::new()
-    };
+    // What the mode has to say about the unit (see `review::comments`).
+    let said = comments(u, app.mode);
+    let cites: Vec<LineRef> = said
+        .iter()
+        .flat_map(|c| c.evidence.iter().copied())
+        .collect();
     let (rows, added, removed) = rows_around(&app.review, u, &cites, notes == Notes::Full, syntax);
     if rows.is_empty() {
         return None;
@@ -1208,21 +1222,19 @@ fn code(app: &App, u: &Unit, notes: Notes, syntax: Option<&Cache>) -> Option<Cod
     let hunks = (0..rows.len())
         .filter(|&k| changes(k) && (k == 0 || !changes(k - 1)))
         .collect();
-    let notes = if said {
-        let mut at: Vec<CodeNote> = u
-            .changes
-            .iter()
-            .enumerate()
-            .map(|(n, c)| CodeNote {
-                after: anchor(c, &rows),
-                statement: n,
-            })
-            .collect();
-        at.sort_by_key(|n| (n.after.unwrap_or(usize::MAX), n.statement));
-        at
-    } else {
-        Vec::new()
-    };
+    // Sorted by row, comments under one row in their order.
+    let mut notes: Vec<CodeNote> = said
+        .into_iter()
+        .map(|c| CodeNote {
+            after: anchor(&c.evidence, &rows),
+            cites: names::cite_text(&c.evidence),
+            title: c.title,
+            risk: c.risk,
+            symbol: c.marker.map(Marker::symbol),
+            text: c.text,
+        })
+        .collect();
+    notes.sort_by_key(|n| n.after.unwrap_or(usize::MAX));
     Some(Code {
         added,
         removed,
@@ -1290,14 +1302,6 @@ fn disputed(app: &App, u: &Unit) -> bool {
 
 fn answer_tile(app: &App, u: &Unit, kind: DiveKind) -> AnswerTile {
     let result = u.dive.results.get(&kind).cloned();
-    let svg = result.as_ref().and_then(|r| r.visual.as_ref()).map(|v| {
-        use crate::review::visual::{DARK, LIGHT, Paint};
-        Svg {
-            svg: crate::review::visual::svg(v, Paint::Css),
-            light: LIGHT.css_vars(),
-            dark: DARK.css_vars(),
-        }
-    });
     let audit = result.as_ref().and_then(|r| r.audit.as_ref());
     let waiting = if tools::pending(u, kind) {
         Some(tools::waiting(app, u, kind))
@@ -1308,14 +1312,8 @@ fn answer_tile(app: &App, u: &Unit, kind: DiveKind) -> AnswerTile {
     } else {
         None
     };
-    let ask = if kind == DiveKind::Recommend && result.is_none() && waiting.is_none() {
-        Some(hint(
-            app,
-            Action::ToolAdvice,
-            "ask the agent what to do about it: concrete steps, most important first, each \
-with its reason",
-        ))
-    } else if kind == DiveKind::Tests && tools::may_read_tests(app, u) {
+    // The advice is asked from what the ask tile offers (`suggestions`).
+    let ask = if kind == DiveKind::Tests && tools::may_read_tests(app, u) {
         let found = result
             .as_ref()
             .and_then(|r| r.coverage.as_ref())
@@ -1347,7 +1345,6 @@ with its reason",
         question: kind,
         label: tools::answer_label(app, u, kind),
         result,
-        svg,
         waiting,
         ask,
         none,
@@ -1431,6 +1428,11 @@ fn ask_tile(app: &App, u: &Unit) -> AskTile {
         })
         .collect();
     AskTile {
+        advice: app
+            .mode
+            .reviews()
+            .then(|| Box::new(answer_tile(app, u, DiveKind::Recommend))),
+        suggestions: app.suggestions_for(u),
         exchanges,
         draft: app.ask.draft.clone(),
         max: super::app::QUESTION_MAX,
@@ -1439,6 +1441,8 @@ fn ask_tile(app: &App, u: &Unit) -> AskTile {
         label: format!("agent ({})", app.cfg.model_label(Role::Deep)),
         tools: tools::TOOLS
             .iter()
+            // The ones the mode has.
+            .filter(|(_, a, ..)| app.allows(*a))
             .map(|(_, a, name, what)| hint(app, *a, format!("{name}: {what}")))
             .collect(),
     }
@@ -1447,10 +1451,6 @@ fn ask_tile(app: &App, u: &Unit) -> AskTile {
 fn tile(app: &App, u: &Unit, p: Panel) -> Tile {
     let id = TileId::of(p);
     let (title, body) = match p {
-        Panel::Recommend => (
-            "Advice".to_string(),
-            TileBody::Answer(Box::new(answer_tile(app, u, DiveKind::Recommend))),
-        ),
         Panel::Ask => ("Ask".to_string(), TileBody::Ask(ask_tile(app, u))),
         Panel::Tool(kind) => (
             tools::light(kind).0.to_string(),
@@ -1476,10 +1476,7 @@ pub const BUTTONS: &[Action] = &[
     Action::ViewOpen,
     Action::ViewBack,
     Action::AskOpen,
-    Action::ToolAdvice,
     Action::ToolTests,
-    Action::ToolRunOldNew,
-    Action::ToolDiagram,
     Action::ToolSecurity,
     Action::ToolProve,
     Action::ToolFix,
@@ -1501,6 +1498,7 @@ pub const BUTTONS: &[Action] = &[
     Action::ToolFlagged,
     Action::ToolNotes,
     Action::ToolHistory,
+    Action::ToolMode,
     Action::FinishOpen,
     Action::HelpOpen,
 ];
@@ -1508,6 +1506,8 @@ pub const BUTTONS: &[Action] = &[
 fn actions(app: &App) -> BTreeMap<&'static str, ActionView> {
     BUTTONS
         .iter()
+        // What the mode leaves out has no button.
+        .filter(|&&a| app.allows(a))
         .map(|&a| {
             let what = match app.screen {
                 Screen::Flagged => help::flagged_describe(a),
@@ -1589,7 +1589,7 @@ fn panel_keys(app: &App) -> Vec<Hint> {
 
 fn unit_screen(app: &App, syntax: Option<&Cache>) -> Option<UnitScreen> {
     let u = app.unit_on_show()?;
-    let advice_open = app.unit.tiles.contains(&Panel::Recommend);
+    let advice_open = app.unit.tiles.contains(&Panel::Ask);
     Some(UnitScreen {
         card: card(app, u, Notes::Full, syntax),
         second: (!advice_open && app.can_ask() && disputed(app, u))
@@ -1722,6 +1722,18 @@ fn overlay(app: &App) -> OverlayView {
             name: app.review.unit(id).map(names::row_name).unwrap_or_default(),
         },
         Overlay::ConfirmWeb => OverlayView::ConfirmWeb,
+        Overlay::Mode { sel } => OverlayView::Mode {
+            sel: *sel,
+            modes: crate::mode::Mode::EVERY
+                .into_iter()
+                .map(|m| ModeItem {
+                    name: m.name(),
+                    about: m.about(),
+                    tools: m.tools(),
+                    current: m == app.mode,
+                })
+                .collect(),
+        },
         Overlay::ConfirmApply { id, hunks } => OverlayView::ConfirmApply {
             question: app.apply_question(id, hunks),
         },

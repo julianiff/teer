@@ -412,7 +412,11 @@ fn help_lists_v2_surface() {
             .filter_map(|l| l.split_whitespace().next().map(String::from))
             .filter(|c| !CLAP_OWN_COMMANDS.contains(&c.as_str()))
             .collect();
-        assert_eq!(commands, ["pr", "notes", "app"], "{flag}:\n{help}");
+        assert_eq!(
+            commands,
+            ["review", "security", "pr", "notes", "app"],
+            "{flag}:\n{help}"
+        );
         let args = section("Arguments:");
         assert_eq!(
             args.iter()

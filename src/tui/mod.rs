@@ -10,8 +10,8 @@ pub mod commits;
 pub mod diff;
 pub mod finish;
 pub mod flagged_list;
+pub mod mode;
 pub mod notes;
-pub mod picture;
 pub mod pr_pick;
 pub mod preview;
 pub mod queue;
@@ -70,10 +70,6 @@ pub async fn run(l: crate::start::Launch) -> Result<()> {
 
     let mut terminal = ratatui::init();
     ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
-    // Ask what the terminal can draw now: in raw mode, before events are read.
-    if app.cfg.images {
-        app.pictures = picture::Pictures::detect();
-    }
     execute!(stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     let mut open_app = false;
     let result = async {

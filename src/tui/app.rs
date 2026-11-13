@@ -1,6 +1,6 @@
 //! The review on the terminal. [`App`] is the review's state
 //! ([`session::App`], which it derefs to) and what only the terminal keeps:
-//! the colours, the pictures it can draw, where each clickable thing was
+//! the colours, where each clickable thing was
 //! drawn, the screen as drawn and the text marked with the mouse. Terminal
 //! keys and mouse events come in here.
 
@@ -11,7 +11,6 @@ use std::time::Instant;
 use crossterm::event::{Event, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
-use super::picture::Pictures;
 use super::select;
 use super::theme::Theme;
 use crate::config::Config;
@@ -45,15 +44,15 @@ pub enum Target {
     /// The question on the unit view's Tests tile: a click has the agent
     /// read the tests teer found.
     ReadTests,
+    /// A question the ask tile offers, by its place in
+    /// [`session::App::suggestions`]: a click asks it.
+    Suggest(usize),
 }
 
 pub struct App {
     /// The review and everything done to it.
     pub core: session::App,
     pub theme: Theme,
-    /// Draws Visualize pictures when the terminal can show images (set by
-    /// the runtime after asking it); `None` keeps the text list.
-    pub pictures: Option<Pictures>,
 
     // Written while drawing.
     pub targets: RefCell<Vec<(Rect, Target)>>,
@@ -97,7 +96,6 @@ impl App {
         App {
             theme: Theme::new(core.cfg.theme),
             core,
-            pictures: None,
             targets: RefCell::new(Vec::new()),
             text_areas: RefCell::new(Vec::new()),
             shown: RefCell::default(),
@@ -229,6 +227,7 @@ impl App {
                         | Target::AskLink(_)
                         | Target::Note(_)
                         | Target::ReadTests
+                        | Target::Suggest(_)
                 )
             );
             if self.double_click(m.column, m.row) && !button {
@@ -246,7 +245,7 @@ impl App {
                     // A link is in the ask tile.
                     let over = match hit {
                         Some(Target::Panel(p)) => Some(p),
-                        Some(Target::AskLink(_)) => Some(Panel::Ask),
+                        Some(Target::AskLink(_) | Target::Suggest(_)) => Some(Panel::Ask),
                         _ => None,
                     };
                     return self.unit_wheel(over, by);
@@ -286,6 +285,7 @@ impl App {
                         Vec::new()
                     }
                     Some(Target::ReadTests) => self.read_tests(),
+                    Some(Target::Suggest(i)) => self.take_suggestion(i),
                     Some(Target::Panel(p)) => {
                         self.unit_click_tile(Some(p));
                         Vec::new()

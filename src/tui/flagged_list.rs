@@ -379,6 +379,7 @@ mod tests {
             history: Default::default(),
             branch: None,
             cursor: None,
+            mode: None,
         };
         let mut a = App::new(review, Config::default(), Keymap::default());
         a.has_agent = true;

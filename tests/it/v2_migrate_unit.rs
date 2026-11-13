@@ -275,9 +275,7 @@ fn the_help_groups_the_queues_keys() {
         ("a f", "accept / flag the unit"),
         ("V", "select lines"),
         ("l/⏎", "open"),
-        ("K", "ask about the unit"),
         ("␣t", "tests that cover this unit"),
-        ("za", "show units accepted for you"),
         ("␣s", "settings"),
         (":w", "finish"),
         ("q/:q", "close; in the list, quit"),
@@ -299,11 +297,10 @@ fn the_help_groups_the_unit_views_keys() {
         "{s}"
     );
     for (keys, what) in [
-        ("]c [c", "next / previous hunk"),
         ("h/esc", "back"),
-        ("gx", "open the picture in the browser"),
+        ("␣t", "tests that cover this unit"),
         ("␣s", "settings"),
-        (":e!", "re-run and reset every decision"),
+        (":e", "re-run, decisions kept"),
     ] {
         assert!(has_row(&s, keys, what), "{keys}  {what}:\n{s}");
     }
@@ -351,7 +348,8 @@ fn the_help_shows_rebound_and_v1_keys() {
     ]);
     let (keys, _) = Keymap::new(&over, 1000).unwrap();
     let mut d = Driver::with(review(units(6)), keys);
-    d.keys("?");
+    // A note, so the notes have something to list.
+    d.keys("ia note<cr>?");
     let s = d.render(160, 50);
     assert!(has_row(&s, "e f", "accept / flag the unit"), "{s}");
     assert!(has_row(&s, "␣N", "every note"), "{s}");
@@ -388,7 +386,11 @@ fn teer_help_lists_only_the_v2_surface() {
             .filter_map(|l| l.split_whitespace().next().map(String::from))
             .collect()
     };
-    assert_eq!(section("Commands"), vec!["pr", "notes", "app"], "{help}");
+    assert_eq!(
+        section("Commands"),
+        vec!["review", "security", "pr", "notes", "app"],
+        "{help}"
+    );
     assert_eq!(
         section("Options"),
         vec!["--base", "--json", "--no-agent", "-h,"],

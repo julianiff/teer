@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use common::v2::{Driver, review, unit, units};
 use teer::keymap::{Action, KeySpec, Keymap, Trigger};
-use teer::review::model::{Change, Decision, DiveKind, DiveResult, Marker, Range, Risk, Visual};
+use teer::review::model::{Change, Decision, DiveKind, DiveResult, Marker, Range, Risk};
 use teer::session::app::{Effect, Grouping, JumpKind, Overlay, Screen};
 use teer::session::unit::Panel;
 
@@ -547,32 +547,6 @@ fn gf_opens_the_editor_at_the_unit() {
 }
 
 #[test]
-fn gx_opens_the_picture_or_says_there_is_none() {
-    let mut d = Driver::new(3);
-    assert!(d.keys("gx").is_empty());
-    assert!(!d.status().is_empty(), "says why nothing opened");
-    let u = d.app.review.unit_mut("u0").unwrap();
-    u.dive.results.insert(
-        DiveKind::Visualize,
-        DiveResult {
-            visual: Some(Visual {
-                claim: "Orders flow to the payment.".into(),
-                nodes: Vec::new(),
-                edges: Vec::new(),
-                path: PathBuf::from("/v2/u0.html"),
-            }),
-            ..Default::default()
-        },
-    );
-    assert_eq!(
-        d.keys("gx"),
-        vec![Effect::OpenVisual {
-            unit_id: "u0".into()
-        }]
-    );
-}
-
-#[test]
 fn za_says_when_nothing_is_accepted_for_you() {
     let mut d = Driver::new(3);
     assert!(d.keys("za").is_empty());
@@ -585,8 +559,8 @@ fn za_says_when_nothing_is_accepted_for_you() {
 fn leader_tools_on_the_queue_open_the_unit_view_with_that_panel() {
     for (keys, kind) in [
         ("<space>t", DiveKind::Tests),
-        ("<space>r", DiveKind::Behavior),
-        ("<space>v", DiveKind::Visualize),
+        ("<space>x", DiveKind::Security),
+        ("<space>x", DiveKind::Security),
         ("<space>x", DiveKind::Security),
     ] {
         // Any unit, flagged or not; old against new and the diagram need
@@ -605,20 +579,20 @@ fn leader_tools_on_the_queue_open_the_unit_view_with_that_panel() {
 
 #[test]
 fn the_v1_tile_keys_are_gone_from_the_queue_and_the_unit_view() {
-    // v1's tiles: what to do (`␣w`) and the second model (`␣m`). (`␣a`,
-    // once the agent reading the tests, asks for advice now.)
-    for keys in ["<space>w", "<space>m"] {
-        let mut d = Driver::of(units(3).into_iter().map(described).collect());
-        d.app.has_agent = true;
-        d.app.review.agent_session = Some(teer::review::model::SessionRef::default());
-        assert!(d.keys(keys).is_empty(), "{keys}");
-        assert_eq!(d.screen(), Screen::Queue, "{keys}");
-        assert_eq!(d.decisions(), vec![P, P, P], "{keys}");
-        d.keys("l");
-        assert_eq!(d.screen(), Screen::Unit, "{keys}");
-        assert!(d.keys(keys).is_empty(), "{keys}");
-        assert_eq!(d.app.unit.panel, None, "{keys}");
-    }
+    // v1's tile: what to do (`␣w`). (`␣a`, once the agent reading the
+    // tests, asks for advice now; `␣m`, once the second model, picks the
+    // mode.)
+    let keys = "<space>w";
+    let mut d = Driver::of(units(3).into_iter().map(described).collect());
+    d.app.has_agent = true;
+    d.app.review.agent_session = Some(teer::review::model::SessionRef::default());
+    assert!(d.keys(keys).is_empty(), "{keys}");
+    assert_eq!(d.screen(), Screen::Queue, "{keys}");
+    assert_eq!(d.decisions(), vec![P, P, P], "{keys}");
+    d.keys("l");
+    assert_eq!(d.screen(), Screen::Unit, "{keys}");
+    assert!(d.keys(keys).is_empty(), "{keys}");
+    assert_eq!(d.app.unit.panel, None, "{keys}");
 }
 
 #[test]
@@ -1017,11 +991,11 @@ fn tile_keys_move_the_focus_and_zoom_in_the_unit_view_only() {
         assert!(d.keys(keys).is_empty(), "{keys}");
         assert_eq!((d.screen(), d.sel()), (Screen::Queue, 0), "{keys}");
     }
-    d.keys("<space>t<space>r");
+    d.keys("<space>t<space>x");
     assert_eq!(d.screen(), Screen::Unit);
-    let rec = Panel::Recommend;
+    let rec = Panel::Ask;
     let tests = Panel::Tool(DiveKind::Tests);
-    let run = Panel::Tool(DiveKind::Behavior);
+    let run = Panel::Tool(DiveKind::Security);
     // The advice tile is open from the start.
     assert_eq!(d.app.unit.tiles, [rec, tests, run]);
     for (keys, focus) in [
@@ -1063,14 +1037,14 @@ fn space_a_asks_for_advice_from_the_queue_and_the_unit_view_only_when_pressed() 
             .count()
     };
     assert_eq!(asks(&d.keys("l")), 0, "opening asks nothing");
-    assert_eq!(asks(&d.keys("<space>a")), 1);
-    assert_eq!(d.app.unit.panel, Some(Panel::Recommend));
+    assert_eq!(asks(&d.keys("K<cr>")), 1);
+    assert_eq!(d.app.unit.panel, Some(Panel::Ask));
     d.keys("hh");
     assert_eq!(d.screen(), Screen::Queue);
     // From the queue: the unit view on the next unit, asking.
     d.keys("j");
     let next = d.app.selected_id().unwrap();
-    assert_eq!(asks(&d.keys("<space>a")), 1);
+    assert_eq!(asks(&d.keys("K<cr>")), 1);
     assert_eq!(d.screen(), Screen::Unit);
     assert_eq!(d.app.unit.id, next);
 }
@@ -1132,6 +1106,18 @@ fn zf_switches_between_by_unit_and_by_file() {
     assert_eq!(d.app.grouping, Grouping::File);
     d.keys("zf");
     assert_eq!(d.app.grouping, Grouping::Unit);
+}
+
+#[test]
+fn space_m_opens_the_mode_picker_and_enter_takes_the_mode() {
+    let mut d = Driver::new(3);
+    assert!(d.keys("<space>m").is_empty());
+    // Every tool until a mode is named: the picker is on `all`, the last.
+    assert_eq!(*d.overlay(), Overlay::Mode { sel: 2 });
+    assert_eq!(d.keys("gg"), vec![]);
+    assert_eq!(d.keys("<cr>"), vec![Effect::Save]);
+    assert_eq!(d.app.mode, teer::mode::Mode::Review);
+    assert_eq!(*d.overlay(), Overlay::None);
 }
 
 // ---- The keymap's modes ---------------------------------------------------------

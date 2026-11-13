@@ -102,7 +102,7 @@ fn a_prefix_shows_each_key_that_can_follow() {
     assert!(
         line.contains(
             "g  g first unit · d what this unit calls · r what calls this unit · \
-             f open in the editor · x open the picture in the browser"
+             f open in the editor"
         ),
         "{line}"
     );
@@ -116,10 +116,7 @@ fn a_prefix_shows_each_key_that_can_follow() {
     let (mut app, _repo) = self::app();
     feed(&mut app, "<space>");
     let line = bar(&app, 200);
-    assert!(
-        line.contains("␣  a advice: what to do about the unit · t tests that cover this unit"),
-        "{line}"
-    );
+    assert!(line.contains("␣  t tests that cover this unit"), "{line}");
 
     // In the unit view: its tiles too.
     let (mut app, _repo) = self::app();
@@ -230,11 +227,8 @@ fn the_help_lists_the_queues_keys_from_the_keymap() {
         "j/↓ k/↑  move down / up",
         "gg/home G/end  first / last unit",
         "a f  accept / flag the unit",
-        "A F  accept / flag the file's pending units",
         "V  select lines",
-        "u ^r  undo the last decision / redo",
         "␣t  tests that cover this unit",
-        ":e!  re-run and reset every decision",
         "zf  list by file or by level",
         "any key closes",
     ] {
@@ -252,7 +246,7 @@ fn the_help_follows_the_screen() {
     app.overlay = Overlay::Help;
     app.screen = Screen::Unit;
     let screen = text(&app, 160, 50);
-    for want in ["keys · unit", "]c [c  next / previous hunk"] {
+    for want in ["keys · unit", "h/esc  back"] {
         assert!(screen.contains(want), "{want}:\n{screen}");
     }
     assert!(!screen.contains("list by file or by level"), "{screen}");

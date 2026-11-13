@@ -1,6 +1,6 @@
 # teer features
 
-[how it works](#how-it-works) · [start](#start) · [agents](#agents) · [the queue](#the-queue) · [the unit view](#the-unit-view) · [security](#security) · [proposed changes](#proposed-changes) · [send to your agent](#send-to-your-agent) · [finish](#finish) · [the fix loop](#the-fix-loop) · [notes](#notes) · [keys](#keys) · [config](#config) · [safety](#safety) · [limits](#limits)
+[how it works](#how-it-works) · [start](#start) · [modes](#modes) · [agents](#agents) · [the queue](#the-queue) · [the unit view](#the-unit-view) · [security](#security) · [proposed changes](#proposed-changes) · [send to your agent](#send-to-your-agent) · [finish](#finish) · [the fix loop](#the-fix-loop) · [notes](#notes) · [keys](#keys) · [config](#config) · [safety](#safety) · [limits](#limits)
 
 ## how it works
 
@@ -41,6 +41,7 @@ besides the rule that set its level, a unit can have reasons to look, each a sen
 | `teer <url>` | a github pull request of this repo |
 | `teer 482` | pull request 482 of this repo |
 | `teer pr` | pick a pr waiting for your review, assigned to you, or yours |
+| `teer review` · `teer security` | the same, in that [mode](#modes); each takes a pr (`teer security 482`) and `--base` |
 | `teer notes [url]` | print the notes of the last review as markdown |
 | `teer notes --sarif [url]` | print the last review's security facts and findings as sarif |
 
@@ -58,6 +59,45 @@ besides the rule that set its level, a unit can have reasons to look, each a sen
 **the session that wrote it** — with claude code, teer looks for the session that made the change: the newest one in this repo that edited the changed files in the last 24 hours. `K` asks a fork of it, which knows why the code changed, and your notes go to a fork of it too. `--session <id>` names one instead.
 
 **first start** — without a config, teer asks which agent and models to use, then goes straight on into the review. `teer setup`, or `<space>s` in a review, changes them later.
+
+## modes
+
+a review is for one thing, and teer keeps to the tools for it. the header names the mode and the key that changes it (`review ␣m`; a click on it works too). a key of a tool the mode leaves out does nothing but say so, and the help (`?`), the keys tile and the prefix hints don't list it.
+
+| mode | for | tools |
+| --- | --- | --- |
+| `review` | what the change does, and whether it is right: yours, your agent's, or a pull request | what changed, written into the code · ask `K`, which offers the advice · tests `<space>t` · proposed changes `<space>e` `p` `P` · commits `<space>c` · send to your agent `s` |
+| `security` | how the change can be abused, and nothing else | the [security order](#security) with its attack-surface card · the risks written into the code · ask `K`, which offers the checks that follow each risk up · the full check `<space>x` · prove `<space>p` · proposed changes · send to your agent |
+| `all` | every tool at once | all of the above, and `zs` |
+
+both modes work the same way: comments in the code, and one tile where the agent is asked, which offers the questions worth asking next. what the comments say and what the tile offers is the mode's.
+
+every mode has the queue, accept and flag, notes, undo, find, `gd` `gr` `gf`, the flagged list, `:w` and the fix loop. security facts stay reasons under "why this level" in every mode: a removed auth check still puts a unit on top in `review`.
+
+**which mode** — the first that applies:
+
+1. the command: `teer review`, `teer security`.
+2. the mode you chose for this review before: it is saved with it.
+3. `mode` in the config (`mode = "all"` for everything, always).
+4. else `review`.
+
+**`<space>m`** lists the modes with what each is for; `enter` takes one, `esc` leaves. the cursor stays on its unit, and the unit view keeps only the new mode's tile.
+
+**comments in the code** follow the mode, each a small card under the rows it cites, its title on the top border in the colour of what it weighs.
+
+- `review`: what the unit now does. each statement under its risk (`╭ medium · disputed ─╮`, with the second model's reason), then a card for what the description missed, what is expensive to undo, what the author didn't mention, and each case no test covers (once the tests tile was asked).
+- `security`: only what can be abused, and no statement. `╭ possible · auth · medium ─╮` is a risk the model that describes the units saw in this one, from the attacker's side ("a caller can pass any asset id"): a place to look, not a finding, and it raises no level. a card for each security fact teer found itself. after the full check, each finding at its `source`, its `hop 1/2` and its `sink`, with what is missing, the path and the proof. a unit with no risk has no card.
+- `all`: review's cards, then security's.
+
+**asking** is the same in every mode: `K` opens the ask tile, and over the question line it lists what is worth asking next, numbered. `enter` on an empty question asks the first, a number and `enter` that one, a click works too; anything else you type is your own question.
+
+- `review` offers the advice: what to do about the unit, step by step.
+- `security` offers the checks that follow up each risk in the code ("which callers check that the user owns the asset?"), written by the model that saw the risk, and last the full check of every path into the unit (the security tile). an answer starts with its verdict: `Holds:` (the control is there, with its lines), `Open:` (nothing stops it) or `Unclear:`.
+- every answer says what it leaves open: those questions are offered next, first in the list. so you follow one risk as deep as it is worth, and leave the others alone.
+
+the full check is never started by a bare `enter`: it takes its number, or `<space>x`.
+
+in `security` the tile is open from the start with teer's facts, and nothing is asked: `<space>x` asks the agent. `enabled = false` in `security.toml` leaves the mode without its order and tile.
 
 ## agents
 
@@ -110,29 +150,26 @@ moving: `n` `N` go to the next and previous pending unit, `]f` `[f` to the next 
 3. **what changed** — the summary, then the diff in its box with each statement under the lines it cites. `]c` `[c` jump between hunks.
 4. **second model** — its verdict on every statement, only when it disputes one.
 
-beside the text, two tiles are open from the start:
+beside the text, two tiles are open from the start (in the `security` [mode](#modes), the security tile in place of the ask tile):
 
-- **advice** — what the agent says to do about the unit: concrete steps, most important first, each with its reason. nothing is asked until you say so: `<space>a` (here or from the queue), `enter` on the tile, or a click on its question. the answer is kept with the unit until its code changes; who wrote it is on the tile's bottom edge.
-- **keys** — what you can do here, by group (decide, look closer, move, finish). click one to run it; `?` lists every key.
+- **ask about it** — the agent on this unit, in one tile, open from the start. nothing is asked until you say so. over the question line it lists what is worth asking next (see [modes](#modes)): in a review the **advice** (what to do about the unit, concrete steps, most important first, each with its reason), in security the checks that follow the risks up. `enter` on the tile or on an empty question asks the first, a number and `enter` another; `K` types any other question. the advice stays on top, with who wrote it; your questions and their answers follow under it. all of it is kept with the unit until its code changes.
+- **keys** — what you can do here, by group (decide, look closer, move, finish). click one to run it; `?` lists what does something right now.
 
-with `--no-agent`, the second model and the advice are left out, and so are the keys that need an agent.
+with `--no-agent`, the second model and the ask tile are left out, and so are the keys that need an agent.
 
-each of these opens a tile, tmux style, next to the ones already open: the text keeps a tall column on the left (on top in a narrow terminal), the tiles share the rest in the order you opened them, the keys tile under them. the new tile gets the focus, and the scroll keys go to whatever has it. `tab` `shift+tab` (`gt` `gT`) move the focus, the text among the tiles; `zz` zooms what has it; `h` closes it. the same key on an open tile gives it the focus, and in focus closes it:
+each of these opens a tile (the ones the [mode](#modes) has), tmux style, next to the ones already open: the text keeps a tall column on the left (on top in a narrow terminal), the tiles share the rest in the order you opened them, the keys tile under them. the new tile gets the focus, and the scroll keys go to whatever has it. `tab` `shift+tab` (`gt` `gT`) move the focus, the text among the tiles; `zz` zooms what has it; `h` closes it. the same key on an open tile gives it the focus, and in focus closes it:
 
 | | |
 | --- | --- |
-| `<space>a` | the advice, asked for now (see above). in focus with an answer, closes it |
 | `K` | ask anything; "this" is the unit (from the queue, `K` opens it first). while the agent works you see each step it takes (the file it reads, what it searches), then the answer as it's written (claude code and model apis; codex shows the steps and the answer once done). the answer brings the code it talks about and the units it relates to: `tab` moves to them, `enter` opens one. follow-ups stay in the tile; the conversation is kept with the unit. `esc` stops typing and leaves the tile open; `K` or `i` types again |
 | `<space>t` | the tests that reach the unit, found by teer at once without an agent. with one, the tile then asks whether the agent reads them: `enter` (or a click on the question) and it says what each checks, and the dangerous cases none covers. with none found, it offers to look for tests itself |
-| `<space>r` | old and new side by side: the agent writes a small program, teer runs it before and after the change in a sandbox, then checks the statements against the runs and whether your tests notice the change. macos only |
-| `<space>v` | what talks to the unit and what the change adds or removes, as a diagram in the terminal (kitty, ghostty, iterm2, sixel). `gx` opens it in the browser |
 | `<space>x` | security: how the change can be abused, each way with its path, checked by a second model; `<space>p` then runs each attacker's case old against new. see [security](#security) |
 | `<space>e` | the agent proposes a change, shown as hunks under the code change; `p` puts one in, `P` all. see [proposed changes](#proposed-changes) |
 | `gd` | what the unit calls: in the review, a list to jump to; outside it, the definition, read-only |
 | `gr` | what calls the unit, to jump to |
 | `gf` | your editor, at the unit's first changed line |
 
-`a` `f` `A` `F` `u` `.` work as in the queue; after `a` or `f` the next pending unit opens here. `n` `N` move without deciding, and close the tiles but the advice. `h` on the text goes back to the queue, on the unit you were looking at.
+`a` `f` `A` `F` `u` `.` work as in the queue; after `a` or `f` the next pending unit opens here. `n` `N` move without deciding, and close the tiles but the first one. `h` on the text goes back to the queue, on the unit you were looking at.
 
 **flagged units** — `<space>f`, here or in the queue, lists every unit you flagged one after another, each as the queue's preview shows it: why it has its level, the agent's summary, the whole change in its box with the statements written in, your note under it. one is selected, with the `▌` bar and a background behind it. `j` `k` (or `n` `N`) select the next and previous one and scroll it to the top, a click selects one, `]c` `[c` jump from hunk to hunk, `<c-d>` `<c-u>` scroll. `l` or `enter` looks closer at the selected one (`h` comes back), `a` accepts it and it leaves the list, `i` writes its note, `h` or `<space>f` goes back.
 
@@ -219,13 +256,11 @@ what it drops is counted and logged to `teer.log`. a hunk whose file has a new s
 
 **what is sent.** the tile in focus decides:
 
-- **advice**: its text and sources
 - **security**: the findings that stand, each with its path from source to sink, what's missing and the exploit; with none standing, teer's facts
 - **tests**: the dangerous cases no test covers, as "add tests that cover these"
-- **old vs new**: the statements the runs disprove and the cases that surprised
-- **ask**: the last answer with its question
+- **ask about it**: the last answer with its question; with no question yet, the advice and its sources
 
-the message names the review and the unit (`file:lines`) and ends with "change the code to address this. keep it small and say what you changed, or why not." a tile with nothing yet, the diagram, and the text itself send nothing. on a pull request nothing is sent: `:w` posts the review.
+the message names the review and the unit (`file:lines`) and ends with "change the code to address this. keep it small and say what you changed, or why not." a tile with nothing yet and the text itself send nothing. on a pull request nothing is sent: `:w` posts the review.
 
 **the picker.** the sessions running in this repository, most recently active first: agent, name, idle or busy, how long since active, its folder when not the root. the one that wrote the change is chosen first, else the one you chose last. `enter` sends, `esc` cancels; the bottom shows the start of the message.
 
@@ -322,15 +357,11 @@ keys follow neovim, and a key does the same on every screen. a prefix (`g`, `]`,
 | `gd` | `goto.definition` | what this unit calls |
 | `gr` | `goto.callers` | what calls this unit |
 | `gf` | `goto.editor` | open in the editor |
-| `gx` | `goto.browser` | open the picture in the browser |
 | `za` | `toggle.auto_accepted` | show units accepted for you |
 | `zf` | `toggle.by_file` | list by file or by level |
 | `zz` | `toggle.zoom` | zoom the tile in focus |
 | `zs` | `toggle.security` | list by level or by exposure |
-| `<space>a` | `tool.advice` | advice: what to do about the unit |
 | `<space>t` | `tool.tests` | tests that cover this unit |
-| `<space>r` | `tool.run_old_new` | run old and new |
-| `<space>v` | `tool.diagram` | diagram of the change |
 | `<space>x` | `tool.security` | security: how the change can be abused |
 | `<space>e` | `tool.fix` | propose a change: the agent writes it, teer checks it |
 | `p` | `fix.apply` | put the proposed hunk into the code |
@@ -341,6 +372,7 @@ keys follow neovim, and a key does the same on every screen. a prefix (`g`, `]`,
 | `<space>n` | `tool.notes` | every note |
 | `<space>f` | `tool.flagged` | flagged units, one after another |
 | `<space>s` | `tool.settings` | settings |
+| `<space>m` | `tool.mode` | mode: review or security |
 | `:app` | `finish.app` | open the review in Teer.app |
 | `:w` | `finish.open` | finish |
 | `y` | `finish.yank` | copy the notes |
@@ -350,7 +382,7 @@ keys follow neovim, and a key does the same on every screen. a prefix (`g`, `]`,
 | `?` | `help.open` | keys |
 | `d` | `note.delete` | delete the note |
 
-most keys work in the queue and the unit view alike. `]c` `[c` work in the unit view and the flagged list; `gx`, the tile keys and `zz` are the unit view's, `V` `za` `zf` the queue's; `y` works on the `:w` sheet and in the notes, `d` in the notes. `?` shows the keys of the screen you're on, as you bound them.
+most keys work in the queue and the unit view alike. `]c` `[c` work in the unit view and the flagged list; the tile keys and `zz` are the unit view's, `V` `za` `zf` the queue's; `y` works on the `:w` sheet and in the notes, `d` in the notes. `?` shows the keys of the screen you're on, as you bound them, and only the ones that do something right now: no undo with nothing to undo, no `p` without a proposed hunk, no tile keys with no tile open, nothing that needs an agent without one. the table above is the whole list.
 
 typing a note, a question or a message, `enter` saves, `esc` cancels and `<c-u>` clears the line. a yes/no question takes `y` or `enter` for yes, any other key for no. `<c-c>` quits from anywhere, saved.
 
@@ -394,9 +426,9 @@ second_opinion = false
 | `concurrency` | `4` | agent requests at once |
 | `large_review` | `150` | above this many units, a file is described when you reach it |
 | `dive_web` | `true` | the advice and `K` may search the web, after asking once; never for a pr |
-| `images` | `true` | draw diagrams in the terminal |
-| `behavior_timeout` | `120` | seconds per old or new run of `<space>r` |
+| `behavior_timeout` | `120` | seconds per old or new run of a security proof (`<space>p`) |
 | `timeoutlen` | `1000` | milliseconds a prefix waits for the next key |
+| `mode` | `review` | the [mode](#modes) a review opens in: `review`, `security` or `all` |
 | `[fix_loop]` | | `quiet_seconds` (`5`): after you copied the notes, how long the files must be quiet before teer reviews again |
 | `[keys]` | | `"action.id" = "key"` or a list, see [keys](#keys) |
 
@@ -417,21 +449,20 @@ editor = "zed --wait {file}:{line}"           # zed
 - **teer writes only what you put in.** a proposed change is text the agent answered with. teer writes it to your working tree only on `p` or `P` and your `y`, only files inside the repository (never `.git`, never through a symlink), all of them or none, and never for a pull request.
 - **the fix loop is your agent.** `:w` opens claude code or codex in your terminal as if you had started it, with its usual permissions. never for a pull request.
 - **pull requests are untrusted.** their own checkout, no web, and the repo's agent instructions (`CLAUDE.md`, `AGENTS.md`, skills, settings) aren't loaded.
-- **code runs only in `<space>r`**, on a separate checkout, in a macos sandbox: no network, no writes outside the checkout, no reads in your home folder beyond the checkout and language toolchains, no keys or tokens in its environment.
+- **code runs only in `<space>p`** (a security proof), on a separate checkout, in a macos sandbox: no network, no writes outside the checkout, no reads in your home folder beyond the checkout and language toolchains, no keys or tokens in its environment.
 - **git runs nothing of the repo's.** hooks, fsmonitor and lfs filters are off for every git command teer runs, except the commit you confirm.
 - **security rules are yours.** `security.toml` is read from teer's config folder, never from the repository under review, so a pull request can't switch off its own checks. facts and imported findings only ever raise a level.
 - **nothing is posted without you.** github sees a review only after `enter` on the `:w` sheet.
-- **what leaves your machine** is the changed code, plus what the agent reads in the repo to answer you. reviews, `teer.log`, diagrams and probe runs stay in `~/.local/share/teer`.
+- **what leaves your machine** is the changed code, plus what the agent reads in the repo to answer you. reviews, `teer.log` and probe runs stay in `~/.local/share/teer`.
 
 ## limits
 
-- `<space>r` runs on macos only, with the dependencies your checkout has installed.
 - codex's read-only sandbox can read the whole disk, not only the repo. for untrusted prs, prefer claude code or an api.
 - the model apis are tested against a fake server, not yet live.
 - the small default model can miss a change; `prepare_model = "sonnet"` trades a little speed for depth.
 - inline pr comments are placed with teer's own diff. when github rejects a line, teer posts the summary only.
 - web search is told to send generic queries only; teer doesn't filter them.
 - security facts come from a catalog of names per language (php, typescript/javascript, go; rust and python get secrets, packages, ci and config only). a check done somewhere else (middleware, a voter elsewhere) can show as gone; the security tile is where that gets sorted out.
-- prove it runs on macos only, like `<space>r`, and only for units that run on their own.
+- prove it runs on macos only, with the dependencies your checkout has installed, and only for units that run on their own.
 - sending to claude code uses its local messaging socket, which isn't documented and may change with an update; the clipboard is the fallback. codex picks a queued message up when the thread next takes input; that a running codex tui does so on its own isn't confirmed.
 - code-scanning alerts: the first 100 per pull request. in a pr review, sarif paths must be relative to the repo.

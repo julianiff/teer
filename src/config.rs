@@ -6,7 +6,6 @@
 //! languages = ["rust", "python", "typescript", "javascript", "php", "go"]
 //! large_review = 150        # above this many units, prepare lazily per file
 //! dive_web = true           # a question in the unit view may search the web (asks once per session)
-//! images = true             # draw Visualize pictures in the terminal when it can show images
 //! provider = "claude"       # claude | codex | api; `teer setup` picks it (asked on first start)
 //! prepare_model = "haiku"   # fast model that describes units; "default" = the CLI's own
 //! prepare_effort = "low"    # low | medium | high | xhigh | max | default
@@ -242,9 +241,6 @@ pub struct Config {
     pub large_review: usize,
     /// Whether the unit view's questions that can use web search may do so.
     pub dive_web: bool,
-    /// Draw Visualize pictures inside the terminal when it supports images
-    /// (asked once at start-up); false keeps the text list.
-    pub images: bool,
     /// What prepares reviews. `None` until `teer setup` ran, which teer
     /// offers on the first start in a terminal.
     pub provider: Option<Provider>,
@@ -277,6 +273,10 @@ pub struct Config {
     pub fix_loop: FixLoop,
     /// When the agent proposes a change without being asked.
     pub propose_fixes: ProposeFixes,
+    /// The mode a review opens in when the command line names none and
+    /// the reviewer chose none for it; unset, a pull request opens in
+    /// `review` and your own changes in `check` (see [`crate::mode`]).
+    pub mode: Option<crate::mode::Mode>,
     /// Action id to its keys (see [`crate::keymap`]).
     pub keys: HashMap<String, KeySpec>,
 }
@@ -289,7 +289,6 @@ impl Default for Config {
             languages: None,
             large_review: 150,
             dive_web: true,
-            images: true,
             provider: None,
             api: ApiConfig::default(),
             prepare_model: None,
@@ -304,6 +303,7 @@ impl Default for Config {
             timeoutlen: 1000,
             fix_loop: FixLoop::default(),
             propose_fixes: ProposeFixes::default(),
+            mode: None,
             keys: HashMap::new(),
         }
     }
@@ -591,13 +591,6 @@ mod tests {
         let c: Config = toml::from_str("auto_accept = \"no_behavior_change\"\n").unwrap();
         assert_eq!(c.auto_accept, AutoAccept::NoBehaviorChange);
         assert!(toml::from_str::<Config>("auto_accept = \"all\"\n").is_err());
-    }
-
-    #[test]
-    fn images_default_on_and_can_be_disabled() {
-        assert!(Config::default().images);
-        let c: Config = toml::from_str("images = false\n").unwrap();
-        assert!(!c.images);
     }
 
     #[test]

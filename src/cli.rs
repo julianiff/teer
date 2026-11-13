@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 use crate::config::{Config, Provider};
 use crate::git::{self, Target};
 use crate::keymap::{Action, Keymap};
+use crate::mode::Mode;
 use crate::review::model::{BranchNames, Review, SessionRef};
 use crate::review::{BuildOptions, build_review, store};
 use crate::start::{
@@ -30,8 +31,8 @@ underneath (Claude Code, Codex, or a model API with your key; teer asks which on
 `teer setup` changes it); you read it in the terminal.\n\n\
 Plain `teer` works out what to review: your uncommitted changes (staged, unstaged or untracked); \
 with none, this branch since its base; on the default branch with none, there is nothing to review.",
-    after_help = "Examples:\n  teer                 review your changes, or this branch since its base\n  teer --base main     review this branch since main\n  teer <url>           review a GitHub pull request of this repository (fetched with git)\n  teer 482             review pull request #482 of this repository\n  teer pr              pick a pull request waiting for your review, assigned to you, or yours\n  teer --no-agent      review without an agent: no change statements, no questions\n  teer --json          print the prepared review as JSON and exit\n  teer notes           print your notes from the last review as Markdown, for an agent\n  teer app             open this review in Teer.app, the desktop app\n\nConfig: ~/.config/teer/config.toml   Data: ~/.local/share/teer/",
-    override_usage = "teer [--base <REF>] [--no-agent] [--json]\n       teer <URL>\n       teer pr\n       teer notes\n       teer app",
+    after_help = "Examples:\n  teer                 review your changes, or this branch since its base\n  teer --base main     review this branch since main\n  teer <url>           review a GitHub pull request of this repository (fetched with git)\n  teer 482             review pull request #482 of this repository\n  teer pr              pick a pull request waiting for your review, assigned to you, or yours\n  teer --no-agent      review without an agent: no change statements, no questions\n  teer --json          print the prepared review as JSON and exit\n  teer notes           print your notes from the last review as Markdown, for an agent\n  teer app             open this review in Teer.app, the desktop app\n\nModes (teer keeps to the tools of one; <space>m changes it inside a review):\n  teer review 482      what the change does, and whether it is right (the default)\n  teer security        how the change can be abused, and nothing else\n\nConfig: ~/.config/teer/config.toml   Data: ~/.local/share/teer/",
+    override_usage = "teer [--base <REF>] [--no-agent] [--json]\n       teer <URL>\n       teer review | security [<PR>] [--base <REF>]\n       teer pr\n       teer notes\n       teer app",
     disable_version_flag = true,
     disable_help_subcommand = true
 )]
@@ -77,10 +78,51 @@ pub struct Args {
     /// Print version. Hidden, as `-C` is.
     #[arg(short = 'V', long, hide = true)]
     pub version: bool,
+
+    /// The mode a mode command named (`teer security`), set by
+    /// [`take_mode`]; `None` leaves it to the review and the config.
+    #[arg(skip)]
+    pub mode: Option<Mode>,
+}
+
+/// What a mode command takes: what plain `teer` takes.
+#[derive(Debug, Clone, clap::Args)]
+pub struct ModeArgs {
+    /// A pull request: its URL, or its number in this repository. Without
+    /// one: your changes, or this branch since its base.
+    #[arg(value_name = "PR")]
+    pub target: Option<String>,
+
+    /// Review this branch since its merge base with REF.
+    #[arg(long, value_name = "REF")]
+    pub base: Option<String>,
+
+    /// Another tool's findings as a SARIF file (see `teer --sarif`).
+    #[arg(long, value_name = "FILE", hide = true)]
+    pub sarif: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
+    /// Review a change: what it does, and whether it is right.
+    ///
+    /// The default mode, for your own changes, your agent's and a pull request: what
+    /// each unit now does written into its code, one tile to ask the agent (`K`; it
+    /// offers what to do about the unit), the tests that reach a unit, proposed changes
+    /// (suggestions on a pull request), the commits, and a way to send a result to
+    /// your running agent session.
+    #[command(after_help = "Examples:\n  teer review 482\n  teer review --base main")]
+    Review(ModeArgs),
+    /// Check the change for security problems, and nothing else.
+    ///
+    /// The queue in the security order under the attack-surface card; the risks a unit
+    /// opens written into its code; one tile to ask the agent (`K`), which offers the
+    /// checks that follow each risk up, and after an answer the ones that follow that;
+    /// the full check of every path, findings proven old against new, proposed changes.
+    #[command(
+        after_help = "Examples:\n  teer security\n  teer security 482\n  teer security --sarif codeql.sarif"
+    )]
+    Security(ModeArgs),
     /// Pick a pull request of the current repository to review.
     ///
     /// Lists the open pull requests that wait for your review, are assigned to you, or are
@@ -161,6 +203,22 @@ pub enum PrAction {
     /// hint ([`old_form_hint`]).
     #[command(hide = true, alias = "ls")]
     List,
+}
+
+/// A mode command (`teer security 482 --base main`) as the plain form it
+/// stands for: its mode in `args.mode`, its pull request, base and SARIF
+/// files where plain `teer` has them. Other commands are left alone.
+pub fn take_mode(args: &mut Args) {
+    let (mode, m) = match &args.command {
+        Some(Command::Review(m)) => (Mode::Review, m.clone()),
+        Some(Command::Security(m)) => (Mode::Security, m.clone()),
+        _ => return,
+    };
+    args.command = None;
+    args.mode = Some(mode);
+    args.target = m.target;
+    args.base = m.base.or(args.base.take());
+    args.sarif.extend(m.sarif);
 }
 
 /// The one-line hint for a form v1 had and v2 replaced, which still works
@@ -260,7 +318,16 @@ pub async fn run(args: Args) -> Result<()> {
 }
 
 /// [`run`] with the config at `path`, opening `screens`.
-pub async fn run_on(args: Args, path: &Path, screens: &dyn Screens) -> Result<()> {
+pub async fn run_on(mut args: Args, path: &Path, screens: &dyn Screens) -> Result<()> {
+    if args.target.is_some()
+        && matches!(
+            args.command,
+            Some(Command::Review(_) | Command::Security(_))
+        )
+    {
+        bail!("name the pull request after the mode: `teer review 482`");
+    }
+    take_mode(&mut args);
     if args.version {
         println!("{}", version_text());
         return Ok(());
@@ -317,7 +384,10 @@ pub async fn run_on(args: Args, path: &Path, screens: &dyn Screens) -> Result<()
         (Some(Command::App { pr }), None) => {
             return open_app(&cwd, pr.as_deref(), args.base.as_deref());
         }
-        (Some(Command::Setup | Command::Help { .. }), None) => unreachable!("handled above"),
+        (
+            Some(Command::Setup | Command::Help { .. } | Command::Review(_) | Command::Security(_)),
+            None,
+        ) => unreachable!("handled above"),
         // `teer pr`, `teer pr list` (clap takes no URL with `list`).
         (Some(Command::Pr { url: None, .. }), None) => Start::Pick,
         (Some(Command::Pr { url: Some(u), .. }), None) | (None, Some(u)) => {
@@ -688,6 +758,7 @@ async fn run_review(
             cfg,
             keymap,
             sarif,
+            mode: args.mode,
         })
         .await
 }
@@ -764,6 +835,35 @@ mod tests {
         // Gone with the v1 screens.
         assert!(Args::try_parse_from(["teer", "--swipe"]).is_err());
         assert_eq!(parse(&["--base", "main"]).base.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn a_mode_command_is_plain_teer_in_that_mode() {
+        let mut a = parse(&["security", "482", "--base", "main", "--sarif", "x.sarif"]);
+        take_mode(&mut a);
+        assert!(a.command.is_none());
+        assert_eq!(a.mode, Some(Mode::Security));
+        assert_eq!(a.target.as_deref(), Some("482"));
+        assert_eq!(a.base.as_deref(), Some("main"));
+        assert_eq!(a.sarif, vec![PathBuf::from("x.sarif")]);
+
+        let mut a = parse(&["--base", "dev", "review"]);
+        take_mode(&mut a);
+        assert_eq!(a.mode, Some(Mode::Review));
+        assert_eq!((a.target, a.base.as_deref()), (None, Some("dev")));
+
+        let mut a = parse(&["review"]);
+        take_mode(&mut a);
+        assert_eq!(a.mode, Some(Mode::Review));
+
+        // Other commands and plain teer name no mode.
+        for args in [&["pr"][..], &["notes"], &["482"], &[]] {
+            let mut a = parse(args);
+            let command = a.command.is_some();
+            take_mode(&mut a);
+            assert_eq!(a.mode, None, "{args:?}");
+            assert_eq!(a.command.is_some(), command, "{args:?}");
+        }
     }
 
     #[test]

@@ -11,6 +11,7 @@ expression: json(&app)
     "subject": "your changes",
     "title": null,
     "summary": null,
+    "mode": "all",
     "no_agent": false,
     "agent_note": null,
     "preparing": null,
@@ -485,15 +486,33 @@ expression: json(&app)
         "notes": [
           {
             "after": 2,
-            "statement": 0
+            "title": "high",
+            "risk": "high",
+            "symbol": "+",
+            "text": [
+              "Rejects unsupported currencies. 2 callers don't handle it."
+            ],
+            "cites": "L9-10"
           },
           {
             "after": 4,
-            "statement": 2
+            "title": "low",
+            "risk": "low",
+            "symbol": "−",
+            "text": [
+              "No longer sends the receipt email."
+            ],
+            "cites": "old L10"
           },
           {
             "after": 6,
-            "statement": 1
+            "title": "medium",
+            "risk": "medium",
+            "symbol": "~",
+            "text": [
+              "Saves the payment on the order before returning it, so a failed save now fails the whole charge."
+            ],
+            "cites": "L12"
           }
         ],
         "hunks": [
@@ -508,22 +527,49 @@ expression: json(&app)
     "second": null,
     "tiles": [
       {
-        "id": "Advice",
-        "title": "Advice",
+        "id": "Ask",
+        "title": "Ask",
         "body": {
-          "kind": "Answer",
-          "question": "Recommend",
-          "label": "agent (Claude Code's default model)",
-          "result": null,
-          "svg": null,
-          "waiting": null,
-          "ask": {
-            "keys": "␣a",
-            "action": "tool.advice",
-            "what": "ask the agent what to do about it: concrete steps, most important first, each with its reason"
+          "kind": "Ask",
+          "advice": {
+            "question": "Recommend",
+            "label": "agent (Claude Code's default model)",
+            "result": null,
+            "waiting": null,
+            "ask": null,
+            "none": "No answer. Opening the unit again asks again.",
+            "second": null
           },
-          "none": null,
-          "second": null
+          "suggestions": [
+            {
+              "text": "What should I do about this change, step by step?",
+              "offer": "Advice",
+              "about": ""
+            },
+            {
+              "text": "Check every path into this unit, from its entry points to its sinks",
+              "offer": "Audit",
+              "about": ""
+            }
+          ],
+          "exchanges": [],
+          "draft": "",
+          "max": 500,
+          "link": null,
+          "web_may_ask": true,
+          "label": "agent (Claude Code's default model)",
+          "tools": [
+            {
+              "keys": "␣t",
+              "action": "tool.tests",
+              "what": "Tests: the tests that reach it, found at once; then the agent may read them"
+            },
+            {
+              "keys": "␣x",
+              "action": "tool.security",
+              "what": "Security: how the change can be abused, each way with its path"
+            }
+          ]
         }
       },
       {
@@ -534,7 +580,6 @@ expression: json(&app)
           "question": "Tests",
           "label": "agent (Claude Code's default model)",
           "result": null,
-          "svg": null,
           "waiting": "searching the test files…",
           "ask": null,
           "none": null,
@@ -689,18 +734,6 @@ expression: json(&app)
       "off": false,
       "on": false
     },
-    "tool.advice": {
-      "keys": "␣a",
-      "what": "advice: what to do about the unit",
-      "off": false,
-      "on": null
-    },
-    "tool.diagram": {
-      "keys": "␣v",
-      "what": "diagram of the change",
-      "off": false,
-      "on": null
-    },
     "tool.fix": {
       "keys": "␣e",
       "what": "propose a change: the agent writes it, teer checks it",
@@ -719,6 +752,12 @@ expression: json(&app)
       "off": false,
       "on": null
     },
+    "tool.mode": {
+      "keys": "␣m",
+      "what": "mode: review or security",
+      "off": false,
+      "on": null
+    },
     "tool.notes": {
       "keys": "␣n",
       "what": "every note",
@@ -728,12 +767,6 @@ expression: json(&app)
     "tool.prove": {
       "keys": "␣p",
       "what": "prove the security findings, old against new",
-      "off": false,
-      "on": null
-    },
-    "tool.run_old_new": {
-      "keys": "␣r",
-      "what": "run old and new",
       "off": false,
       "on": null
     },

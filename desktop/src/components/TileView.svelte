@@ -1,10 +1,10 @@
 <script lang="ts">
-  // A tile's inside: an answer (the advice, the tests, old against new,
-  // the diagram, the security findings), the conversation, or what the
+  // A tile's inside: an answer (the tests, the diagram, the security
+  // findings), the advice and the conversation, or what the
   // unit calls outside. Everything the agent wrote is plain text. A tile
   // with a textual result can send it to an agent session (`s`).
   import { api } from "../lib/api";
-  import type { Audit, Cite, Finding, Outcome, ProbeCase, Risk, SecurityClass, Tile } from "../lib/types";
+  import type { Audit, Cite, Finding, Risk, SecurityClass, Tile } from "../lib/types";
   import Act from "./Act.svelte";
   import AskTile from "./AskTile.svelte";
   import Second from "./Second.svelte";
@@ -12,15 +12,6 @@
 
   let { tile, typing }: { tile: Tile; typing: boolean } = $props();
 
-  const dark = window.matchMedia("(prefers-color-scheme: dark)");
-  let isDark = $state(dark.matches);
-  $effect(() => {
-    const f = () => (isDark = dark.matches);
-    dark.addEventListener("change", f);
-    return () => dark.removeEventListener("change", f);
-  });
-
-  const out = (o: Outcome) => (o.kind === "missing" ? "—" : o.kind === "error" ? `error: ${o.text}` : o.text);
   const reach = (r: { how: string; line?: number; via?: string; hops?: number }) =>
     r.how === "calls" ? `calls it at line ${r.line}` : r.how === "through" ? `through ${r.via} (${r.hops} calls)` : "names it";
 
@@ -46,25 +37,20 @@
   const ordered = (fs: Finding[]) =>
     [...fs].sort((a, b) => Number(stands(b)) - Number(stands(a)) || RANK[a.severity] - RANK[b.severity]);
   const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
-  const surprise = (c: ProbeCase) =>
-    (JSON.stringify(c.before) !== JSON.stringify(c.after)) !== (c.expect === "different");
-  // What `s` sends from it: the advice, the findings that stand (else
-  // teer's facts), the gaps no test covers, the surprises, the last answer.
+  // What `s` sends from it: the last answer (else the advice), the
+  // findings that stand (else teer's facts), the gaps no test covers.
   // teer says why when there is nothing after all.
   const sendable = (t: Tile): boolean => {
     const b = t.body;
-    if (b.kind === "Ask") return b.exchanges.some((e) => !!e.answer);
+    // The last answer of the conversation, else the advice.
+    if (b.kind === "Ask") return b.exchanges.some((e) => !!e.answer) || !!b.advice?.result?.text.trim();
     if (b.kind !== "Answer" || b.waiting) return false;
     const r = b.result;
     switch (t.id) {
-      case "Advice":
-        return !!r?.text.trim();
       case "Security":
         return !!r?.audit?.findings.some(stands) || !!b.facts?.length;
       case "Tests":
         return !!r?.coverage?.judged && r.coverage.gaps.length > 0;
-      case "Behavior":
-        return !!r?.behavior?.cases.some(surprise);
       default:
         return false;
     }
@@ -162,31 +148,6 @@
           {plural(au.dropped, "finding", "findings")} dropped: their lines didn't check out (teer.log says which)
         </p>
       {/if}
-    {:else if a.svg}
-      <p>{r.text}</p>
-      <div class="diagram" style={isDark ? a.svg.dark : a.svg.light}>{@html a.svg.svg}</div>
-      <button class="link" onclick={() => api.action("goto.browser")}>Open it in the browser</button>
-    {:else if r.behavior}
-      <p>{r.text}</p>
-      <table>
-        <thead><tr><th>case</th><th>before</th><th>after</th><th></th></tr></thead>
-        <tbody>
-          {#each r.behavior.cases as c, i (i)}
-            {@const changed = JSON.stringify(c.before) !== JSON.stringify(c.after)}
-            {@const surprise = changed !== (c.expect === "different")}
-            <tr class:changed class:surprise>
-              <td><strong>{c.name}</strong><div class="muted small">{c.input}</div></td>
-              <td class="mono">{out(c.before)}</td>
-              <td class="mono">{out(c.after)}</td>
-              <td>{surprise ? "⚠ unexpected" : changed ? "Δ" : "="}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-      {#if r.behavior.tests}
-        <p class="muted small">Project tests: {r.behavior.tests.kind.replaceAll("_", " ")}{"detail" in r.behavior.tests ? ` — ${r.behavior.tests.detail}` : ""}</p>
-      {/if}
-      <p class="muted small mono">{r.behavior.command.join(" ")}</p>
     {:else if r.coverage}
       {#if r.text}<p>{r.text}</p>{/if}
       {#if r.coverage.search && !r.coverage.search.tests.length}
@@ -249,32 +210,6 @@
   }
   .answer {
     white-space: pre-wrap;
-  }
-  .diagram :global(svg) {
-    max-width: 100%;
-    height: auto;
-  }
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 12px;
-  }
-  th {
-    text-align: left;
-    color: var(--muted);
-    font-weight: 500;
-  }
-  td,
-  th {
-    padding: 3px 6px;
-    border-bottom: 1px solid var(--border);
-    vertical-align: top;
-  }
-  tr.changed td:last-child {
-    color: var(--accent);
-  }
-  tr.surprise td:last-child {
-    color: var(--attention);
   }
   h4 {
     font-size: 12px;

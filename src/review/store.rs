@@ -175,6 +175,7 @@ fn read(path: &Path) -> Option<Review> {
     if json.get("version").and_then(Value::as_u64).unwrap_or(0) == 0 {
         migrate_v1(&mut json);
     }
+    drop_removed_answers(&mut json);
     let mut review: Review = serde_json::from_value(json).ok()?;
     // The cursor moves more often than the review is saved.
     if let Ok(id) = std::fs::read_to_string(cursor_path(path)) {
@@ -197,6 +198,22 @@ fn migrate_v1(review: &mut Value) {
         let accepted = u.get("decision").and_then(Value::as_str) == Some("Accepted");
         if resolved && !accepted {
             u["decision"] = Value::from("Investigate");
+        }
+    }
+}
+
+/// Answers of tools teer no longer has (old against new, `Behavior`; the
+/// diagram, `Visualize`) are
+/// left out as a saved review loads: the rest of it stays.
+fn drop_removed_answers(review: &mut Value) {
+    let units = review.get_mut("units").and_then(Value::as_array_mut);
+    for u in units.into_iter().flatten() {
+        if let Some(results) = u
+            .pointer_mut("/dive/results")
+            .and_then(Value::as_object_mut)
+        {
+            results.remove("Behavior");
+            results.remove("Visualize");
         }
     }
 }
@@ -251,6 +268,9 @@ pub fn merge_previous(new: &mut Review, old: &Review) {
     // (else on the first pending ▲: see `App::new`).
     if new.cursor.is_none() {
         new.cursor = old.cursor.clone();
+    }
+    if new.mode.is_none() {
+        new.mode = old.mode;
     }
     if new.agent_session.is_none() {
         new.agent_session = old.agent_session.clone();
@@ -473,6 +493,7 @@ mod tests {
             history: Default::default(),
             branch: None,
             cursor: None,
+            mode: None,
         }
     }
 
@@ -485,8 +506,6 @@ mod tests {
             DiveResult {
                 text: "why".into(),
                 sources: Vec::new(),
-                visual: None,
-                behavior: None,
                 coverage: None,
                 audit: None,
                 proposal: None,
@@ -655,6 +674,19 @@ mod tests {
                 .version,
             CURRENT
         );
+    }
+
+    #[test]
+    fn an_answer_of_a_removed_tool_is_left_out_and_the_review_still_loads() {
+        let r = saved_at("/teer-tests/removed-tool", vec![unit("x")]);
+        let path = save(&r).unwrap();
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        json["units"][0]["dive"]["results"]["Behavior"] =
+            serde_json::json!({"text": "2 cases ran", "sources": [], "behavior": {"cases": []}});
+        write_atomic(&path, &serde_json::to_vec(&json).unwrap()).unwrap();
+        let back = load_latest(&r.repo_root, None).expect("it loads");
+        assert!(back.units[0].dive.results.is_empty());
     }
 
     #[test]

@@ -384,10 +384,8 @@ async fn help_lists_the_queue_keys_and_the_legend() {
         let s = text(&grid(&app, w, h));
         // Every key from the keymap, with what it does.
         for want in [
-            ":e!  re-run and reset every",
             "a f  accept / flag the",
             "n N  next / previous pen",
-            "]f [f  next / previous file",
             "zf  list by file or by",
         ] {
             assert!(s.contains(want), "{w}x{h} missing {want:?}\n{s}");

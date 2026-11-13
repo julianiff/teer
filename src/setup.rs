@@ -179,7 +179,7 @@ pub fn tool_names(cfg: &Config) -> Vec<String> {
 
 /// What is found of each of [`tool_names`]: git teer needs, gh for pull
 /// requests (installed and logged in), the editor of `cfg` for
-/// `goto.editor` in `keys`, the sandbox Behavior runs code in.
+/// `goto.editor` in `keys`, the sandbox the security proofs run code in.
 pub async fn tools(cfg: &Config, keys: &Keymap) -> Vec<Tool> {
     let names = tool_names(cfg);
     let gh_program = crate::approve::Tools::default().gh;
@@ -237,9 +237,9 @@ pub async fn tools(cfg: &Config, keys: &Keymap) -> Vec<Tool> {
             sandbox,
             "not on this system",
             if sandbox {
-                "Behavior runs code in it"
+                "the security proofs run code in it"
             } else {
-                "Behavior runs code only on macOS"
+                "the security proofs run code only on macOS"
             },
         ),
     ]

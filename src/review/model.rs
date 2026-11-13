@@ -111,6 +111,11 @@ pub struct Review {
     /// where it was left (Phase 4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    /// The mode the reviewer chose (`teer security`, `<space>m`), so the
+    /// review resumes in it; `None` goes by what is reviewed (see
+    /// [`crate::mode::Mode::for_review`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<crate::mode::Mode>,
 }
 
 /// A question about the code, asked during the review, and the agent's
@@ -139,6 +144,10 @@ pub struct Answer {
     pub shown: Vec<Shown>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub related: Vec<Related>,
+    /// The questions worth asking next, as the agent sees it: what the ask
+    /// tile offers after this answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next: Vec<String>,
 }
 
 /// Lines of a file an answer shows, as teer read them when the answer came:
@@ -352,11 +361,6 @@ pub enum AcceptedBy {
 pub enum DiveKind {
     /// What should be done about the change, ranked.
     Recommend,
-    /// A picture of what talks to the unit and what the change adds or removes.
-    Visualize,
-    /// The unit run before and after the change on the same inputs, by a
-    /// probe the agent wrote and teer ran in a sandbox.
-    Behavior,
     /// A second model's check of the unit's description (`Unit::checks`).
     /// Only a tab: its answer lives in `Checks::second`, not in `Dive::results`.
     Disagree,
@@ -374,12 +378,6 @@ pub enum DiveKind {
 pub struct DiveResult {
     pub text: String,
     pub sources: Vec<String>,
-    /// The validated picture of a Visualize answer (`text` holds its claim).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub visual: Option<Visual>,
-    /// The table of a Behavior answer (`text` holds its summary).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub behavior: Option<Behavior>,
     /// The covering tests and the gaps of a Tests answer (`text` holds its note).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage: Option<Coverage>,
@@ -519,160 +517,12 @@ impl ProbeCase {
     }
 }
 
-/// What the project's own tests said about a unit: run with the change, and
-/// again with only this unit put back the way it was.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind", content = "detail")]
-pub enum TestCheck {
-    /// They pass with the change and fail without it: they notice it.
-    Guarded,
-    /// They pass either way: no test notices this change.
-    Unguarded,
-    /// They already fail with the change applied (the run's status).
-    FailWithChange(String),
-    /// The agent found no test that exercises the unit (its reason).
-    NoTests(String),
-    /// Nothing ran (a removed unit, or the run couldn't start).
-    NotRun(String),
-}
-
-/// A Behavior answer: every case, the command that ran, and where the probe
-/// and its raw output were saved.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Behavior {
-    pub cases: Vec<ProbeCase>,
-    pub command: Vec<String>,
-    pub dir: PathBuf,
-    /// The statements the cases test, as they read when the probe ran.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub claims: Vec<String>,
-    /// The project's tests with and without this unit's change.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tests: Option<TestCheck>,
-    /// The command those tests ran with.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub test_command: Vec<String>,
-}
-
-/// How the runs bear on one statement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClaimCheck {
-    /// Every case testing it came out as the statement implies.
-    Holds(usize),
-    /// This many of its cases did not.
-    Fails { wrong: usize, of: usize },
-    /// No case tests it.
-    Untested,
-}
-
-impl Behavior {
-    /// Each statement in `claims` against the cases that test it.
-    pub fn claim_checks(&self) -> Vec<(String, ClaimCheck)> {
-        self.claims
-            .iter()
-            .enumerate()
-            .map(|(i, text)| {
-                let cases: Vec<&ProbeCase> =
-                    self.cases.iter().filter(|c| c.claim == i + 1).collect();
-                let wrong = cases.iter().filter(|c| c.surprise()).count();
-                let check = match (cases.len(), wrong) {
-                    (0, _) => ClaimCheck::Untested,
-                    (n, 0) => ClaimCheck::Holds(n),
-                    (n, w) => ClaimCheck::Fails { wrong: w, of: n },
-                };
-                (text.clone(), check)
-            })
-            .collect()
-    }
-
-    pub fn changed(&self) -> usize {
-        self.cases.iter().filter(|c| c.changed()).count()
-    }
-
-    pub fn surprises(&self) -> usize {
-        self.cases.iter().filter(|c| c.surprise()).count()
-    }
-
-    /// One sentence: how many cases ran, changed, and surprised.
-    pub fn summary(&self) -> String {
-        let n = self.cases.len();
-        let s = if n == 1 { "" } else { "s" };
-        let changed = match self.changed() {
-            0 => "none behaves differently".to_string(),
-            c if c == n => "all behave differently".to_string(),
-            c => format!("{c} behave{} differently", if c == 1 { "s" } else { "" }),
-        };
-        let surprises = match self.surprises() {
-            0 => "all as the agent predicted".to_string(),
-            1 => "1 not as the agent predicted".to_string(),
-            k => format!("{k} not as the agent predicted"),
-        };
-        format!("{n} case{s} ran before and after the change: {changed}, {surprises}.")
-    }
-}
-
-/// What a change does to one part of a picture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Delta {
-    Added,
-    Removed,
-    Changed,
-    Unchanged,
-}
-
-impl Delta {
-    pub fn word(self) -> &'static str {
-        match self {
-            Delta::Added => "added",
-            Delta::Removed => "removed",
-            Delta::Changed => "changed",
-            Delta::Unchanged => "unchanged",
-        }
-    }
-}
-
 /// Lines `start..=end` of `file` (relative to the repo root), cited by the agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cite {
     pub file: PathBuf,
     pub start: u32,
     pub end: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VisualNode {
-    pub id: String,
-    pub label: String,
-    pub status: Delta,
-    pub evidence: Vec<Cite>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VisualEdge {
-    pub from: String,
-    pub to: String,
-    /// A short verb: "calls", "writes", "SendMessage".
-    pub label: String,
-    pub status: Delta,
-    pub evidence: Vec<Cite>,
-}
-
-/// A Visualize answer after validation, and where its page was saved.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Visual {
-    /// One sentence saying what the picture shows.
-    pub claim: String,
-    pub nodes: Vec<VisualNode>,
-    pub edges: Vec<VisualEdge>,
-    /// The HTML page in teer's data dir.
-    pub path: PathBuf,
-}
-
-impl Visual {
-    pub fn node(&self, id: &str) -> Option<&VisualNode> {
-        self.nodes.iter().find(|n| n.id == id)
-    }
 }
 
 /// Why undoing a unit after it ships would be costly. Only set when it is.
@@ -779,6 +629,10 @@ pub struct Checks {
     /// (the agent's word, with lines).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unmentioned: Option<Unmentioned>,
+    /// Possible security risks the description's model saw in the unit
+    /// (places to look, with lines; see [`crate::security::Suspect`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suspects: Vec<crate::security::Suspect>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub second: Option<SecondOpinion>,
     /// Why there is no second opinion, when asking for one failed.
@@ -793,6 +647,7 @@ impl Checks {
     pub fn is_empty(&self) -> bool {
         self.cost.is_none()
             && self.unmentioned.is_none()
+            && self.suspects.is_empty()
             && self.second.is_none()
             && self.second_failed.is_none()
     }
@@ -1072,62 +927,15 @@ mod tests {
             DiveResult {
                 text: "t".into(),
                 sources: vec!["s".into()],
-                visual: None,
-                behavior: None,
                 coverage: None,
                 audit: None,
                 proposal: None,
             },
         );
         u.dive.note = "n".into();
-        u.dive_pending.insert(DiveKind::Visualize);
+        u.dive_pending.insert(DiveKind::Tests);
         let back: Unit = serde_json::from_str(&serde_json::to_string(&u).unwrap()).unwrap();
         assert_eq!(back.dive, u.dive);
         assert!(back.dive_pending.is_empty());
-    }
-
-    #[test]
-    fn old_results_load_without_a_visual_and_visuals_round_trip() {
-        let old: DiveResult =
-            serde_json::from_value(serde_json::json!({"text": "t", "sources": []})).unwrap();
-        assert_eq!(old.visual, None);
-        assert!(!serde_json::to_string(&old).unwrap().contains("visual"));
-        let cite = Cite {
-            file: "a.rs".into(),
-            start: 1,
-            end: 2,
-        };
-        let v = DiveResult {
-            text: "claim".into(),
-            sources: Vec::new(),
-            visual: Some(Visual {
-                claim: "claim".into(),
-                nodes: vec![VisualNode {
-                    id: "a".into(),
-                    label: "A".into(),
-                    status: Delta::Added,
-                    evidence: vec![cite.clone()],
-                }],
-                edges: vec![VisualEdge {
-                    from: "a".into(),
-                    to: "a".into(),
-                    label: "calls".into(),
-                    status: Delta::Unchanged,
-                    evidence: vec![cite],
-                }],
-                path: "/d/visuals/r/a.html".into(),
-            }),
-            behavior: None,
-            coverage: None,
-            audit: None,
-            proposal: None,
-        };
-        let json = serde_json::to_string(&v).unwrap();
-        assert!(json.contains("\"status\":\"added\""), "{json}");
-        assert_eq!(serde_json::from_str::<DiveResult>(&json).unwrap(), v);
-        assert_eq!(
-            serde_json::from_str::<DiveKind>("\"Visualize\"").unwrap(),
-            DiveKind::Visualize
-        );
     }
 }

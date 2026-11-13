@@ -21,7 +21,6 @@
     <div class="group">
       <Act id="view.open" label="Open" />
       <Act id="ask.open" label="Ask" />
-      <Act id="tool.advice" label="Advice" />
       <Act id="tool.tests" label="Tests" />
     </div>
   {/if}

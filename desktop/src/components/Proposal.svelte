@@ -60,7 +60,7 @@
   {/if}
 
   {#each proposal.hunks as h, i (i)}
-    <Code code={h.code} statements={[]} title={h.place} current={proposal.current === i}>
+    <Code code={h.code} title={h.place} current={proposal.current === i}>
       {#snippet tools()}
         <span class="state s-{h.state}">{STATE[h.state]}</span>
         {#if h.state === "proposed"}

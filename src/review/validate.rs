@@ -10,17 +10,13 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::model::{
-    Answer, Change, Cite, Cost, Coverage, CoveringTest, Delta, FoundTest, Gap, LineRef, Marker,
-    Range, Related, Risk, SecondOpinion, Shown, Side, Unit, Unmentioned, Verdict, Visual,
-    VisualEdge, VisualNode,
+    Answer, Change, Cite, Cost, Coverage, CoveringTest, FoundTest, Gap, LineRef, Marker, Range,
+    Related, Risk, SecondOpinion, Shown, Side, Unit, Unmentioned, Verdict,
 };
 use crate::git::ChangedFile;
+use crate::security::{Class, Suspect};
 
 const MAX_CHANGES: usize = 3;
-/// Most nodes in a picture; more would not read at a glance.
-pub const MAX_NODES: usize = 12;
-/// Most edges in a picture.
-pub const MAX_EDGES: usize = 24;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Dropped {
@@ -215,6 +211,67 @@ pub fn validate_cost(unit: &Unit, raw: &Value) -> (Option<Cost>, Option<Dropped>
         Ok(evidence) => (Some(Cost { why, evidence }), None),
         Err(reason) => (None, Some(drop(reason))),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct RawSuspect {
+    #[serde(default)]
+    class: String,
+    #[serde(default)]
+    severity: String,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    evidence: Vec<RawLine>,
+    #[serde(default)]
+    checks: Vec<String>,
+}
+
+/// The questions an answer offers to ask next: one line each, the blank
+/// and the repeated left out, at most `max`.
+pub(crate) fn questions(raw: &[String], max: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for q in raw {
+        let q = one_line(q, super::prompts::MAX_QUESTION);
+        if !q.is_empty() && !out.contains(&q) && out.len() < max {
+            out.push(q);
+        }
+    }
+    out
+}
+
+/// The agent's `risks` answer for `unit`: the possible security risks it
+/// names, each kept only with a class teer knows and lines of the unit
+/// that show it, like a statement. At most [`super::prompts::MAX_SUSPECTS`].
+pub fn validate_suspects(unit: &Unit, raw: &Value) -> (Vec<Suspect>, Vec<Dropped>) {
+    let raws: Vec<RawSuspect> = serde_json::from_value(raw.clone()).unwrap_or_default();
+    let (mut kept, mut dropped) = (Vec::new(), Vec::new());
+    for r in raws.into_iter().take(super::prompts::MAX_SUSPECTS) {
+        let text = one_line(&r.text, 140);
+        if text.is_empty() {
+            continue;
+        }
+        let drop = |reason: String| Dropped {
+            unit_id: unit.id.clone(),
+            statement: format!("possible risk: {text}"),
+            reason,
+        };
+        let Some(class) = Class::from_id(r.class.trim()) else {
+            dropped.push(drop(format!("unknown class '{}'", r.class)));
+            continue;
+        };
+        match check_evidence(unit, &r.evidence) {
+            Ok(evidence) => kept.push(Suspect {
+                class,
+                severity: parse_risk(&r.severity),
+                text,
+                evidence,
+                checks: questions(&r.checks, super::prompts::MAX_CHECKS),
+            }),
+            Err(reason) => dropped.push(drop(reason)),
+        }
+    }
+    (kept, dropped)
 }
 
 #[derive(Debug, Deserialize)]
@@ -529,46 +586,10 @@ struct RawCite {
     end: i64,
 }
 
-#[derive(Debug, Deserialize)]
-struct RawNode {
-    #[serde(default)]
-    id: String,
-    #[serde(default)]
-    label: String,
-    #[serde(default)]
-    status: String,
-    #[serde(default)]
-    evidence: Vec<RawCite>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawEdge {
-    #[serde(default)]
-    from: String,
-    #[serde(default)]
-    to: String,
-    #[serde(default)]
-    label: String,
-    #[serde(default)]
-    status: String,
-    #[serde(default)]
-    evidence: Vec<RawCite>,
-}
-
 /// Agent text on one line: cleaned, whitespace collapsed, capped at `max` columns.
 pub(crate) fn one_line(s: &str, max: usize) -> String {
     let s = crate::util::sanitize_agent_text(s);
     crate::util::truncate(&s.split_whitespace().collect::<Vec<_>>().join(" "), max)
-}
-
-fn parse_delta(s: &str) -> Option<Delta> {
-    match s.trim().to_ascii_lowercase().as_str() {
-        "added" => Some(Delta::Added),
-        "removed" => Some(Delta::Removed),
-        "changed" => Some(Delta::Changed),
-        "unchanged" => Some(Delta::Unchanged),
-        _ => None,
-    }
 }
 
 /// Validate an Ask answer. Each region it shows must be lines that exist in a
@@ -697,6 +718,10 @@ pub fn validate_answer(
             text,
             shown,
             related,
+            next: questions(
+                &serde_json::from_value::<Vec<String>>(raw["next"].clone()).unwrap_or_default(),
+                super::prompts::MAX_NEXT,
+            ),
         }),
         dropped,
     )
@@ -771,167 +796,6 @@ fn check_cites(raw: &[RawCite], regions: &[Region], root: &Path) -> Result<Vec<C
     Ok(out)
 }
 
-/// Validate a Visualize answer against the code it may cite. Nodes and edges
-/// without valid evidence are dropped, then edges whose ends were dropped.
-/// Fails when no edge is left. The returned picture has an empty `path`.
-pub fn validate_visual(
-    unit_id: &str,
-    raw: &Value,
-    regions: &[Region],
-    root: &Path,
-) -> (Result<Visual, String>, Vec<Dropped>) {
-    let mut dropped = Vec::new();
-    let mut drop = |what: String, reason: String| {
-        dropped.push(Dropped {
-            unit_id: unit_id.to_string(),
-            statement: what,
-            reason,
-        })
-    };
-    let claim = one_line(raw.get("claim").and_then(|c| c.as_str()).unwrap_or(""), 200);
-
-    let mut nodes: Vec<VisualNode> = Vec::new();
-    for item in raw
-        .get("nodes")
-        .and_then(|n| n.as_array())
-        .into_iter()
-        .flatten()
-    {
-        let hint = format!(
-            "node {}",
-            one_line(
-                item.get("label").and_then(|l| l.as_str()).unwrap_or("?"),
-                60
-            )
-        );
-        let rn: RawNode = match serde_json::from_value(item.clone()) {
-            Ok(rn) => rn,
-            Err(e) => {
-                drop(hint, format!("malformed node: {e}"));
-                continue;
-            }
-        };
-        let (id, label) = (one_line(&rn.id, 60), one_line(&rn.label, 40));
-        if id.is_empty() || label.is_empty() {
-            drop(hint, "empty id or label".into());
-            continue;
-        }
-        if nodes.iter().any(|n| n.id == id) {
-            drop(hint, format!("duplicate node id '{id}'"));
-            continue;
-        }
-        let Some(status) = parse_delta(&rn.status) else {
-            drop(hint, format!("unknown status '{}'", rn.status));
-            continue;
-        };
-        let evidence = match check_cites(&rn.evidence, regions, root) {
-            Ok(ev) => ev,
-            Err(reason) => {
-                drop(hint, reason);
-                continue;
-            }
-        };
-        if nodes.len() >= MAX_NODES {
-            drop(hint, format!("more than {MAX_NODES} nodes"));
-            continue;
-        }
-        nodes.push(VisualNode {
-            id,
-            label,
-            status,
-            evidence,
-        });
-    }
-
-    let mut edges: Vec<VisualEdge> = Vec::new();
-    for item in raw
-        .get("edges")
-        .and_then(|e| e.as_array())
-        .into_iter()
-        .flatten()
-    {
-        let field = |k: &str| one_line(item.get(k).and_then(|v| v.as_str()).unwrap_or("?"), 60);
-        let hint = format!(
-            "edge {} -{}-> {}",
-            field("from"),
-            field("label"),
-            field("to")
-        );
-        let re: RawEdge = match serde_json::from_value(item.clone()) {
-            Ok(re) => re,
-            Err(e) => {
-                drop(hint, format!("malformed edge: {e}"));
-                continue;
-            }
-        };
-        let (from, to, label) = (
-            one_line(&re.from, 60),
-            one_line(&re.to, 60),
-            one_line(&re.label, 24),
-        );
-        if label.is_empty() {
-            drop(hint, "empty label".into());
-            continue;
-        }
-        if let Some(gone) = [&from, &to]
-            .into_iter()
-            .find(|id| !nodes.iter().any(|n| &n.id == *id))
-        {
-            drop(
-                hint,
-                format!("endpoint '{gone}' was dropped or never drawn"),
-            );
-            continue;
-        }
-        let Some(status) = parse_delta(&re.status) else {
-            drop(hint, format!("unknown status '{}'", re.status));
-            continue;
-        };
-        let evidence = match check_cites(&re.evidence, regions, root) {
-            Ok(ev) => ev,
-            Err(reason) => {
-                drop(hint, reason);
-                continue;
-            }
-        };
-        if edges
-            .iter()
-            .any(|e| e.from == from && e.to == to && e.label == label)
-        {
-            drop(hint, "duplicate edge".into());
-            continue;
-        }
-        if edges.len() >= MAX_EDGES {
-            drop(hint, format!("more than {MAX_EDGES} edges"));
-            continue;
-        }
-        edges.push(VisualEdge {
-            from,
-            to,
-            label,
-            status,
-            evidence,
-        });
-    }
-
-    let result = if edges.is_empty() {
-        Err(format!(
-            "no connection in the agent's picture is backed by lines in this unit or its callers and callees ({} dropped, see teer.log)",
-            dropped.len()
-        ))
-    } else if claim.is_empty() {
-        Err("the agent's picture has no claim".into())
-    } else {
-        Ok(Visual {
-            claim,
-            nodes,
-            edges,
-            path: PathBuf::new(),
-        })
-    };
-    (result, dropped)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -963,6 +827,36 @@ mod tests {
             checks: Default::default(),
             security: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_possible_risk_needs_a_known_class_and_lines_of_the_unit() {
+        let raw = json!([
+            { "class": "authorization", "severity": "high", "text": "A caller can pass any id.",
+              "evidence": [{ "side": "new", "line": 14 }],
+              "checks": ["Which callers check the owner?", " ", "Which callers check the owner?",
+                         "Is there a voter?", "A third one is not read."] },
+            { "class": "magic", "severity": "high", "text": "Unknown class.",
+              "evidence": [{ "side": "new", "line": 14 }] },
+            { "class": "injection", "severity": "low", "text": "Lines of other code.",
+              "evidence": [{ "side": "new", "line": 99 }] },
+            { "class": "secret", "severity": "low", "text": "  ", "evidence": [] },
+        ]);
+        let (kept, dropped) = validate_suspects(&unit(), &raw);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].class, Class::Authorization);
+        assert_eq!(kept[0].severity, Risk::High);
+        assert_eq!(kept[0].evidence[0].line, 14);
+        // The checks that follow it up: the blank and the repeated left out.
+        assert_eq!(
+            kept[0].checks,
+            ["Which callers check the owner?", "Is there a voter?"]
+        );
+        // The fourth says nothing; only three are read anyway.
+        assert_eq!(dropped.len(), 2);
+        assert!(dropped[0].statement.starts_with("possible risk: "));
+        // An answer without the field (an older agent) is no risk.
+        assert_eq!(validate_suspects(&unit(), &Value::Null).0, []);
     }
 
     #[test]
@@ -1055,146 +949,6 @@ mod tests {
         let (kept, dropped) = validate_changes(&unit(), &raw);
         assert_eq!(kept.len(), 3);
         assert_eq!(dropped.len(), 1);
-    }
-
-    fn regions() -> Vec<Region> {
-        vec![
-            Region {
-                file: "a.py".into(),
-                range: Range::new(12, 25),
-                role: "this unit, new lines".into(),
-            },
-            Region {
-                file: "lib/q.py".into(),
-                range: Range::new(40, 50),
-                role: "called: q.send".into(),
-            },
-        ]
-    }
-
-    fn node(id: &str, file: &str, start: u32, end: u32) -> Value {
-        json!({"id": id, "label": id.to_uppercase(), "status": "unchanged",
-               "evidence": [{"file": file, "start": start, "end": end}]})
-    }
-
-    fn edge(from: &str, to: &str, label: &str, status: &str) -> Value {
-        json!({"from": from, "to": to, "label": label, "status": status,
-               "evidence": [{"file": "a.py", "start": 14, "end": 14}]})
-    }
-
-    fn check(raw: &Value) -> (Result<Visual, String>, Vec<Dropped>) {
-        validate_visual("a.py::f", raw, &regions(), Path::new("/repo"))
-    }
-
-    #[test]
-    fn visual_evidence_outside_the_unit_and_its_neighbours_is_dropped() {
-        let raw = json!({
-            "claim": "f now sends to the queue.",
-            "nodes": [
-                node("f", "a.py", 12, 25),
-                // Absolute and ./ paths inside the repo are fine.
-                node("queue", "/repo/lib/q.py", 41, 42),
-                node("caller", "./a.py", 13, 13),
-                node("far", "a.py", 24, 30),
-                node("elsewhere", "b.py", 1, 1),
-                node("escape", "/etc/passwd", 1, 1),
-                node("up", "../a.py", 13, 13),
-                {"id": "none", "label": "None", "status": "added", "evidence": []},
-                {"id": "odd", "label": "Odd", "status": "maybe", "evidence": [{"file": "a.py", "start": 13, "end": 13}]},
-            ],
-            "edges": [
-                edge("caller", "f", "calls", "unchanged"),
-                edge("f", "queue", "SendMessage", "added"),
-                {"from": "f", "to": "queue", "label": "writes", "status": "removed",
-                 "evidence": [{"file": "lib/q.py", "start": 49, "end": 51}]},
-            ]
-        });
-        let (v, dropped) = check(&raw);
-        let v = v.unwrap();
-        assert_eq!(
-            v.nodes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
-            ["f", "queue", "caller"]
-        );
-        assert_eq!(v.nodes[1].evidence[0].file, PathBuf::from("lib/q.py"));
-        assert_eq!(v.edges.len(), 2);
-        assert_eq!(v.edges[1].status, Delta::Added);
-        assert_eq!(v.claim, "f now sends to the queue.");
-        let reasons: Vec<&str> = dropped.iter().map(|d| d.reason.as_str()).collect();
-        assert_eq!(dropped.len(), 7, "{reasons:?}");
-        assert!(reasons[0].contains("outside the unit"), "{reasons:?}");
-        assert!(reasons[2].contains("outside the repository"), "{reasons:?}");
-        assert!(reasons.contains(&"no evidence"));
-        assert!(reasons.iter().any(|r| r.contains("unknown status")));
-        assert!(dropped.last().unwrap().statement.contains("-writes->"));
-        assert!(dropped.iter().all(|d| d.unit_id == "a.py::f"));
-    }
-
-    #[test]
-    fn visual_edges_lose_their_dropped_endpoints() {
-        let raw = json!({
-            "claim": "c",
-            "nodes": [node("f", "a.py", 12, 12), node("gone", "z.py", 1, 1)],
-            "edges": [
-                edge("f", "gone", "calls", "added"),
-                edge("ghost", "f", "calls", "added"),
-                edge("f", "f", "retries", "changed"),
-            ]
-        });
-        let (v, dropped) = check(&raw);
-        let v = v.unwrap();
-        assert_eq!(v.edges.len(), 1);
-        assert_eq!(v.edges[0].label, "retries");
-        let reasons: Vec<&str> = dropped.iter().map(|d| d.reason.as_str()).collect();
-        assert_eq!(reasons.len(), 3, "{reasons:?}");
-        assert!(reasons[1].contains("endpoint 'gone'"), "{reasons:?}");
-        assert!(reasons[2].contains("endpoint 'ghost'"), "{reasons:?}");
-    }
-
-    #[test]
-    fn visual_with_nothing_left_fails() {
-        let raw = json!({
-            "claim": "c",
-            "nodes": [node("x", "z.py", 1, 1), node("y", "z.py", 2, 2)],
-            "edges": [edge("x", "y", "calls", "added")]
-        });
-        let (v, dropped) = check(&raw);
-        let err = v.unwrap_err();
-        assert!(
-            err.contains("no connection") && err.contains("3 dropped"),
-            "{err}"
-        );
-        assert_eq!(dropped.len(), 3);
-        assert!(check(&json!({})).0.is_err());
-        assert!(
-            check(&json!({"claim": "c", "nodes": [], "edges": []}))
-                .0
-                .is_err()
-        );
-        // Nodes alone show nothing about what talks to what.
-        let lonely = json!({"claim": "c", "nodes": [node("f", "a.py", 12, 12)], "edges": []});
-        assert!(check(&lonely).0.is_err());
-    }
-
-    #[test]
-    fn visual_caps_nodes_and_cleans_agent_text() {
-        let nodes: Vec<Value> = (0..14)
-            .map(|i| node(&format!("n{i}"), "a.py", 12, 12))
-            .collect();
-        let raw = json!({
-            "claim": "  two\nlines \u{1b}[31mred ",
-            "nodes": nodes,
-            "edges": [{"from": "n0", "to": "n1", "label": "  sends\tto  ", "status": "Added",
-                       "evidence": [{"file": "a.py", "start": 12, "end": 12}, {"file": "a.py", "start": 12, "end": 12}]}]
-        });
-        let (v, dropped) = check(&raw);
-        let v = v.unwrap();
-        assert_eq!(v.nodes.len(), MAX_NODES);
-        assert_eq!(dropped.len(), 2);
-        assert!(dropped[0].reason.contains("more than 12"));
-        assert_eq!(v.claim, "two lines red");
-        assert_eq!(v.edges[0].label, "sends to");
-        assert_eq!(v.edges[0].status, Delta::Added);
-        assert_eq!(v.edges[0].evidence.len(), 1, "duplicate cites are merged");
     }
 
     #[test]

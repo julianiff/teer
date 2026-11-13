@@ -17,8 +17,9 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use super::app::App;
 use super::preview;
 use crate::fix::ProposedHunk;
+use crate::review::comments::{Comment, comments};
 use crate::review::diff::{DIFF_LEVEL, Kind, Row, anchor, expand_tabs, rows_around};
-use crate::review::model::{Change, LineRef, Marker, Prep, Unit};
+use crate::review::model::{LineRef, Marker, Unit};
 use crate::syntax::Class;
 use crate::util::sanitize;
 
@@ -210,17 +211,18 @@ pub fn code_change_of(app: &App, u: &Unit, w: usize, notes: Notes) -> CodeChange
     if app.assessment(&u.id).is_none_or(|a| a.level < DIFF_LEVEL) {
         return CodeChange::default();
     }
-    let said = notes != Notes::Off && u.prep == Prep::Ready;
-    // Where the statements are drawn inline, they show only the code they
-    // cite; in full, the code they cite as well as every change.
-    let cites: Vec<LineRef> = if said {
-        u.changes
-            .iter()
-            .flat_map(|c| c.evidence.iter().copied())
-            .collect()
-    } else {
+    // What the mode has to say about the unit, written into the code.
+    let said = if notes == Notes::Off {
         Vec::new()
+    } else {
+        comments(u, app.mode)
     };
+    // Where comments are drawn inline, the code shows only what they
+    // cite; in full, the code they cite as well as every change.
+    let cites: Vec<LineRef> = said
+        .iter()
+        .flat_map(|c| c.evidence.iter().copied())
+        .collect();
     let every = notes == Notes::Full;
     let (rows, added, removed) = rows_around(&app.review, u, &cites, every, Some(&app.syntax));
     if rows.is_empty() {
@@ -234,18 +236,17 @@ pub fn code_change_of(app: &App, u: &Unit, w: usize, notes: Notes) -> CodeChange
     // Each row as its lines: long code wraps instead of being cut.
     let mut blocks: Vec<Vec<Line<'static>>> =
         rows.iter().map(|r| row_lines(app, r, digits, w)).collect();
-    if said {
-        // Each statement under the row it is anchored to, in their order;
+    if !said.is_empty() {
+        // Each comment under the row it is anchored to, in their order;
         // inserted from the back so the row indices stay right.
-        let mut at: Vec<(usize, usize)> = u
-            .changes
+        let mut at: Vec<(usize, usize)> = said
             .iter()
             .enumerate()
-            .map(|(n, c)| (anchor(c, &rows).map_or(rows.len(), |k| k + 1), n))
+            .map(|(n, c)| (anchor(&c.evidence, &rows).map_or(rows.len(), |k| k + 1), n))
             .collect();
         at.sort();
         for &(k, n) in at.iter().rev() {
-            let note = note_lines(app, &u.changes[n], digits + 1, w);
+            let note = note_lines(app, &said[n], digits + 1, w);
             blocks.insert(k, note);
         }
         // A row moves down by the notes inserted before it.
@@ -341,24 +342,46 @@ pub fn proposed_rows(app: &App, h: &ProposedHunk, w: usize) -> Vec<Vec<Line<'sta
     rows.iter().map(|r| row_lines(app, r, digits, w)).collect()
 }
 
-/// A statement as a comment in the code, under the row above it: a small
-/// rounded card from the sign column (`at` cells in) on, as wide as its
-/// text needs and at most to `w`, the statement inside in the note style.
-/// No `+ ~ −` marker as in the list: inside a diff it would read as a sign.
-fn note_lines(app: &App, c: &Change, at: usize, w: usize) -> Vec<Line<'static>> {
+/// A comment in the code, under the row above it: a small rounded card
+/// from the sign column (`at` cells in) on, as wide as its text and its
+/// title need and at most to `w`. The title is on the top border, in the
+/// colour of what it weighs; the text inside in the note style, a
+/// paragraph after the other. No `+ ~ −` marker as in the list: inside a
+/// diff it would read as a sign.
+fn note_lines(app: &App, c: &Comment, at: usize, w: usize) -> Vec<Line<'static>> {
     use unicode_width::UnicodeWidthStr;
     let t = &app.theme;
     let lead = " ".repeat(at);
     // Borders and a space on each side take 4.
-    let text = crate::util::wrap(&c.statement, w.saturating_sub(at + 4).max(8));
-    let inner = text.iter().map(|l| l.width()).max().unwrap_or(0);
-    let edge = |l: &str, r: &str| {
-        Line::from(vec![
-            Span::raw(lead.clone()),
-            Span::styled(format!("{l}{}{r}", "─".repeat(inner + 2)), t.note_border()),
-        ])
-    };
-    let mut lines = vec![edge("╭", "╮")];
+    let room = w.saturating_sub(at + 4).max(8);
+    let text: Vec<String> = c
+        .text
+        .iter()
+        .flat_map(|p| crate::util::wrap(p, room))
+        .collect();
+    let title = crate::util::truncate(&c.title, room);
+    let inner = text
+        .iter()
+        .map(|l| l.width())
+        .chain([title.width()])
+        .max()
+        .unwrap_or(0);
+    let mut top = vec![Span::raw(lead.clone())];
+    if title.is_empty() {
+        top.push(Span::styled(
+            format!("╭{}╮", "─".repeat(inner + 2)),
+            t.note_border(),
+        ));
+    } else {
+        let rest = "─".repeat(inner - title.width());
+        top.push(Span::styled("╭ ", t.note_border()));
+        top.push(Span::styled(
+            title,
+            c.risk.map_or(t.note_border(), |r| t.risk(r)),
+        ));
+        top.push(Span::styled(format!(" {rest}╮"), t.note_border()));
+    }
+    let mut lines = vec![Line::from(top)];
     lines.extend(text.iter().map(|l| {
         Line::from(vec![
             Span::raw(lead.clone()),
@@ -367,7 +390,10 @@ fn note_lines(app: &App, c: &Change, at: usize, w: usize) -> Vec<Line<'static>> 
             Span::styled(" │", t.note_border()),
         ])
     }));
-    lines.push(edge("╰", "╯"));
+    lines.push(Line::from(vec![
+        Span::raw(lead),
+        Span::styled(format!("╰{}╯", "─".repeat(inner + 2)), t.note_border()),
+    ]));
     lines
 }
 
@@ -461,7 +487,7 @@ mod tests {
     use super::*;
     use crate::git::{ChangedFile, FileStatus};
     use crate::review::diff::{rows_near, unit_rows};
-    use crate::review::model::{Decision, Range, Review, Side, UnitKind, UnitStatus};
+    use crate::review::model::{Change, Decision, Prep, Range, Review, Side, UnitKind, UnitStatus};
     use std::path::PathBuf;
 
     /// [`wrap_ranges`] as strings.
@@ -506,6 +532,7 @@ mod tests {
             history: Default::default(),
             branch: None,
             cursor: None,
+            mode: None,
         }
     }
 
@@ -619,7 +646,9 @@ mod tests {
             theme,
             ..Config::default()
         };
-        let app = App::new(review(Some(old), Some(new), u), cfg, Keymap::default());
+        let mut app = App::new(review(Some(old), Some(new), u), cfg, Keymap::default());
+        // The statements under their risk: what review writes in.
+        app.mode = crate::mode::Mode::Review;
         let u = &app.review.units[0];
         code_change(&app, u, 40, notes)
             .0
@@ -658,12 +687,12 @@ mod tests {
                 "  1   def f():",
                 "  2 -     a = 1",
                 "  2 +     a = 2",
-                "    ╭───╮",
-                "    │ s │",
-                "    ╰───╯",
-                "    ╭───╮",
-                "    │ s │",
-                "    ╰───╯",
+                "    ╭ low ╮",
+                "    │ s   │",
+                "    ╰─────╯",
+                "    ╭ low ╮",
+                "    │ s   │",
+                "    ╰─────╯",
                 "  3       return a",
             ]
         );
@@ -705,6 +734,54 @@ mod tests {
     }
 
     #[test]
+    fn a_comment_has_its_title_on_the_border_in_the_colour_of_its_risk() {
+        use crate::config::Config;
+        use crate::keymap::Keymap;
+        use crate::mode::Mode;
+        let (old, new) = twenty();
+        let mut u = unit(UnitStatus::Changed, Some((1, 20)), Some((1, 20)));
+        u.prep = Prep::Ready;
+        u.changes = vec![change(&[(Side::New, 17)])];
+        let mut app = App::new(
+            review(Some(&old), Some(&new), u),
+            Config::default(),
+            Keymap::default(),
+        );
+        let card = |app: &App| -> Vec<Line<'static>> {
+            code_change(app, &app.review.units[0], 40, Notes::Inline)
+                .0
+                .into_iter()
+                .flatten()
+                .filter(|l| {
+                    let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                    t.trim_start().starts_with(['╭', '│', '╰'])
+                })
+                .collect()
+        };
+        let text = |l: &Line| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        // Review judges: the statement under its risk, the card as wide as
+        // the title needs.
+        app.mode = Mode::Review;
+        let got = card(&app);
+        assert_eq!(
+            got.iter().map(text).collect::<Vec<_>>(),
+            ["    ╭ low ╮", "    │ s   │", "    ╰─────╯"]
+        );
+        let title = got[0].spans.iter().find(|s| s.content == "low").unwrap();
+        assert_eq!(title.style, app.theme.risk(crate::review::model::Risk::Low));
+        // Security leaves the statements out: every change shows instead.
+        app.mode = Mode::Security;
+        assert!(card(&app).is_empty());
+        let rows = code_change(&app, &app.review.units[0], 40, Notes::Inline).0;
+        assert!(rows.iter().flatten().any(|l| text(l).contains("L2")));
+    }
+
+    #[test]
     fn drawn_statements_show_only_the_code_they_cite() {
         use crate::config::Config;
         use crate::keymap::Keymap;
@@ -712,11 +789,12 @@ mod tests {
         let mut u = unit(UnitStatus::Changed, Some((1, 20)), Some((1, 20)));
         u.prep = Prep::Ready;
         u.changes = vec![change(&[(Side::New, 17)])];
-        let app = App::new(
+        let mut app = App::new(
             review(Some(&old), Some(&new), u),
             Config::default(),
             Keymap::default(),
         );
+        app.mode = crate::mode::Mode::Review;
         let lines = |notes| -> Vec<Line<'static>> {
             code_change(&app, &app.review.units[0], 40, notes)
                 .0
@@ -742,9 +820,9 @@ mod tests {
                 " 16   l16",
                 " 17 - l17",
                 " 17 + L17",
-                "    ╭───╮",
-                "    │ s │",
-                "    ╰───╯",
+                "    ╭ low ╮",
+                "    │ s   │",
+                "    ╰─────╯",
                 " 18   l18",
                 " 19   l19",
             ]
@@ -752,7 +830,7 @@ mod tests {
         // In full, every change shows too, the statement under its line.
         let full = text(Notes::Full);
         assert!(full.contains(&"  2 + L2".to_string()), "{full:?}");
-        let note = full.iter().position(|l| l == "    │ s │").unwrap();
+        let note = full.iter().position(|l| l == "    │ s   │").unwrap();
         assert_eq!(full[note - 2], " 17 + L17", "{full:?}");
         // Without statements, every change shows.
         let all = text(Notes::Off);
@@ -931,9 +1009,9 @@ mod tests {
             &unit(UnitStatus::Changed, Some((1, 12)), Some((1, 12))),
         );
         // Line 9 sits in the gap; the nearest shown row is line 10.
-        let k = anchor(&change(&[(Side::New, 9)]), &rows).unwrap();
+        let k = anchor(&change(&[(Side::New, 9)]).evidence, &rows).unwrap();
         assert_eq!(rows[k].line, Some(10));
-        assert_eq!(anchor(&change(&[]), &rows), None);
+        assert_eq!(anchor(&change(&[]).evidence, &rows), None);
     }
 
     #[test]

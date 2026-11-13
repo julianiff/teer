@@ -639,10 +639,8 @@ fn the_help_lists_the_queues_keys() {
     for want in [
         "keys · queue",
         "a f  accept / flag the unit",
-        "A F  accept / flag the file's pending units",
         "za  show units accepted for you",
         "zf  list by file or by level",
-        "␣c  commits and PR description",
         ":w  finish",
         "○ accepted for you",
         "⚠ disputed",

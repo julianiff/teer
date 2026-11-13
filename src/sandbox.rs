@@ -1,5 +1,5 @@
 //! Running code from the change under review, confined. This is the only
-//! place teer runs repository code: the Behavior probe (see
+//! place teer runs repository code: the probe of a security proof (see
 //! `review::behavior`), on a checkout teer owns.
 //!
 //! macOS `sandbox-exec` with a profile that denies the network, Apple Events

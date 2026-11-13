@@ -102,6 +102,11 @@ pub enum Overlay {
         text: String,
         what: String,
     },
+    /// The modes to pick from (`<space>m`, see [`super::mode`]); `sel`
+    /// indexes [`crate::mode::Mode::EVERY`].
+    Mode {
+        sel: usize,
+    },
     /// Units to jump to (see [`super::jump`]): found by file or name as
     /// `query` is typed (`/`), or what the unit calls (`gd`) or what calls
     /// it (`gr`); `sel` indexes [`App::jump_items`].
@@ -309,11 +314,6 @@ pub enum Effect {
     ProveFindings {
         unit_id: String,
     },
-    /// Open the unit's Visualize page in the browser (written again from the
-    /// saved picture if the file is gone).
-    OpenVisual {
-        unit_id: String,
-    },
     /// Post the review (see `approve::post`). `body` and `inline` are what
     /// the user confirmed; `flat_body` is the summary with every note listed,
     /// used if GitHub rejects the inline comments.
@@ -476,6 +476,9 @@ pub struct App {
     /// and what comes back when it closes.
     pub help_over: Option<Overlay>,
 
+    /// What the review is for: the tools it has (see [`crate::mode`]).
+    /// Every tool until a front end names one ([`App::set_mode`]).
+    pub mode: crate::mode::Mode,
     pub has_agent: bool,
     pub agent_note: Option<String>,
     pub sessions: Vec<SessionInfo>,
@@ -562,6 +565,7 @@ impl App {
             screen: Screen::Queue,
             overlay: Overlay::None,
             help_over: None,
+            mode: Default::default(),
             has_agent: false,
             agent_note: None,
             sessions: Vec::new(),
@@ -1040,6 +1044,7 @@ impl App {
         match self.overlay.clone() {
             Overlay::Jump { .. } => return Some(self.jump_key(k)),
             Overlay::SendTo { .. } => return Some(self.send_key(k)),
+            Overlay::Mode { .. } => return Some(self.mode_key(k)),
             Overlay::Finish { .. } => return Some(self.finish_key(k)),
             Overlay::Note { .. } => return Some(self.note_key(k)),
             Overlay::Notes { sel } => return Some(self.notes_key(sel, k)),
@@ -1149,6 +1154,7 @@ impl App {
             Overlay::Notes { .. }
             | Overlay::Commits { .. }
             | Overlay::Jump { .. }
+            | Overlay::Mode { .. }
             | Overlay::Finish { .. }
                 if self.finish.editing.is_none() && self.finish.confirm.is_none() =>
             {
@@ -1182,6 +1188,11 @@ impl App {
                 return Vec::new();
             }
         }
+        // What the mode leaves out does nothing but say so.
+        if !self.allows(a) {
+            self.status = self.not_in_mode(a);
+            return Vec::new();
+        }
         if self.visual.is_some() {
             match a {
                 _ if a.id().starts_with("move.") => {}
@@ -1214,6 +1225,10 @@ impl App {
     pub fn pick(&mut self, i: usize) -> Vec<Effect> {
         if matches!(self.overlay, Overlay::SendTo { .. }) {
             self.send_select(i);
+            return Vec::new();
+        }
+        if let Overlay::Mode { sel } = &mut self.overlay {
+            *sel = i.min(crate::mode::Mode::EVERY.len() - 1);
             return Vec::new();
         }
         let steps = self.finish_steps().len();
@@ -1289,7 +1304,6 @@ impl App {
                 });
             }
             Action::GotoEditor => return self.edit(),
-            Action::GotoBrowser => return self.open_visual(),
             // On the ask tile, `i` types the question.
             Action::NoteEdit if self.unit_ask_focused() => {
                 self.open_ask_panel();
@@ -1312,6 +1326,10 @@ impl App {
                 return Vec::new();
             }
             Action::ToolSettings => return vec![Effect::Settings],
+            Action::ToolMode => {
+                self.open_mode_picker();
+                return Vec::new();
+            }
             Action::FinishApp => return vec![Effect::Save, Effect::OpenApp],
             Action::FinishOpen => return self.open_finish(),
             Action::ToggleAutoAccepted => {
@@ -1342,11 +1360,7 @@ impl App {
                 };
                 return self.scroll_detail(by);
             }
-            Action::ToolAdvice
-            | Action::ToolTests
-            | Action::ToolRunOldNew
-            | Action::ToolDiagram
-            | Action::ToolSecurity => {
+            Action::ToolTests | Action::ToolSecurity => {
                 return self.open_tool(a);
             }
             Action::ToolProve => return self.prove_findings(),
@@ -1363,7 +1377,7 @@ impl App {
         }
     }
 
-    /// A tool (`<space>a` `<space>t` `<space>r` `<space>v`): in the unit
+    /// A tool (`<space>t` `<space>x`): in the unit
     /// view, its panel; from the queue, the unit view on the unit with that
     /// panel.
     fn open_tool(&mut self, a: Action) -> Vec<Effect> {
@@ -1422,28 +1436,6 @@ impl App {
         u.dive_pending.insert(kind);
         vec![Effect::InterpretTests {
             unit_id: id.to_string(),
-        }]
-    }
-
-    /// Open the picture of the unit on show, or say how to draw one.
-    pub(crate) fn open_visual(&mut self) -> Vec<Effect> {
-        let Some(u) = self.current_unit() else {
-            return Vec::new();
-        };
-        let drawn = u
-            .dive
-            .results
-            .get(&DiveKind::Visualize)
-            .is_some_and(|r| r.visual.is_some());
-        if !drawn {
-            self.status = format!(
-                "No picture yet: press {} to draw one.",
-                self.keys.label(Action::ToolDiagram)
-            );
-            return Vec::new();
-        }
-        vec![Effect::OpenVisual {
-            unit_id: u.id.clone(),
         }]
     }
 
@@ -1869,14 +1861,19 @@ impl App {
     /// follows new lines.
     pub(crate) fn chat_scroll(&mut self, by: isize) -> Vec<Effect> {
         let max = self.ask.chat_max.get();
+        // With no question yet the tile shows its top (the advice); a
+        // conversation follows its end.
+        let follows = !self.chat_of(&self.unit.id).is_empty();
         let to = self
             .ask
             .chat_scroll
             .get()
-            .unwrap_or(max)
+            .unwrap_or(if follows { max } else { 0 })
             .saturating_add_signed(by)
             .min(max);
-        self.ask.chat_scroll.set((to < max).then_some(to));
+        self.ask
+            .chat_scroll
+            .set((to < max || !follows).then_some(to));
         Vec::new()
     }
 
@@ -2596,6 +2593,7 @@ pub(crate) mod tests {
             history: Default::default(),
             branch: None,
             cursor: None,
+            mode: None,
         };
         let mut a = App::new(review, Config::default(), Keymap::default());
         a.sel = 0;

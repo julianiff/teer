@@ -255,6 +255,7 @@ mod tests {
             history: Default::default(),
             branch: None,
             cursor: None,
+            mode: None,
         };
         App::new(review, Config::default(), Keymap::default())
     }

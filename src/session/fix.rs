@@ -214,9 +214,9 @@ impl App {
         if target(u).is_none() {
             let k = |a: Action| self.keys.label(a);
             self.status = format!(
-                "Nothing to fix yet: {} finds security issues, {} asks for advice, {} writes a note.",
+                "Nothing to fix yet: {} finds security issues, {} asks what to do, {} writes a note.",
                 k(Action::ToolSecurity),
-                k(Action::ToolAdvice),
+                k(Action::AskOpen),
                 k(Action::NoteEdit)
             );
             return effects;

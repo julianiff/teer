@@ -17,6 +17,7 @@
 
 <header>
   <div class="line">
+    <Act id="tool.mode" label={header.mode === "all" ? "all tools" : header.mode} title="The mode: what this review is for" />
     <PrMenu subject={header.subject} home={header.home} pr={header.pr} />
     {#if header.title}<span class="title">· {header.title}</span>{/if}
     {#if header.pr !== null || header.commits > 0}

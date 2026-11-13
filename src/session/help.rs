@@ -37,10 +37,7 @@ pub const QUEUE: &[Action] = &[
     Action::GotoDefinition,
     Action::GotoCallers,
     Action::GotoEditor,
-    Action::ToolAdvice,
     Action::ToolTests,
-    Action::ToolRunOldNew,
-    Action::ToolDiagram,
     Action::ToolSecurity,
     Action::ToolFix,
     Action::ToggleAutoAccepted,
@@ -50,6 +47,7 @@ pub const QUEUE: &[Action] = &[
     Action::ToolNotes,
     Action::ToolFlagged,
     Action::ToolSettings,
+    Action::ToolMode,
     Action::FinishApp,
     Action::HelpOpen,
     Action::FinishOpen,
@@ -92,11 +90,7 @@ pub const UNIT: &[Action] = &[
     Action::GotoDefinition,
     Action::GotoCallers,
     Action::GotoEditor,
-    Action::GotoBrowser,
-    Action::ToolAdvice,
     Action::ToolTests,
-    Action::ToolRunOldNew,
-    Action::ToolDiagram,
     Action::ToolSecurity,
     Action::ToolProve,
     Action::ToolFix,
@@ -107,6 +101,7 @@ pub const UNIT: &[Action] = &[
     Action::ToolNotes,
     Action::ToolFlagged,
     Action::ToolSettings,
+    Action::ToolMode,
     Action::FinishApp,
     Action::HelpOpen,
     Action::FinishOpen,
@@ -141,15 +136,13 @@ pub const FLAGGED: &[Action] = &[
     Action::GotoDefinition,
     Action::GotoCallers,
     Action::GotoEditor,
-    Action::ToolAdvice,
     Action::ToolTests,
-    Action::ToolRunOldNew,
-    Action::ToolDiagram,
     Action::ToolSecurity,
     Action::ToolFix,
     Action::ToolFlagged,
     Action::ToolHistory,
     Action::ToolNotes,
+    Action::ToolMode,
     Action::HelpOpen,
     Action::FinishOpen,
     Action::ViewClose,
@@ -283,11 +276,11 @@ pub fn group_of(a: Action) -> usize {
         | ScrollHalfUp | ScrollPageDown | ScrollPageUp | FindUnit | ViewBack => 0,
         DecideAccept | DecideFlag | NoteEdit | DecideAcceptFile | DecideFlagFile | VisualStart
         | HistoryUndo | HistoryRedo | HistoryRepeat | NoteDelete | FixApply | FixApplyAll => 1,
-        ViewOpen | AskOpen | GotoDefinition | GotoCallers | GotoEditor | GotoBrowser
-        | ToolAdvice | ToolTests | ToolRunOldNew | ToolDiagram | ToolSecurity | ToolProve
-        | ToolFix | ToolFlagged | MoveNextTile | MovePrevTile | ToggleZoom | SendSession => 2,
+        ViewOpen | AskOpen | GotoDefinition | GotoCallers | GotoEditor | ToolTests
+        | ToolSecurity | ToolProve | ToolFix | ToolFlagged | MoveNextTile | MovePrevTile
+        | ToggleZoom | SendSession => 2,
         ToggleAutoAccepted | ToggleByFile | ToggleSecurityOrder | ToolHistory | ToolNotes
-        | ToolSettings | HelpOpen => 3,
+        | ToolSettings | ToolMode | HelpOpen => 3,
         FinishOpen | FinishYank | FinishApp | ReviewRerun | ReviewReset | ViewClose => 4,
     }
 }
@@ -381,11 +374,91 @@ pub fn describe(app: &App, a: Action) -> &'static str {
     }
 }
 
+/// Does `a` do something right now, where the help was opened? The help
+/// lists only these: no undo with nothing to undo, no hunk to put in with
+/// none proposed, no tile keys with no tile open, nothing that needs an
+/// agent without one. In a panel (the notes, the sheet) its keys all count.
+pub fn relevant(app: &App, a: Action) -> bool {
+    use crate::review::model::{Decision, DiveKind};
+    use Action::*;
+    if help_panel(app).is_some() {
+        return true;
+    }
+    if AGENT_KEYS.contains(&a) && !app.can_ask() {
+        return false;
+    }
+    let units = &app.review.units;
+    let unit = app.current_unit();
+    let in_unit = app.screen == Screen::Unit;
+    let pending = || units.iter().any(|u| u.decision == Decision::Pending);
+    let files = || {
+        let mut all = units.iter().map(|u| &u.file);
+        all.next().is_some_and(|first| all.any(|f| f != first))
+    };
+    match a {
+        HistoryUndo => app.review.history.can_undo(),
+        HistoryRedo => app.review.history.can_redo(),
+        HistoryRepeat => app.last_decision.is_some(),
+        // In the flagged list these go through the flagged units.
+        MoveNextPending | MovePrevPending => app.screen == Screen::Flagged || pending(),
+        MoveNextFile | MovePrevFile => files(),
+        MoveNextHunk | MovePrevHunk => {
+            !in_unit || app.unit.hunks.borrow().len() + app.unit.fixes.borrow().len() > 1
+        }
+        MoveNextTile | MovePrevTile | ToggleZoom => !app.unit.tiles.is_empty(),
+        ScrollHalfDown | ScrollHalfUp | ScrollPageDown | ScrollPageUp => {
+            app.detail_max_scroll.get() > 0
+        }
+        FindUnit | VisualStart => app.order.len() > 1,
+        DecideAcceptFile | DecideFlagFile => unit.is_some_and(|c| {
+            units
+                .iter()
+                .filter(|u| u.file == c.file && u.decision == Decision::Pending)
+                .count()
+                > 1
+        }),
+        GotoCallers => unit.is_some_and(|u| !u.callers.is_empty()),
+        ToolSecurity | ToggleSecurityOrder => app.security.enabled,
+        ToolProve => unit.is_some_and(|u| {
+            u.dive
+                .results
+                .get(&DiveKind::Security)
+                .and_then(|r| r.audit.as_ref())
+                .is_some_and(|a| !a.findings.is_empty() && !a.proving)
+        }),
+        FixApply | FixApplyAll => unit.and_then(super::fix::proposal).is_some_and(|p| {
+            p.hunks
+                .iter()
+                .any(|h| h.state == crate::fix::HunkState::Proposed)
+        }),
+        SendSession => {
+            in_unit && unit.is_some_and(|u| app.unit.panel.is_some_and(|p| app.can_send(u, p)))
+        }
+        ToggleAutoAccepted => app.auto_accepted() > 0,
+        ToolHistory => app.review.pr.is_some() || !app.review.intent.commits.is_empty(),
+        ToolNotes => !crate::notes::noted(&app.review).is_empty(),
+        ToolFlagged => {
+            app.screen == Screen::Flagged
+                || units.iter().any(|u| u.decision == Decision::Investigate)
+        }
+        ReviewReset => units.iter().any(|u| u.decision != Decision::Pending),
+        _ => true,
+    }
+}
+
 /// The help's rows for `actions`, by group: each group's name and its
 /// rows, pairs on one row, unbound actions left out.
 pub fn help_groups(app: &App, actions: &[Action]) -> Vec<(&'static str, Vec<HelpRow>)> {
     let mut groups: Vec<(&'static str, Vec<HelpRow>)> =
         GROUPS.iter().map(|g| (*g, Vec::new())).collect();
+    // Only what does something right now: what the mode leaves out, and
+    // what has nothing to act on, isn't listed.
+    let actions: Vec<Action> = actions
+        .iter()
+        .copied()
+        .filter(|&a| app.allows(a) && relevant(app, a))
+        .collect();
+    let actions = &actions[..];
     for &a in actions {
         // The second of a pair is on the first one's row.
         if PAIRS
@@ -439,11 +512,8 @@ pub const KEY_GROUPS: &[(&str, &[KeyItem])] = &[
     (
         "Look closer",
         &[
-            (&[Action::ToolAdvice], "advice"),
             (&[Action::AskOpen], "ask"),
             (&[Action::ToolTests], "tests"),
-            (&[Action::ToolRunOldNew], "old vs new"),
-            (&[Action::ToolDiagram], "diagram"),
             (&[Action::ToolSecurity], "security"),
             (&[Action::ToolFix], "fix"),
             (&[Action::SendSession], "send to agent"),
@@ -470,21 +540,15 @@ pub const KEY_GROUPS: &[(&str, &[KeyItem])] = &[
         "Finish",
         &[
             (&[Action::FinishOpen], "finish"),
-            (&[Action::HelpOpen], "every key"),
+            (&[Action::ToolMode], "mode"),
+            (&[Action::HelpOpen], "keys"),
         ],
     ),
 ];
 
 /// Items of the keys tile that need an agent.
 /// (The Security tile isn't one: without an agent it shows teer's facts.)
-pub const AGENT_KEYS: [Action; 6] = [
-    Action::ToolAdvice,
-    Action::AskOpen,
-    Action::ToolRunOldNew,
-    Action::ToolDiagram,
-    Action::ToolProve,
-    Action::ToolFix,
-];
+pub const AGENT_KEYS: [Action; 3] = [Action::AskOpen, Action::ToolProve, Action::ToolFix];
 
 #[cfg(test)]
 mod tests {

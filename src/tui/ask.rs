@@ -35,6 +35,9 @@ const NOTE_LINES: usize = 4;
 /// scroll (`None` follows the end) and how far it went as last drawn; the
 /// link in focus, kept in view.
 pub struct Talk<'a> {
+    /// What goes above the conversation (the advice): with no question
+    /// yet the tile shows its top, a conversation follows its end.
+    pub head: Vec<Line<'static>>,
     pub which: &'a [usize],
     pub scroll: &'a Cell<Option<usize>>,
     pub max: &'a Cell<usize>,
@@ -43,11 +46,20 @@ pub struct Talk<'a> {
 
 /// Draw `talk` in `area`, each link on show a click target.
 pub fn draw_talk(f: &mut Frame, app: &App, area: Rect, talk: Talk) {
-    let (lines, links) = conversation(app, talk.which, area.width as usize);
+    let (talked, mut links) = conversation(app, talk.which, area.width as usize);
+    let mut lines = talk.head;
+    if !lines.is_empty() && !talked.is_empty() {
+        lines.push(Line::default());
+    }
+    for l in &mut links {
+        l.0 += lines.len();
+    }
+    lines.extend(talked);
     let h = area.height as usize;
     let max = lines.len().saturating_sub(h);
     talk.max.set(max);
-    let mut top = talk.scroll.get().unwrap_or(max).min(max);
+    let follow = if talk.which.is_empty() { 0 } else { max };
+    let mut top = talk.scroll.get().unwrap_or(follow).min(max);
     if let Some(sel) = talk.focus
         && let Some(&(at, _)) = links.iter().find(|(_, l)| *l == sel)
     {

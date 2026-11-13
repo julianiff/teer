@@ -1,5 +1,5 @@
 //! `s`: send the result of the tile in focus (the advice, the security
-//! findings, the tests' gaps, old against new, an answer) to an agent
+//! findings, the tests' gaps, an answer) to an agent
 //! session running in this repository, which applies it. Proposed hunks
 //! aren't sent: `p`/`P` put them in. See [`crate::send`].
 //!
@@ -14,9 +14,7 @@ use super::names;
 use super::tools;
 use super::unit::Panel;
 use crate::keymap::{Action, Edit, Key};
-use crate::review::model::{
-    Cite, ClaimCheck, DiveKind, DiveResult, Expect, Outcome, ProbeCase, Unit, UnitKind, UnitStatus,
-};
+use crate::review::model::{Cite, DiveKind, DiveResult, Unit, UnitKind};
 use crate::security::{Finding, Proof};
 use crate::send::{Agent, PiState, Target};
 use crate::util::sanitize;
@@ -58,7 +56,6 @@ pub struct Message {
 /// The tile's name, as its border says it.
 pub fn tile_name(p: Panel) -> &'static str {
     match p {
-        Panel::Recommend => "Advice",
         Panel::Ask => "Ask",
         Panel::Outside => "Outside the review",
         Panel::Tool(kind) => match tools::light(kind).0 {
@@ -208,11 +205,13 @@ impl App {
     /// there is none.
     pub fn tile_message(&self, u: &Unit, p: Panel) -> Result<Message, String> {
         let body = match p {
-            Panel::Recommend => advice_body(u, p),
-            Panel::Ask => self.ask_body(u, p),
+            // The last answer of the conversation, else the advice.
+            Panel::Ask => match self.ask_body(u, p) {
+                Body::None(_) => advice_body(u, p),
+                body => body,
+            },
             Panel::Tool(DiveKind::Security) => self.security_body(u, p),
             Panel::Tool(DiveKind::Tests) => tests_body(u, p),
-            Panel::Tool(DiveKind::Behavior) => behavior_body(u, p),
             Panel::Tool(_) | Panel::Outside => nothing_yet(p),
         };
         let (what, intro, body) = match body {
@@ -654,76 +653,5 @@ fn tests_body(u: &Unit, p: Panel) -> Body {
         what: "the missing tests",
         intro: "Dangerous cases no test covers. Add tests that cover these:",
         body,
-    }
-}
-
-fn outcome(o: &Outcome) -> String {
-    match o {
-        Outcome::Value(v) => one_line(v),
-        Outcome::Error(e) => format!("error: {}", one_line(e)),
-        Outcome::Missing => "nothing printed".into(),
-    }
-}
-
-/// The Behavior tile: the statements the runs disprove, and each case that
-/// came out other than predicted, with its input, before and after.
-fn behavior_body(u: &Unit, p: Panel) -> Body {
-    let Some(b) = answered(u, DiveKind::Behavior).and_then(|r| r.behavior.as_ref()) else {
-        return nothing_yet(p);
-    };
-    // A new unit has no before to be surprised by.
-    if u.status == UnitStatus::Added {
-        return Body::None(
-            "Behavior has nothing to send: the unit is new, so nothing ran before.".into(),
-        );
-    }
-    let surprises: Vec<&ProbeCase> = b.cases.iter().filter(|c| c.surprise()).collect();
-    if surprises.is_empty() {
-        return Body::None(
-            "Behavior has nothing to send: every case came out as predicted.".into(),
-        );
-    }
-    let mut out = Vec::new();
-    let wrong: Vec<String> = b
-        .claim_checks()
-        .into_iter()
-        .filter_map(|(text, check)| match check {
-            ClaimCheck::Fails { wrong, of } => Some(format!(
-                "- \"{}\" ({wrong} of {of} cases disagree)",
-                one_line(&text)
-            )),
-            _ => None,
-        })
-        .collect();
-    if !wrong.is_empty() {
-        out.push("Statements about the change the runs disprove:".to_string());
-        out.extend(wrong);
-    }
-    out.push("Cases that came out other than predicted:".to_string());
-    for c in surprises {
-        let predicted = match (c.claim > 0, c.expect) {
-            (true, Expect::Same) => "its statement implies no change",
-            (true, Expect::Different) => "its statement implies a change",
-            (false, Expect::Same) => "the agent predicted no change",
-            (false, Expect::Different) => "the agent predicted a change",
-        };
-        out.push(format!(
-            "- {}: input {}",
-            one_line(&c.name),
-            one_line(&c.input)
-        ));
-        out.push(format!("  before: {}", outcome(&c.before)));
-        out.push(format!("  after: {}", outcome(&c.after)));
-        let why = one_line(&c.why);
-        if why.is_empty() {
-            out.push(format!("  {predicted}"));
-        } else {
-            out.push(format!("  {predicted}: {why}"));
-        }
-    }
-    Body::Some {
-        what: "the unexpected behavior",
-        intro: "The old and the new code ran on the same inputs, in a sandbox:",
-        body: out.join("\n"),
     }
 }

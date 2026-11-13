@@ -71,6 +71,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             targets, sel, what, ..
         } => super::send::draw(f, app, targets, *sel, what),
         Overlay::Commits { sel, unit } => super::commits::draw_commits(f, app, *sel, *unit),
+        Overlay::Mode { sel } => super::mode::draw(f, app, *sel),
         Overlay::None => {}
     }
     // What is on the screen, to copy from; then the selection marked on it.
@@ -251,9 +252,34 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     // The status on the right is never cut and keeps a gap before it.
     let rw: usize = right.iter().map(|s| s.content.width()).sum();
     let budget = (area.width as usize).saturating_sub(if rw > 0 { rw + 2 } else { 0 });
+    // The mode leads, in the accent, with the key that changes it (a
+    // click on it does too); with every tool there is none to name.
+    let (mode, key) = match app.mode {
+        crate::mode::Mode::All => (String::new(), String::new()),
+        m => (
+            truncate(&format!(" {}", m.name()), budget),
+            format!(" {} ·", app.keys.label(Action::ToolMode)),
+        ),
+    };
+    let key = if mode.width() + key.width() <= budget {
+        key
+    } else {
+        String::new()
+    };
+    let lead = mode.width() + key.width();
+    if lead > 0 {
+        let at = Rect::new(area.x, area.y, (lead as u16).min(area.width), 1);
+        target(app, at, Target::Action(Action::ToolMode));
+    }
+    let budget = budget.saturating_sub(lead);
     let title = truncate(&format!(" {title}"), budget);
-    let pad = (area.width as usize).saturating_sub(title.width() + rw);
-    let mut line = vec![Span::styled(title, t.bold()), Span::raw(" ".repeat(pad))];
+    let pad = (area.width as usize).saturating_sub(lead + title.width() + rw);
+    let mut line = vec![
+        Span::styled(mode, t.accent().add_modifier(Modifier::BOLD)),
+        Span::styled(key, t.muted()),
+        Span::styled(title, t.bold()),
+        Span::raw(" ".repeat(pad)),
+    ];
     line.extend(right);
     f.render_widget(Paragraph::new(Line::from(line)), area);
 }
@@ -288,7 +314,7 @@ fn pending_spans(app: &App, typed: &str) -> Vec<Span<'static>> {
         .keys
         .hint()
         .into_iter()
-        .filter(|(_, a)| unit || !TILES.contains(a));
+        .filter(|(_, a)| app.allows(*a) && (unit || !TILES.contains(a)));
     for (i, (rest, a)) in follow.enumerate() {
         spans.push(Span::styled(if i == 0 { "  " } else { " · " }, t.muted()));
         spans.push(Span::styled(rest, t.accent()));

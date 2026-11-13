@@ -1,12 +1,30 @@
 <script lang="ts">
-  // The conversation about the unit, oldest first, and the question being
-  // typed. Links go to units of this change or to the code shown.
+  // The agent on the unit: its advice (what to do about it) on top, then
+  // the conversation, oldest first, the questions offered to ask next
+  // (the advice, the security checks, what the last answer leads to), and
+  // the question being typed. Links go to units of this change or to the code shown.
   import { api } from "../lib/api";
   import type { AskTile } from "../lib/types";
+  import Second from "./Second.svelte";
   import ShownCode from "./ShownCode.svelte";
 
   let { ask, typing }: { ask: AskTile; typing: boolean } = $props();
 </script>
+
+{#if ask.advice}
+  {@const a = ask.advice}
+  {#if a.result}
+    <div class="advice">
+      <h4>Advice <span class="muted small">{a.label}</span></h4>
+      <p class="answer">{a.result.text}</p>
+      {#if a.result.sources.length}
+        <ul>{#each a.result.sources as s, i (i)}<li class="muted small">{s}</li>{/each}</ul>
+      {/if}
+    </div>
+  {/if}
+  {#if a.waiting}<p class="muted small">⋯ {a.waiting}</p>{/if}
+  {#if a.second}<Second second={a.second} />{/if}
+{/if}
 
 {#each ask.exchanges as x (x.index)}
   <div class="exchange">
@@ -48,12 +66,22 @@
     {/each}
   </div>
 {:else}
-  <p class="muted">Ask anything about this unit; the agent reads the code to answer.</p>
+  <p class="muted">Ask anything else about this unit; the agent reads the code to answer.</p>
   <p class="muted small">Not sure yet? Bring more light into it:</p>
   {#each ask.tools as t (t.action)}
     <button class="tool" onclick={() => api.action(t.action)}><span class="key">{t.keys}</span> {t.what}</button>
   {/each}
 {/each}
+
+{#if ask.suggestions.length}
+  <p class="muted small next">Ask next</p>
+  {#each ask.suggestions as s, i (s.text)}
+    <button class="tool" onclick={() => api.click({ kind: "Suggest", i })}>
+      <span class="key">{i + 1}</span>
+      <span>{s.text}{#if s.about} <span class="muted small">{s.about}</span>{/if}</span>
+    </button>
+  {/each}
+{/if}
 
 <div class="input" class:typing>
   <span class="prompt">›</span>
@@ -63,8 +91,16 @@
 {#if ask.web_may_ask}<p class="muted small">The first question that could use the web asks before it does.</p>{/if}
 
 <style>
-  .exchange {
+  .exchange,
+  .advice {
     margin-bottom: 14px;
+  }
+  .advice ul {
+    padding-left: 16px;
+    margin: 4px 0;
+  }
+  .next {
+    margin: 10px 0 2px;
   }
   .q {
     font-weight: 600;

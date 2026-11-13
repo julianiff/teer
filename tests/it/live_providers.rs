@@ -103,17 +103,7 @@ async fn round_trip(adapter: Arc<dyn AgentAdapter>, name: &str) {
         .find(|u| u.symbol == "total")
         .unwrap()
         .clone();
-    run_dive(
-        adapter,
-        session,
-        unit,
-        file,
-        DiveKind::Recommend,
-        false,
-        None,
-        tx,
-    )
-    .await;
+    run_dive(adapter, session, unit, file, DiveKind::Recommend, false, tx).await;
     match rx.recv().await.unwrap() {
         DiveEvent::Ready { text, sources, .. } => {
             println!("recommend: {text}\nsources: {sources:?}")
@@ -174,8 +164,6 @@ async fn codex_takes_every_schema() {
         ("second", p::second_schema()),
         ("ask", p::ask_schema()),
         ("dive", p::dive_schema()),
-        ("visual", p::visual_schema()),
-        ("behavior", p::behavior_schema()),
         ("tests", p::tests_schema()),
         ("commit", p::commit_message_schema()),
     ];

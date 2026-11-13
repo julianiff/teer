@@ -91,7 +91,7 @@
   {/if}
 
   {#if card.code}
-    <Code code={card.code} statements={card.statements} tools={codeTools} />
+    <Code code={card.code} tools={codeTools} />
   {/if}
 
   {#if card.note}

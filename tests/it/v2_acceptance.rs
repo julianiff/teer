@@ -346,7 +346,7 @@ async fn look_closer() {
     assert_eq!(s.selected().as_deref(), Some("total"));
     let row = s.app.sel;
     // `l` on the ▲, then `<space>a`: the advice.
-    s.keys("l<space>a");
+    s.keys("lK<cr>");
     assert_eq!(s.app.screen, Screen::Unit);
     assert!(
         s.until(Duration::from_secs(10), |s| s

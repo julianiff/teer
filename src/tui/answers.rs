@@ -1,24 +1,18 @@
 //! The agent's answers about a unit, as the unit view shows them: the
-//! advice, the second model, and the tools' panels (the tests, old
-//! against new, the diagram, the security findings). (The agent
+//! advice, the second model, and the tools' panels (the tests, the
+//! security findings). (The agent
 //! questions keep the `Dive*` names: `DiveKind`, `DiveEvent`.) Everything
 //! the agent wrote is untrusted and drawn as plain text.
 
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
-use crate::config::Theme as ThemeName;
 use crate::keymap::Action;
 use crate::review::model::{
-    Behavior, Cite, ClaimCheck, Coverage, Delta, DiveKind, Expect, FoundTest, Marker, Outcome,
-    ProbeCase, Reach, Risk, Side, TestCheck, TestSearch, Unit, UnitStatus, Visual,
+    Cite, Coverage, DiveKind, FoundTest, Reach, Risk, Side, TestSearch, Unit,
 };
-use crate::review::visual::{DARK, LIGHT, edge_line};
 use crate::security::{Audit, Fact, Finding, Origin, Proof, Weight, audit};
 use crate::session::names;
 use crate::session::tools::{self, may_read_tests, pending, tool_key};
@@ -26,65 +20,14 @@ use crate::util::{truncate, wrap};
 
 /// The advice tile's name.
 pub(super) const ADVICE: &str = "Advice";
-/// The advice tile's question, after its key, until the agent is asked.
-pub(super) const ASK_ADVICE: &str = "ask the agent what to do about it";
 
 /// The Tests tile's question, after its key, when teer found tests.
 pub(super) const READ_TESTS: &str = "the agent reads them";
 /// The same, when teer found none.
 pub(super) const LOOK_TESTS: &str = "the agent looks for tests itself";
 
-/// The first row of what brings more light into a unit.
-pub(super) const MENU: &str = "Not sure yet? Bring more light into it:";
-
-fn delta_style(app: &App, d: Delta) -> Style {
-    let t = &app.theme;
-    match d {
-        Delta::Added => t.marker(Marker::Added),
-        Delta::Changed => t.marker(Marker::Changed),
-        Delta::Removed => t.marker(Marker::Removed),
-        Delta::Unchanged => t.muted(),
-    }
-}
-
-/// A Visualize answer: the claim, one line per edge, where the page is.
-fn visual_lines(app: &App, v: &Visual, w: usize) -> Vec<Line<'static>> {
-    let t = &app.theme;
-    let mut lines: Vec<Line<'static>> = wrap(&v.claim, w)
-        .into_iter()
-        .map(|l| Line::raw(format!(" {l}")))
-        .collect();
-    lines.push(Line::default());
-    for e in &v.edges {
-        let tag = format!("[{}]", e.status.word());
-        let text = truncate(&edge_line(v, e), w.saturating_sub(tag.width() + 3));
-        lines.push(Line::from(vec![
-            Span::raw(format!(" {text}  ")),
-            Span::styled(tag, delta_style(app, e.status)),
-        ]));
-    }
-    lines.push(Line::default());
-    let saved = format!("saved to {}", v.path.display());
-    for l in wrap(&saved, w) {
-        lines.push(Line::styled(format!(" {l}"), t.muted()));
-    }
-    lines.push(Line::styled(
-        format!(
-            " {} opens it in the browser",
-            app.keys.label(Action::GotoBrowser)
-        ),
-        t.muted(),
-    ));
-    lines
-}
-
-fn outcome_text(o: &Outcome) -> String {
-    match o {
-        Outcome::Value(v) => v.clone(),
-        Outcome::Error(e) => format!("error: {e}"),
-        Outcome::Missing => "— (not printed)".into(),
-    }
-}
+/// The ask tile's other offer, after its key.
+pub(super) const ASK_ANYTHING: &str = "ask anything about it, in your own words";
 
 /// A line of `text` after a marker, wrapped and indented under it.
 fn marked(glyph: &str, text: &str, w: usize, style: Style) -> Vec<Line<'static>> {
@@ -100,147 +43,6 @@ fn marked(glyph: &str, text: &str, w: usize, style: Style) -> Vec<Line<'static>>
             Line::styled(format!("{lead}{l}"), style)
         })
         .collect()
-}
-
-/// A Behavior answer: the summary; the statements checked against the runs;
-/// each case (surprises first, then the ones that changed, then the same);
-/// whether the project's tests notice the change; what ran.
-fn behavior_lines(app: &App, u: &Unit, b: &Behavior, w: usize) -> Vec<Line<'static>> {
-    let t = &app.theme;
-    let new_unit = u.status == UnitStatus::Added;
-    let summary = if new_unit {
-        let n = b.cases.len();
-        format!(
-            "{n} case{} ran on the new code (it doesn't exist before the change).",
-            if n == 1 { "" } else { "s" }
-        )
-    } else {
-        b.summary()
-    };
-    let mut lines: Vec<Line<'static>> = wrap(&summary, w)
-        .into_iter()
-        .map(|l| Line::raw(format!(" {l}")))
-        .collect();
-    lines.push(Line::default());
-    let claims = b.claim_checks();
-    if !claims.is_empty() && !new_unit {
-        lines.push(Line::styled(
-            " The statements, checked by running the code",
-            t.bold(),
-        ));
-        for (text, check) in claims {
-            let (glyph, style, result) = match check {
-                ClaimCheck::Holds(n) => (
-                    "✓",
-                    t.ok(),
-                    format!("{n} case{} agree", if n == 1 { "" } else { "s" }),
-                ),
-                ClaimCheck::Fails { wrong, of } => (
-                    "✗",
-                    t.needs_fix(),
-                    format!("{wrong} of {of} cases disagree"),
-                ),
-                ClaimCheck::Untested => ("?", t.muted(), "no case tests it".to_string()),
-            };
-            lines.extend(marked(glyph, &format!("{text} ({result})"), w, style));
-        }
-        lines.push(Line::default());
-    }
-    let mut cases: Vec<&ProbeCase> = b.cases.iter().collect();
-    cases.sort_by_key(|c| (!c.surprise(), !c.changed()));
-    let name_w = cases
-        .iter()
-        .map(|c| c.name.width())
-        .max()
-        .unwrap_or(0)
-        .min(18);
-    for c in cases {
-        let (glyph, style) = match (c.surprise() && !new_unit, c.changed()) {
-            _ if new_unit => ("•", t.muted()),
-            (true, _) => ("!", t.needs_fix()),
-            (false, true) => (Marker::Changed.symbol(), t.marker(Marker::Changed)),
-            (false, false) => ("=", t.muted()),
-        };
-        let name = crate::util::truncate_pad(&c.name, name_w);
-        let room = w.saturating_sub(name_w + 6);
-        let mut head = vec![
-            Span::styled(format!(" {glyph} "), style),
-            Span::styled(name, t.bold()),
-            Span::raw("  "),
-            Span::styled(truncate(&c.input, room), t.muted()),
-        ];
-        if !c.changed() || new_unit {
-            let used: usize = head.iter().map(|s| s.content.width()).sum();
-            let value = format!("  {}", outcome_text(&c.after));
-            head.push(Span::raw(truncate(&value, w.saturating_sub(used))));
-        }
-        lines.push(Line::from(head));
-        let pad = " ".repeat(5);
-        if c.changed() && !new_unit {
-            for (side, o) in [("before", &c.before), ("after ", &c.after)] {
-                let text = truncate(&outcome_text(o), w.saturating_sub(13));
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{pad}{side}  "), t.muted()),
-                    Span::raw(text),
-                ]));
-            }
-        }
-        if c.surprise() && !new_unit {
-            let predicted = match (c.claim > 0, c.expect) {
-                (true, Expect::Same) => "its statement implies no change",
-                (true, Expect::Different) => "its statement implies a change",
-                (false, Expect::Same) => "the agent predicted no change",
-                (false, Expect::Different) => "the agent predicted a change",
-            };
-            let text = format!("{predicted}: {}", c.why);
-            for l in wrap(&text, w.saturating_sub(5)) {
-                lines.push(Line::styled(format!("{pad}{l}"), t.needs_fix()));
-            }
-        }
-    }
-    if let Some(tests) = &b.tests {
-        lines.push(Line::default());
-        let (glyph, style, text) = match tests {
-            TestCheck::Guarded => (
-                "✓",
-                t.ok(),
-                "The project's tests pass with the change and fail with this unit put back: they notice it."
-                    .to_string(),
-            ),
-            TestCheck::Unguarded => (
-                "⚠",
-                t.risk(Risk::Medium),
-                "The project's tests pass with or without this change: no test notices it."
-                    .to_string(),
-            ),
-            TestCheck::FailWithChange(status) => (
-                "✗",
-                t.needs_fix(),
-                format!("The project's tests already fail with the change applied ({status})."),
-            ),
-            TestCheck::NoTests(why) => ("·", t.muted(), format!("No existing test: {why}")),
-            TestCheck::NotRun(why) => ("·", t.muted(), format!("Tests not run: {why}")),
-        };
-        lines.extend(marked(glyph, &text, w, style));
-        if !b.test_command.is_empty() {
-            let cmd = format!("`{}`", b.test_command.join(" "));
-            for l in wrap(&cmd, w.saturating_sub(4)) {
-                lines.push(Line::styled(format!("   {l}"), t.muted()));
-            }
-        }
-    }
-    lines.push(Line::default());
-    let ran = format!(
-        "ran `{}` in a sandbox: no network, nothing from the home folder",
-        b.command.join(" ")
-    );
-    for l in wrap(&ran, w) {
-        lines.push(Line::styled(format!(" {l}"), t.muted()));
-    }
-    for l in wrap(&format!("probe and raw output: {}", b.dir.display()), w) {
-        lines.push(Line::styled(format!(" {l}"), t.muted()));
-    }
-    lines
 }
 
 fn cite_text(c: &crate::review::model::Cite) -> String {
@@ -760,6 +562,12 @@ fn security_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
         }
         None if pending(u, kind) => {}
         None if !app.can_ask() => lines.extend(marked("·", audit::NO_AGENT, w, t.muted())),
+        // Open from the start in the security mode: nothing asked yet.
+        None if result.is_none() => {
+            let key = tool_key(app, kind);
+            let ask = format!("{key} asks the agent how this change can be abused.");
+            lines.extend(marked("·", &ask, w, t.muted()));
+        }
         None => {
             let key = tool_key(app, kind);
             lines.push(Line::styled(
@@ -777,9 +585,6 @@ fn security_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
     lines
 }
 
-/// Rows the picture needs at least; with fewer the text list is shown.
-const PICTURE_MIN_ROWS: usize = 4;
-
 /// What the answer to `kind` says: the answer, that it is on its way, or
 /// that there is none and how to ask again.
 pub(super) fn section_body(app: &App, u: &Unit, kind: DiveKind, w: usize) -> Vec<Line<'static>> {
@@ -791,17 +596,12 @@ pub(super) fn section_body(app: &App, u: &Unit, kind: DiveKind, w: usize) -> Vec
     if kind == DiveKind::Disagree {
         lines = disagree_lines(app, u, w);
     } else if let Some(res) = u.dive.results.get(&kind) {
-        let drawn = res
-            .visual
-            .as_ref()
-            .map(|v| visual_lines(app, v, w))
-            .or_else(|| res.behavior.as_ref().map(|b| behavior_lines(app, u, b, w)))
-            .or_else(|| {
-                let ask = kind == DiveKind::Tests && may_read_tests(app, u);
-                res.coverage
-                    .as_ref()
-                    .map(|c| coverage_lines(app, &res.text, c, w, ask))
-            });
+        let drawn = None.or_else(|| {
+            let ask = kind == DiveKind::Tests && may_read_tests(app, u);
+            res.coverage
+                .as_ref()
+                .map(|c| coverage_lines(app, &res.text, c, w, ask))
+        });
         if let Some(drawn) = drawn {
             lines = drawn;
         } else {
@@ -830,21 +630,6 @@ pub(super) fn section_body(app: &App, u: &Unit, kind: DiveKind, w: usize) -> Vec
             lines.push(Line::styled(format!(" {lead} {l}"), t.muted()));
         }
     }
-    if lines.is_empty() && kind == DiveKind::Recommend {
-        // Nothing is asked before the reviewer says so.
-        let key = app.keys.label(Action::ToolAdvice);
-        let what = "concrete steps, most important first, each with its reason";
-        let mut first = vec![
-            Span::styled(format!(" {key} "), t.accent()),
-            Span::styled(ASK_ADVICE, t.bold()),
-        ];
-        first.push(Span::styled(":", t.bold()));
-        lines.push(Line::from(first));
-        for l in wrap(what, w.saturating_sub(2)) {
-            lines.push(Line::styled(format!(" {l}"), t.muted()));
-        }
-        return lines;
-    }
     if lines.is_empty() {
         // A tool asks again with its key; the rest when the unit opens.
         let again = match tool_key(app, kind) {
@@ -854,67 +639,4 @@ pub(super) fn section_body(app: &App, u: &Unit, kind: DiveKind, w: usize) -> Vec
         lines.push(Line::styled(format!(" No answer. {again}"), t.muted()));
     }
     lines
-}
-
-/// Draw `u`'s Visualize picture in `area` (a panel's inside): the claim,
-/// the picture, and how to open the page. False to show the text instead.
-pub(super) fn draw_picture(f: &mut Frame, app: &App, u: &Unit, area: Rect, w: usize) -> bool {
-    let Some(pictures) = &app.pictures else {
-        return false;
-    };
-    let Some(v) = u
-        .dive
-        .results
-        .get(&DiveKind::Visualize)
-        .and_then(|r| r.visual.as_ref())
-    else {
-        return false;
-    };
-    if pending(u, DiveKind::Visualize) {
-        return false;
-    }
-    let claim: Vec<Line<'static>> = wrap(&v.claim, w)
-        .into_iter()
-        .map(|l| Line::raw(format!(" {l}")))
-        .collect();
-    let claim_h = claim.len() as u16;
-    if (area.height as usize) < claim.len() + 1 + PICTURE_MIN_ROWS + 1 || area.width < 4 {
-        return false;
-    }
-    let [top, _, pic, foot] = Layout::vertical([
-        Constraint::Length(claim_h),
-        Constraint::Length(1),
-        Constraint::Min(PICTURE_MIN_ROWS as u16),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-    // One column in, like the text.
-    let pic = Rect {
-        x: pic.x + 1,
-        width: pic.width - 1,
-        ..pic
-    };
-    let palette = if app.theme.name == ThemeName::Light {
-        &LIGHT
-    } else {
-        &DARK
-    };
-    f.render_widget(Clear, pic);
-    if !pictures.draw(f, pic, v, palette) {
-        return false;
-    }
-    f.render_widget(Paragraph::new(claim), top);
-    let open = format!(
-        "{} opens it in the browser · {}",
-        app.keys.label(Action::GotoBrowser),
-        v.path.display()
-    );
-    f.render_widget(
-        Paragraph::new(Line::styled(
-            format!(" {}", truncate(&open, w)),
-            app.theme.muted(),
-        )),
-        foot,
-    );
-    true
 }

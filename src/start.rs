@@ -235,6 +235,9 @@ pub struct Launch {
     pub cfg: Config,
     pub keymap: crate::keymap::Keymap,
     pub sarif: Vec<PathBuf>,
+    /// The mode named at start (`teer security`); `None` goes by the mode
+    /// kept with the review, else the config's, else what is reviewed.
+    pub mode: Option<crate::mode::Mode>,
 }
 
 /// A review begun: the app on its first screen, the runtime that carries
@@ -247,6 +250,15 @@ pub struct Begun {
     pub events: tokio::sync::mpsc::UnboundedReceiver<crate::session::AppEvent>,
     pub initial: Vec<crate::session::Effect>,
     pub lock: crate::review::store::Lock,
+}
+
+/// The mode `review` opens in: the one the reviewer chose for it (at
+/// start or with `<space>m`), else the config's, else `review`.
+pub fn mode_for(review: &Review, cfg: &Config) -> crate::mode::Mode {
+    review
+        .mode
+        .or(cfg.mode)
+        .unwrap_or_else(|| crate::mode::Mode::for_review(review))
 }
 
 /// Begin `l` as every front end does: the app on the queue, started with
@@ -264,7 +276,14 @@ pub fn begin(l: Launch, by: &str) -> Result<Begun> {
         sarif: l.sarif,
     };
     let editor = l.cfg.editor()?;
-    let mut app = crate::session::App::new(l.review, l.cfg, l.keymap);
+    let mut review = l.review;
+    // A mode named at start is the reviewer's choice: kept with the review.
+    if l.mode.is_some() {
+        review.mode = l.mode;
+    }
+    let mode = mode_for(&review, &l.cfg);
+    let mut app = crate::session::App::new(review, l.cfg, l.keymap);
+    app.set_mode(mode);
     let repo = app.review.repo_root.clone();
     let (adapter, sessions, note) = match l.agent {
         Ok(a) => (Some(a.adapter), a.sessions, None),
@@ -402,6 +421,7 @@ pub fn open(cwd: &Path, what: &What, mut cfg: Config, no_agent: bool) -> Result<
             // Teer.app opens a review without other tools' SARIF files; a
             // PR's code-scanning alerts come along all the same.
             sarif: Vec::new(),
+            mode: None,
         }),
         worktree,
     })

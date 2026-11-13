@@ -11,6 +11,7 @@ expression: json(&app)
     "subject": "your changes",
     "title": null,
     "summary": null,
+    "mode": "all",
     "no_agent": false,
     "agent_note": null,
     "preparing": null,
@@ -392,15 +393,33 @@ expression: json(&app)
       "notes": [
         {
           "after": 0,
-          "statement": 2
+          "title": "low",
+          "risk": "low",
+          "symbol": "−",
+          "text": [
+            "No longer sends the receipt email."
+          ],
+          "cites": "old L8"
         },
         {
           "after": 1,
-          "statement": 0
+          "title": "high",
+          "risk": "high",
+          "symbol": "+",
+          "text": [
+            "Rejects unsupported currencies. 2 callers don't handle it."
+          ],
+          "cites": "L9"
         },
         {
           "after": 1,
-          "statement": 1
+          "title": "medium",
+          "risk": "medium",
+          "symbol": "~",
+          "text": [
+            "Saves the payment on the order before returning it, so a failed save now fails the whole charge."
+          ],
+          "cites": "L9"
         }
       ],
       "hunks": [
@@ -598,18 +617,6 @@ expression: json(&app)
       "off": false,
       "on": false
     },
-    "tool.advice": {
-      "keys": "␣a",
-      "what": "advice: what to do about the unit",
-      "off": false,
-      "on": null
-    },
-    "tool.diagram": {
-      "keys": "␣v",
-      "what": "diagram of the change",
-      "off": false,
-      "on": null
-    },
     "tool.fix": {
       "keys": "␣e",
       "what": "propose a change: the agent writes it, teer checks it",
@@ -628,6 +635,12 @@ expression: json(&app)
       "off": false,
       "on": null
     },
+    "tool.mode": {
+      "keys": "␣m",
+      "what": "mode: review or security",
+      "off": false,
+      "on": null
+    },
     "tool.notes": {
       "keys": "␣n",
       "what": "every note",
@@ -637,12 +650,6 @@ expression: json(&app)
     "tool.prove": {
       "keys": "␣p",
       "what": "prove the security findings, old against new",
-      "off": false,
-      "on": null
-    },
-    "tool.run_old_new": {
-      "keys": "␣r",
-      "what": "run old and new",
       "off": false,
       "on": null
     },

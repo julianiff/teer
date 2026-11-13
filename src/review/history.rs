@@ -58,6 +58,16 @@ impl History {
         self.undo.is_empty() && self.redo.is_empty()
     }
 
+    /// Is there a step to undo?
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    /// Is there an undone step to redo?
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
     /// Record a step that was just made. A new step forgets what was undone.
     /// Changes that change nothing are left out, and a step of none is not kept.
     pub fn record(&mut self, mut step: Step) {

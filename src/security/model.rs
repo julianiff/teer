@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::review::model::{Cite, Range, Risk, Side};
+use crate::review::model::{Cite, LineRef, Range, Risk, Side};
 
 /// What a fact or a finding is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -142,6 +142,25 @@ impl Origin {
     pub fn is_teer(&self) -> bool {
         *self == Origin::Teer
     }
+}
+
+/// A possible security risk in a unit: what the fast model saw when it
+/// described the unit, from the unit's code alone. A place to look, not a
+/// finding: it read no caller, so a control elsewhere may cover it. It
+/// raises no level; the findings (`<space>s`) confirm or clear it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Suspect {
+    pub class: Class,
+    /// How bad it would be if it holds.
+    pub severity: Risk,
+    /// One sentence: who could do what. "A caller can pass any asset id."
+    pub text: String,
+    /// The lines of the unit that show it.
+    pub evidence: Vec<LineRef>,
+    /// The checks that would confirm or clear it, each a question to an
+    /// agent that reads the whole repository: what the ask tile offers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<String>,
 }
 
 /// The Security tile's answer after validation: the findings that kept

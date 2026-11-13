@@ -1,4 +1,4 @@
-//! Behavior: a flagged unit run before and after the change on the same
+//! The probe runner (the security proofs use it): a unit run before and after the change on the same
 //! inputs. The agent, read-only as always, writes a small probe program and
 //! predicts for each case whether its output changes. teer runs the probe
 //! in a sandbox (see `crate::sandbox`) on its own checkout of the base, then
@@ -23,15 +23,10 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::sync::mpsc::UnboundedSender;
 
-use super::dive::DiveEvent;
-use super::model::{
-    Behavior, DiveKind, Expect, Outcome, ProbeCase, SessionRef, TestCheck, Unit, UnitStatus,
-};
-use super::prompts::{self, MAX_CASES, MAX_PROBE_BYTES, MAX_PROBE_FILES, PROBE_MARK, ProbeSetting};
+use super::model::{Expect, Outcome, ProbeCase, Unit, UnitStatus};
+use super::prompts::{MAX_CASES, MAX_PROBE_BYTES, MAX_PROBE_FILES, PROBE_MARK, ProbeSetting};
 use super::validate::one_line;
-use crate::agent::AgentAdapter;
 use crate::git::{ChangedFile, FileStatus};
 use crate::pr::ProbeTree;
 use crate::sandbox::{self, Jail, RunOutput};
@@ -622,19 +617,13 @@ async fn run_side(
 
 // ------------------------------------------------------------------ receipts
 
-/// `<data>/probes/<review>/<unit>/`: the probe and what each run printed.
-fn receipt_dir(review_id: &str, unit_id: &str) -> PathBuf {
-    receipt_dir_in("probes", review_id, unit_id)
-}
-
 /// `<data>/<folder>/<review>/<unit>/`: where a run of `folder`'s kind
 /// (`probes`, `proofs`) keeps its receipt.
 pub(crate) fn receipt_dir_in(folder: &str, review_id: &str, unit_id: &str) -> PathBuf {
-    let page = super::visual::page_name(unit_id);
     super::store::data_dir()
         .join(folder)
-        .join(super::visual::safe_name(review_id, 64))
-        .join(page.trim_end_matches(".html"))
+        .join(super::scope::safe_name(review_id, 64))
+        .join(super::scope::unit_name(unit_id))
 }
 
 fn save_run(dir: &Path, name: &str, r: &RunOutput) {
@@ -712,64 +701,6 @@ fn programs() -> Vec<String> {
 /// by the probe checkout's lock.
 static RUNS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Tells the tab what is happening.
-struct Progress {
-    id: String,
-    tx: UnboundedSender<DiveEvent>,
-}
-
-impl Progress {
-    fn say(&self, text: impl Into<String>) {
-        let _ = self.tx.send(DiveEvent::Progress {
-            id: self.id.clone(),
-            kind: DiveKind::Behavior,
-            text: text.into(),
-        });
-    }
-}
-
-/// The project's tests with the change, then with only this unit put back.
-async fn check_tests(
-    tree: &Arc<ProbeTree>,
-    job: &Arc<Job>,
-    plan: &Plan,
-    deps: &Arc<Vec<(&'static str, PathBuf)>>,
-    dir: &Path,
-    progress: &Progress,
-) -> TestCheck {
-    if plan.tests.is_empty() {
-        let why = if plan.tests_why.is_empty() {
-            "the agent found no test that exercises this unit".to_string()
-        } else {
-            plan.tests_why.clone()
-        };
-        return TestCheck::NoTests(why);
-    }
-    if job.unit.status == UnitStatus::Removed {
-        return TestCheck::NotRun("a removed unit has nothing to put back".into());
-    }
-    progress.say("running the project's tests with the change…");
-    let with = match run_side(tree, job, Vec::new(), &plan.tests, deps, Side::After).await {
-        Ok(r) => r,
-        Err(RunError::Setup(e) | RunError::Plan(e)) => return TestCheck::NotRun(e),
-    };
-    save_run(dir, "tests-with-change", &with);
-    if with.timed_out || with.code != Some(0) {
-        return TestCheck::FailWithChange(with.status_text());
-    }
-    progress.say("running the tests again with this unit put back…");
-    let undone = match run_side(tree, job, Vec::new(), &plan.tests, deps, Side::Undone).await {
-        Ok(r) => r,
-        Err(RunError::Setup(e) | RunError::Plan(e)) => return TestCheck::NotRun(e),
-    };
-    save_run(dir, "tests-unit-undone", &undone);
-    match (undone.timed_out, undone.code) {
-        (true, _) => TestCheck::NotRun("timed out with the unit put back".into()),
-        (false, Some(0)) => TestCheck::Unguarded,
-        _ => TestCheck::Guarded,
-    }
-}
-
 /// Where probes run: teer's probe checkout, the dependency folders linked
 /// into it, and what a prompt says about the place.
 pub(crate) struct Bench {
@@ -793,7 +724,7 @@ pub(crate) async fn bench(
         return Err(sandbox::UNAVAILABLE.into());
     }
     if RUNS.try_lock().is_err() {
-        say("waiting for another Behavior run to finish…".into());
+        say("waiting for another probe run to finish…".into());
     }
     let one = RUNS.lock().await;
     say("preparing the probe checkout…".into());
@@ -845,123 +776,9 @@ pub(crate) async fn run_both(
     Ok((before, after))
 }
 
-async fn behave(
-    adapter: Arc<dyn AgentAdapter>,
-    session: &SessionRef,
-    job: Arc<Job>,
-    progress: &Progress,
-) -> Result<Behavior, String> {
-    let say = |text: String| progress.say(text);
-    let (_one, bench) = bench(&job, &say).await?;
-    let claims: Vec<String> = job
-        .unit
-        .changes
-        .iter()
-        .map(|c| c.statement.clone())
-        .collect();
-    let mut retry: Option<String> = None;
-    let mut last = String::new();
-    for attempt in 1..=ATTEMPTS {
-        let of = if attempt == 1 {
-            String::new()
-        } else {
-            format!(" (try {attempt} of {ATTEMPTS})")
-        };
-        progress.say(format!("the agent writes a probe{of}…"));
-        let prompt =
-            prompts::behavior_prompt(&job.unit, &job.file, &bench.setting, retry.as_deref());
-        let raw = adapter
-            .ask_probe(session, &prompt, &prompts::behavior_schema())
-            .await
-            .map_err(|e| format!("{e:#}"))?;
-        let plan = match validate_plan(&raw, &job.files, claims.len()) {
-            Ok(p) => p,
-            Err(why) => {
-                crate::log::write(&format!("probe {attempt} for {}: {why}", job.unit.id));
-                retry = Some(format!("Problem: your answer was refused: {why}"));
-                last = why;
-                continue;
-            }
-        };
-        let (before, after) = match run_both(&bench, &job, &plan, &say).await {
-            Ok(runs) => runs,
-            Err(RunError::Setup(e)) => return Err(e),
-            Err(RunError::Plan(why)) => {
-                crate::log::write(&format!("probe {attempt} for {}: {why}", job.unit.id));
-                retry = Some(format!("Problem: {why}"));
-                last = why;
-                continue;
-            }
-        };
-        let dir = receipt_dir(&job.review_id, &job.unit.id);
-        save_receipt(&dir, &plan, &before, &after);
-        let cases = build_cases(&plan, &before.stdout, &after.stdout);
-        match judge(job.unit.status, &cases) {
-            Ok(()) => {
-                let tests =
-                    check_tests(&bench.tree, &job, &plan, &bench.deps, &dir, progress).await;
-                return Ok(Behavior {
-                    cases,
-                    command: plan.command.clone(),
-                    dir,
-                    claims,
-                    tests: Some(tests),
-                    test_command: plan.tests.clone(),
-                });
-            }
-            Err(why) => {
-                crate::log::write(&format!("probe {attempt} for {}: {why}", job.unit.id));
-                retry = Some(retry_text(
-                    &plan,
-                    &[("before the change", &before), ("after the change", &after)],
-                    &why,
-                ));
-                last = why;
-            }
-        }
-    }
-    Err(format!("no working probe after {ATTEMPTS} tries: {last}"))
-}
-
-/// Ask for a probe of `job.unit`, run it before and after the change, and
-/// send the table (or why there is none). Progress goes out as it happens.
-pub async fn run(
-    adapter: Arc<dyn AgentAdapter>,
-    session: SessionRef,
-    job: Job,
-    tx: UnboundedSender<DiveEvent>,
-) {
-    let id = job.unit.id.clone();
-    let fingerprint = job.unit.fingerprint.clone();
-    let progress = Progress {
-        id: id.clone(),
-        tx: tx.clone(),
-    };
-    let ev = match behave(adapter, &session, Arc::new(job), &progress).await {
-        Ok(b) => DiveEvent::Ready {
-            id,
-            fingerprint,
-            kind: DiveKind::Behavior,
-            text: b.summary(),
-            sources: Vec::new(),
-            visual: None,
-            behavior: Some(Box::new(b)),
-            coverage: None,
-        },
-        Err(error) => DiveEvent::Failed {
-            id,
-            fingerprint,
-            kind: DiveKind::Behavior,
-            error,
-        },
-    };
-    let _ = tx.send(ev);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review::model::ClaimCheck;
     use serde_json::json;
 
     fn changed(path: &str) -> ChangedFile {
@@ -1047,18 +864,6 @@ mod tests {
         assert!(cases[0].changed() && !cases[0].surprise());
         assert!(cases[1].changed() && cases[1].surprise(), "predicted same");
         assert_eq!(judge(UnitStatus::Changed, &cases), Ok(()));
-        let b = Behavior {
-            cases,
-            command: Vec::new(),
-            dir: PathBuf::new(),
-            claims: Vec::new(),
-            tests: None,
-            test_command: Vec::new(),
-        };
-        assert_eq!(
-            b.summary(),
-            "2 cases ran before and after the change: all behave differently, 1 not as the agent predicted."
-        );
     }
 
     #[test]
@@ -1072,30 +877,6 @@ mod tests {
         assert_eq!(p.cases[0].claim, 1);
         assert_eq!(p.cases[1].claim, 0, "there is no statement 7");
         assert_eq!(p.tests, ["python3", "-m", "pytest", "-q"]);
-        let before = "TEER_CASE {\"case\": \"neg\", \"output\": -5}\nTEER_CASE {\"case\": \"pos\", \"output\": 3}\n";
-        let after = "TEER_CASE {\"case\": \"neg\", \"output\": -5}\nTEER_CASE {\"case\": \"pos\", \"output\": 3}\n";
-        let b = Behavior {
-            cases: build_cases(&p, before, after),
-            command: Vec::new(),
-            dir: PathBuf::new(),
-            claims: vec![
-                "Negative amounts now clamp to 0.".into(),
-                "Logs the total.".into(),
-            ],
-            tests: None,
-            test_command: Vec::new(),
-        };
-        // Statement 1 implies "neg" changes; it didn't. Nothing tests statement 2.
-        assert_eq!(
-            b.claim_checks(),
-            [
-                (
-                    "Negative amounts now clamp to 0.".to_string(),
-                    ClaimCheck::Fails { wrong: 1, of: 1 }
-                ),
-                ("Logs the total.".to_string(), ClaimCheck::Untested),
-            ]
-        );
         // A test command that can't run is dropped, the probe kept.
         v["tests"] = json!({"command": ["-x"], "why": ""});
         assert!(validate_plan(&v, &[], 2).unwrap().tests.is_empty());

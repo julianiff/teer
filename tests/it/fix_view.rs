@@ -626,7 +626,7 @@ fn leader_e_asks_for_a_change_when_there_is_something_to_fix() {
     assert!(dives(&d.keys("<space>e")).is_empty());
     assert_eq!(
         d.status(),
-        "Nothing to fix yet: ␣x finds security issues, ␣a asks for advice, i writes a note."
+        "Nothing to fix yet: ␣x finds security issues, K asks what to do, i writes a note."
     );
     // A finding that doesn't stand isn't one.
     let mut disputed = finding(Risk::High);

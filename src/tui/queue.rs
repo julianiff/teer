@@ -636,6 +636,7 @@ mod tests {
             history: Default::default(),
             branch: None,
             cursor: None,
+            mode: None,
         };
         let mut app = App::new(review, Config::default(), Keymap::default());
         app.screen = Screen::Queue;

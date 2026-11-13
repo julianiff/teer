@@ -13,7 +13,7 @@ use super::model::{Change, Cost, SecondOpinion, SessionRef, Unit, Unmentioned};
 use super::prompts;
 use super::validate::{
     Dropped, log_dropped, validate_changes, validate_cost, validate_second, validate_summary,
-    validate_unmentioned,
+    validate_suspects, validate_unmentioned,
 };
 use crate::agent::AgentAdapter;
 use crate::git::ChangedFile;
@@ -34,6 +34,8 @@ pub enum PrepareEvent {
         cost: Option<Cost>,
         /// A change the commit messages and the PR description don't mention.
         unmentioned: Option<Unmentioned>,
+        /// Possible security risks, with the lines that show each.
+        suspects: Vec<crate::security::Suspect>,
         dropped: Vec<Dropped>,
         /// A second opinion on these statements follows.
         checking: bool,
@@ -145,6 +147,8 @@ async fn run_batch(
             (None, None)
         };
         dropped.extend(gap_dropped);
+        let (suspects, suspects_dropped) = validate_suspects(u, &item["risks"]);
+        dropped.extend(suspects_dropped);
         log_dropped("claim for", &dropped);
         let summary = validate_summary(&item["summary"]);
         let checking = second && !changes.is_empty();
@@ -161,6 +165,7 @@ async fn run_batch(
             summary,
             cost,
             unmentioned,
+            suspects,
             dropped,
             checking,
         });

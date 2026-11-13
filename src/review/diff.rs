@@ -8,7 +8,7 @@
 //! the rows; `crate::notes` quotes them.
 
 use crate::review::attention::Level;
-use crate::review::model::{Change, LineRef, Range, Review, Side, Unit};
+use crate::review::model::{LineRef, Range, Review, Side, Unit};
 use crate::syntax::{Cache, Class};
 use crate::util::{DiffOp, diff_lines};
 
@@ -61,11 +61,11 @@ pub fn unit_rows(review: &Review, u: &Unit) -> Vec<Row> {
     rows_near(review, u, &[], None).0
 }
 
-/// The row a statement is written under: the last one it cites, else the
+/// The row a comment is written under: the last one it cites, else the
 /// one nearest its first cited line (a cited line may sit in a gap).
-pub fn anchor(c: &Change, rows: &[Row]) -> Option<usize> {
+pub fn anchor(evidence: &[LineRef], rows: &[Row]) -> Option<usize> {
     let cites = |r: &Row| {
-        c.evidence.iter().any(|e| match e.side {
+        evidence.iter().any(|e| match e.side {
             Side::New => r.line == Some(e.line),
             Side::Old => r.old == Some(e.line),
         })
@@ -73,7 +73,7 @@ pub fn anchor(c: &Change, rows: &[Row]) -> Option<usize> {
     if let Some(k) = rows.iter().rposition(cites) {
         return Some(k);
     }
-    let first = c.evidence.first()?;
+    let first = evidence.first()?;
     rows.iter()
         .enumerate()
         .filter_map(|(k, r)| {

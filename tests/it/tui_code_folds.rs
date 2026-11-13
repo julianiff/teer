@@ -157,8 +157,6 @@ async fn the_unit_view_shows_the_whole_change_with_the_statement_in_it() {
             kind: teer::review::model::DiveKind::Recommend,
             text: "Looks fine.".into(),
             sources: Vec::new(),
-            visual: None,
-            behavior: None,
             coverage: None,
         }));
     }

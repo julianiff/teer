@@ -22,9 +22,10 @@ teer splits a git change into the functions it touches, puts the risky ones on t
 
 - **risky first** — every function lands in `▲` close look, `◆` worth a look or `●` routine. facts from the code set the level; the agent can only raise it. what doesn't change behavior is accepted for you.
 - **no claim without its lines** — a fast model explains each function right in the code, a second model checks it. a sentence that can't cite its lines is dropped.
-- **answers before you ask** — open a function and it says why it got its level and what changed; `␣a` asks the agent what to do about it, `K` anything else; its tests, old and new run side by side in a sandbox, or a diagram are a key away.
+- **answers before you ask** — open a function and it says why it got its level and what changed; one tile holds the agent: `␣a` asks what to do about it, `K` anything else; its tests are a key away.
 - **a fix loop** — `f` flags, `i` writes a note, `:w` sends the notes to claude code or codex, and once the agent is done teer reviews again, with only the changed functions back in the queue.
 - **pull requests at arm's length** — `teer <url>` reviews in a checkout of its own. the agent only reads, the repo's agent instructions stay out, nothing is posted until you confirm.
+- **two modes, one way to work** — `review` what a change does and whether it is right, or read it for `security` alone. both write comments into the code and offer the questions worth asking next; what they say is the mode's. `␣m` changes it.
 - **neovim keys** — a key means the same on every screen. counts, `.`, `V`, undo and redo; every key can be rebound.
 - **any agent, or none** — [claude code](https://claude.com/claude-code), [codex](https://developers.openai.com/codex), or a model api with your key (anthropic, openai, openrouter, ollama). `--no-agent` still sorts the change.
 
@@ -45,12 +46,15 @@ teer                # your changes, or this branch since its base
 teer <url>          # a github pull request
 teer 482            # pull request 482 of this repo
 teer pr             # pick one waiting for you
+teer security       # only the security check; teer review is the default
 teer app            # the same review in teer.app
 ```
 
 the first start asks which agent and models to use; `teer setup` changes it.
 
-**review what your agent wrote** — `teer` → `a` or `f` down the queue → `l` on a `▲` → `K` to ask → `f` and `i` a note → `:w` `enter` sends the notes to your agent → teer reviews again when it's done → `a` the changed units → `:w` `enter` commits.
+**modes** — a review opens in `review`: what each unit now does, written into its code, and one tile to ask the agent (`K`), which offers what to do about it; plus tests, proposed changes, commits and sending a result to your agent. `teer security` reads the same change for abuse and nothing else: the risks written into the code, and in the same tile the checks that follow each one up, as deep as you want to go. `␣m` changes the mode inside a review. more in [FEATURES.md](FEATURES.md#modes).
+
+**check what your agent wrote** — `teer` → `a` or `f` down the queue → `l` on a `▲` → `K` to ask → `f` and `i` a note → `:w` `enter` sends the notes to your agent → teer reviews again when it's done → `a` the changed units → `:w` `enter` commits.
 
 **review a teammate's pull request** — `teer pr` → `a` or `f` down the queue → `l`, `K` to ask → `f` and `i` to note the problem → `:w` `enter` requests changes, or approves when nothing is flagged.
 
@@ -63,8 +67,9 @@ the first start asks which agent and models to use; `teer setup` changes it.
 | `i` | edit the note |
 | `u` · `<c-r>` | undo · redo |
 | `/` | find a unit |
+| `␣m` | the mode: check, review, security |
 | `:w` | finish: send the notes, commit, approve |
-| `?` | every key |
+| `?` | the keys that do something right now |
 
 your place is saved on every change. a review is open in one place at a time: a second `teer` on it, in another terminal or the app, says where it's open.
 
@@ -107,9 +112,9 @@ one queue replaces the list, swipe and the flagged screen, `:w` replaces the fin
 | `l` · `i` accept · flag | `a` · `f`; `i` writes a note |
 | `s` swipe | the queue: `a` and `f` move on to the next pending unit |
 | `d` the flagged screen | `l` opens any unit |
-| `n` recommend · `x` disagreement | `<space>a` advice in the unit view · the disagreement shown there |
+| `n` recommend · `x` disagreement | `K`, then `enter`: the advice, the first question the ask tile offers · the disagreement shown there |
 | `c` tests · `a` the agent reads them | `<space>t`, then `enter` lets the agent read them |
-| `t` behavior · `v` visualize · `b` browser | `<space>r` · `<space>v` · `gx` |
+| `t` behavior · `v` visualize · `b` browser | gone |
 | `o` · `f` resolve | gone: a flag and its note say it |
 | `tab` `z` `r` tiles, zoom, ask again | `tab` `zz` in the unit view; asking again is `<c-r>` while typing |
 | `/` ask and chat | `K`; `/` finds a unit |
@@ -127,7 +132,7 @@ one queue replaces the list, swipe and the flagged screen, `:w` replaces the fin
 
 ## docs
 
-[FEATURES.md](FEATURES.md): [how it works](FEATURES.md#how-it-works) · [start](FEATURES.md#start) · [agents](FEATURES.md#agents) · [the queue](FEATURES.md#the-queue) · [the unit view](FEATURES.md#the-unit-view) · [finish](FEATURES.md#finish) · [the fix loop](FEATURES.md#the-fix-loop) · [notes](FEATURES.md#notes) · [keys](FEATURES.md#keys) · [config](FEATURES.md#config) · [safety](FEATURES.md#safety) · [limits](FEATURES.md#limits)
+[FEATURES.md](FEATURES.md): [how it works](FEATURES.md#how-it-works) · [start](FEATURES.md#start) · [modes](FEATURES.md#modes) · [agents](FEATURES.md#agents) · [the queue](FEATURES.md#the-queue) · [the unit view](FEATURES.md#the-unit-view) · [finish](FEATURES.md#finish) · [the fix loop](FEATURES.md#the-fix-loop) · [notes](FEATURES.md#notes) · [keys](FEATURES.md#keys) · [config](FEATURES.md#config) · [safety](FEATURES.md#safety) · [limits](FEATURES.md#limits)
 
 ## development
 

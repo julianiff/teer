@@ -486,9 +486,10 @@ fn a_long_recommendation_in_its_tile_scrolls_to_its_end() {
     assert!(!has(&first, "step 40 of the answer"), "{text}");
     // Its tile in focus, `^d` scrolls it half its rows; the text stays.
     keys(&mut app, "<tab>");
-    assert_eq!(app.unit.panel, Some(Panel::Recommend));
+    assert_eq!(app.unit.panel, Some(Panel::Ask));
     screen(&app, w, h);
-    let at = |app: &App| app.unit.tile_offset(Panel::Recommend);
+    // The ask tile scrolls as its conversation does.
+    let at = |app: &App| app.ask.chat_scroll.get().unwrap_or(0);
     let step = half(&app);
     keys(&mut app, "<c-d>");
     assert_eq!(at(&app), step);
@@ -500,7 +501,6 @@ fn a_long_recommendation_in_its_tile_scrolls_to_its_end() {
     let end = screen(&app, w, h);
     let text = end.join("\n");
     assert!(has(&end, "step 40 of the answer"), "{text}");
-    assert!(has(&end, ABOVE), "{text}");
     let max = at(&app);
     assert!(max > 0);
     keys(&mut app, "<c-d>");

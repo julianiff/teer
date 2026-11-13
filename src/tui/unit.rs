@@ -8,16 +8,15 @@
 //! `[c` stop too. The hunk at the top of the text is the current one, its
 //! border in the accent: `p` puts it into the code, `P` every one.
 //!
-//! Beside it tiles open, tmux style. "Advice" is open as the unit opens,
-//! when there is an agent, and says which key asks the agent what to do
-//! about the unit (`<space>a`, or `enter` on it): nothing is asked before.
-//! Under the advice it shows the "Second model" when that disputes the
-//! description; with the tile closed, the text shows it at its end.
-//! The rest are added to the ones open: `K` asks about the unit
-//! (the conversation is kept with it), `<space>t` `<space>r` `<space>v`
-//! `<space>x` show the tests (teer's search; the tile then asks whether
-//! the agent reads them), old against new, the diagram and the security
-//! findings (teer's facts first; `<space>p` proves them), and `gd` shows
+//! Beside it tiles open, tmux style. "Ask about it" is open as the unit
+//! opens, when there is an agent: it offers the advice (what to do about
+//! the unit: `<space>a`, or `enter` on it) and any other question (`K`);
+//! nothing is asked before. The advice goes on top of the conversation,
+//! with the "Second model" when that disputes the description; with the
+//! tile closed, the text shows that at its end. The rest are added to the
+//! ones open: `<space>t` shows the tests (teer's search; the tile then
+//! asks whether the agent reads them), `<space>x` the security findings
+//! (teer's facts first; `<space>p` proves them), and `gd` shows
 //! what the unit calls outside the review, read-only. Under them the keys
 //! tile says what can be done here. The text takes a tall column on the
 //! left (on top when narrow), the tiles the rest. `tab` and `shift+tab`
@@ -38,7 +37,7 @@ use super::{ask, diff, preview, slim};
 use crate::fix::{HunkState, Proposal};
 use crate::keymap::Action;
 use crate::review::model::{AcceptedBy, Decision, DiveKind, Prep, Risk, Unit};
-use crate::session::tools::{self, TOOLS, tool_key};
+use crate::session::tools::{self, tool_key};
 use crate::session::unit::{Panel, TileScroll};
 use crate::session::{fix, help};
 use crate::util::{truncate, wrap};
@@ -50,9 +49,6 @@ const KEY_GAP: usize = 2;
 const SIDE_BY_SIDE: u16 = 90;
 /// Two tiles share a row once each gets this many columns.
 const TILE_W: u16 = 48;
-/// Blank rows above and below the advice tile's text while it only asks
-/// or waits.
-const ADVICE_AIR: u16 = 1;
 
 // ---- Drawing -----------------------------------------------------------
 
@@ -305,8 +301,8 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> (Vec<Vec<Line<'static>>>, Vec<u
         add(&mut blocks, card.into_iter().map(indented).collect());
     }
 
-    // The second model goes in the advice tile; with it closed, here.
-    if !app.unit.tiles.contains(&Panel::Recommend) {
+    // The second model goes in the ask tile; with it closed, here.
+    if !app.unit.tiles.contains(&Panel::Ask) {
         add(&mut blocks, second_model_lines(app, u, w));
     }
 
@@ -541,39 +537,53 @@ fn second_model_shown(app: &App, u: &Unit) -> bool {
     app.can_ask() && disputed(app, u)
 }
 
-/// Whether the advice tile only asks or waits: no advice yet, and no
-/// second model to show in it. Then it is small, its text in the middle.
-fn advice_waits(app: &App, u: &Unit) -> bool {
-    !u.dive.results.contains_key(&DiveKind::Recommend) && !second_model_shown(app, u)
+/// What the ask tile shows above the conversation, `w` cells wide: the
+/// advice once it was asked for (the answer, or that it is on its way)
+/// under its heading and who gave it, then the second model when it
+/// disputes the description. Empty before any of that.
+fn advice_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
+    let kind = DiveKind::Recommend;
+    let mut lines = Vec::new();
+    let answered = u.dive.results.contains_key(&kind);
+    if answered || tools::pending(u, kind) {
+        let by = if answered {
+            tools::answer_label(app, u, kind)
+        } else {
+            String::new()
+        };
+        lines.push(heading_by(app, answers::ADVICE, by, w));
+        lines.extend(answers::section_body(app, u, kind, w));
+    }
+    let second = second_model_lines(app, u, w);
+    // Its blank line parts it from the advice only.
+    let skip = usize::from(lines.is_empty());
+    lines.extend(second.into_iter().skip(skip));
+    lines
 }
 
-/// What the advice tile says while it [waits](advice_waits), `w` cells
-/// wide: the question (or that the agent is asked), each line centred.
-fn advice_wait_lines(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
-    answers::section_body(app, u, DiveKind::Recommend, w)
-        .into_iter()
-        .map(|mut l| {
-            // Without the indent the other tiles' text has.
-            if let Some(s) = l.spans.first_mut()
-                && let Some(rest) = s.content.strip_prefix(' ')
-            {
-                s.content = rest.to_string().into();
-            }
-            l.centered()
-        })
-        .collect()
+/// Whether the ask tile has nothing to show yet: no advice asked for, no
+/// second model, no question. Then it is small: what it offers, and the
+/// question line.
+fn ask_empty(app: &App, u: &Unit) -> bool {
+    let kind = DiveKind::Recommend;
+    app.chat_of(&u.id).is_empty()
+        && !u.dive.results.contains_key(&kind)
+        && !tools::pending(u, kind)
+        && !second_model_shown(app, u)
 }
 
 /// Rows tile `p` needs `w` columns wide, borders included, when it is
-/// small: the advice tile while it [waits](advice_waits), and the
+/// small: the ask tile while it [has nothing yet](ask_empty), and the
 /// Security tile until the agent's audit is there (teer's facts and a
 /// line or two: no empty box under them). None for the others.
 fn small_height(app: &App, u: &Unit, p: Panel, w: u16) -> Option<u16> {
     let inner = (w as usize).saturating_sub(4);
     match p {
-        Panel::Recommend if advice_waits(app, u) => {
-            let lines = advice_wait_lines(app, u, inner).len() as u16;
-            Some(lines + 2 * ADVICE_AIR + 2)
+        Panel::Ask if ask_empty(app, u) => {
+            // What it says and offers, the rule, the question line, the
+            // borders.
+            let lines = empty_ask(app, inner + 2).len() + offer_lines(app, u, inner + 2).len();
+            Some(lines as u16 + 2 + 2)
         }
         Panel::Tool(DiveKind::Security) if answers::audit_of(u).is_none() => {
             let lines = answers::section_body(app, u, DiveKind::Security, inner);
@@ -716,29 +726,16 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
         }
     };
     let (title, keys) = match p {
-        Panel::Recommend => {
-            let mut title = vec![
-                Span::styled(format!(" {}", k(Action::ToolAdvice)), t.accent()),
-                Span::styled(format!(" {} ", answers::ADVICE), t.bold()),
-            ];
-            if tools::pending(u, DiveKind::Recommend) {
-                title.push(Span::styled(format!("{} ", app.spinner()), t.muted()));
-            }
-            let mut keys = send(format!(" {next} · {} close ", k(Action::ViewBack)));
-            if tools::may_advise(app, u) {
-                keys = format!(" {} ask ·{keys}", k(Action::ViewOpen));
-            }
-            (Line::from(title), keys)
-        }
         Panel::Ask => {
             let mut title = vec![
                 Span::styled(format!(" {}", k(Action::AskOpen)), t.accent()),
                 Span::styled(" Ask about it ", t.bold()),
             ];
-            if app
-                .chat_of(&u.id)
-                .iter()
-                .any(|n| app.ask.pending.contains(n))
+            if tools::pending(u, DiveKind::Recommend)
+                || app
+                    .chat_of(&u.id)
+                    .iter()
+                    .any(|n| app.ask.pending.contains(n))
             {
                 title.push(Span::styled(format!("{} ", app.spinner()), t.muted()));
             }
@@ -760,11 +757,16 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
                     super::ui::fixed::ESC
                 )
             } else {
-                send(format!(
+                let keys = send(format!(
                     " {} type · {next} · {} close ",
                     k(Action::AskOpen),
                     k(Action::ViewBack)
-                ))
+                ));
+                if app.offers_at_once() {
+                    format!(" {} asks 1 ·{keys}", k(Action::ViewOpen))
+                } else {
+                    keys
+                }
             };
             (Line::from(title), keys)
         }
@@ -779,9 +781,6 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
                 title.push(Span::styled(format!("{} ", app.spinner()), t.muted()));
             }
             let mut keys = send(format!(" {next} · {} close ", k(Action::ViewBack)));
-            if kind == DiveKind::Visualize {
-                keys = format!(" {} browser ·{keys}", k(Action::GotoBrowser));
-            }
             if kind == DiveKind::Security && answers::may_prove(u) {
                 keys = format!(" {} prove ·{keys}", k(Action::ToolProve));
             }
@@ -815,11 +814,8 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
     if focus {
         block = block.title_bottom(Line::styled(keys, t.muted()).right_aligned());
     }
-    // Who gave the advice, or the findings.
+    // Who gave the findings.
     let by = match p {
-        Panel::Recommend if u.dive.results.contains_key(&DiveKind::Recommend) => {
-            Some(DiveKind::Recommend)
-        }
         Panel::Tool(DiveKind::Security) if answers::audit_of(u).is_some() => {
             Some(DiveKind::Security)
         }
@@ -845,43 +841,7 @@ fn draw_tile(f: &mut Frame, app: &App, u: &Unit, p: Panel, area: Rect, focus: bo
     }
     super::ui::text_area(app, inner, 0);
     match p {
-        Panel::Recommend => {
-            let w = inner.width as usize;
-            if advice_waits(app, u) {
-                // The question in the middle, nothing to scroll.
-                let lines = advice_wait_lines(app, u, w);
-                let h = (lines.len() as u16).min(inner.height);
-                let top = (inner.height - h) / 2;
-                let at = Rect::new(inner.x, inner.y + top, inner.width, h);
-                f.render_widget(Paragraph::new(lines), at);
-                app.unit.scroll.borrow_mut().remove(&p);
-                if focus {
-                    app.detail_max_scroll.set(0);
-                    app.detail_rows.set(inner.height as usize);
-                }
-            } else {
-                let mut lines = answers::section_body(app, u, DiveKind::Recommend, w);
-                lines.extend(second_model_lines(app, u, w));
-                draw_scrolled(f, app, p, lines, inner, focus);
-            }
-            // A click on the question asks.
-            if tools::may_advise(app, u)
-                && let Some(r) = super::select::find(f.buffer_mut(), inner, answers::ASK_ADVICE)
-            {
-                let row = Rect::new(inner.x, r.y, inner.width, 1);
-                let to = Target::Action(Action::ToolAdvice);
-                app.targets.borrow_mut().push((row, to));
-            }
-        }
         Panel::Ask => draw_ask(f, app, u, inner, focus),
-        Panel::Tool(DiveKind::Visualize)
-            if answers::draw_picture(f, app, u, inner, inner.width as usize) =>
-        {
-            if focus {
-                app.detail_max_scroll.set(0);
-                app.detail_rows.set(inner.height as usize);
-            }
-        }
         Panel::Tool(kind) => {
             let w = inner.width as usize;
             let lines = answers::section_body(app, u, kind, w);
@@ -978,6 +938,10 @@ fn keys_lines(app: &App, w: usize) -> (Vec<Line<'static>>, Vec<KeyAt>) {
             if !app.can_ask() && actions.iter().any(|a| help::AGENT_KEYS.contains(a)) {
                 continue;
             }
+            // What the mode leaves out isn't listed.
+            if actions.iter().any(|&a| !app.allows(a)) {
+                continue;
+            }
             let keys: Vec<String> = actions.iter().map(|&a| app.keys.label(a)).collect();
             if keys.iter().any(String::is_empty) {
                 continue;
@@ -1061,30 +1025,38 @@ fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
 fn draw_ask(f: &mut Frame, app: &App, u: &Unit, area: Rect, focus: bool) {
     let t = &app.theme;
     let w = area.width as usize;
-    let [talk, rule, input] = Layout::vertical([
+    // What the tile offers to ask next sits over the question line, cut
+    // so the conversation keeps a row.
+    let mut offered = offer_lines(app, u, w);
+    offered.truncate((area.height as usize).saturating_sub(3));
+    let [talk, offers, rule, input] = Layout::vertical([
         Constraint::Min(1),
+        Constraint::Length(offered.len() as u16),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
     .areas(area);
-    let chat = app.chat_of(&u.id);
-    if chat.is_empty() {
-        let lines = preview::cut(app, empty_ask(app, u, w), talk.height as usize);
-        f.render_widget(Paragraph::new(lines), talk);
-        // A click on a tool opens it.
-        for (kind, action, name, _) in TOOLS {
-            let shown = format!("{}  {name}", tool_key(app, kind));
-            if let Some(r) = super::select::find(f.buffer_mut(), talk, &shown) {
-                let row = Rect::new(talk.x, r.y, talk.width, 1);
-                app.targets.borrow_mut().push((row, Target::Action(action)));
-            }
+    // A click on an offered question asks it.
+    for (row, (_, i)) in offered.iter().enumerate() {
+        if let Some(i) = i {
+            let r = Rect::new(offers.x, offers.y + row as u16, offers.width, 1);
+            app.targets.borrow_mut().push((r, Target::Suggest(*i)));
         }
+    }
+    let lines: Vec<Line> = offered.into_iter().map(|(l, _)| l).collect();
+    f.render_widget(Paragraph::new(lines), offers);
+    let chat = app.chat_of(&u.id);
+    if ask_empty(app, u) {
+        let lines = preview::cut(app, empty_ask(app, w), talk.height as usize);
+        f.render_widget(Paragraph::new(lines), talk);
+        app.ask.chat_max.set(0);
     } else {
         ask::draw_talk(
             f,
             app,
             talk,
             ask::Talk {
+                head: advice_lines(app, u, w),
                 which: &chat,
                 scroll: &app.ask.chat_scroll,
                 max: &app.ask.chat_max,
@@ -1104,53 +1076,74 @@ fn draw_ask(f: &mut Frame, app: &App, u: &Unit, area: Rect, focus: bool) {
     );
 }
 
-/// What the ask panel says before the first question about `u`: how to
-/// ask, then the tools that bring more light into it (Q7), each with its
-/// key.
-fn empty_ask(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
+/// What the ask tile says before anything is asked, `w` cells wide: that
+/// anything can be asked, with its key. What it offers to ask is under it
+/// ([`offer_lines`]).
+fn empty_ask(app: &App, w: usize) -> Vec<Line<'static>> {
     let t = &app.theme;
     let mut lines = Vec::new();
-    let intro = if app.has_agent {
-        "Ask about this unit in your own words: \"why is the retry here?\", \"who else calls it?\", \
-\"show me the test for it\". The agent reads the code (read-only) and this conversation so far, \
-so a question can follow on from the last answer. The conversation is kept with the unit."
-    } else {
-        "No agent: asking needs one. `teer setup` picks Claude Code, Codex or a model API."
-    };
-    for l in wrap(intro, w.saturating_sub(1)) {
-        lines.push(Line::styled(format!(" {l}"), t.muted()));
-    }
-    if app.has_agent && app.web_may_ask() {
-        let web = "The first question asks once whether the agent may also search the web.";
-        for l in wrap(web, w.saturating_sub(1)) {
+    if !app.has_agent {
+        let none =
+            "No agent: asking needs one. `teer setup` picks Claude Code, Codex or a model API.";
+        for l in wrap(none, w.saturating_sub(1)) {
             lines.push(Line::styled(format!(" {l}"), t.muted()));
         }
+        return lines;
     }
-    lines.push(Line::default());
-    lines.push(Line::styled(format!(" {}", answers::MENU), t.bold()));
-    let key_w = TOOLS
-        .iter()
-        .map(|t| tool_key(app, t.0).width())
-        .max()
-        .unwrap_or(1);
-    let name_w = TOOLS.iter().map(|t| t.2.width()).max().unwrap_or(0);
-    for (kind, _, name, what) in TOOLS {
-        // Without an agent only teer's own test search works.
-        if !app.has_agent && kind != DiveKind::Tests {
-            continue;
+    lines.push(Line::from(vec![
+        Span::styled(format!(" {} ", app.keys.label(Action::AskOpen)), t.accent()),
+        Span::styled(answers::ASK_ANYTHING, t.bold()),
+    ]));
+    lines
+}
+
+/// Rows a question offered takes at most.
+const OFFER_ROWS: usize = 2;
+
+/// The questions the ask tile offers to ask next about `u`
+/// ([`App::suggestions_for`]), `w` cells wide: a line saying how one is
+/// asked, then each under its number with what it follows up, and with
+/// each line the question a click on it asks. Nothing when none is
+/// offered.
+fn offer_lines(app: &App, u: &Unit, w: usize) -> Vec<(Line<'static>, Option<usize>)> {
+    let t = &app.theme;
+    let offered = app.suggestions_for(u);
+    if offered.is_empty() {
+        return Vec::new();
+    }
+    let enter = super::ui::fixed::ENTER;
+    let how = if offered[0].offer == crate::session::suggest::Offer::Audit {
+        format!(" ask next: its number and {enter} asks it")
+    } else if offered.len() == 1 {
+        format!(" ask next: {enter} asks it")
+    } else {
+        format!(" ask next: {enter} asks 1, a number and {enter} another")
+    };
+    let mut lines = vec![(
+        Line::styled(crate::util::truncate(&how, w), t.muted()),
+        None,
+    )];
+    for (i, s) in offered.iter().enumerate() {
+        let text = if s.about.is_empty() {
+            s.text.clone()
+        } else {
+            format!("{} ({})", s.text, s.about)
+        };
+        let mut rows = wrap(&text, w.saturating_sub(4));
+        if rows.len() > OFFER_ROWS {
+            rows.truncate(OFFER_ROWS);
+            if let Some(last) = rows.last_mut() {
+                *last = crate::util::truncate(&format!("{last}…"), w.saturating_sub(4));
+            }
         }
-        let done = u.dive.results.contains_key(&kind);
-        let mut spans = vec![
-            Span::styled(format!(" {:>key_w$}  ", tool_key(app, kind)), t.accent()),
-            Span::styled(format!("{name:<name_w$}"), t.bold()),
-        ];
-        let room = w.saturating_sub(key_w + name_w + 6);
-        let what = if done { "answered: it opens" } else { what };
-        spans.push(Span::styled(
-            format!("  {}", truncate(what, room)),
-            t.muted(),
-        ));
-        lines.push(Line::from(spans));
+        for (k, row) in rows.into_iter().enumerate() {
+            let lead = if k == 0 {
+                Span::styled(format!(" {} ", i + 1), t.accent())
+            } else {
+                Span::raw("   ")
+            };
+            lines.push((Line::from(vec![lead, Span::styled(row, t.bold())]), Some(i)));
+        }
     }
     lines
 }
@@ -1236,6 +1229,7 @@ mod tests {
             history: Default::default(),
             branch: None,
             cursor: None,
+            mode: None,
         };
         let mut a = App::new(review, Config::default(), Keymap::default());
         a.has_agent = true;
@@ -1276,19 +1270,21 @@ mod tests {
     }
 
     #[test]
-    fn opening_asks_nothing_space_a_or_enter_on_the_tile_asks_once() {
+    fn opening_asks_nothing_enter_on_the_tile_asks_once() {
         let mut a = app();
         let id = a.selected_id().unwrap();
         let effects = a.open_unit(id.clone());
         assert_eq!(a.screen, Screen::Unit);
         assert!(recommends(&effects).is_empty(), "nothing before asked");
         assert!(a.review.unit(&id).unwrap().dive_pending.is_empty());
-        assert_eq!(recommends(&press(&mut a, "<space>a")), vec![id.clone()]);
+        // `enter` on the tile takes the question it offers.
+        assert_eq!(recommends(&press(&mut a, "<tab><cr>")), vec![id.clone()]);
         assert_eq!(a.unit.panel, Some(REC));
-        // On its way: not asked again; the key closes the tile.
-        assert!(recommends(&press(&mut a, "<space>a")).is_empty());
-        assert!(!a.unit.tiles.contains(&REC));
-        // `enter` on the tile asks the next unit's.
+        // On its way: not asked again; a question is typed instead.
+        assert!(recommends(&press(&mut a, "<cr>")).is_empty());
+        assert!(a.unit.typing);
+        press(&mut a, "<esc>");
+        // The same on the next unit.
         press(&mut a, "n");
         let next = a.unit.id.clone();
         assert_ne!(next, id);
@@ -1303,7 +1299,7 @@ mod tests {
         let id = a.selected_id().unwrap();
         a.open_unit(id);
         let text = render(&a, 100, 50);
-        for s in [preview::WHY_HEADING, "What changed", "Advice"] {
+        for s in [preview::WHY_HEADING, "What changed", "K Ask"] {
             assert!(text.contains(s), "{s}:\n{text}");
         }
         assert!(!text.contains("Second model"), "{text}");
@@ -1369,16 +1365,16 @@ mod tests {
     }
 
     const TESTS: Panel = Panel::Tool(DiveKind::Tests);
-    const RUN: Panel = Panel::Tool(DiveKind::Behavior);
+    const RUN: Panel = Panel::Tool(DiveKind::Security);
 
-    const REC: Panel = Panel::Recommend;
+    const REC: Panel = Panel::Ask;
 
     #[test]
     fn each_tool_adds_a_tile_and_the_focus_goes_round_them() {
         let mut a = app();
         let id = a.selected_id().unwrap();
         a.open_unit(id);
-        press(&mut a, "<space>t<space>r");
+        press(&mut a, "<space>t<space>x");
         assert_eq!(a.unit.tiles, [REC, TESTS, RUN]);
         assert_eq!(a.unit.panel, Some(RUN));
         // The text first, then the tiles in the order they opened.
@@ -1406,7 +1402,7 @@ mod tests {
         let id = a.selected_id().unwrap();
         let from = a.screen;
         a.open_unit(id);
-        press(&mut a, "<space>t<space>r");
+        press(&mut a, "<space>t<space>x");
         // The one opened before it gets the focus.
         press(&mut a, "h");
         assert_eq!(
@@ -1455,7 +1451,7 @@ mod tests {
         assert!(!a.unit.zoom);
         assert_eq!(a.unit.panel, Some(TESTS));
         // A tile opening ends a zoom, so it shows.
-        press(&mut a, "zz<space>r");
+        press(&mut a, "zz<space>x");
         assert!(!a.unit.zoom);
     }
 
@@ -1465,14 +1461,15 @@ mod tests {
         let id = a.selected_id().unwrap();
         a.open_unit(id);
         press(&mut a, "<space>tK");
-        assert_eq!(a.unit.tiles, [REC, TESTS, Panel::Ask]);
+        // The ask tile is the one open from the start.
+        assert_eq!(a.unit.tiles, [REC, TESTS]);
         press(&mut a, "x<esc>");
         assert_eq!(a.ask.draft, "x");
         assert_eq!(a.unit.panel, Some(Panel::Ask));
         assert!(!a.unit.typing);
         // The view's keys work again: tab moves on, i types again.
         press(&mut a, "<tab>");
-        assert_eq!(a.unit.panel, None);
+        assert_eq!(a.unit.panel, Some(TESTS));
         press(&mut a, "<s-tab>i");
         assert!(a.unit.typing);
         press(&mut a, "y");
@@ -1523,7 +1520,7 @@ mod tests {
     }
 
     #[test]
-    fn the_advice_tile_is_open_from_the_start_beside_the_keys_and_waits() {
+    fn the_ask_tile_is_open_from_the_start_small_and_offers_the_advice() {
         use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
         let mut a = app();
         let id = a.selected_id().unwrap();
@@ -1531,30 +1528,30 @@ mod tests {
         assert_eq!((a.unit.tiles.clone(), a.unit.panel), (vec![REC], None));
         let text = render(&a, 120, 40);
         let rows: Vec<&str> = text.lines().collect();
-        // The tile beside the text, saying which key asks.
+        // The tile beside the text, saying which keys ask.
         let head = rows
             .iter()
-            .position(|r| r.contains("╭ ␣a Advice"))
+            .position(|r| r.contains("╭ K Ask"))
             .unwrap_or_else(|| panic!("{text}"));
-        assert!(rows[head].find("╭ ␣a").unwrap() >= 58, "{text}");
+        assert!(rows[head].find("╭ K").unwrap() >= 58, "{text}");
+        assert!(text.contains("K ask anything about it"), "{text}");
+        // What it offers to ask, under its number.
+        assert!(text.contains("ask next: ⏎ asks"), "{text}");
         assert!(
-            text.contains("␣a ask the agent what to do about it:"),
+            text.contains("1 What should I do about this change"),
             "{text}"
         );
         assert!(!text.contains("asking the agent"), "{text}");
-        assert!(text.contains("␣a advice"), "in the keys tile:\n{text}");
+        assert!(!text.contains("Advice"), "no advice tile:\n{text}");
+        assert!(!text.contains("␣a"), "no key of its own:\n{text}");
         // The keys tile under it: what can be done here.
         let keys = rows.iter().position(|r| r.contains("╭ Keys")).unwrap();
         assert!(keys > head, "{text}");
-        // Small while it only asks, the question in the middle of it.
-        let (left, right) = tile_edges(&rows, head);
-        let foot = advice_foot(&rows, head, left);
-        // The question, its explanation on two rows, a blank row around.
-        assert_eq!(foot - head, 6, "{text}");
-        let q = rows[head + 2];
-        let start = q.find("␣a ask").map(|i| q[..i].chars().count()).unwrap();
-        let end = start + "␣a ask the agent what to do about it:".chars().count();
-        assert!((start - left - 1).abs_diff(right - end) <= 1, "{text}");
+        // Small while nothing is asked: what it says, what it offers
+        // (the advice; with every tool, the full check on two rows), the
+        // rule, the question line.
+        let (left, _) = tile_edges(&rows, head);
+        assert_eq!(advice_foot(&rows, head, left) - head, 8, "{text}");
         for item in [
             "a accept",
             "f flag",
@@ -1562,17 +1559,19 @@ mod tests {
             "␣t tests",
             "n N pending",
             "]c [c hunks",
-            "? every key",
+            "? keys",
         ] {
             assert!(text.contains(item), "{item}:\n{text}");
         }
-        // A click on the question asks.
+        // A click on the offer asks for the advice.
         let (row, line) = rows
             .iter()
             .enumerate()
-            .find(|(_, l)| l.contains("ask the agent what"))
+            .find(|(_, l)| l.contains("What should I do"))
             .unwrap();
-        let col = line[..line.find("ask the agent").unwrap()].chars().count() as u16;
+        let col = line[..line.find("What should I do").unwrap()]
+            .chars()
+            .count() as u16;
         let mut effects = Vec::new();
         for kind in [
             MouseEventKind::Down(MouseButton::Left),
@@ -1587,10 +1586,12 @@ mod tests {
         }
         assert_eq!(recommends(&effects), [a.unit.id.clone()]);
         let text = render(&a, 120, 40);
+        assert!(text.contains("Advice"), "{text}");
         assert!(text.contains("asking the agent"), "{text}");
+        // Asked for: the tile is as tall as the others, down to the keys.
         let rows: Vec<&str> = text.lines().collect();
-        assert_eq!(advice_foot(&rows, head, left) - head, 4, "{text}");
-        // Answered: who wrote it on its bottom edge.
+        assert_eq!(advice_foot(&rows, head, left) + 1, keys, "{text}");
+        // Answered: the advice under its heading, with who wrote it.
         let id = a.unit.id.clone();
         let u = a.review.unit_mut(&id).unwrap();
         u.dive_pending.remove(&DiveKind::Recommend);
@@ -1603,10 +1604,28 @@ mod tests {
         );
         let text = render(&a, 120, 40);
         assert!(text.contains("Keep the retry, log the failure."), "{text}");
-        assert!(text.contains("╰ agent ("), "{text}");
-        // Then it grows down to the keys tile.
-        let rows: Vec<&str> = text.lines().collect();
-        assert_eq!(advice_foot(&rows, head, left) + 1, keys, "{text}");
+        assert!(text.contains("Advice  agent ("), "{text}");
+        // A question typed after it goes under the advice, in the same tile.
+        press(&mut a, "Kwhy<cr>");
+        assert_eq!(a.unit.tiles, [REC]);
+        let text = render(&a, 120, 40);
+        assert!(text.contains("why"), "{text}");
+    }
+
+    #[test]
+    fn enter_with_nothing_typed_asks_for_the_advice_once() {
+        let mut a = app();
+        let id = a.selected_id().unwrap();
+        a.open_unit(id.clone());
+        // K types; enter on the empty question takes the tile's offer.
+        assert_eq!(
+            recommends(&press(&mut a, "K<cr>")),
+            std::slice::from_ref(&id)
+        );
+        assert!(!a.unit.typing);
+        // It is on its way: enter types a question now, and asks nothing.
+        assert!(recommends(&press(&mut a, "<cr>")).is_empty());
+        assert!(a.unit.typing);
     }
 
     /// The columns of the left and right edge of the tile whose top is on

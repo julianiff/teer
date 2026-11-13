@@ -100,6 +100,7 @@ fn review(units: Vec<Unit>, pr: Option<PrInfo>) -> Review {
         history: Default::default(),
         branch: None,
         cursor: None,
+        mode: None,
     }
 }
 

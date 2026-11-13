@@ -4,6 +4,7 @@
 pub mod ask;
 pub mod attention;
 pub mod behavior;
+pub mod comments;
 pub mod diff;
 pub mod dive;
 pub mod history;
@@ -11,11 +12,11 @@ pub mod intent;
 pub mod model;
 pub mod prepare;
 pub mod prompts;
+pub mod scope;
 pub mod store;
 pub mod story;
 pub mod test_search;
 pub mod validate;
-pub mod visual;
 
 use std::path::Path;
 
@@ -89,6 +90,7 @@ fn build(cwd: &Path, opts: &BuildOptions, tree: bool) -> Result<Review> {
         history: Default::default(),
         branch: None,
         cursor: None,
+        mode: None,
     };
     crate::security::facts::annotate(&mut review, &crate::security::SecurityConfig::load());
     // Other tools' findings, after teer's own facts (which start afresh).
@@ -192,6 +194,7 @@ impl Review {
                 summary,
                 cost,
                 unmentioned,
+                suspects,
                 checking,
                 ..
             } => {
@@ -205,6 +208,7 @@ impl Review {
                     u.changes = changes;
                     u.checks.cost = cost;
                     u.checks.unmentioned = unmentioned;
+                    u.checks.suspects = suspects;
                     // New statements: an old check was about other ones.
                     u.checks.second = None;
                     u.checks.second_failed = None;

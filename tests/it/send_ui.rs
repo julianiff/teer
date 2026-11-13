@@ -14,8 +14,8 @@ use std::path::PathBuf;
 use common::v2::{Driver, review, unit};
 use teer::keymap::Keymap;
 use teer::review::model::{
-    Answer, Behavior, Cite, Coverage, DiveKind, DiveResult, Expect, Gap, Outcome, PrInfo,
-    ProbeCase, Question, Range, Risk, SessionRef, Shown, Side, Unit,
+    Answer, Cite, Coverage, DiveKind, DiveResult, Gap, PrInfo, Question, Range, Risk, SessionRef,
+    Shown, Side, Unit,
 };
 use teer::security::{Audit, Class, Fact, Finding, Hop, Origin, Proof, SecondCheck, Weight};
 use teer::send::{Agent, PiState, Target};
@@ -145,7 +145,7 @@ fn sent_to(effects: &[Effect]) -> Option<(Target, String)> {
 fn the_advice_goes_with_its_sources_between_the_head_and_what_to_do() {
     let mut d = driver(advised());
     d.keys("l<tab>");
-    assert_eq!(d.app.unit.panel, Some(Panel::Recommend));
+    assert_eq!(d.app.unit.panel, Some(Panel::Ask));
     let effects = d.keys("s");
     let (text, what) = listed(&effects);
     assert_eq!(what, "the advice");
@@ -332,105 +332,6 @@ fn tests_found_but_not_read_by_the_agent_have_nothing_to_send_yet() {
     assert_eq!(d.status(), "Tests has nothing to send yet.");
 }
 
-fn case(name: &str, expect: Expect, before: &str, after: &str, claim: usize) -> ProbeCase {
-    ProbeCase {
-        name: name.into(),
-        input: format!("{name} input"),
-        expect,
-        why: "the retry is new".into(),
-        before: Outcome::Value(before.into()),
-        after: Outcome::Value(after.into()),
-        claim,
-    }
-}
-
-#[test]
-fn behavior_sends_the_statements_the_runs_disprove_and_the_surprises() {
-    let b = Behavior {
-        cases: vec![
-            case("same", Expect::Same, "1", "1", 0),
-            case("expected", Expect::Different, "1", "2", 0),
-            case("declined", Expect::Same, "\"ok\"", "\"retry\"", 1),
-        ],
-        command: vec!["node".into(), "probe.js".into()],
-        dir: PathBuf::from("/tmp/probe"),
-        claims: vec!["Charges once.".into()],
-        tests: None,
-        test_command: Vec::new(),
-    };
-    let r = DiveResult {
-        behavior: Some(b),
-        ..Default::default()
-    };
-    let mut d = driver(with(charge(), DiveKind::Behavior, r));
-    d.keys("l<space>r");
-    assert_eq!(d.app.unit.panel, Some(Panel::Tool(DiveKind::Behavior)));
-    let (text, what) = listed(&d.keys("s"));
-    assert_eq!(what, "the unexpected behavior");
-    assert_eq!(
-        text,
-        format!(
-            "{HEAD}\n\nThe old and the new code ran on the same inputs, in a sandbox:\n\
-             Statements about the change the runs disprove:\n\
-             - \"Charges once.\" (1 of 1 cases disagree)\n\
-             Cases that came out other than predicted:\n\
-             - declined: input declined input\n  \
-             before: \"ok\"\n  \
-             after: \"retry\"\n  \
-             its statement implies no change: the retry is new\n\n\
-             {CLOSING}"
-        )
-    );
-}
-
-#[test]
-fn behavior_with_every_case_as_predicted_has_nothing_to_send() {
-    let b = Behavior {
-        cases: vec![case("same", Expect::Same, "1", "1", 0)],
-        command: Vec::new(),
-        dir: PathBuf::new(),
-        claims: Vec::new(),
-        tests: None,
-        test_command: Vec::new(),
-    };
-    let r = DiveResult {
-        behavior: Some(b),
-        ..Default::default()
-    };
-    let mut d = driver(with(charge(), DiveKind::Behavior, r));
-    d.keys("l<space>r");
-    assert!(!lists(&d.keys("s")));
-    assert_eq!(
-        d.status(),
-        "Behavior has nothing to send: every case came out as predicted."
-    );
-}
-
-#[test]
-fn behavior_of_a_new_unit_has_no_before_to_send() {
-    let b = Behavior {
-        cases: vec![case("declined", Expect::Same, "1", "2", 0)],
-        command: Vec::new(),
-        dir: PathBuf::new(),
-        claims: Vec::new(),
-        tests: None,
-        test_command: Vec::new(),
-    };
-    let r = DiveResult {
-        behavior: Some(b),
-        ..Default::default()
-    };
-    let mut u = with(charge(), DiveKind::Behavior, r);
-    u.status = teer::review::model::UnitStatus::Added;
-    let mut d = driver(u);
-    d.keys("l<space>r");
-    assert!(!lists(&d.keys("s")));
-    assert_eq!(
-        d.status(),
-        "Behavior has nothing to send: the unit is new, so nothing ran before."
-    );
-}
-
 #[test]
 fn ask_sends_the_last_answer_with_its_question() {
     let mut d = driver(charge());
@@ -441,6 +342,7 @@ fn ask_sends_the_last_answer_with_its_question() {
             text: a.into(),
             shown: Vec::new(),
             related: Vec::new(),
+            next: Vec::new(),
         }),
         error: None,
     };
@@ -508,9 +410,9 @@ fn a_tile_without_a_result_or_still_waiting_has_nothing_to_send_yet() {
     // The advice, not asked yet.
     let mut d = driver(charge());
     d.keys("l<tab>");
-    assert_eq!(d.app.unit.panel, Some(Panel::Recommend));
+    assert_eq!(d.app.unit.panel, Some(Panel::Ask));
     assert!(!lists(&d.keys("s")));
-    assert_eq!(d.status(), "Advice has nothing to send yet.");
+    assert_eq!(d.status(), "Ask has nothing to send yet.");
 
     // On its way: the old answer doesn't go.
     let mut u = advised();
@@ -518,18 +420,16 @@ fn a_tile_without_a_result_or_still_waiting_has_nothing_to_send_yet() {
     let mut d = driver(u);
     d.keys("l<tab>");
     assert!(!lists(&d.keys("s")));
-    assert_eq!(d.status(), "Advice has nothing to send yet.");
+    assert_eq!(d.status(), "Ask has nothing to send yet.");
 
     // Visualize is a picture.
     let mut u = charge();
-    u.dive
-        .results
-        .insert(DiveKind::Visualize, result("a claim"));
+    u.dive.results.insert(DiveKind::Security, result("a claim"));
     let mut d = driver(u);
-    d.keys("l<space>v");
-    assert_eq!(d.app.unit.panel, Some(Panel::Tool(DiveKind::Visualize)));
+    d.keys("l<space>x");
+    assert_eq!(d.app.unit.panel, Some(Panel::Tool(DiveKind::Security)));
     assert!(!lists(&d.keys("s")));
-    assert_eq!(d.status(), "Visualize has nothing to send yet.");
+    assert_eq!(d.status(), "Security has nothing to send yet.");
 
     // Asked nothing yet.
     let mut d = driver(charge());
@@ -830,7 +730,10 @@ fn a_focused_tile_with_something_to_send_says_s_send_on_its_edge() {
     let mut d = driver(advised());
     d.keys("l<tab>");
     let screen = d.render(140, 40);
-    assert!(screen.contains(" s send · tab next · h close "), "{screen}");
+    assert!(
+        screen.contains(" s send · K type · tab next · h close "),
+        "{screen}"
+    );
     // The keys tile lists it too.
     assert!(screen.contains("s send to agent"), "{screen}");
 

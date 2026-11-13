@@ -1,5 +1,5 @@
 //! The questions a unit view's tiles ask beyond what prepare wrote: the
-//! advice and the leader tools (Tests, Behavior, Visualize), their keys,
+//! advice and the leader tools (Tests, Security), their keys,
 //! names, and whether one may be asked now.
 
 use super::app::App;
@@ -9,24 +9,12 @@ use crate::review::model::{DiveKind, Unit};
 
 /// Each tool: its kind, the key that opens its panel, its name, and what
 /// it brings to light, in the order the ask panel suggests them.
-pub const TOOLS: [(DiveKind, Action, &str, &str); 4] = [
+pub const TOOLS: [(DiveKind, Action, &str, &str); 2] = [
     (
         DiveKind::Tests,
         Action::ToolTests,
         "Tests",
         "the tests that reach it, found at once; then the agent may read them",
-    ),
-    (
-        DiveKind::Behavior,
-        Action::ToolRunOldNew,
-        "Behavior",
-        "runs the old and the new code on the same inputs",
-    ),
-    (
-        DiveKind::Visualize,
-        Action::ToolDiagram,
-        "Visualize",
-        "a picture of what it talks to and what changes",
     ),
     (
         DiveKind::Security,
@@ -88,9 +76,6 @@ pub fn pending(u: &Unit, kind: DiveKind) -> bool {
 
 pub const ASKING: &str = "asking the agent…";
 
-pub const PROBING: &str =
-    "the agent writes a probe, then teer runs it before and after the change…";
-
 pub const CHECKING: &str = "a second model checks the description…";
 
 pub const SEARCHING: &str = "searching the test files…";
@@ -102,7 +87,6 @@ pub fn waiting(app: &App, u: &Unit, kind: DiveKind) -> String {
         return p.clone();
     }
     match kind {
-        DiveKind::Behavior => PROBING,
         DiveKind::Disagree => CHECKING,
         DiveKind::Tests if !u.dive.results.contains_key(&kind) => SEARCHING,
         _ => ASKING,
@@ -123,7 +107,6 @@ pub fn answer_label(app: &App, u: &Unit, kind: DiveKind) -> String {
             format!("found by teer, read by the agent ({agent})")
         }
         DiveKind::Disagree => format!("second opinion ({})", app.cfg.model_label(Role::Second)),
-        DiveKind::Behavior => format!("probe by the agent ({agent}), run by teer"),
         _ => format!("agent ({agent})"),
     }
 }

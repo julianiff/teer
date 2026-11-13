@@ -59,6 +59,8 @@ pub enum Click {
     Flagged { i: usize },
     /// A link in the ask conversation.
     Link { i: usize },
+    /// A question the ask tile offers: it is asked.
+    Suggest { i: usize },
     /// An item of the overlay's list: a step of the sheet, a note, a jump.
     Item { i: usize },
     /// A proposed hunk of the unit on show: `fix.apply` then puts it in.
@@ -371,6 +373,7 @@ impl Session {
                     Vec::new()
                 }
                 Click::Link { i } => app.follow_ask_link(i),
+                Click::Suggest { i } => app.take_suggestion(i),
                 Click::Item { i } => app.pick(i),
                 Click::Fix { i } => {
                     app.select_fix(i);
@@ -388,6 +391,8 @@ impl Session {
                 // `:app` is the terminal's way here.
                 let hints = Action::all()
                     .filter(|a| !app.keys.label(*a).is_empty() && *a != Action::FinishApp)
+                    // What the mode leaves out isn't offered.
+                    .filter(|a| app.allows(*a))
                     .map(|a| Hint {
                         keys: app.keys.labels(a),
                         action: a.id(),

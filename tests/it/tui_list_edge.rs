@@ -76,6 +76,7 @@ fn app_of(units: Vec<Unit>) -> App {
         history: Default::default(),
         branch: None,
         cursor: None,
+        mode: None,
     };
     // The queue listed by file (`zf`): file names as labels too.
     let mut app = App::new(review, Config::default(), Keymap::default());

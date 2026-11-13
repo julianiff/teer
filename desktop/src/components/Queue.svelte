@@ -43,11 +43,13 @@
   <div class="list scroll" bind:this={list}>
     {#if ui.buttons}
     <div class="listbar">
-      <div class="seg" role="group" aria-label="List by" title={grouping ? tip(grouping) : ""}>
+      {#if grouping}
+      <div class="seg" role="group" aria-label="List by" title={tip(grouping)}>
         <button class:on={!byFile} aria-pressed={!byFile} onclick={() => listBy(false)}>Units</button>
         <button class:on={byFile} aria-pressed={byFile} onclick={() => listBy(true)}>Files</button>
       </div>
-      {#if grouping?.keys}<kbd class="faint">{grouping.keys}</kbd>{/if}
+      {#if grouping.keys}<kbd class="faint">{grouping.keys}</kbd>{/if}
+      {/if}
       {#if queue.surface && securityOrder}
         <button
           class="toggle"

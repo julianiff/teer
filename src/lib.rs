@@ -21,6 +21,7 @@ pub mod git;
 pub mod graph;
 pub mod keymap;
 pub mod log;
+pub mod mode;
 pub mod notes;
 pub mod pr;
 pub mod pr_list;

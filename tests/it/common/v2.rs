@@ -72,6 +72,7 @@ pub fn review(units: Vec<Unit>) -> Review {
         history: Default::default(),
         branch: None,
         cursor: None,
+        mode: None,
     }
 }
 

@@ -652,7 +652,7 @@ async fn answers_about_code_a_rerun_changed_are_dropped() {
     let other = s.listed().into_iter().find(|n| n != "ship").unwrap();
     for name in ["ship", other.as_str()] {
         s.go_to(name);
-        s.keys("<space>a");
+        s.keys("K<cr>");
         s.keys("hh");
     }
     let recommended: Vec<String> = s.seen(|e| match e {
@@ -702,7 +702,7 @@ async fn answers_about_code_a_rerun_changed_are_dropped() {
     );
     // Asked again, about the code it has now.
     s.go_to("ship");
-    let asked = s.keys("l<space>a");
+    let asked = s.keys("lK<cr>");
     assert!(
         asked.iter().any(|e| matches!(
             e,

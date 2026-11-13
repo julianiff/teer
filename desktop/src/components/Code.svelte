@@ -1,22 +1,20 @@
 <script lang="ts">
   // A unit's code change: diff rows coloured by syntax class, each
-  // statement written in under the row it cites. A proposed hunk is drawn
+  // comment of the mode written in under the row it cites. A proposed hunk is drawn
   // the same way, under its own `title`; the `current` one (that
   // `fix.apply` puts in) has the accent border.
   // `tools`: what can be done with it, on its head; `caption`: a line
   // under the head (why a proposed hunk is there).
   import type { Snippet } from "svelte";
-  import type { Code, Statement } from "../lib/types";
+  import type { Code, CodeNote } from "../lib/types";
   let {
     code,
-    statements,
     tools,
     caption,
     title = "code change",
     current = false,
   }: {
     code: Code;
-    statements: Statement[];
     tools?: Snippet;
     caption?: Snippet;
     title?: string;
@@ -29,6 +27,17 @@
   const after = (k: number | null) => code.notes.filter((n) => n.after === k);
   const hunk = (k: number) => code.hunks.includes(k);
 </script>
+
+{#snippet said(n: CodeNote)}
+  <div class="said">
+    {#if n.symbol}<span class={n.risk ? `risk-${n.risk}` : ""}>{n.symbol}</span>{/if}
+    <div class="body">
+      {#if n.title}<div class="title {n.risk ? `risk-${n.risk}` : 'muted'}">{n.title}</div>{/if}
+      {#each n.text as p, i (i)}<p>{p}</p>{/each}
+    </div>
+    <span class="muted cites">{n.cites}</span>
+  </div>
+{/snippet}
 
 <div class="code" class:current>
   <div class="head">
@@ -48,23 +57,9 @@
           <span class="text">{#each row.pieces as p, i (i)}<span class={p.class ? `c-${p.class}` : ""}>{p.text}</span>{/each}</span>
         </div>
       {/if}
-      {#each after(k) as n (n.statement)}
-        {@const s = statements[n.statement]}
-        <div class="said">
-          <span class="risk-{s.risk}">{s.symbol}</span>
-          <span>{s.text}</span>
-          <span class="muted cites">{s.cites}</span>
-        </div>
-      {/each}
+      {#each after(k) as n, i (i)}{@render said(n)}{/each}
     {/each}
-    {#each after(null) as n (n.statement)}
-      {@const s = statements[n.statement]}
-      <div class="said">
-        <span class="risk-{s.risk}">{s.symbol}</span>
-        <span>{s.text}</span>
-        <span class="muted cites">{s.cites}</span>
-      </div>
-    {/each}
+    {#each after(null) as n, i (i)}{@render said(n)}{/each}
   </div>
 </div>
 
@@ -163,6 +158,17 @@
     display: flex;
     gap: 8px;
     max-width: 72ch;
+  }
+  .said p {
+    margin: 0;
+  }
+  .said p + p {
+    margin-top: 2px;
+  }
+  .title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
   }
   .cites {
     margin-left: auto;

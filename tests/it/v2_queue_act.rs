@@ -291,6 +291,7 @@ fn a_selection_keeps_its_units_when_a_description_moves_the_list() {
         summary: None,
         cost: None,
         unmentioned: None,
+        suspects: Vec::new(),
         dropped: Vec::new(),
         checking: false,
     }));

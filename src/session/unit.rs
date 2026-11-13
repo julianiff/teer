@@ -1,7 +1,7 @@
 //! The unit view's state and what its keys do (v2 Phase 5): any unit,
 //! its text, and the tiles open beside it, tmux style: the advice (open as
 //! the unit opens, with an agent; nothing is asked before `<space>a`), the
-//! ask conversation (`K`), the tools (`<space>t` `<space>r` `<space>v`)
+//! ask conversation (`K`), the tools (`<space>t` `<space>x`)
 //! and what the unit calls outside the review (`gd`). `tab` and
 //! `shift+tab` move the focus, `zz` zooms, `h` closes the tile in focus,
 //! then goes back. Deciding here moves on to the next pending unit and
@@ -27,12 +27,12 @@ const OUTSIDE_BYTES: usize = 512 * 1024;
 /// A tile beside the unit's text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum Panel {
-    /// What the agent says to do about the unit: open as the unit opens.
-    Recommend,
-    /// `K`: the conversation about the unit and the question being typed.
+    /// The agent on the unit, open as the unit opens: its advice (what
+    /// to do about it, `<space>a`), then the conversation and the question
+    /// being typed (`K`).
     Ask,
-    /// A leader tool's answer: the tests (`Tests`), old against new
-    /// (`Behavior`) or the diagram (`Visualize`).
+    /// A leader tool's answer: the tests (`Tests`) or the security
+    /// findings (`Security`).
     Tool(DiveKind),
     /// `gd`: what the unit calls outside the review, read-only.
     Outside,
@@ -157,8 +157,10 @@ impl App {
             self.unit.outside.clear();
             self.unit.fixes.borrow_mut().clear();
         }
-        if self.can_ask() && !self.unit.tiles.contains(&Panel::Recommend) {
-            self.unit.tiles.insert(0, Panel::Recommend);
+        if let Some(tile) = self.first_tile()
+            && !self.unit.tiles.contains(&tile)
+        {
+            self.unit.tiles.insert(0, tile);
         }
         self.unit.id = id.clone();
         self.unit.home = id.clone();
@@ -170,6 +172,26 @@ impl App {
             effects.extend(self.move_sel(p));
         }
         effects
+    }
+
+    /// The tile open from the start: the ask tile, in every mode, with
+    /// what the mode offers to ask. Nothing is asked before a key.
+    /// Without an agent the security mode opens the security tile, which
+    /// has teer's own facts.
+    fn first_tile(&self) -> Option<Panel> {
+        if self.can_ask() {
+            return Some(Panel::Ask);
+        }
+        (self.mode.security_order() && self.security.enabled)
+            .then_some(Panel::Tool(DiveKind::Security))
+    }
+
+    /// The mode changed with the view open: only the new mode's first tile
+    /// stays beside the text.
+    pub(crate) fn unit_mode_changed(&mut self) {
+        let id = self.unit.id.clone();
+        self.close_tiles();
+        self.show_unit(id);
     }
 
     /// Close every tile, the focus back on the text; the conversation stays
@@ -209,8 +231,9 @@ impl App {
     }
 
     /// Close tile `p`; the focus goes to the tile opened before it, else
-    /// to the text. The advice tile, open from the start, never
-    /// gets it this way: `h` again goes on to the text, then back.
+    /// to the text. The ask tile, when it is the first one (open from the
+    /// start), never gets it this way: `h` again goes on to the text, then
+    /// back.
     fn close_tile(&mut self, p: Panel) {
         let Some(i) = self.unit.tiles.iter().position(|&t| t == p) else {
             return;
@@ -223,9 +246,10 @@ impl App {
         if self.unit.panel == Some(p) {
             let before = self.unit.tiles[..i]
                 .iter()
+                .enumerate()
                 .rev()
-                .copied()
-                .find(|&t| t != Panel::Recommend);
+                .find(|&(k, &t)| !(k == 0 && t == Panel::Ask))
+                .map(|(_, &t)| t);
             self.focus_tile(before);
         }
     }
@@ -363,7 +387,17 @@ impl App {
     /// could use the web asks first whether it may (once a session, Q7);
     /// the question waits for the answer.
     fn unit_send(&mut self) -> Vec<Effect> {
+        // Nothing typed, or a number alone: a question the tile offers.
+        if let Some(i) = self.suggestion_typed(&self.ask.draft) {
+            self.ask.draft.clear();
+            return self.take_suggestion(i);
+        }
         let text = std::mem::take(&mut self.ask.draft);
+        self.ask_about_unit(text)
+    }
+
+    /// Ask `text` about the unit on show, as the reviewer's question.
+    pub(crate) fn ask_about_unit(&mut self, text: String) -> Vec<Effect> {
         self.ask.chat_scroll.set(None);
         let id = self.unit.id.clone();
         if self.has_agent && self.web_may_ask() {
@@ -428,9 +462,14 @@ impl App {
                 self.tile_step(a == Action::MoveNextTile, times);
             }
             Action::ToggleZoom => self.toggle_zoom(),
-            // On the advice tile, the agent is asked.
-            Action::ViewOpen if self.unit.panel == Some(Panel::Recommend) => {
-                return self.ask_advice();
+            // On the ask tile: the first question it offers is asked; with
+            // none, a question is typed. The full check is not started
+            // this lightly: its number asks for it.
+            Action::ViewOpen if self.unit.panel == Some(Panel::Ask) => {
+                if self.offers_at_once() {
+                    return self.take_suggestion(0);
+                }
+                self.open_ask_panel();
             }
             // On the Tests tile, the agent reads what teer found.
             Action::ViewOpen if self.unit.panel == Some(Panel::Tool(DiveKind::Tests)) => {
@@ -676,7 +715,7 @@ impl App {
         }
     }
 
-    /// A leader tool (`<space>a` `<space>t` `<space>r` `<space>v`): its tile opens
+    /// A leader tool (`<space>t` `<space>x`): its tile opens
     /// beside the ones open and its answer is asked for unless it has one.
     /// Open already, the same key gives it the focus, and in focus closes
     /// it. `<space>t` runs only teer's test search; the tile then asks
@@ -686,13 +725,25 @@ impl App {
         if self.review.unit(&id).is_none() {
             return Vec::new();
         }
-        if a == Action::ToolAdvice {
-            return self.toggle_advice();
-        }
         let Some(kind) = tools::tool_kind(a) else {
             return Vec::new();
         };
         let tile = Panel::Tool(kind);
+        // Open from the start in the security mode, with nothing asked:
+        // its key asks.
+        let unasked = self
+            .review
+            .unit(&id)
+            .is_some_and(|u| !u.dive.results.contains_key(&kind) && !tools::pending(u, kind));
+        if kind == DiveKind::Security
+            && unasked
+            && self.can_ask()
+            && self.unit.tiles.contains(&tile)
+        {
+            self.unit.zoom = false;
+            self.focus_tile(Some(tile));
+            return self.dive_on(&id, kind);
+        }
         if self.unit.panel == Some(tile) {
             self.close_tile(tile);
             return Vec::new();
@@ -715,37 +766,44 @@ impl App {
         self.dive_on(&id, kind)
     }
 
-    /// `<space>a`: the advice tile, asked when it hasn't been. In focus
-    /// with an answer (or one on its way), the same key closes it.
-    fn toggle_advice(&mut self) -> Vec<Effect> {
-        let tile = Panel::Recommend;
-        if self.unit.panel == Some(tile)
+    /// May the advice be asked for now: the mode has it, there is an
+    /// agent, and it hasn't answered and isn't answering.
+    pub fn advice_open(&self) -> bool {
+        self.mode.reviews()
             && self
                 .review
                 .unit(&self.unit.id)
-                .is_some_and(|u| !tools::may_advise(self, u))
-        {
-            self.close_tile(tile);
-            return Vec::new();
+                .is_some_and(|u| tools::may_advise(self, u))
+    }
+
+    /// The full security check of the unit on show, in its own tile,
+    /// asked unless it is answered or on its way.
+    pub(crate) fn open_audit(&mut self) -> Vec<Effect> {
+        let tile = Panel::Tool(DiveKind::Security);
+        if !self.unit.tiles.contains(&tile) {
+            self.open_tile(tile);
         }
-        self.ask_advice()
+        self.unit.zoom = false;
+        self.focus_tile(Some(tile));
+        let id = self.unit.id.clone();
+        self.dive_on(&id, DiveKind::Security)
     }
 
     /// Ask the agent for advice on the unit on show: what to do about it.
-    /// The advice tile opens first, in focus; answered already or on its
-    /// way, nothing more is asked.
+    /// The ask tile opens first, in focus, at its top, where the advice
+    /// is; answered already or on its way, nothing more is asked.
     pub(crate) fn ask_advice(&mut self) -> Vec<Effect> {
         if !self.can_ask() {
             self.status = "No agent: advice needs one (`teer setup` picks it).".into();
             return Vec::new();
         }
-        let tile = Panel::Recommend;
+        let tile = Panel::Ask;
         if !self.unit.tiles.contains(&tile) {
             self.unit.tiles.insert(0, tile);
-            self.unit.scroll.borrow_mut().remove(&tile);
         }
         self.unit.zoom = false;
         self.focus_tile(Some(tile));
+        self.ask.chat_scroll.set(Some(0));
         let id = self.unit.id.clone();
         self.dive_on(&id, DiveKind::Recommend)
     }

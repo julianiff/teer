@@ -91,12 +91,8 @@ impl AgentAdapter for MockAdapter {
 }
 
 /// A responder for dive prompts: keys on the `DIVE:<kind>` marker and
-/// answers Recommend with `{text, sources}`, Visualize with a small picture
-/// citing the unit's first line. Other prompts get an error.
+/// answers Recommend with `{text, sources}`. Other prompts get an error.
 pub fn dive_responder(prompt: &str, _schema: &Value) -> Result<Value> {
-    if prompt.contains("DIVE:Visualize") {
-        return Ok(mock_picture(prompt));
-    }
     if prompt.contains("DIVE:Recommend") {
         return Ok(serde_json::json!({
             "text": "mock Recommend answer",
@@ -104,41 +100,4 @@ pub fn dive_responder(prompt: &str, _schema: &Value) -> Result<Value> {
         }));
     }
     anyhow::bail!("not a dive prompt")
-}
-
-/// `caller ─calls→ unit ─writes→ store` (store added), every part citing the
-/// first line of the unit as the prompt shows it (`file:` and `new lines:`,
-/// or `old lines:` for a removed unit).
-fn mock_picture(prompt: &str) -> Value {
-    let field = |name: &str| {
-        prompt
-            .lines()
-            .find_map(|l| l.strip_prefix(name))
-            .map(str::trim)
-            .unwrap_or("")
-            .to_string()
-    };
-    let file = field("file: ");
-    let lines = match field("new lines: ") {
-        l if l == "none" => field("old lines: "),
-        l => l,
-    };
-    let line: u32 = lines
-        .split('-')
-        .next()
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(1);
-    let ev = serde_json::json!([{ "file": file, "start": line, "end": line }]);
-    serde_json::json!({
-        "claim": "mock picture: the unit now writes to a store.",
-        "nodes": [
-            { "id": "caller", "label": "caller", "status": "unchanged", "evidence": ev },
-            { "id": "unit", "label": "this unit", "status": "changed", "evidence": ev },
-            { "id": "store", "label": "store", "status": "added", "evidence": ev },
-        ],
-        "edges": [
-            { "from": "caller", "to": "unit", "label": "calls", "status": "unchanged", "evidence": ev },
-            { "from": "unit", "to": "store", "label": "writes", "status": "added", "evidence": ev },
-        ],
-    })
 }

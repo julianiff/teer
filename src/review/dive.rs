@@ -6,10 +6,8 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::model::{
-    Behavior, Coverage, DiveKind, DiveResult, Review, SessionRef, TestSearch, Unit, Visual,
-};
-use super::{prompts, test_search, validate, visual};
+use super::model::{Coverage, DiveKind, DiveResult, Review, SessionRef, TestSearch, Unit};
+use super::{prompts, test_search, validate};
 use crate::agent::AgentAdapter;
 use crate::fix::Proposal;
 use crate::git::ChangedFile;
@@ -26,10 +24,6 @@ pub enum DiveEvent {
         kind: DiveKind,
         text: String,
         sources: Vec<String>,
-        /// The picture, for a Visualize answer (`text` is its claim).
-        visual: Option<Box<Visual>>,
-        /// The table, for a Behavior answer (`text` is its summary).
-        behavior: Option<Box<Behavior>>,
         /// Covering tests and gaps, for a Tests answer (`text` is its note).
         coverage: Option<Box<Coverage>>,
     },
@@ -127,33 +121,6 @@ fn parse_answer(v: &serde_json::Value) -> Result<(String, Vec<String>), String> 
     Ok((text, sources))
 }
 
-/// Ask for a picture of `unit`, keep what cites code in `target.regions`, and
-/// save the page. The agent only reads; teer writes the file.
-async fn visualize(
-    adapter: Arc<dyn AgentAdapter>,
-    session: &SessionRef,
-    unit: &Unit,
-    file: &ChangedFile,
-    target: visual::Target,
-) -> Result<Visual, String> {
-    let prompt = prompts::visual_prompt(unit, file, &target.regions);
-    let raw = adapter
-        .ask_dive(session, &prompt, &prompts::visual_schema(), false)
-        .await
-        .map_err(|e| format!("{e:#}"))?;
-    let (picture, dropped) =
-        validate::validate_visual(&unit.id, &raw, &target.regions, &session.cwd);
-    validate::log_dropped("from the picture of", &dropped);
-    let mut picture = picture?;
-    picture.path = target.path;
-    let (page, title) = (picture.clone(), target.title);
-    tokio::task::spawn_blocking(move || visual::write_page(&page, &title))
-        .await
-        .map_err(|e| format!("{e}"))?
-        .map_err(|e| format!("couldn't save the picture: {e:#}"))?;
-    Ok(picture)
-}
-
 /// Search the test files under `root` (the repository with the change) for
 /// the tests that reach `unit`: no agent. See [`test_search::find`].
 pub fn search_tests(root: &Path, unit: &Unit, callers: &[test_search::Caller]) -> DiveEvent {
@@ -164,8 +131,6 @@ pub fn search_tests(root: &Path, unit: &Unit, callers: &[test_search::Caller]) -
         kind: DiveKind::Tests,
         text: String::new(),
         sources: Vec::new(),
-        visual: None,
-        behavior: None,
         coverage: Some(Box::new(Coverage::found(search))),
     }
 }
@@ -175,7 +140,8 @@ pub struct TestsJob {
     pub unit: Unit,
     pub file: ChangedFile,
     /// The code a gap may cite.
-    pub target: visual::Target,
+    /// The code the answer may cite.
+    pub regions: Vec<validate::Region>,
     pub search: TestSearch,
     /// The repository the search ran in: the found tests' code is read here.
     pub root: PathBuf,
@@ -209,8 +175,6 @@ pub async fn interpret_tests(
             kind: DiveKind::Tests,
             text,
             sources: Vec::new(),
-            visual: None,
-            behavior: None,
             coverage: Some(Box::new(c)),
         },
         Err(error) => DiveEvent::Failed {
@@ -239,13 +203,7 @@ async fn interpret(
         .await
         .unwrap_or_default()
     };
-    let prompt = prompts::tests_prompt(
-        &job.unit,
-        &job.file,
-        &job.target.regions,
-        &job.search,
-        &code,
-    );
+    let prompt = prompts::tests_prompt(&job.unit, &job.file, &job.regions, &job.search, &code);
     let raw = adapter
         .ask_dive(session, &prompt, &prompts::tests_schema(), false)
         .await
@@ -253,7 +211,7 @@ async fn interpret(
     let (mut coverage, dropped) = validate::validate_coverage(
         &job.unit,
         &raw,
-        &job.target.regions,
+        &job.regions,
         &session.cwd,
         &job.search.tests,
     );
@@ -265,7 +223,6 @@ async fn interpret(
 
 /// Ask the agent one question about `unit` and send the outcome.
 /// Web access is only granted for kinds that need it, and only if `web`.
-/// A Visualize question needs `visual` (what it may cite, where the page goes).
 #[allow(clippy::too_many_arguments)]
 pub async fn run_dive(
     adapter: Arc<dyn AgentAdapter>,
@@ -274,35 +231,8 @@ pub async fn run_dive(
     file: ChangedFile,
     kind: DiveKind,
     web: bool,
-    visual: Option<visual::Target>,
     tx: UnboundedSender<DiveEvent>,
 ) {
-    if kind == DiveKind::Visualize {
-        let result = match visual {
-            Some(target) => visualize(adapter, &session, &unit, &file, target).await,
-            None => Err("nothing to draw: the unit's code is not known".into()),
-        };
-        let ev = match result {
-            Ok(v) => DiveEvent::Ready {
-                id: unit.id.clone(),
-                fingerprint: unit.fingerprint.clone(),
-                kind,
-                text: v.claim.clone(),
-                sources: Vec::new(),
-                visual: Some(Box::new(v)),
-                behavior: None,
-                coverage: None,
-            },
-            Err(error) => DiveEvent::Failed {
-                id: unit.id.clone(),
-                fingerprint: unit.fingerprint.clone(),
-                kind,
-                error,
-            },
-        };
-        let _ = tx.send(ev);
-        return;
-    }
     let prompt = prompts::dive_prompt(kind, &unit, &file);
     let web = web && uses_web(kind);
     let ev = match adapter
@@ -316,8 +246,6 @@ pub async fn run_dive(
                 kind,
                 text,
                 sources,
-                visual: None,
-                behavior: None,
                 coverage: None,
             },
             Err(error) => DiveEvent::Failed {
@@ -381,8 +309,6 @@ impl Review {
                 kind,
                 text,
                 sources,
-                visual,
-                behavior,
                 coverage,
                 ..
             } => {
@@ -395,8 +321,6 @@ impl Review {
                     DiveResult {
                         text: text.clone(),
                         sources: sources.clone(),
-                        visual: visual.as_deref().cloned(),
-                        behavior: behavior.as_deref().cloned(),
                         coverage: coverage.as_deref().cloned(),
                         audit: None,
                         proposal: None,
@@ -508,6 +432,7 @@ mod tests {
             history: Default::default(),
             branch: None,
             cursor: None,
+            mode: None,
         }
     }
 
@@ -521,8 +446,6 @@ mod tests {
             kind: DiveKind::Recommend,
             text: "why".into(),
             sources: vec!["a.rs:1".into()],
-            visual: None,
-            behavior: None,
             coverage: None,
         };
         assert!(r.apply_dive(&ev));
@@ -559,8 +482,6 @@ mod tests {
             kind: DiveKind::Recommend,
             text: String::new(),
             sources: vec![],
-            visual: None,
-            behavior: None,
             coverage: None,
         };
         assert!(!r.apply_dive(&ev));
@@ -579,8 +500,6 @@ mod tests {
             kind: DiveKind::Recommend,
             text: "about the old code".into(),
             sources: vec![],
-            visual: None,
-            behavior: None,
             coverage: None,
         };
         let failed = DiveEvent::Failed {
@@ -631,17 +550,7 @@ mod run_tests {
     async fn dive(m: &MockAdapter, kind: DiveKind, web: bool) -> DiveEvent {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let session = SessionRef::fresh("mock", ".".into());
-        run_dive(
-            Arc::new(m.clone()),
-            session,
-            unit(),
-            file(),
-            kind,
-            web,
-            None,
-            tx,
-        )
-        .await;
+        run_dive(Arc::new(m.clone()), session, unit(), file(), kind, web, tx).await;
         rx.recv().await.unwrap()
     }
 
@@ -655,8 +564,6 @@ mod run_tests {
                 kind,
                 text,
                 sources,
-                visual: None,
-                behavior: None,
                 coverage: None,
             } => {
                 assert_eq!((id.as_str(), kind), ("a::f", DiveKind::Recommend));
@@ -701,99 +608,5 @@ mod run_tests {
         assert_eq!(res.text, "bad");
         assert_eq!(res.sources, ["https://a.dev"]);
         assert!(r.units[0].dive_pending.is_empty());
-    }
-
-    fn target(dir: &std::path::Path) -> visual::Target {
-        visual::Target {
-            regions: vec![validate::Region {
-                file: "a.rs".into(),
-                range: crate::review::model::Range::new(1, 9),
-                role: "this unit, new lines".into(),
-            }],
-            path: dir.join("visuals/r/a.html"),
-            title: "f · a.rs:1".into(),
-        }
-    }
-
-    fn picture(evidence_line: u32) -> serde_json::Value {
-        let ev =
-            serde_json::json!([{"file": "a.rs", "start": evidence_line, "end": evidence_line}]);
-        serde_json::json!({
-            "claim": "f now writes the <cache>.",
-            "nodes": [
-                {"id": "f", "label": "f", "status": "changed", "evidence": ev},
-                {"id": "cache", "label": "cache", "status": "added", "evidence": ev},
-            ],
-            "edges": [{"from": "f", "to": "cache", "label": "writes", "status": "added", "evidence": ev}]
-        })
-    }
-
-    async fn ask_visual(m: &MockAdapter, target: Option<visual::Target>) -> DiveEvent {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let session = SessionRef::fresh("mock", ".".into());
-        run_dive(
-            Arc::new(m.clone()),
-            session,
-            unit(),
-            file(),
-            DiveKind::Visualize,
-            true,
-            target,
-            tx,
-        )
-        .await;
-        rx.recv().await.unwrap()
-    }
-
-    #[tokio::test]
-    async fn visualize_saves_the_page_without_web_and_applies() {
-        let dir = tempfile::tempdir().unwrap();
-        let m = MockAdapter::new(|p, schema| {
-            assert!(p.starts_with("DIVE:Visualize"));
-            assert!(schema["properties"]["nodes"].is_object());
-            Ok(picture(3))
-        });
-        let ev = ask_visual(&m, Some(target(dir.path()))).await;
-        let DiveEvent::Ready {
-            text,
-            visual: Some(v),
-            ..
-        } = &ev
-        else {
-            panic!("{ev:?}")
-        };
-        assert_eq!(text, "f now writes the <cache>.");
-        assert_eq!(v.path, dir.path().join("visuals/r/a.html"));
-        let html = std::fs::read_to_string(&v.path).unwrap();
-        assert!(html.contains("f now writes the &lt;cache&gt;."), "{html}");
-        assert!(html.contains("<h1>f · a.rs:1</h1>"));
-        assert_eq!(*m.web_calls.lock().unwrap(), [false], "never the web");
-
-        let mut r = tests_review();
-        r.units[0].dive_pending.insert(DiveKind::Visualize);
-        assert!(r.apply_dive(&ev));
-        let res = &r.units[0].dive.results[&DiveKind::Visualize];
-        assert_eq!(res.visual.as_ref().unwrap().edges[0].label, "writes");
-        assert!(r.units[0].dive_pending.is_empty());
-    }
-
-    #[tokio::test]
-    async fn visualize_fails_when_nothing_is_backed_or_nothing_is_known() {
-        let dir = tempfile::tempdir().unwrap();
-        let m = MockAdapter::new(|_, _| Ok(picture(42)));
-        let ev = ask_visual(&m, Some(target(dir.path()))).await;
-        assert!(
-            matches!(&ev, DiveEvent::Failed { kind: DiveKind::Visualize, error, .. } if error.contains("no connection")),
-            "{ev:?}"
-        );
-        assert!(
-            !dir.path().join("visuals").exists(),
-            "no page for a failed ask"
-        );
-        let ev = ask_visual(&m, None).await;
-        assert!(matches!(ev, DiveEvent::Failed { .. }), "{ev:?}");
-        let m = MockAdapter::new(|_, _| anyhow::bail!("boom"));
-        let ev = ask_visual(&m, Some(target(dir.path()))).await;
-        assert!(matches!(&ev, DiveEvent::Failed { error, .. } if error.contains("boom")));
     }
 }

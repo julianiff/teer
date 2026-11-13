@@ -302,7 +302,8 @@ async fn statements_sit_in_the_code_under_the_rows_they_cite() {
     for row in [
         "\" │   9 +     if order.currency not in SUPPORTED:",
         "\" │  10 +         raise ValueError(\"unsupported currency\")",
-        "\" │     ╭──────",
+        // Every tool is on here, so the card says the statement's risk.
+        "\" │     ╭ high ──────",
         "\" │     │ Rejects unsupported currencies. 2 callers don't handle it. │",
         "\" │  11       result = pay(order)",
         "\" │  10 -     send_receipt(order)",
@@ -585,7 +586,6 @@ async fn the_flagged_screens_old_keys_do_nothing_in_the_queue() {
     select(&mut app, "charge_order");
     for keys in [
         "o", "x", "r", "s", "zz", "gt", "gT", "<tab>", "<s-tab>", "<right>", "<left>", "<space>w",
-        "<space>m",
     ] {
         assert!(v2::press(&mut app, keys).is_empty(), "{keys}");
         assert_eq!(app.screen, Screen::Queue, "{keys}");

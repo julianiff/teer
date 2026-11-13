@@ -147,6 +147,16 @@ fn the_prompt_carries_the_change_the_unit_on_show_and_what_was_asked_before() {
     );
     assert!(p.trim_end().ends_with("and who calls this?"), "{p}");
     assert!(!ask_prompt(&review, 0).contains("Asked before"));
+    // Every answer may say what is worth asking next.
+    assert!(p.contains("`next`: at most 3 questions"), "{p}");
+    assert_eq!(teer::review::prompts::ask_schema()["required"][3], "next");
+    // Read for security, the same question is answered from the
+    // attacker's side, with a verdict first; a review isn't.
+    assert!(!p.contains("attacker's side"), "{p}");
+    review.mode = Some(teer::mode::Mode::Security);
+    let p = ask_prompt(&review, 1);
+    assert!(p.contains("attacker's side"), "{p}");
+    assert!(p.contains("\"Holds:\""), "{p}");
 }
 
 #[tokio::test]
@@ -278,7 +288,7 @@ fn shift_k_asks_about_the_unit_on_show_and_shows_the_answer() {
     let mut a = app(review);
     ask_on(&mut a, CHARGE);
     assert!(
-        screen(&a, 120, 40).contains("Ask about this unit in your own words"),
+        screen(&a, 120, 40).contains("ask anything about it, in your own words"),
         "{}",
         screen(&a, 120, 40)
     );

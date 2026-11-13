@@ -85,6 +85,7 @@ fn app(n: usize) -> App {
         history: Default::default(),
         branch: None,
         cursor: None,
+        mode: None,
     };
     // The queue listed by file (`zf`): each file's units under its name.
     let mut app = App::new(review, Config::default(), Keymap::default());

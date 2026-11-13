@@ -20,7 +20,7 @@ use teer::review::attention::Level;
 use teer::review::dive::DiveEvent;
 use teer::review::model::{
     Answer, Change, Cite, Coverage, Decision, DiveKind, FoundTest, LineRef, Marker, Prep, Range,
-    Reach, Related, Review, Risk, SecondOpinion, Side, TestSearch, Unit, Verdict, Visual,
+    Reach, Related, Review, Risk, SecondOpinion, Side, TestSearch, Unit, Verdict,
 };
 use teer::review::{BuildOptions, build_review};
 use teer::session::app::{AppEvent, Effect, JumpKind, Overlay, Screen};
@@ -168,8 +168,6 @@ fn answer(d: &mut Driver, id: &str, kind: DiveKind, text: &str) -> Vec<Effect> {
         kind,
         text: text.into(),
         sources: Vec::new(),
-        visual: None,
-        behavior: None,
         coverage: None,
     }))
 }
@@ -273,9 +271,8 @@ fn sections_and_hunk_jumps() {
         rows.windows(2).all(|w| w[0] < w[1]),
         "top to bottom: {rows:?}"
     );
-    assert_eq!(d.app.unit.tiles, [Panel::Recommend]);
-    let shown = sections_with_content(&screen, &[ADVICE]);
-    assert_eq!(shown, [ADVICE], "{screen}");
+    assert_eq!(d.app.unit.tiles, [Panel::Ask]);
+    assert!(screen.contains("K Ask about it"), "{screen}");
 
     let mut r = r;
     let u = r.units.iter_mut().find(|u| u.symbol == "big").unwrap();
@@ -289,12 +286,12 @@ fn sections_and_hunk_jumps() {
     // tile closed, at the end of the text.
     let x = |screen: &str, h: &str| find(screen, h).unwrap().0;
     let (advice, second) = (
-        find(&screen, ADVICE).unwrap(),
+        find(&screen, "K Ask about it").unwrap(),
         find(&screen, SECOND).unwrap(),
     );
     assert!(second.0 >= 70 && second.1 > advice.1, "{screen}");
     disputed_view.keys("<tab>h");
-    assert!(!disputed_view.app.unit.tiles.contains(&Panel::Recommend));
+    assert!(!disputed_view.app.unit.tiles.contains(&Panel::Ask));
     let screen = disputed_view.render(140, 200);
     assert_eq!(x(&screen, SECOND), x(&screen, WHAT_CHANGED), "{screen}");
 
@@ -375,7 +372,7 @@ fn advice_on_demand_and_cache() {
     let effects = open(&mut d, &third);
     assert!(recommends(&effects).is_empty(), "{effects:?}");
     // `<space>a` asks, once.
-    assert_eq!(recommends(&d.keys("<space>a")), vec![third.clone()]);
+    assert_eq!(recommends(&d.keys("K<cr>")), vec![third.clone()]);
     answer(
         &mut d,
         &third,
@@ -394,7 +391,7 @@ fn advice_on_demand_and_cache() {
     // Any unit, routine too, can be asked about.
     let effects = open(&mut d, "u6");
     assert!(recommends(&effects).is_empty(), "{effects:?}");
-    assert_eq!(recommends(&d.keys("<space>a")), vec!["u6".to_string()]);
+    assert_eq!(recommends(&d.keys("K<cr>")), vec!["u6".to_string()]);
 }
 
 #[test]
@@ -402,7 +399,7 @@ fn advice_is_gone_once_the_code_changed_and_the_key_asks_again() {
     let mut d = Driver::open_with_agent(review(mixed()), cfg());
     let id = closer_looks(&d)[0].clone();
     open(&mut d, &id);
-    d.keys("<space>a");
+    d.keys("K<cr>");
     answer(&mut d, &id, DiveKind::Recommend, "Fine as it is.");
     d.keys("hh");
     // The cache is per unit and content hash: a re-run on the same code
@@ -420,7 +417,7 @@ fn advice_is_gone_once_the_code_changed_and_the_key_asks_again() {
     let effects = open(&mut d, &id);
     assert!(recommends(&effects).is_empty(), "{effects:?}");
     assert!(!d.render(140, 60).contains("Fine as it is."));
-    assert_eq!(recommends(&d.keys("<space>a")), vec![id]);
+    assert_eq!(recommends(&d.keys("K<cr>")), vec![id]);
 }
 
 // ---- U3 ---------------------------------------------------------------------------
@@ -581,7 +578,7 @@ fn goto_definition_callers_editor() {
 // ---- U6 ---------------------------------------------------------------------------
 
 #[test]
-fn leader_panels_and_gx() {
+fn leader_panels() {
     let units: Vec<Unit> = (0..3).map(|i| leveled(i, Some(Risk::High))).collect();
     let mut d = Driver::open_with_agent(review(units), cfg());
     open(&mut d, "u0");
@@ -591,8 +588,7 @@ fn leader_panels_and_gx() {
     let bar = d.bar(200, 40);
     for tool in [
         "tests that cover this unit",
-        "run old and new",
-        "diagram of the change",
+        "security: how the change can be abused",
     ] {
         assert!(bar.contains(tool), "{tool}: {bar}");
     }
@@ -620,8 +616,6 @@ fn leader_panels_and_gx() {
         kind: DiveKind::Tests,
         text: String::new(),
         sources: Vec::new(),
-        visual: None,
-        behavior: None,
         coverage: Some(Box::new(Coverage::found(found))),
     }));
     let read = Effect::InterpretTests {
@@ -634,57 +628,19 @@ fn leader_panels_and_gx() {
     let effects = d.keys("<cr>");
     assert!(effects.contains(&read), "{effects:?}");
 
-    // Run old and new: a tile of its own, beside the tests'.
-    let effects = d.keys("<space>r");
-    assert_eq!(asked(&effects, DiveKind::Behavior), ["u0"], "{effects:?}");
-    answer(
-        &mut d,
-        "u0",
-        DiveKind::Behavior,
-        "Old and new agree on every input.",
-    );
+    // Security: a tile of its own, beside the tests'.
+    let effects = d.keys("<space>x");
+    assert_eq!(asked(&effects, DiveKind::Security), ["u0"], "{effects:?}");
     let screen = d.render(140, 60);
-    assert!(
-        screen.contains("Old and new agree on every input."),
-        "{screen}"
-    );
+    assert!(screen.contains("␣x Security"), "{screen}");
     assert!(screen.contains("test_alpha_charges_once"), "{screen}");
-
-    // The diagram, and `gx` opens it in the browser.
-    let effects = d.keys("<space>v");
-    assert_eq!(asked(&effects, DiveKind::Visualize), ["u0"], "{effects:?}");
-    d.app.on_app_event(AppEvent::Dive(DiveEvent::Ready {
-        id: "u0".into(),
-        fingerprint: "fp0".into(),
-        kind: DiveKind::Visualize,
-        text: "Orders flow to the payment.".into(),
-        sources: Vec::new(),
-        visual: Some(Box::new(Visual {
-            claim: "Orders flow to the payment.".into(),
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            path: PathBuf::from("/v2/u0.html"),
-        })),
-        behavior: None,
-        coverage: None,
-    }));
-    let screen = d.render(140, 60);
-    assert!(screen.contains("Orders flow to the payment."), "{screen}");
-    assert!(screen.contains("Old and new agree"), "{screen}");
     assert_eq!(
         d.app.unit.tiles,
         [
-            Panel::Recommend,
+            Panel::Ask,
             Panel::Tool(DiveKind::Tests),
-            Panel::Tool(DiveKind::Behavior),
-            Panel::Tool(DiveKind::Visualize)
+            Panel::Tool(DiveKind::Security)
         ]
-    );
-    assert_eq!(
-        d.keys("gx"),
-        vec![Effect::OpenVisual {
-            unit_id: "u0".into()
-        }]
     );
     assert_eq!(d.screen(), Screen::Unit);
 }
@@ -780,7 +736,7 @@ fn look_closer() {
 
     // `l`, then `<space>a`: the advice.
     assert!(recommends(&d.keys("l")).is_empty());
-    let asked_for = recommends(&d.keys("<space>a"));
+    let asked_for = recommends(&d.keys("K<cr>"));
     assert_eq!(asked_for, vec![first.clone()]);
     answer(
         &mut d,

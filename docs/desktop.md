@@ -38,12 +38,12 @@ tooltip, so the keymap is learned by clicking (`View.actions`: each
 action's key, words and state, by id; the window places them):
 
 - on the unit's card, under its name: accept, flag, note, accept the file,
-  undo, and in the queue's preview open, ask, advice, tests;
+  undo, and in the queue's preview open, ask, tests;
 - on a queue row under the mouse: accept and flag (the row is selected
   first); over the list: units or files, find a unit; under it, the units
   accepted for you shown or hidden;
 - over the unit view: back, the pending units before and after, and the
-  closer looks (advice, ask, tests, old vs new, diagram), each opening its
+  closer looks (ask with the advice, tests, security), each opening its
   tile; on the code, its hunks, what it calls, its callers, the editor; on
   a tile, zoom and close;
 - in the header: the commits (or the pull request's description), the

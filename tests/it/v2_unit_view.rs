@@ -109,8 +109,6 @@ fn ready(app: &App, id: &str, kind: DiveKind, text: &str) -> AppEvent {
         kind,
         text: text.into(),
         sources: Vec::new(),
-        visual: None,
-        behavior: None,
         coverage: None,
     })
 }
@@ -215,11 +213,11 @@ fn sections_and_hunk_jumps() {
     assert!(title.contains("checkout.py:8-12"), "{text}");
     assert!(title.trim_end().ends_with("pending"), "{text}");
     // The sections in their order; the second model only when it disputes.
-    // The advice is a tile of its own, open from the start.
+    // The ask tile is open from the start, and offers the advice.
     assert!(at("Why this level") < at("What changed"));
     assert!(at("What changed") < at("raise ValueError"));
-    assert_eq!(app.unit.tiles, [Panel::Recommend]);
-    assert!(at("Advice") < at("ask the agent what to do about it"));
+    assert_eq!(app.unit.tiles, [Panel::Ask]);
+    assert!(at("K Ask about it") < at("1 What should I do about this change"));
     assert!(!text.contains("Second model"), "{text}");
 
     // A dispute shows the second model in the advice tile, under the
@@ -238,7 +236,7 @@ fn sections_and_hunk_jumps() {
         missed: Vec::new(),
     });
     app.rebuild_order();
-    assert_eq!(recommends(&press(&mut app, "<space>a")), [CHARGE]);
+    assert_eq!(recommends(&press(&mut app, "K<cr>")), [CHARGE]);
     let answer = ready(&app, CHARGE, DiveKind::Recommend, "Check the currency.");
     app.on_app_event(answer);
     let text = screen(&app, 120, 60);
@@ -271,17 +269,14 @@ fn advice_is_asked_for_on_demand_once_and_kept() {
     assert!(recommends(&effects).is_empty());
     let first = queue(&app)[0].clone();
     assert!(recommends(&app.open_unit(first.clone())).is_empty());
-    assert_eq!(
-        recommends(&press(&mut app, "<space>a")),
-        vec![first.clone()]
-    );
+    assert_eq!(recommends(&press(&mut app, "K<cr>")), vec![first.clone()]);
 
     // The answer is kept with the unit and shown; not asked again.
     let answer = ready(&app, &first, DiveKind::Recommend, "Rename it back.");
     app.on_app_event(answer);
     assert!(text(&app).contains("Rename it back."));
     assert!(recommends(&app.open_unit(first.clone())).is_empty());
-    assert!(recommends(&press(&mut app, "<space>a")).is_empty());
+    assert!(recommends(&press(&mut app, "K<cr>")).is_empty());
 
     // Saved and run again on the same code: it is still there.
     let mut again = v2::review(mixed());
@@ -302,7 +297,7 @@ fn advice_is_asked_for_on_demand_once_and_kept() {
     let (mut app3, _) = started(changed, true);
     app3.open_unit(first.clone());
     assert!(!text(&app3).contains("Rename it back."));
-    assert_eq!(recommends(&press(&mut app3, "<space>a")), [first]);
+    assert_eq!(recommends(&press(&mut app3, "K<cr>")), [first]);
 }
 
 #[tokio::test]
@@ -311,7 +306,7 @@ async fn the_mock_agent_answers_the_advice_asked_for() {
     let (mut app, _) = started(review, true);
     let mock = MockAdapter::new(responder);
     app.open_unit(CHARGE.into());
-    let dives = press(&mut app, "<space>a")
+    let dives = press(&mut app, "K<cr>")
         .into_iter()
         .filter(|e| matches!(e, Effect::Dive { .. }))
         .collect();
@@ -351,14 +346,9 @@ fn no_agent_hides_agent_sections() {
         .filter(|l| !l.trim().is_empty())
         .collect::<Vec<_>>();
     assert!(!last.iter().any(|l| l.trim() == "Advice"));
-    // Advice needs an agent and says so.
-    assert!(press(&mut app, "<space>a").is_empty());
-    assert!(app.status.contains("No agent"), "{}", app.status);
-    assert!(!app.unit.tiles.contains(&Panel::Recommend));
-    // The tools that need an agent say so; teer's own test search works.
-    assert!(press(&mut app, "<space>r").is_empty());
-    assert!(app.status.contains("No agent"), "{}", app.status);
-    assert_eq!(app.unit.panel, None);
+    // No tile is open without an agent.
+    assert!(!app.unit.tiles.contains(&Panel::Ask));
+    // teer's own test search works without one.
     let effects = press(&mut app, "<space>t");
     assert!(matches!(
         &effects[..],
@@ -382,18 +372,15 @@ async fn ask_panel_lifecycle() {
     app.open_unit(CHARGE.into());
     let mock = MockAdapter::new(responder);
 
-    // K: the panel under the text, typing; before a question, what to ask
-    // and the tools that bring more light (Q7).
+    // K: the tile beside the text, typing; before a question, what it
+    // offers.
     assert!(press(&mut app, "K").is_empty());
     assert_eq!(app.unit.panel, Some(Panel::Ask));
     assert!(app.unit.typing);
     let t = text(&app);
-    assert!(t.contains("Ask about this unit in your own words"), "{t}");
-    assert!(t.contains("Not sure yet? Bring more light into it:"), "{t}");
-    assert!(t.contains("␣t  Tests"), "{t}");
-    assert!(t.contains("␣r  Behavior"), "{t}");
+    assert!(t.contains("1 What should I do about this change"), "{t}");
     assert!(
-        t.contains("asks once whether the agent may also search the web"),
+        t.contains("K ask anything about it, in your own words"),
         "{t}"
     );
 
@@ -591,7 +578,7 @@ fn goto_definition_callers_editor() {
 // ---- U6: leader panels --------------------------------------------------------------
 
 #[test]
-fn leader_panels_and_gx() {
+fn leader_panels() {
     let (_repo, review) = fixture();
     let (mut app, _) = started(review, true);
     app.open_unit(CHARGE.into());
@@ -599,11 +586,7 @@ fn leader_panels_and_gx() {
     // <space> alone waits and names what follows.
     press(&mut app, "<space>");
     let hint: Vec<Action> = app.keys.hint().into_iter().map(|(_, a)| a).collect();
-    for a in [
-        Action::ToolTests,
-        Action::ToolRunOldNew,
-        Action::ToolDiagram,
-    ] {
+    for a in [Action::ToolTests, Action::ToolSecurity] {
         assert!(hint.contains(&a), "{hint:?}");
     }
     // t: teer's search at once; the tile then asks whether the agent reads
@@ -625,8 +608,6 @@ fn leader_panels_and_gx() {
         kind: DiveKind::Tests,
         text: String::new(),
         sources: Vec::new(),
-        visual: None,
-        behavior: None,
         coverage: Some(Box::new(Coverage::found(TestSearch::default()))),
     });
     let effects = app.on_app_event(found);
@@ -640,64 +621,30 @@ fn leader_panels_and_gx() {
     let effects = press(&mut app, "<cr>");
     assert!(effects.contains(&read), "{effects:?}");
 
-    // Tiles add up: run old and new opens beside the tests.
-    let effects = press(&mut app, "<space>r");
+    // Tiles add up: security opens beside the tests.
+    let effects = press(&mut app, "<space>x");
     assert!(matches!(
         &effects[..],
         [Effect::Dive {
-            kind: DiveKind::Behavior,
+            kind: DiveKind::Security,
             ..
         }]
     ));
-    assert_eq!(app.unit.panel, Some(Panel::Tool(DiveKind::Behavior)));
+    assert_eq!(app.unit.panel, Some(Panel::Tool(DiveKind::Security)));
     assert!(text(&app).contains("␣t Tests"));
-
-    // The diagram; gx before there is one says so, after opens it.
-    let effects = press(&mut app, "<space>v");
-    assert!(matches!(
-        &effects[..],
-        [Effect::Dive {
-            kind: DiveKind::Visualize,
-            web: false,
-            ..
-        }]
-    ));
-    assert_eq!(app.unit.panel, Some(Panel::Tool(DiveKind::Visualize)));
-    assert!(press(&mut app, "gx").is_empty());
-    assert!(app.status.starts_with("No picture yet"), "{}", app.status);
-    let u = app.review.unit_mut(CHARGE).unwrap();
-    u.dive_pending.clear();
-    u.dive.results.insert(
-        DiveKind::Visualize,
-        teer::review::model::DiveResult {
-            text: "a picture".into(),
-            visual: Some(teer::review::model::Visual {
-                claim: "a picture".into(),
-                nodes: Vec::new(),
-                edges: Vec::new(),
-                path: PathBuf::from("/tmp/p.html"),
-            }),
-            ..Default::default()
-        },
-    );
-    assert_eq!(
-        press(&mut app, "gx"),
-        [Effect::OpenVisual {
-            unit_id: CHARGE.into()
-        }]
-    );
-    // The same key again closes its tile; the focus goes to the one
-    // opened before it.
-    press(&mut app, "<space>v");
     assert_eq!(
         app.unit.tiles,
         [
-            Panel::Recommend,
+            Panel::Ask,
             Panel::Tool(DiveKind::Tests),
-            Panel::Tool(DiveKind::Behavior)
+            Panel::Tool(DiveKind::Security)
         ]
     );
-    assert_eq!(app.unit.panel, Some(Panel::Tool(DiveKind::Behavior)));
+    // The same key again closes its tile; the focus goes to the one
+    // opened before it.
+    press(&mut app, "<space>x");
+    assert_eq!(app.unit.tiles, [Panel::Ask, Panel::Tool(DiveKind::Tests)]);
+    assert_eq!(app.unit.panel, Some(Panel::Tool(DiveKind::Tests)));
 }
 
 // ---- U7: deciding here ----------------------------------------------------------------

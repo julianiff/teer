@@ -107,6 +107,7 @@ fn app(notes: [&str; 2], pr: Option<PrInfo>) -> App {
         history: Default::default(),
         branch: None,
         cursor: None,
+        mode: None,
     };
     App::new(review, Config::default(), Keymap::default())
 }

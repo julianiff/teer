@@ -9,7 +9,7 @@ export type Prep = "NotRequested" | "Pending" | "Ready" | "Unavailable" | "Skipp
 export type Risk = "low" | "medium" | "high";
 export type Marker = "added" | "changed" | "removed";
 export type Side = "old" | "new";
-export type DiveKind = "Recommend" | "Visualize" | "Behavior" | "Disagree" | "Tests" | "Security";
+export type DiveKind = "Recommend" | "Disagree" | "Tests" | "Security";
 export type RowKind = "Context" | "Removed" | "Added" | "Gap";
 export type Class =
   | "Keyword"
@@ -19,7 +19,7 @@ export type Class =
   | "String"
   | "Comment"
   | "Constant";
-export type TileId = "Advice" | "Ask" | "Tests" | "Behavior" | "Visualize" | "Security" | "Outside";
+export type TileId = "Ask" | "Tests" | "Security" | "Outside";
 export type Step =
   | "KeepReviewing"
   | "SendNotes"
@@ -66,6 +66,8 @@ export interface Header {
   subject: string;
   title: string | null;
   summary: string | null;
+  /** The mode the review is in: check, review, security or all. */
+  mode: string;
   no_agent: boolean;
   agent_note: string | null;
   preparing: { done: number; total: number } | null;
@@ -224,11 +226,25 @@ export interface CodeRow {
   pieces: Piece[];
 }
 
+/** A comment written into the code; what it says depends on the mode. */
+export interface CodeNote {
+  /** The row it is written under; null after the last. */
+  after: number | null;
+  /** `medium · disputed`, `sink · injection · high`; empty for a statement. */
+  title: string;
+  risk: Risk | null;
+  /** A statement's `+`, `~`, `−`. */
+  symbol: string | null;
+  /** A paragraph each. */
+  text: string[];
+  cites: string;
+}
+
 export interface Code {
   added: number;
   removed: number;
   rows: CodeRow[];
-  notes: { after: number | null; statement: number }[];
+  notes: CodeNote[];
   hunks: number[];
 }
 
@@ -290,22 +306,6 @@ export interface ProbeCase {
   before: Outcome;
   after: Outcome;
   claim: number;
-}
-
-export type TestCheck =
-  | { kind: "guarded" }
-  | { kind: "unguarded" }
-  | { kind: "fail_with_change"; detail: string }
-  | { kind: "no_tests"; detail: string }
-  | { kind: "not_run"; detail: string };
-
-export interface Behavior {
-  cases: ProbeCase[];
-  command: string[];
-  dir: string;
-  claims?: string[];
-  tests?: TestCheck;
-  test_command?: string[];
 }
 
 export type Reach =
@@ -393,8 +393,6 @@ export interface Audit {
 export interface DiveResult {
   text: string;
   sources: string[];
-  visual?: unknown;
-  behavior?: Behavior;
   coverage?: Coverage;
   audit?: Audit;
 }
@@ -412,7 +410,6 @@ export interface AnswerTile {
   question: DiveKind;
   label: string;
   result: DiveResult | null;
-  svg: { svg: string; light: string; dark: string } | null;
   waiting: string | null;
   ask: Hint | null;
   none: string | null;
@@ -444,8 +441,23 @@ export interface Exchange {
   shown: { shown: Shown; link: number }[];
 }
 
+/** A question the ask tile offers. */
+export interface Suggestion {
+  text: string;
+  /** What taking it does: the advice, a question, the full security check. */
+  offer: "Advice" | "Question" | "Audit";
+  /** What it follows up: `auth · medium`, `the last answer`; empty for none. */
+  about: string;
+}
+
 export interface AskTile {
   kind: "Ask";
+  /** Above the conversation: the advice, what came or is on its way;
+   *  null where the mode has no advice. */
+  advice: Omit<AnswerTile, "kind"> | null;
+  /** The questions offered to ask next; enter on an empty question asks
+   *  the first, its number and enter another. */
+  suggestions: Suggestion[];
   exchanges: Exchange[];
   draft: string;
   max: number;
@@ -623,7 +635,17 @@ export type Overlay =
     }
   | ({ kind: "Finish" } & FinishView)
   | { kind: "Jump"; list: JumpKind; query: string; sel: number; items: JumpItem[] }
-  | ({ kind: "SendTo" } & SendToView);
+  | ({ kind: "SendTo" } & SendToView)
+  | { kind: "Mode"; sel: number; modes: ModeItem[] };
+
+/** A mode in the picker: what it is for, the tools it has, and whether
+ *  the review is in it. */
+export interface ModeItem {
+  name: string;
+  about: string;
+  tools: string;
+  current: boolean;
+}
 
 export type Click =
   | { kind: "Row"; pos: number }
@@ -633,6 +655,7 @@ export type Click =
   | { kind: "Back" }
   | { kind: "Flagged"; i: number }
   | { kind: "Link"; i: number }
+  | { kind: "Suggest"; i: number }
   | { kind: "Item"; i: number }
   | { kind: "Fix"; i: number }
   | { kind: "Send"; i: number };

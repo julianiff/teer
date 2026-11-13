@@ -146,6 +146,7 @@ fn app_keys(units: Vec<Unit>, cfg: Config, keys: Keymap) -> App {
         history: Default::default(),
         branch: None,
         cursor: None,
+        mode: None,
     };
     // The queue listed by file (`zf`).
     let mut app = App::new(review, cfg, keys);
@@ -798,7 +799,7 @@ fn the_keys_are_in_the_help_overlay_and_the_legend_shows_when_it_fits() {
     let out = text(&f, 100, 40);
     assert!(out.contains("keys · unit"), "{out}");
     assert!(!out.contains("resolved: ok"), "{out}");
-    assert!(out.contains("zoom the tile in focus"), "{out}");
+    assert!(out.contains("tests that cover this unit"), "{out}");
     // The footer has no file button.
     a.overlay = Overlay::None;
     let out = text(&a, 120, 30);

@@ -585,6 +585,7 @@ fn pr_app(o: &Origin, d: Decision, note: &str) -> App {
         history: Default::default(),
         branch: None,
         cursor: None,
+        mode: None,
     };
     App::new(rv, Config::default(), Keymap::default())
 }

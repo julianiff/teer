@@ -91,46 +91,6 @@ impl Runtime {
         Some((self.adapter.clone()?, app.review.agent_session.clone()?))
     }
 
-    /// Open a unit's Visualize page with the opener. A page that is gone, or
-    /// not in teer's `visuals/` folder, is written again from the saved
-    /// picture first. The status line, and whether the stored path changed.
-    fn open_visual(&self, app: &mut App, unit_id: &str) -> (String, bool) {
-        use crate::review::visual;
-        let review_id = app.review.id.clone();
-        let Some(u) = app.review.unit_mut(unit_id) else {
-            return (String::new(), false);
-        };
-        let title = visual::title(u);
-        let Some(v) = u
-            .dive
-            .results
-            .get_mut(&DiveKind::Visualize)
-            .and_then(|r| r.visual.as_mut())
-        else {
-            return ("No picture yet.".into(), false);
-        };
-        let home = store::data_dir().join("visuals");
-        let mut moved = false;
-        if !(v.path.starts_with(&home) && v.path.is_file()) {
-            let fresh = visual::page_path(&review_id, unit_id);
-            moved = fresh != v.path;
-            v.path = fresh;
-            if let Err(e) = visual::write_page(v, &title) {
-                return (format!("Couldn't write the picture: {e:#}"), moved);
-            }
-        }
-        let status = if crate::approve::open_detached(&self.tools, v.path.as_os_str()) {
-            format!("Opened {}", v.path.display())
-        } else {
-            format!(
-                "Couldn't start {}. The picture is at {}",
-                self.tools.opener.to_string_lossy(),
-                v.path.display()
-            )
-        };
-        (status, moved)
-    }
-
     /// Carry out one effect. Returns true to quit.
     pub fn exec(&self, app: &mut App, effect: Effect) -> bool {
         match effect {
@@ -347,7 +307,7 @@ impl Runtime {
                     return false;
                 };
                 let job = crate::review::dive::TestsJob {
-                    target: crate::review::visual::target(&app.review, &unit),
+                    regions: crate::review::scope::scope(&app.review, &unit),
                     root: app.review.repo_root.clone(),
                     unit,
                     file,
@@ -384,26 +344,6 @@ impl Runtime {
                     fail(&unit, "changed file not found");
                     return false;
                 };
-                if kind == DiveKind::Behavior {
-                    let job = crate::review::behavior::Job {
-                        repo: app
-                            .review
-                            .pr
-                            .as_ref()
-                            .and_then(|p| p.repo_dir.clone())
-                            .unwrap_or_else(|| app.review.repo_root.clone()),
-                        base: app.review.base.clone(),
-                        files: app.review.files.clone(),
-                        review_id: app.review.id.clone(),
-                        unit,
-                        file,
-                        timeout: Duration::from_secs(app.cfg.behavior_timeout.max(1)),
-                    };
-                    forward(tx, AppEvent::Dive, |dtx| {
-                        crate::review::behavior::run(adapter, session, job, dtx)
-                    });
-                    return false;
-                }
                 if kind == DiveKind::Security {
                     // Cited lines are read where the agent reads them.
                     let job = crate::security::audit::Job::new(
@@ -433,13 +373,8 @@ impl Runtime {
                     });
                     return false;
                 }
-                // What a picture may cite.
-                let target = (kind == DiveKind::Visualize)
-                    .then(|| crate::review::visual::target(&app.review, &unit));
                 forward(tx, AppEvent::Dive, |dtx| {
-                    crate::review::dive::run_dive(
-                        adapter, session, unit, file, kind, web, target, dtx,
-                    )
+                    crate::review::dive::run_dive(adapter, session, unit, file, kind, web, dtx)
                 });
             }
             Effect::Ask { index } => {
@@ -463,13 +398,6 @@ impl Runtime {
                     let result = crate::review::ask::answer(adapter, session, job, progress).await;
                     let _ = tx.send(AppEvent::Answer { index, result });
                 });
-            }
-            Effect::OpenVisual { unit_id } => {
-                let (status, moved) = self.open_visual(app, &unit_id);
-                app.status = status;
-                if moved && let Err(e) = store::save(&app.review) {
-                    app.status = format!("Couldn't save the review: {e:#}");
-                }
             }
             Effect::PostReview {
                 pr,
@@ -659,6 +587,7 @@ mod tests {
             history: Default::default(),
             branch: None,
             cursor: None,
+            mode: None,
         };
         super::App::new(review, cfg, Default::default())
     }

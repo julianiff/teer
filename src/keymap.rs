@@ -71,7 +71,6 @@ pub enum Action {
     GotoDefinition,
     GotoCallers,
     GotoEditor,
-    GotoBrowser,
     ToggleAutoAccepted,
     /// The queue by level (each unit under its own) or by file (each file
     /// in the box of its most critical unit).
@@ -81,11 +80,7 @@ pub enum Action {
     /// The queue by level, or by how exposed each unit is (the security
     /// order).
     ToggleSecurityOrder,
-    /// The agent's advice on the unit: what to do about it.
-    ToolAdvice,
     ToolTests,
-    ToolRunOldNew,
-    ToolDiagram,
     /// The Security tile: how the change can be abused.
     ToolSecurity,
     /// The unit's security findings, each attacker's case run old against
@@ -106,6 +101,8 @@ pub enum Action {
     /// The flagged units one after another, each with its note and diff.
     ToolFlagged,
     ToolSettings,
+    /// The mode picker: what the review is for (see [`crate::mode`]).
+    ToolMode,
     FinishOpen,
     FinishYank,
     /// The review in Teer.app: the terminal lets go of it first.
@@ -254,12 +251,6 @@ const TABLE: &[(Action, &str, &[&str], &str)] = &[
         "open in the editor",
     ),
     (
-        Action::GotoBrowser,
-        "goto.browser",
-        &["gx"],
-        "open the picture in the browser",
-    ),
-    (
         Action::ToggleAutoAccepted,
         "toggle.auto_accepted",
         &["za"],
@@ -284,28 +275,10 @@ const TABLE: &[(Action, &str, &[&str], &str)] = &[
         "list by level or by exposure",
     ),
     (
-        Action::ToolAdvice,
-        "tool.advice",
-        &["<space>a"],
-        "advice: what to do about the unit",
-    ),
-    (
         Action::ToolTests,
         "tool.tests",
         &["<space>t"],
         "tests that cover this unit",
-    ),
-    (
-        Action::ToolRunOldNew,
-        "tool.run_old_new",
-        &["<space>r"],
-        "run old and new",
-    ),
-    (
-        Action::ToolDiagram,
-        "tool.diagram",
-        &["<space>v"],
-        "diagram of the change",
     ),
     (
         Action::ToolSecurity,
@@ -361,6 +334,12 @@ const TABLE: &[(Action, &str, &[&str], &str)] = &[
         "tool.settings",
         &["<space>s"],
         "settings",
+    ),
+    (
+        Action::ToolMode,
+        "tool.mode",
+        &["<space>m"],
+        "mode: review or security",
     ),
     (
         Action::FinishApp,
@@ -1333,12 +1312,12 @@ pub const V1_NAMES: &[(&str, &str, Option<Action>)] = &[
     ("investigate", "i", Some(Action::DecideFlag)),
     ("flagged", "d", None),
     ("dive_recommend", "n", None),
-    ("dive_visualize", "v", Some(Action::ToolDiagram)),
-    ("dive_behavior", "t", Some(Action::ToolRunOldNew)),
+    ("dive_visualize", "v", None),
+    ("dive_behavior", "t", None),
     ("dive_disagree", "x", None),
     ("dive_tests", "c", Some(Action::ToolTests)),
     ("interpret_tests", "a", None),
-    ("open_visual", "b", Some(Action::GotoBrowser)),
+    ("open_visual", "b", None),
     ("resolve_ok", "o", None),
     ("resolve_fix", "f", None),
     ("edit_note", "m", Some(Action::NoteEdit)),

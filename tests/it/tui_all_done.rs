@@ -83,6 +83,7 @@ fn app_with(n: usize, cfg: Config, keys: Keymap) -> App {
         history: Default::default(),
         branch: None,
         cursor: None,
+        mode: None,
     };
     App::new(review, cfg, keys)
 }

@@ -1,6 +1,7 @@
 <script lang="ts">
   // What is open over the screen: the keys, a question, the notes, a jump
-  // list, the commits, the `:w` sheet, the sessions to send a result to.
+  // list, the commits, the `:w` sheet, the sessions to send a result to,
+  // the modes.
   // Keys still go to teer; a click picks, and a key named here is pressed
   // by a click on it (the panel's keys under its list, every key in the
   // help).
@@ -266,6 +267,24 @@
           <button class="btn" onclick={() => api.keys("<esc>")}>Cancel</button>
         </div>
       {/if}
+    {:else if overlay.kind === "Mode"}
+      <h2>Mode: what is this review for?</h2>
+      <ul class="list modes">
+        {#each overlay.modes as m, i (m.name)}
+          <li>
+            <button class:selected={i === overlay.sel} onclick={() => pick(i)} ondblclick={() => go(i)}>
+              <strong>{m.name}</strong>
+              <span>{m.about}</span>
+              {#if m.current}<span class="default">now</span>{/if}
+              <span class="muted small tools">{m.tools}</span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+      <div class="buttons">
+        <button class="btn primary" onclick={() => go(overlay.sel)}>Use ⏎</button>
+        <button class="btn" onclick={() => api.keys("<esc>")}>Cancel</button>
+      </div>
     {/if}
   </div>
 </div>
@@ -402,6 +421,12 @@
     padding: 4px 8px;
     border-radius: 6px;
     cursor: pointer;
+  }
+  .modes button {
+    flex-wrap: wrap;
+  }
+  .modes .tools {
+    flex-basis: 100%;
   }
   .list button.selected,
   .steps button.selected {
