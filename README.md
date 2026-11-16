@@ -6,7 +6,14 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-666666?labelColor=333333" alt="Apache 2.0 license" /></a>
-  <a href="https://github.com/julianiff/teer/releases/latest"><img src="https://img.shields.io/github/v/release/julianiff/teer?label=release&labelColor=333333&color=666666" alt="latest release" /></a>
+  <a href="https://github.com/julianiff/teer/releases/latest">
+
+    
+
+https://github.com/user-attachments/assets/e1bdbb5d-a7ab-415f-9aba-e80b056169f1
+
+
+  </a>
 </p>
 
 ---
