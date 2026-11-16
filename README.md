@@ -19,10 +19,6 @@ https://github.com/user-attachments/assets/e1bdbb5d-a7ab-415f-9aba-e80b056169f1
 ---
 
 
-https://github.com/user-attachments/assets/4f66d3b0-057e-49b9-8873-3f277a254ea7
-
-
-
 **review a code change by what it does, not line by line.**
 
 teer splits a git change into units: the functions, methods and classes that changed. it puts the risky units on top. an agent explains each unit, and each sentence points to the lines that prove it. you accept a unit, or you flag it and write a note. then `:w` sends your notes to your agent, commits the change, or posts your review on the pull request.
