@@ -44,6 +44,7 @@ fn unit(id: &str, file: &str, line: u32, kind: Kind) -> Unit {
         status: UnitStatus::Changed,
         old_range: None,
         new_range: Some(Range::new(line, line + 5)),
+        nested: Vec::new(),
         renamed_from: None,
         fingerprint: String::new(),
         changes: Vec::new(),

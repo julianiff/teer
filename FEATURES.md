@@ -4,7 +4,7 @@
 
 ## how it works
 
-1. **split** — teer parses the old and new version of every changed file and lists the units that changed: functions, methods, classes, top-level code. rust, python, typescript, javascript, php and go are split; any other text file is one whole-file unit. binary, huge and non-utf-8 files are listed as not shown.
+1. **split** — teer parses the old and new version of every changed file and lists the units that changed: functions, methods, classes, top-level code. a class or the top level shows only its own lines; a unit inside it (a method, a function) is folded to the line that names it, since it is listed on its own. rust, python, typescript, javascript, php and go are split; any other text file is one whole-file unit. binary, huge and non-utf-8 files are listed as not shown.
 2. **sort** — every unit gets a level from what the code shows. the agent can raise it, never lower it. a unit with no behavior change is accepted for you.
 3. **explain** — a fast model writes a one-line summary and up to three statements per unit. a statement that doesn't cite lines of its unit is dropped. a second model checks every description.
 4. **review** — down the queue, accept (`a`) or flag (`f`), and write a note (`i`) where you have something to say. `l` opens any unit to look closer.

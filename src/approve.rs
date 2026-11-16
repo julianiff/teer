@@ -1136,6 +1136,7 @@ mod tests {
             status,
             old_range: old.map(|r| Range::new(r.0, r.1)),
             new_range: new.map(|r| Range::new(r.0, r.1)),
+            nested: Vec::new(),
             renamed_from: None,
             fingerprint: String::new(),
             changes: Vec::new(),

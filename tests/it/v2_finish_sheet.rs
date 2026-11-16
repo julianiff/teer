@@ -534,6 +534,7 @@ fn unit(symbol: &str, lines: (u32, u32), d: Decision, note: &str) -> Unit {
         status: UnitStatus::Changed,
         old_range: Some(Range::new(lines.0, lines.1)),
         new_range: Some(Range::new(lines.0, lines.1)),
+        nested: Vec::new(),
         renamed_from: None,
         fingerprint: format!("fp-{symbol}"),
         changes: Vec::new(),

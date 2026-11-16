@@ -603,6 +603,7 @@ mod tests {
             status: UnitStatus::Changed,
             old_range: None,
             new_range: Some(Range::new(1, 4)),
+            nested: Vec::new(),
             renamed_from: None,
             fingerprint: format!("fp{i}"),
             changes: Vec::new(),

@@ -155,6 +155,7 @@ pub fn unit(f: &ChangedFile) -> Option<Unit> {
         status,
         old_range: whole(old),
         new_range: whole(new),
+        nested: Vec::new(),
         renamed_from: None,
         fingerprint: hash_hex(&[old.unwrap_or("").as_bytes(), new.unwrap_or("").as_bytes()]),
         changes: Vec::new(),

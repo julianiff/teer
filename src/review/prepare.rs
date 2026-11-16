@@ -58,11 +58,10 @@ const SMALL_UNIT: u32 = 40;
 const BATCH_LINES: u32 = 160;
 const BATCH_UNITS: usize = 6;
 
+/// The unit's own lines: its nested units go folded to one line each.
 fn unit_lines(u: &Unit) -> u32 {
-    u.old_range
-        .map(|r| r.len())
-        .unwrap_or(0)
-        .max(u.new_range.map(|r| r.len()).unwrap_or(0))
+    use crate::review::model::Side;
+    u.own_len(Side::Old).max(u.own_len(Side::New))
 }
 
 /// Group units into requests: large units alone, small ones together

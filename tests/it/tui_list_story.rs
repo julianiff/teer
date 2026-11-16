@@ -26,6 +26,7 @@ fn unit(file: &str, name: &str, line: u32, callees: &[&str], callers: &[&str]) -
         status: UnitStatus::Changed,
         old_range: None,
         new_range: Some(Range::new(line, line + 5)),
+        nested: Vec::new(),
         renamed_from: None,
         fingerprint: String::new(),
         changes: Vec::new(),

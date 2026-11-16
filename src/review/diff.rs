@@ -3,9 +3,13 @@
 //! into one gap row. Built from the old and new contents stored in the
 //! review, so no git runs. Line numbers are those of the new file; removed
 //! lines know theirs in the old file. Around the lines statements cite,
-//! [`rows_near`] keeps [`NOTE_CONTEXT`] lines instead. Each row may carry
-//! the syntax class of its chars (see [`crate::syntax`]). Front ends draw
-//! the rows; `crate::notes` quotes them.
+//! [`rows_near`] keeps [`NOTE_CONTEXT`] lines instead. A unit nested in
+//! the shown one (a class's method, a module's function) is its own unit:
+//! its lines are folded to the one that names it. Each row may carry the
+//! syntax class of its chars (see [`crate::syntax`]). Front ends draw the
+//! rows; `crate::notes` quotes them.
+
+use std::borrow::Cow;
 
 use crate::review::attention::Level;
 use crate::review::model::{LineRef, Range, Review, Side, Unit};
@@ -30,6 +34,10 @@ pub enum Kind {
     Added,
     /// Lines left out between two shown runs.
     Gap,
+    /// A nested unit's lines, folded to the line that names it (see
+    /// [`Unit::folds`]): that unit shows them. A fold with only a new line
+    /// came with the change, one with only an old line went.
+    Fold,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,15 +52,74 @@ pub struct Row {
     pub classes: Vec<Option<Class>>,
 }
 
-fn lines_in(content: Option<&str>, r: Option<Range>) -> Vec<&str> {
-    match (content, r) {
-        (Some(c), Some(r)) if r.start > 0 => c
-            .lines()
-            .skip(r.start as usize - 1)
-            .take(r.len() as usize)
-            .collect(),
-        _ => Vec::new(),
+/// One line of a unit's side as the diff compares it: a line of its own,
+/// or a nested unit folded to one item.
+struct Item<'a> {
+    /// Its line in that side's file; a fold's first line.
+    line: u32,
+    /// What the diff compares: the text, or for a fold a key no code has,
+    /// so that the old and the new fold of one symbol match.
+    key: Cow<'a, str>,
+    /// What is shown: the line, or the line that names the folded unit.
+    text: &'a str,
+    fold: bool,
+}
+
+/// One side of a unit: its own lines in `r`, each nested unit (see
+/// [`Unit::folds`]) as one item where its lines were.
+fn items<'a>(content: Option<&'a str>, r: Option<Range>, folds: &[(Range, &str)]) -> Vec<Item<'a>> {
+    let (Some(content), Some(r)) = (content, r) else {
+        return Vec::new();
+    };
+    if r.start == 0 {
+        return Vec::new();
     }
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out = Vec::new();
+    let mut n = r.start;
+    while n <= r.end {
+        let Some(&text) = lines.get(n as usize - 1) else {
+            break;
+        };
+        match folds.iter().find(|(f, _)| f.start == n) {
+            Some((f, symbol)) => {
+                out.push(Item {
+                    line: n,
+                    key: Cow::Owned(format!("\0{symbol}")),
+                    text: signature(&lines, *f),
+                    fold: true,
+                });
+                n = f.end.max(n) + 1;
+            }
+            None => {
+                out.push(Item {
+                    line: n,
+                    key: Cow::Borrowed(text),
+                    text,
+                    fold: false,
+                });
+                n += 1;
+            }
+        }
+    }
+    out
+}
+
+/// The line that names a folded unit: the first of its lines that isn't
+/// blank, an attribute, a decorator or a comment.
+pub(crate) fn signature<'a>(lines: &[&'a str], r: Range) -> &'a str {
+    let start = (r.start.max(1) as usize - 1).min(lines.len());
+    let end = (r.end as usize).clamp(start, lines.len());
+    let names = |l: &str| {
+        let t = l.trim_start();
+        !(t.is_empty() || ["@", "#", "//", "/*", "*"].iter().any(|p| t.starts_with(p)))
+    };
+    lines[start..end]
+        .iter()
+        .copied()
+        .find(|l| names(l))
+        .or_else(|| lines.get(start).copied())
+        .unwrap_or("")
 }
 
 /// The unit's change as diff rows, indentation shared by every shown line
@@ -115,27 +182,40 @@ pub fn rows_around(
     let Some(f) = review.file_of(u) else {
         return (Vec::new(), 0, 0);
     };
-    let old = lines_in(f.old_content.as_deref(), u.old_range);
-    let new = lines_in(f.new_content.as_deref(), u.new_range);
-    let ops = diff_lines(&old, &new);
+    let old = items(f.old_content.as_deref(), u.old_range, &u.folds(Side::Old));
+    let new = items(f.new_content.as_deref(), u.new_range, &u.folds(Side::New));
+    let old_keys: Vec<&str> = old.iter().map(|i| i.key.as_ref()).collect();
+    let new_keys: Vec<&str> = new.iter().map(|i| i.key.as_ref()).collect();
+    let ops = diff_lines(&old_keys, &new_keys);
+    // A fold that came or went is a change to show, not a line to count.
+    let fold = |k: usize| {
+        let (op, i, j) = ops[k];
+        if op == DiffOp::Delete {
+            old[i].fold
+        } else {
+            new[j].fold
+        }
+    };
     let changed: Vec<usize> = (0..ops.len())
         .filter(|&k| ops[k].0 != DiffOp::Equal)
         .collect();
     if changed.is_empty() {
         return (Vec::new(), 0, 0);
     }
-    let count = |op: DiffOp| ops.iter().filter(|o| o.0 == op).count();
+    let count = |op: DiffOp| {
+        (0..ops.len())
+            .filter(|&k| ops[k].0 == op && !fold(k))
+            .count()
+    };
     let (added, removed) = (count(DiffOp::Insert), count(DiffOp::Delete));
-    let n0 = u.new_range.map_or(1, |r| r.start);
-    let o0 = u.old_range.map_or(1, |r| r.start);
     // Cited as in [`anchor`]: an added line by its new number, a removed
     // one by its old, an unchanged one by either.
     let cited: Vec<usize> = (0..ops.len())
         .filter(|&k| {
             let (op, i, j) = ops[k];
             cites.iter().any(|e| match e.side {
-                Side::New => op != DiffOp::Delete && n0 + j as u32 == e.line,
-                Side::Old => op != DiffOp::Insert && o0 + i as u32 == e.line,
+                Side::New => op != DiffOp::Delete && new[j].line == e.line,
+                Side::Old => op != DiffOp::Insert && old[i].line == e.line,
             })
         })
         .collect();
@@ -193,17 +273,20 @@ pub fn rows_around(
         let (kind, line, old_line, text) = match op {
             DiffOp::Equal => (
                 Kind::Context,
-                Some(n0 + j as u32),
-                Some(o0 + i as u32),
-                new[j],
+                Some(new[j].line),
+                Some(old[i].line),
+                new[j].text,
             ),
-            DiffOp::Insert => (Kind::Added, Some(n0 + j as u32), None, new[j]),
-            DiffOp::Delete => (Kind::Removed, None, Some(o0 + i as u32), old[i]),
+            DiffOp::Insert => (Kind::Added, Some(new[j].line), None, new[j].text),
+            DiffOp::Delete => (Kind::Removed, None, Some(old[i].line), old[i].text),
         };
-        // The new file's colours where the row has a new line.
-        let classes = match (line, old_line) {
-            (Some(n), _) => new_classes.get(n as usize - 1),
-            (None, Some(n)) => old_classes.get(n as usize - 1),
+        let kind = if fold(k) { Kind::Fold } else { kind };
+        // The new file's colours where the row has a new line; a fold is
+        // drawn quiet, without them.
+        let classes = match (kind, line, old_line) {
+            (Kind::Fold, _, _) => None,
+            (_, Some(n), _) => new_classes.get(n as usize - 1),
+            (_, None, Some(n)) => old_classes.get(n as usize - 1),
             _ => None,
         };
         let (text, classes) = expand_tabs(text, classes.map_or(&[][..], Vec::as_slice));

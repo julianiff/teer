@@ -1248,6 +1248,7 @@ mod tests {
             status: UnitStatus::Changed,
             old_range: Some(Range::new(1, 20)),
             new_range: Some(Range::new(1, 20)),
+            nested: Vec::new(),
             renamed_from: None,
             fingerprint: format!("fp{i}"),
             changes: Vec::new(),

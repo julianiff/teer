@@ -40,6 +40,7 @@ fn unit(symbol: &str, file: &str, old: (u32, u32), new: (u32, u32), note: &str) 
         status: UnitStatus::Changed,
         old_range: Some(Range::new(old.0, old.1)),
         new_range: Some(Range::new(new.0, new.1)),
+        nested: Vec::new(),
         renamed_from: None,
         fingerprint: String::new(),
         changes: Vec::new(),

@@ -285,6 +285,17 @@ fn row_lines(app: &App, r: &Row, digits: usize, w: usize) -> Vec<Line<'static>> 
         Kind::Added => ("+", t.added, Style::new()),
         Kind::Removed => ("-", t.removed, t.removed_line()),
         Kind::Context => (" ", t.text, Style::new()),
+        // A nested unit folded to the line that names it: quiet, like a
+        // gap, with the sign of a fold that came or went.
+        Kind::Fold => (
+            match (r.line, r.old) {
+                (None, _) => "-",
+                (_, None) => "+",
+                _ => " ",
+            },
+            t.muted,
+            t.muted(),
+        ),
         // Left out, quietly: dots under the numbers.
         Kind::Gap => {
             return vec![Line::styled(format!("{:>digits$}", "..."), t.muted())];
@@ -292,13 +303,17 @@ fn row_lines(app: &App, r: &Row, digits: usize, w: usize) -> Vec<Line<'static>> 
     };
     let (num, num_style) = match r.kind {
         Kind::Removed => (r.old, t.old_line_no()),
+        Kind::Fold if r.line.is_none() => (r.old, t.old_line_no()),
         _ => (r.line, t.line_no()),
     };
     let num = num.map(|n| n.to_string()).unwrap_or_default();
     let code_style = t.text().patch(line_style);
     let sign_style = code_style.fg(sign_fg);
     // Colours only for code that is drawn as it is in the file.
-    let text = sanitize(&r.text);
+    let text = match r.kind {
+        Kind::Fold => format!("{} …", sanitize(&r.text)),
+        _ => sanitize(&r.text),
+    };
     let chars: Vec<char> = text.chars().collect();
     let classes = if text == r.text { &r.classes[..] } else { &[] };
     wrap_ranges(&chars, code_w)
@@ -487,7 +502,9 @@ mod tests {
     use super::*;
     use crate::git::{ChangedFile, FileStatus};
     use crate::review::diff::{rows_near, unit_rows};
-    use crate::review::model::{Change, Decision, Prep, Range, Review, Side, UnitKind, UnitStatus};
+    use crate::review::model::{
+        Change, Decision, Nested, Prep, Range, Review, Side, UnitKind, UnitStatus,
+    };
     use std::path::PathBuf;
 
     /// [`wrap_ranges`] as strings.
@@ -545,6 +562,7 @@ mod tests {
             status,
             old_range: old.map(|(a, b)| Range::new(a, b)),
             new_range: new.map(|(a, b)| Range::new(a, b)),
+            nested: Vec::new(),
             renamed_from: None,
             fingerprint: String::new(),
             changes: Vec::new(),
@@ -941,6 +959,62 @@ mod tests {
                 .all(|s| s.style.fg.is_none_or(|c| c == ratatui::style::Color::Reset))
         );
         assert!(added.iter().all(|s| s.style.bg.is_none()), "{added:?}");
+    }
+
+    #[test]
+    fn nested_units_fold_to_the_line_that_names_them() {
+        let old = "class A:\n    n = 0\n\n    def f(self):\n        return 1\n\n    def g(self):\n        return 2\n    m = 0\n";
+        let new = "class A:\n    n = 0\n\n    def f(self):\n        return 1\n\n    @cached\n    def g(self):\n        return 3\n    m = 1\n";
+        let mut u = unit(UnitStatus::Changed, Some((1, 9)), Some((1, 10)));
+        u.kind = UnitKind::Class;
+        let nested = |symbol: &str, old: (u32, u32), new: (u32, u32)| Nested {
+            symbol: symbol.into(),
+            old: Some(Range::new(old.0, old.1)),
+            new: Some(Range::new(new.0, new.1)),
+        };
+        u.nested = vec![
+            nested("A::f", (4, 5), (4, 5)),
+            nested("A::g", (7, 8), (7, 9)),
+        ];
+        let r = review(Some(old), Some(new), u);
+        let (rows, added, removed) = rows_near(&r, &r.units[0], &[], None);
+        let shape: Vec<(Kind, Option<u32>, Option<u32>, &str)> = rows
+            .iter()
+            .map(|r| (r.kind, r.line, r.old, r.text.as_str()))
+            .collect();
+        // The decorator is the fold's first line; the `def` names it.
+        assert_eq!(
+            shape,
+            vec![
+                (Kind::Context, Some(6), Some(6), ""),
+                (Kind::Fold, Some(7), Some(7), "def g(self):"),
+                (Kind::Removed, None, Some(9), "m = 0"),
+                (Kind::Added, Some(10), None, "m = 1"),
+            ]
+        );
+        assert_eq!((added, removed), (1, 1));
+    }
+
+    #[test]
+    fn a_nested_unit_that_went_is_a_fold_with_only_an_old_line() {
+        let old = "class A:\n    n = 0\n\n    def gone(self):\n        return 1\n";
+        let new = "class A:\n    n = 1\n";
+        let mut u = unit(UnitStatus::Changed, Some((1, 5)), Some((1, 2)));
+        u.kind = UnitKind::Class;
+        u.nested = vec![Nested {
+            symbol: "A::gone".into(),
+            old: Some(Range::new(4, 5)),
+            new: None,
+        }];
+        let r = review(Some(old), Some(new), u);
+        let (rows, added, removed) = rows_near(&r, &r.units[0], &[], None);
+        let fold = rows.iter().find(|r| r.kind == Kind::Fold).unwrap();
+        assert_eq!(
+            (fold.line, fold.old, fold.text.as_str()),
+            (None, Some(4), "    def gone(self):")
+        );
+        // The fold is not a removed line.
+        assert_eq!((added, removed), (1, 2));
     }
 
     #[test]

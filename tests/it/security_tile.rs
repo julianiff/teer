@@ -67,6 +67,7 @@ fn unit(id: &str, file: &str, symbol: &str) -> Unit {
         status: UnitStatus::Changed,
         old_range: Some(Range::new(3, 6)),
         new_range: Some(Range::new(3, 6)),
+        nested: Vec::new(),
         renamed_from: None,
         fingerprint: format!("fp-{symbol}"),
         changes: Vec::new(),

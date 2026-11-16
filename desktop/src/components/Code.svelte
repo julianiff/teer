@@ -50,6 +50,13 @@
     {#each code.rows as row, k (k)}
       {#if row.kind === "Gap"}
         <div class="row gap"><span class="num">…</span></div>
+      {:else if row.kind === "Fold"}
+        <!-- A nested unit, folded to the line that names it: its own unit shows it. -->
+        <div class="row fold">
+          <span class="num" class:old={row.line == null}>{row.line ?? row.old}</span>
+          <span class="sign">{row.line == null ? "-" : row.old == null ? "+" : " "}</span>
+          <span class="text">{#each row.pieces as p, i (i)}<span>{p.text}</span>{/each} …</span>
+        </div>
       {:else}
         <div class="row {row.kind}" data-hunk={hunk(k) ? "" : undefined}>
           <span class="num" class:old={row.kind === "Removed"}>{row.kind === "Removed" ? row.old : row.line}</span>
@@ -118,6 +125,9 @@
   }
   .row.Added {
     background: var(--added);
+  }
+  .row.fold {
+    color: var(--muted);
   }
   .row.Removed {
     background: var(--removed);

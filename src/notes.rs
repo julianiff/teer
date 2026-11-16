@@ -171,6 +171,7 @@ fn hunk(review: &Review, u: &Unit) -> Option<String> {
             Kind::Removed => format!("-{}", sanitize(&r.text)),
             Kind::Added => format!("+{}", sanitize(&r.text)),
             Kind::Gap => " …".into(),
+            Kind::Fold => format!(" {} …", sanitize(&r.text)),
         })
         .collect();
     if rows.len() > MAX_ROWS {

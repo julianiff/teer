@@ -31,6 +31,7 @@ fn unit(i: usize) -> Unit {
         status: UnitStatus::Changed,
         old_range: None,
         new_range: Some(Range::new(10 + i as u32, 20 + i as u32)),
+        nested: Vec::new(),
         renamed_from: None,
         fingerprint: String::new(),
         changes: Vec::new(),

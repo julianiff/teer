@@ -71,6 +71,7 @@ fn unit() -> Unit {
         status: UnitStatus::Changed,
         old_range: Some(Range::new(3, 6)),
         new_range: Some(Range::new(3, 6)),
+        nested: Vec::new(),
         renamed_from: None,
         fingerprint: "fp-byId".into(),
         changes: Vec::new(),
