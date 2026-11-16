@@ -63,7 +63,9 @@ pub fn draw(f: &mut Frame, app: &App) {
             "Web search sends generic queries (never your code) to external services. Continue?"
                 .into(),
         ),
-        Overlay::ConfirmApply { id, hunks } => draw_confirm(f, app, app.apply_question(id, hunks)),
+        Overlay::ConfirmApply { id, hunks, kind } => {
+            draw_confirm(f, app, app.apply_question(id, hunks, *kind))
+        }
         Overlay::Finish { .. } => super::finish::draw(f, app),
         Overlay::Jump { kind, query, sel } => draw_jump(f, app, kind, query, *sel),
         Overlay::SendTo {
@@ -247,6 +249,16 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             t.muted(),
         ));
     }
+    // Improve mode: how many units the agent has looked at for inserts.
+    if app.mode.improves() {
+        let (done, total) = app.improve_progress();
+        if done < total {
+            right.push(Span::styled(
+                format!("{} looking for what to add {done}/{total}  ", app.spinner()),
+                t.muted(),
+            ));
+        }
+    }
     // The status on the right is never cut and keeps a gap before it.
     let rw: usize = right.iter().map(|s| s.content.width()).sum();
     let budget = (area.width as usize).saturating_sub(if rw > 0 { rw + 2 } else { 0 });
@@ -354,6 +366,9 @@ fn spans_width(spans: &[Span]) -> usize {
 /// `Nothing pending. :w to finish` and what is flagged and accepted, if
 /// anything. With it, which span names the finish key, to click.
 fn count_spans(app: &App) -> (Vec<Span<'static>>, Option<usize>) {
+    if app.mode.improves() && app.screen == Screen::Queue {
+        return super::improve::count_spans(app);
+    }
     let t = &app.theme;
     let (accepted, flagged, pending) = app.decision_counts();
     let sep = || Span::styled(" · ", t.muted());
@@ -679,12 +694,19 @@ pub(super) fn draw_empty(f: &mut Frame, app: &App, area: Rect) {
 
 /// `rows` in `list`, scrolled so the unit under the cursor is in view, each
 /// unit's row a click target that selects it.
-pub(super) fn draw_rows(f: &mut Frame, app: &App, list: Rect, rows: &slim::Rows) {
+pub(super) fn draw_rows(
+    f: &mut Frame,
+    app: &App,
+    list: Rect,
+    rows: &slim::Rows,
+    sel: usize,
+    of: impl Fn(usize) -> Target,
+) {
     let h = list.height as usize;
-    let (s, e) = rows.spans.get(app.sel).copied().unwrap_or((0, 0));
-    let title = rows.titles.get(app.sel).copied().unwrap_or(s);
-    let head = rows.heads.get(app.sel).copied().unwrap_or(s);
-    let end = rows.ends.get(app.sel).copied().unwrap_or(e);
+    let (s, e) = rows.spans.get(sel).copied().unwrap_or((0, 0));
+    let title = rows.titles.get(sel).copied().unwrap_or(s);
+    let head = rows.heads.get(sel).copied().unwrap_or(s);
+    let end = rows.ends.get(sel).copied().unwrap_or(e);
     let mut top = app.slim_scroll.get();
     // Keep the selected unit in view, with its box title above it when the
     // two fit together, else with its file's name.
@@ -712,7 +734,7 @@ pub(super) fn draw_rows(f: &mut Frame, app: &App, list: Rect, rows: &slim::Rows)
             target(
                 app,
                 Rect::new(list.x, list.y + k as u16, list.width, 1),
-                Target::Unit(*pos),
+                of(*pos),
             );
         }
     }

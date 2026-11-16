@@ -10,6 +10,7 @@ pub mod commits;
 pub mod diff;
 pub mod finish;
 pub mod flagged_list;
+pub mod improve;
 pub mod mode;
 pub mod notes;
 pub mod pr_pick;

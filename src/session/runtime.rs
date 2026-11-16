@@ -189,12 +189,17 @@ impl Runtime {
                     });
                 });
             }
-            Effect::ApplyHunks { unit_id, hunks } => {
+            Effect::ApplyHunks {
+                unit_id,
+                hunks,
+                kind,
+            } => {
                 let tx = self.tx.clone();
                 let refuse = |unit_id: String, hunks: Vec<usize>, why: &str| {
                     let _ = tx.send(AppEvent::FixApplied {
                         unit_id,
                         hunks,
+                        kind,
                         result: Err(why.into()),
                     });
                 };
@@ -206,7 +211,7 @@ impl Runtime {
                 let Some(proposal) = app
                     .review
                     .unit(&unit_id)
-                    .and_then(|u| u.dive.results.get(&DiveKind::Fix))
+                    .and_then(|u| u.dive.results.get(&kind))
                     .and_then(|r| r.proposal.clone())
                 else {
                     refuse(unit_id, hunks, "there is no proposed change");
@@ -218,6 +223,7 @@ impl Runtime {
                     let _ = tx.send(AppEvent::FixApplied {
                         unit_id,
                         hunks,
+                        kind,
                         result,
                     });
                 });
@@ -359,7 +365,7 @@ impl Runtime {
                     });
                     return false;
                 }
-                if kind == DiveKind::Fix {
+                if matches!(kind, DiveKind::Fix | DiveKind::Improve) {
                     // Hunks are looked up where the agent reads the code.
                     let job = crate::fix::propose::Job::new(
                         &app.review,
@@ -369,7 +375,7 @@ impl Runtime {
                         app.cfg.second_opinion,
                     );
                     forward(tx, AppEvent::Dive, |dtx| {
-                        crate::fix::propose::run(adapter, session, job, dtx)
+                        crate::fix::propose::run_kind(adapter, session, job, dtx, kind)
                     });
                     return false;
                 }

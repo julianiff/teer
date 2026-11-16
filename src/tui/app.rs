@@ -25,6 +25,9 @@ use crate::session::{self, AppEvent, Effect, Overlay, Screen};
 pub enum Target {
     Action(Action),
     Unit(usize),
+    /// An insert's row on improve mode's list, by its place there: a
+    /// click puts the cursor on it.
+    Insert(usize),
     /// The detail area (the queue's preview, the unit view's text): the
     /// wheel scrolls it, a click does nothing.
     Detail,
@@ -279,6 +282,7 @@ impl App {
                     Some(Target::Note(_)) => Vec::new(),
                     Some(Target::Action(a)) => self.run_action(a, None),
                     Some(Target::Unit(pos)) => self.move_sel(pos),
+                    Some(Target::Insert(pos)) => self.select_insert(pos),
                     Some(Target::AskLink(i)) => self.follow_ask_link(i),
                     Some(Target::Flagged(i)) => {
                         self.flagged_click(i);

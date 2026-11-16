@@ -25,6 +25,7 @@ pub const QUEUE: &[Action] = &[
     Action::FindUnit,
     Action::DecideAccept,
     Action::DecideFlag,
+    Action::InsertLeave,
     Action::DecideAcceptFile,
     Action::DecideFlagFile,
     Action::NoteEdit,
@@ -96,6 +97,7 @@ pub const UNIT: &[Action] = &[
     Action::ToolFix,
     Action::FixApply,
     Action::FixApplyAll,
+    Action::InsertLeave,
     Action::SendSession,
     Action::ToolHistory,
     Action::ToolNotes,
@@ -275,7 +277,8 @@ pub fn group_of(a: Action) -> usize {
         | MoveNextHunk | MovePrevHunk | MoveNextFile | MovePrevFile | ScrollHalfDown
         | ScrollHalfUp | ScrollPageDown | ScrollPageUp | FindUnit | ViewBack => 0,
         DecideAccept | DecideFlag | NoteEdit | DecideAcceptFile | DecideFlagFile | VisualStart
-        | HistoryUndo | HistoryRedo | HistoryRepeat | NoteDelete | FixApply | FixApplyAll => 1,
+        | HistoryUndo | HistoryRedo | HistoryRepeat | NoteDelete | FixApply | FixApplyAll
+        | InsertLeave => 1,
         ViewOpen | AskOpen | GotoDefinition | GotoCallers | GotoEditor | ToolTests
         | ToolSecurity | ToolProve | ToolFix | ToolFlagged | MoveNextTile | MovePrevTile
         | ToggleZoom | SendSession => 2,
@@ -370,8 +373,29 @@ pub fn describe(app: &App, a: Action) -> &'static str {
     match (help_panel(app), a) {
         (Some(("finish", _)), Action::NoteEdit) => "edit the commit message or summary",
         (None, a) if app.screen == Screen::Flagged => flagged_describe(a).unwrap_or(a.describe()),
+        (None, a) if app.screen == Screen::Queue && app.mode.improves() => {
+            improve_describe(a).unwrap_or(a.describe())
+        }
         _ => a.describe(),
     }
+}
+
+/// What improve mode's list says an action does where `?` lists it, when
+/// that differs from the keymap's words: the cursor is on an insert.
+pub fn improve_describe(a: Action) -> Option<&'static str> {
+    Some(match a {
+        Action::MoveDown => "next insert",
+        Action::MoveUp => "previous insert",
+        Action::MoveFirst => "first insert",
+        Action::MoveLast => "last insert",
+        Action::MoveNextPending => "next insert still proposed",
+        Action::MovePrevPending => "previous insert still proposed",
+        Action::DecideAccept | Action::FixApply => "put the insert in",
+        Action::FixApplyAll => "put every insert of its unit in",
+        Action::DecideFlag => "flag its unit: the insert goes to your agent with the notes",
+        Action::ViewOpen => "look closer at the insert",
+        _ => return None,
+    })
 }
 
 /// Does `a` do something right now, where the help was opened? The help
@@ -426,11 +450,12 @@ pub fn relevant(app: &App, a: Action) -> bool {
                 .and_then(|r| r.audit.as_ref())
                 .is_some_and(|a| !a.findings.is_empty() && !a.proving)
         }),
-        FixApply | FixApplyAll => unit.and_then(super::fix::proposal).is_some_and(|p| {
+        FixApply | FixApplyAll => unit.and_then(|u| app.shown_proposal(u)).is_some_and(|p| {
             p.hunks
                 .iter()
                 .any(|h| h.state == crate::fix::HunkState::Proposed)
         }),
+        InsertLeave => app.mode.improves() && (in_unit || app.insert_at().is_some()),
         SendSession => {
             in_unit && unit.is_some_and(|u| app.unit.panel.is_some_and(|p| app.can_send(u, p)))
         }

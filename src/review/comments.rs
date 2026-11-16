@@ -42,7 +42,7 @@ pub struct Comment {
 pub fn comments(u: &Unit, mode: Mode) -> Vec<Comment> {
     let mut out = Vec::new();
     match mode {
-        Mode::Review => judged(u, &mut out),
+        Mode::Review | Mode::Improve => judged(u, &mut out),
         Mode::Security => abuse(u, &mut out),
         Mode::All => {
             judged(u, &mut out);

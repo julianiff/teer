@@ -19,6 +19,7 @@ mod commit_flow;
 mod fix_core;
 mod fix_finish;
 mod fix_view;
+mod improve;
 mod live_claude;
 mod live_providers;
 mod live_send;

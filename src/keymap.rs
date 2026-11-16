@@ -93,6 +93,9 @@ pub enum Action {
     FixApply,
     /// Put every proposed hunk of the unit into the code (`P`).
     FixApplyAll,
+    /// Leave the insert under the cursor out (improve mode, `x`); on one
+    /// left out, take it back.
+    InsertLeave,
     /// Send the result of the tile in focus to an agent session running
     /// in this repository.
     SendSession,
@@ -309,6 +312,12 @@ const TABLE: &[(Action, &str, &[&str], &str)] = &[
         "fix.apply_all",
         &["P"],
         "put every proposed hunk into the code",
+    ),
+    (
+        Action::InsertLeave,
+        "insert.leave",
+        &["x"],
+        "leave the insert out",
     ),
     (
         Action::SendSession,

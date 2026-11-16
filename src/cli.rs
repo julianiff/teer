@@ -123,6 +123,17 @@ pub enum Command {
         after_help = "Examples:\n  teer security\n  teer security 482\n  teer security --sarif codeql.sarif"
     )]
     Security(ModeArgs),
+    /// List what to add so the change is better, written by the agent.
+    ///
+    /// The agent writes inserts for each unit: a check the change needs, a case it misses,
+    /// a test, a clearer name. The queue lists them in place of the units, by what each
+    /// does (fills a gap, makes it stronger, polish); `a` puts one into the code (a
+    /// suggestion on a pull request), `x` leaves it out, `f` flags its unit so it goes to
+    /// your agent with the notes. The inserts are asked for in this mode only.
+    #[command(
+        after_help = "Examples:\n  teer improve\n  teer improve 482\n  teer improve --base main"
+    )]
+    Improve(ModeArgs),
     /// Pick a pull request of the current repository to review.
     ///
     /// Lists the open pull requests that wait for your review, are assigned to you, or are
@@ -212,6 +223,7 @@ pub fn take_mode(args: &mut Args) {
     let (mode, m) = match &args.command {
         Some(Command::Review(m)) => (Mode::Review, m.clone()),
         Some(Command::Security(m)) => (Mode::Security, m.clone()),
+        Some(Command::Improve(m)) => (Mode::Improve, m.clone()),
         _ => return,
     };
     args.command = None;
@@ -385,7 +397,13 @@ pub async fn run_on(mut args: Args, path: &Path, screens: &dyn Screens) -> Resul
             return open_app(&cwd, pr.as_deref(), args.base.as_deref());
         }
         (
-            Some(Command::Setup | Command::Help { .. } | Command::Review(_) | Command::Security(_)),
+            Some(
+                Command::Setup
+                | Command::Help { .. }
+                | Command::Review(_)
+                | Command::Security(_)
+                | Command::Improve(_),
+            ),
             None,
         ) => unreachable!("handled above"),
         // `teer pr`, `teer pr list` (clap takes no URL with `list`).

@@ -761,6 +761,10 @@ fn dive_task(kind: DiveKind) -> &'static str {
         DiveKind::Fix => {
             "Propose the smallest change to the code that fixes what matters most about this unit."
         }
+        DiveKind::Improve => {
+            "Propose what to add to this unit so the change is better: a check it needs, a case it misses, a test, \
+a clearer name. Each as one exact edit."
+        }
         DiveKind::Security => {
             "Find how this change can be abused: for each way, the path from where untrusted input enters to where it \
 does harm, and the control missing on it."

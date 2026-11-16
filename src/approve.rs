@@ -506,10 +506,11 @@ pub fn collect_suggestions(review: &Review, order: &[usize]) -> Vec<SuggestionEn
     let mut hunks: HashMap<&Path, Vec<Range>> = HashMap::new();
     let mut out = Vec::new();
     for u in units {
-        let Some(p) = crate::notes::proposal(u) else {
-            continue;
-        };
-        for h in p.hunks.iter().filter(|h| h.state == HunkState::Suggested) {
+        let suggested = crate::notes::proposals(u)
+            .into_iter()
+            .flat_map(|(_, p)| p.hunks.iter())
+            .filter(|h| h.state == HunkState::Suggested);
+        for h in suggested {
             let path = safe_path(&h.file);
             let file = review.files.iter().find(|f| f.path == h.file);
             let inline = match (&path, file, guessed) {

@@ -54,6 +54,11 @@ const CARD_MIN_AREA: u16 = 6;
 /// and the preview of the unit under the cursor beside or below them.
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let area = ui::banner(f, app, area);
+    // Improve mode lists the inserts, not the units.
+    if app.mode.improves() {
+        super::improve::draw(f, app, area);
+        return;
+    }
     if app.order.is_empty() {
         ui::draw_empty(f, app, area);
         return;
@@ -64,7 +69,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     // has room for them.
     let padded = list.height as usize >= slim::PADDING_MIN_ROWS;
     let rows = slim::build_queue(app, list.width, padded);
-    ui::draw_rows(f, app, list, &rows);
+    ui::draw_rows(f, app, list, &rows, app.sel, Target::Unit);
     if let Some((rect, kind)) = pane {
         preview::draw_preview(f, app, rect, kind);
     }

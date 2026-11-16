@@ -412,15 +412,22 @@ pub fn unit_groups(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Vec<L
 /// yet.
 pub fn proposed_line(app: &App, u: &Unit, w: usize, indent: usize) -> Option<Line<'static>> {
     use crate::keymap::Action;
-    let open = crate::session::fix::proposal(u)?.open().len();
+    let open = app.shown_proposal(u)?.open().len();
     if open == 0 {
         return None;
     }
     let s = if open == 1 { "" } else { "s" };
-    let text = format!(
-        "a change is proposed: {open} hunk{s} · {} shows it",
-        app.keys.label(Action::ToolFix)
-    );
+    let text = if app.mode.improves() {
+        format!(
+            "{open} insert{s} proposed · {} shows them",
+            app.keys.label(Action::ViewOpen)
+        )
+    } else {
+        format!(
+            "a change is proposed: {open} hunk{s} · {} shows it",
+            app.keys.label(Action::ToolFix)
+        )
+    };
     Some(Line::from(vec![
         Span::styled(format!("{}✎ ", " ".repeat(indent)), app.theme.accent()),
         Span::styled(

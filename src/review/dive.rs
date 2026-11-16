@@ -62,10 +62,12 @@ pub enum DiveEvent {
         fingerprint: String,
         proofs: Vec<(usize, Proof)>,
     },
-    /// A proposed change (`DiveKind::Fix`): `text` is its summary.
+    /// A proposed change (`DiveKind::Fix`), or the inserts of improve mode
+    /// (`DiveKind::Improve`): `text` is its summary.
     Proposed {
         id: String,
         fingerprint: String,
+        kind: DiveKind,
         text: String,
         proposal: Box<Proposal>,
     },
@@ -266,12 +268,13 @@ pub async fn run_dive(
 }
 
 impl Review {
-    /// The proposed change of unit `id`, when it has one.
-    pub fn proposal_mut(&mut self, id: &str) -> Option<&mut Proposal> {
+    /// The proposal of `kind` on unit `id`, when it has one: its proposed
+    /// change (`Fix`) or its inserts (`Improve`).
+    pub fn proposal_mut(&mut self, id: &str, kind: DiveKind) -> Option<&mut Proposal> {
         self.unit_mut(id)?
             .dive
             .results
-            .get_mut(&DiveKind::Fix)?
+            .get_mut(&kind)?
             .proposal
             .as_mut()
     }
@@ -358,14 +361,18 @@ impl Review {
                 true
             }
             DiveEvent::Proposed {
-                id, text, proposal, ..
+                id,
+                kind,
+                text,
+                proposal,
+                ..
             } => {
                 let Some(u) = self.unit_mut(id) else {
                     return false;
                 };
-                u.dive_pending.remove(&DiveKind::Fix);
+                u.dive_pending.remove(kind);
                 u.dive.results.insert(
-                    DiveKind::Fix,
+                    *kind,
                     DiveResult {
                         text: text.clone(),
                         proposal: Some((**proposal).clone()),

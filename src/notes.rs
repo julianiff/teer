@@ -48,17 +48,23 @@ pub fn proposal(u: &Unit) -> Option<&Proposal> {
     u.dive.results.get(&DiveKind::Fix)?.proposal.as_ref()
 }
 
-/// The hunks of `u`'s proposed change not put in yet: proposed, or
-/// suggested on a pull request.
+/// The proposals on `u`: its proposed change, then its inserts (improve
+/// mode), each with its kind.
+pub fn proposals(u: &Unit) -> Vec<(DiveKind, &Proposal)> {
+    [DiveKind::Fix, DiveKind::Improve]
+        .into_iter()
+        .filter_map(|k| Some((k, u.dive.results.get(&k)?.proposal.as_ref()?)))
+        .collect()
+}
+
+/// The hunks of `u`'s proposals not put in yet and not left out:
+/// proposed, or suggested on a pull request.
 pub fn unapplied(u: &Unit) -> Vec<&ProposedHunk> {
-    proposal(u)
-        .map(|p| {
-            p.hunks
-                .iter()
-                .filter(|h| h.state != HunkState::Applied)
-                .collect()
-        })
-        .unwrap_or_default()
+    proposals(u)
+        .into_iter()
+        .flat_map(|(_, p)| p.hunks.iter())
+        .filter(|h| matches!(h.state, HunkState::Proposed | HunkState::Suggested))
+        .collect()
 }
 
 /// "1 note", "2 notes and 1 flagged unit without one", "1 note and 1
@@ -184,6 +190,7 @@ pub fn answers(reason: &Reason) -> String {
         } => format!("the finding \"{}\" ({})", one_line(title), severity.word()),
         Reason::Note => "the note".into(),
         Reason::Advice => "the advice".into(),
+        Reason::Improve => "what would make it better".into(),
     }
 }
 
@@ -193,11 +200,29 @@ pub fn answers(reason: &Reason) -> String {
 /// ([`unapplied`]) with its state and why, its diff under it. Empty
 /// without such hunks.
 pub fn proposed(u: &Unit) -> String {
-    let hunks = unapplied(u);
-    let Some(p) = proposal(u).filter(|_| !hunks.is_empty()) else {
+    proposals(u)
+        .into_iter()
+        .map(|(kind, p)| proposed_section(kind, p))
+        .collect()
+}
+
+/// One proposal's part of [`proposed`]: under "Proposed change", or
+/// "Inserts" for improve mode's. Empty without hunks not put in.
+fn proposed_section(kind: DiveKind, p: &Proposal) -> String {
+    let hunks: Vec<&ProposedHunk> = p
+        .hunks
+        .iter()
+        .filter(|h| matches!(h.state, HunkState::Proposed | HunkState::Suggested))
+        .collect();
+    if hunks.is_empty() {
         return String::new();
+    }
+    let title = if kind == DiveKind::Improve {
+        "Inserts"
+    } else {
+        "Proposed change"
     };
-    let mut out = String::from("\n**Proposed change**\n\n");
+    let mut out = format!("\n**{title}**\n\n");
     out.push_str(&format!("- answers: {}\n", answers(&p.reason)));
     let summary = one_line(&p.summary);
     if !summary.is_empty() {

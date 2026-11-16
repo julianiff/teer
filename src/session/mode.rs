@@ -35,6 +35,10 @@ impl App {
             self.security.by_exposure = false;
         }
         self.rebuild_order();
+        // Improve mode's cursor is on an insert: the unit's first one.
+        if mode.improves() {
+            self.insert_follow_unit();
+        }
         if self.screen == Screen::Unit {
             self.unit_mode_changed();
         }
@@ -109,7 +113,10 @@ impl App {
         } else {
             format!("Mode: {}. {}.", mode.name(), capitalized(mode.about()))
         };
-        vec![Effect::Save]
+        let mut effects = vec![Effect::Save];
+        // Improve mode asks what to add as soon as it is on.
+        effects.extend(self.ask_inserts());
+        effects
     }
 }
 

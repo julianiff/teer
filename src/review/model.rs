@@ -372,6 +372,10 @@ pub enum DiveKind {
     /// A change the agent proposes, shown as hunks in the unit's text
     /// (`fix::propose`).
     Fix,
+    /// What to add so the unit is better: the inserts improve mode lists,
+    /// a proposal of hunks each with its kind (`fix::propose`,
+    /// `session::improve`). Asked for in that mode only.
+    Improve,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
