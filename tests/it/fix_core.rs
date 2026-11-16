@@ -71,6 +71,7 @@ fn unit() -> Unit {
         status: UnitStatus::Changed,
         old_range: Some(Range::new(3, 6)),
         new_range: Some(Range::new(3, 6)),
+        nested: Vec::new(),
         renamed_from: None,
         fingerprint: "fp-byId".into(),
         changes: Vec::new(),
@@ -679,6 +680,7 @@ fn proposed(file: &str, old: &str, new: &str) -> ProposedHunk {
         old: old.into(),
         new: new.into(),
         why: String::new(),
+        kind: None,
         parses: true,
         state: HunkState::Proposed,
     }
@@ -928,6 +930,7 @@ async fn the_runtime_asks_for_a_change_and_writes_it_to_the_working_tree() {
         Effect::ApplyHunks {
             unit_id: BY_ID.into(),
             hunks: vec![0, 1],
+            kind: DiveKind::Fix,
         },
         |ev| matches!(ev, AppEvent::FixApplied { .. }),
     )
@@ -937,6 +940,7 @@ async fn the_runtime_asks_for_a_change_and_writes_it_to_the_working_tree() {
             unit_id,
             hunks,
             result,
+            ..
         },
     ] = &events[..]
     else {
@@ -985,6 +989,7 @@ async fn the_runtime_never_writes_a_pull_requests_code() {
         Effect::ApplyHunks {
             unit_id: BY_ID.into(),
             hunks: vec![0],
+            kind: DiveKind::Fix,
         },
         |ev| matches!(ev, AppEvent::FixApplied { .. }),
     )

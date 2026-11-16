@@ -635,6 +635,11 @@ pub enum OverlayView {
     ConfirmApply {
         question: String,
     },
+    /// After the inserts to add were put in: asks whether to check the
+    /// change again.
+    ConfirmCheck {
+        question: String,
+    },
     Commits(CommitsView),
     Finish(FinishView),
     Jump(JumpView),
@@ -1177,7 +1182,8 @@ fn card(app: &App, u: &Unit, notes: Notes, syntax: Option<&Cache>) -> Card {
             })
             .collect(),
         disputed: a.is_some_and(|a| !a.doubts.is_empty()),
-        proposed: super::fix::proposal(u)
+        proposed: app
+            .shown_proposal(u)
             .map(|p| p.open().len())
             .filter(|&n| n > 0),
     }
@@ -1618,12 +1624,16 @@ fn unit_screen(app: &App, syntax: Option<&Cache>) -> Option<UnitScreen> {
 /// `None` with neither.
 fn proposal_view(app: &App, u: &Unit, syntax: Option<&Cache>) -> Option<ProposalView> {
     use super::fix;
-    let p = fix::proposal(u);
-    let waiting = tools::pending(u, DiveKind::Fix).then(|| tools::waiting(app, u, DiveKind::Fix));
+    let kind = app.shown_kind();
+    let p = app.shown_proposal(u);
+    let waiting = tools::pending(u, kind).then(|| tools::waiting(app, u, kind));
     if p.is_none() && waiting.is_none() {
         return None;
     }
-    let reason = p.map(|p| p.reason.clone()).or_else(|| fix::target(u));
+    let reason = p
+        .map(|p| p.reason.clone())
+        .or_else(|| fix::target(u))
+        .filter(|_| !app.mode.improves());
     let (answers, severity) = match reason.as_ref().map(fix::answers) {
         Some((a, s)) => (Some(a), s),
         None => (None, None),
@@ -1656,7 +1666,7 @@ fn proposal_view(app: &App, u: &Unit, syntax: Option<&Cache>) -> Option<Proposal
     Some(ProposalView {
         answers,
         severity,
-        label: tools::answer_label(app, u, DiveKind::Fix),
+        label: tools::answer_label(app, u, kind),
         summary: p.map(|p| p.summary.clone()).unwrap_or_default(),
         second: p.and_then(|p| p.second.clone()),
         dropped: p.map_or(0, |p| p.dropped),
@@ -1745,8 +1755,11 @@ fn overlay(app: &App) -> OverlayView {
                 })
                 .collect(),
         },
-        Overlay::ConfirmApply { id, hunks } => OverlayView::ConfirmApply {
-            question: app.apply_question(id, hunks),
+        Overlay::ConfirmApply { id, hunks, kind } => OverlayView::ConfirmApply {
+            question: app.apply_question(id, hunks, *kind),
+        },
+        Overlay::ConfirmCheck { question } => OverlayView::ConfirmCheck {
+            question: question.clone(),
         },
         Overlay::SendTo {
             targets,

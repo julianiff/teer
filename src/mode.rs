@@ -6,14 +6,18 @@
 //!   agent's or someone else's. The default.
 //! - **security**: how the change can be abused, and nothing else: the
 //!   risks written into the code, and the checks that follow each up.
-//! - **all**: every tool of both.
+//! - **improve**: what to add so the change is better. The agent writes
+//!   inserts for each unit, and the queue lists them instead of the units
+//!   (see [`crate::session::improve`]). They are asked for in this mode
+//!   only.
+//! - **all**: every tool of review and security.
 //!
-//! Both work the same way: comments in the code, and one tile where the
-//! agent is asked, which offers the questions worth asking next. What the
-//! comments say and what the tile offers is the mode's.
+//! Review and security work the same way: comments in the code, and one
+//! tile where the agent is asked, which offers the questions worth asking
+//! next. What the comments say and what the tile offers is the mode's.
 //!
-//! The mode is named at start (`teer review`, `teer security`), kept with
-//! the review, and changed inside it with `<space>m`.
+//! The mode is named at start (`teer review`, `teer security`, `teer
+//! improve`), kept with the review, and changed inside it with `<space>m`.
 
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +32,7 @@ pub enum Mode {
     #[serde(alias = "check")]
     Review,
     Security,
+    Improve,
     /// Every tool. What an [`App`](crate::session::App) has until a front
     /// end names a mode.
     #[default]
@@ -36,13 +41,14 @@ pub enum Mode {
 
 impl Mode {
     /// The modes as the picker lists them.
-    pub const EVERY: [Mode; 3] = [Mode::Review, Mode::Security, Mode::All];
+    pub const EVERY: [Mode; 4] = [Mode::Review, Mode::Security, Mode::Improve, Mode::All];
 
     /// Its name: what the command line, the config and the header say.
     pub fn name(self) -> &'static str {
         match self {
             Mode::Review => "review",
             Mode::Security => "security",
+            Mode::Improve => "improve",
             Mode::All => "all",
         }
     }
@@ -53,6 +59,7 @@ impl Mode {
         match self {
             Mode::Review => "🔍",
             Mode::Security => "🔒",
+            Mode::Improve => "✨",
             Mode::All => "",
         }
     }
@@ -66,6 +73,7 @@ impl Mode {
         match self {
             Mode::Review => "what the change does, and whether it is right",
             Mode::Security => "how the change can be abused, and nothing else",
+            Mode::Improve => "what to add so the change is better",
             Mode::All => "every tool at once",
         }
     }
@@ -80,6 +88,10 @@ impl Mode {
             Mode::Security => {
                 "risks in the code · checks that follow them up · full check · prove · proposed \
                  changes · send to your agent"
+            }
+            Mode::Improve => {
+                "inserts the agent writes, listed by what each does · mark to add or leave out · \
+                 :w puts them in · flag for your agent · send to your agent"
             }
             Mode::All => "the tools of review and security",
         }
@@ -96,11 +108,31 @@ impl Mode {
         use Action::*;
         match self {
             Mode::All => true,
-            Mode::Review => !matches!(a, ToolSecurity | ToolProve | ToggleSecurityOrder),
+            Mode::Review => !matches!(
+                a,
+                ToolSecurity | ToolProve | ToggleSecurityOrder | InsertLeave
+            ),
             // The security order is the mode's own: nothing to toggle.
             Mode::Security => !matches!(
                 a,
-                ToolTests | ToggleSecurityOrder | ToggleByFile | ToolHistory
+                ToolTests | ToggleSecurityOrder | ToggleByFile | ToolHistory | InsertLeave
+            ),
+            // The list is the inserts: nothing to list by file, by exposure
+            // or with the units accepted for you; a decision is on one
+            // insert, so nothing decides a file or a selection.
+            Mode::Improve => !matches!(
+                a,
+                ToolSecurity
+                    | ToolProve
+                    | ToggleSecurityOrder
+                    | ToolTests
+                    | ToolHistory
+                    | ToggleByFile
+                    | ToggleAutoAccepted
+                    | ToolFix
+                    | DecideAcceptFile
+                    | DecideFlagFile
+                    | VisualStart
             ),
         }
     }
@@ -108,19 +140,25 @@ impl Mode {
     /// Does the mode write what the change does into the code, and offer
     /// the advice on it?
     pub fn reviews(self) -> bool {
-        self != Mode::Security
+        matches!(self, Mode::Review | Mode::Improve | Mode::All)
     }
 
     /// Does the mode write the security risks into the code, and offer the
     /// checks that follow them up?
     pub fn secures(self) -> bool {
-        self != Mode::Review
+        matches!(self, Mode::Security | Mode::All)
     }
 
     /// Is the queue in the security order (the security box and the
     /// attack-surface card on top) whatever `zs` says?
     pub fn security_order(self) -> bool {
         self == Mode::Security
+    }
+
+    /// Does the queue list the inserts the agent writes, and are they
+    /// asked for (see [`crate::session::improve`])?
+    pub fn improves(self) -> bool {
+        self == Mode::Improve
     }
 }
 
@@ -173,8 +211,15 @@ mod tests {
         assert!(!Mode::Review.allows(ToolProve) && !Mode::Review.allows(ToolSecurity));
         assert!(Mode::Security.allows(ToolSecurity) && Mode::Security.allows(ToolProve));
         assert!(!Mode::Security.allows(ToolTests) && !Mode::Security.allows(ToolHistory));
+        assert!(Mode::Improve.allows(FixApply) && Mode::Improve.allows(InsertLeave));
+        assert!(Mode::Improve.allows(SendSession) && Mode::Improve.allows(AskOpen));
+        assert!(!Mode::Improve.allows(ToolFix) && !Mode::Improve.allows(ToolSecurity));
+        assert!(!Mode::Improve.allows(ToggleByFile) && !Mode::Improve.allows(VisualStart));
+        assert!(!Mode::Review.allows(InsertLeave) && !Mode::Security.allows(InsertLeave));
         assert!(Mode::Review.reviews() && !Mode::Review.secures());
         assert!(Mode::Security.secures() && !Mode::Security.reviews());
+        assert!(Mode::Improve.reviews() && !Mode::Improve.secures());
+        assert!(Mode::Improve.improves() && !Mode::All.improves());
         assert!(Mode::All.reviews() && Mode::All.secures());
         // A review saved in the mode that is now part of review.
         assert_eq!(

@@ -553,6 +553,7 @@ mod tests {
             status: UnitStatus::Changed,
             old_range: None,
             new_range: None,
+            nested: Vec::new(),
             renamed_from: None,
             fingerprint: format!("fp{i}"),
             changes: Vec::new(),

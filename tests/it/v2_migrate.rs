@@ -414,7 +414,7 @@ fn help_lists_v2_surface() {
             .collect();
         assert_eq!(
             commands,
-            ["review", "security", "pr", "notes", "app"],
+            ["review", "security", "improve", "pr", "notes", "app"],
             "{flag}:\n{help}"
         );
         let args = section("Arguments:");

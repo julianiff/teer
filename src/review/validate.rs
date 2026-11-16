@@ -811,6 +811,7 @@ mod tests {
             status: UnitStatus::Changed,
             old_range: Some(Range::new(10, 20)),
             new_range: Some(Range::new(12, 25)),
+            nested: Vec::new(),
             renamed_from: None,
             fingerprint: String::new(),
             changes: vec![],

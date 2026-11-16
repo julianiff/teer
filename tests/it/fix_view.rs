@@ -73,6 +73,7 @@ fn hunk(file: &str, line: u32, new: &str, why: &str) -> ProposedHunk {
         old: format!("l{}\nl{line}\nl{}", line - 1, line + 1),
         new: format!("l{}\n{new}\nl{}", line - 1, line + 1),
         why: why.into(),
+        kind: None,
         parses: true,
         state: HunkState::Proposed,
     }
@@ -371,7 +372,8 @@ fn p_asks_then_puts_the_current_hunk_in_and_shift_p_every_open_one() {
         d.overlay(),
         &Overlay::ConfirmApply {
             id: "u0".into(),
-            hunks: vec![1]
+            hunks: vec![1],
+            kind: DiveKind::Fix,
         }
     );
     let text = d.render(100, 30);
@@ -380,7 +382,8 @@ fn p_asks_then_puts_the_current_hunk_in_and_shift_p_every_open_one() {
         d.keys("y"),
         vec![Effect::ApplyHunks {
             unit_id: "u0".into(),
-            hunks: vec![1]
+            hunks: vec![1],
+            kind: DiveKind::Fix,
         }]
     );
     assert_eq!(d.overlay(), &Overlay::None);
@@ -391,7 +394,8 @@ fn p_asks_then_puts_the_current_hunk_in_and_shift_p_every_open_one() {
         d.overlay(),
         &Overlay::ConfirmApply {
             id: "u0".into(),
-            hunks: vec![1, 2]
+            hunks: vec![1, 2],
+            kind: DiveKind::Fix,
         }
     );
     let text = d.render(100, 30);
@@ -430,7 +434,8 @@ fn p_from_the_queue_opens_the_unit_at_its_first_open_hunk_and_asks() {
         d.overlay(),
         &Overlay::ConfirmApply {
             id: "u0".into(),
-            hunks: vec![1]
+            hunks: vec![1],
+            kind: DiveKind::Fix,
         }
     );
     // Drawn, the text is at that hunk.
@@ -538,6 +543,7 @@ fn written_they_are_put_in_and_the_review_runs_again() {
     let effects = d.app.on_app_event(AppEvent::FixApplied {
         unit_id: "u0".into(),
         hunks: vec![0, 2],
+        kind: DiveKind::Fix,
         result: Ok(vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")]),
     });
     assert_eq!(effects, vec![Effect::Save, Effect::Rerun]);
@@ -558,6 +564,7 @@ fn written_they_are_put_in_and_the_review_runs_again() {
     let effects = d.app.on_app_event(AppEvent::FixApplied {
         unit_id: "u1".into(),
         hunks: vec![1],
+        kind: DiveKind::Fix,
         result: Err("a.rs changed: the text isn't there once".into()),
     });
     assert!(effects.is_empty());
@@ -765,7 +772,8 @@ fn the_window_gets_the_proposal_with_its_hunks_and_the_current_one() {
         d.overlay(),
         &Overlay::ConfirmApply {
             id: "u0".into(),
-            hunks: vec![2]
+            hunks: vec![2],
+            kind: DiveKind::Fix,
         }
     );
 }

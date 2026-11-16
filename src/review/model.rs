@@ -32,6 +32,17 @@ impl Range {
     }
 }
 
+/// A symbol inside a unit (a class's method, a module's class or
+/// function). Its lines belong to its own unit, so the outer unit shows
+/// and sends them as one folded line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Nested {
+    /// Its symbol path, e.g. `PaymentService::charge`.
+    pub symbol: String,
+    pub old: Option<Range>,
+    pub new: Option<Range>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRef {
     pub agent: String,
@@ -372,6 +383,10 @@ pub enum DiveKind {
     /// A change the agent proposes, shown as hunks in the unit's text
     /// (`fix::propose`).
     Fix,
+    /// What to add so the unit is better: the inserts improve mode lists,
+    /// a proposal of hunks each with its kind (`fix::propose`,
+    /// `session::improve`). Asked for in that mode only.
+    Improve,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -707,6 +722,11 @@ pub struct Unit {
     pub status: UnitStatus,
     pub old_range: Option<Range>,
     pub new_range: Option<Range>,
+    /// The outermost symbols inside it: a class's methods, a module's
+    /// classes and functions. Their lines are their own units' and are
+    /// folded to one line wherever this unit's code is shown or sent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nested: Vec<Nested>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub renamed_from: Option<String>,
     /// Hash of the old and new source of the unit; decisions carry over
@@ -765,6 +785,33 @@ impl Unit {
             .or(self.old_range)
             .map(|r| r.start)
             .unwrap_or(0)
+    }
+
+    /// The nested units' lines on `side`, each with its symbol: folded to
+    /// one line wherever this unit's code is shown or sent.
+    pub fn folds(&self, side: Side) -> Vec<(Range, &str)> {
+        self.nested
+            .iter()
+            .filter_map(|n| {
+                let r = match side {
+                    Side::Old => n.old,
+                    Side::New => n.new,
+                }?;
+                Some((r, n.symbol.as_str()))
+            })
+            .collect()
+    }
+
+    /// How many lines on `side` are the unit's own: its range without the
+    /// nested units' lines.
+    pub fn own_len(&self, side: Side) -> u32 {
+        let r = match side {
+            Side::Old => self.old_range,
+            Side::New => self.new_range,
+        };
+        let Some(r) = r else { return 0 };
+        let folded: u32 = self.folds(side).iter().map(|(f, _)| f.len()).sum();
+        r.len().saturating_sub(folded)
     }
 
     /// The note was written on code that has changed since.

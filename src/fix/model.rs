@@ -51,6 +51,62 @@ pub enum Reason {
     Note,
     /// The advice the agent gave on the unit.
     Advice,
+    /// What would make the unit better: the inserts of improve mode (see
+    /// [`crate::session::improve`]). Each hunk says what it does for the
+    /// change in its [`InsertKind`].
+    Improve,
+}
+
+/// What an insert does for the change: the box improve mode's list puts
+/// it in, the most needed first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InsertKind {
+    /// Something the change needs and lacks: a check, a case, an error
+    /// path.
+    Gap,
+    /// Something that makes the change hold up better: a test, a guard
+    /// against misuse.
+    Stronger,
+    /// Something that only makes it clearer: a name, a docstring.
+    Polish,
+}
+
+impl InsertKind {
+    /// The kinds in the list's order.
+    pub const EVERY: [InsertKind; 3] = [InsertKind::Gap, InsertKind::Stronger, InsertKind::Polish];
+
+    /// What the agent answers with, and the config says.
+    pub fn id(self) -> &'static str {
+        match self {
+            InsertKind::Gap => "gap",
+            InsertKind::Stronger => "stronger",
+            InsertKind::Polish => "polish",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<InsertKind> {
+        InsertKind::EVERY.into_iter().find(|k| k.id() == id.trim())
+    }
+
+    /// The box's title: `Fills a gap`, `Makes it stronger`, `Polish`.
+    pub fn title(self) -> &'static str {
+        match self {
+            InsertKind::Gap => "Fills a gap",
+            InsertKind::Stronger => "Makes it stronger",
+            InsertKind::Polish => "Polish",
+        }
+    }
+
+    /// On a hunk's box, in a sentence: `fills a gap`, `makes it stronger`,
+    /// `polish`.
+    pub fn name(self) -> &'static str {
+        match self {
+            InsertKind::Gap => "fills a gap",
+            InsertKind::Stronger => "makes it stronger",
+            InsertKind::Polish => "polish",
+        }
+    }
 }
 
 /// One replacement of exact text in a file of the repository.
@@ -68,6 +124,10 @@ pub struct ProposedHunk {
     /// Why this hunk, one line.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub why: String,
+    /// What it does for the change, when it is an insert of improve mode;
+    /// none on a proposed change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<InsertKind>,
     /// The file still parses with it (no new syntax error), for the
     /// languages teer splits; true for others.
     pub parses: bool,
@@ -123,6 +183,13 @@ pub enum HunkState {
     Applied,
     /// On a pull request: to be posted as a suggestion.
     Suggested,
+    /// An insert marked to add (`a`): `:w` writes it to the working tree,
+    /// or posts it as a suggestion on a pull request. `a` again takes it
+    /// back.
+    Picked,
+    /// Left out by the reviewer (`x` on an insert): not put in, and not
+    /// sent with the notes. `x` again takes it back.
+    LeftOut,
 }
 
 #[cfg(test)]
@@ -136,6 +203,7 @@ mod tests {
             old: old.into(),
             new: new.into(),
             why: String::new(),
+            kind: None,
             parses: true,
             state: HunkState::Proposed,
         }

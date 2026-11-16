@@ -450,15 +450,16 @@ fn proposed_blocks(
     at: usize,
 ) -> (Vec<Vec<Line<'static>>>, Vec<usize>) {
     let t = &app.theme;
-    let p = fix::proposal(u);
-    let pending = tools::pending(u, DiveKind::Fix);
+    let kind = app.shown_kind();
+    let p = app.shown_proposal(u);
+    let pending = tools::pending(u, kind);
     if p.is_none() && !pending {
         return (Vec::new(), Vec::new());
     }
     let mut lines = vec![Line::default()];
     lines.extend(proposed_heading(app, u, pending, w));
     if pending {
-        let wait = tools::waiting(app, u, DiveKind::Fix);
+        let wait = tools::waiting(app, u, kind);
         lines.extend(
             wrap(&wait, w.saturating_sub(2))
                 .into_iter()
@@ -519,14 +520,23 @@ fn proposed_blocks(
 /// spinner while one is on its way.
 fn proposed_heading(app: &App, u: &Unit, pending: bool, w: usize) -> Vec<Line<'static>> {
     let t = &app.theme;
-    let mut spans = vec![Span::styled(" Proposed change", t.bold())];
+    let improve = app.mode.improves();
+    let title = if improve {
+        " Inserts"
+    } else {
+        " Proposed change"
+    };
+    let mut spans = vec![Span::styled(title, t.bold())];
     if pending {
         spans.push(Span::styled(format!(" {}", app.spinner()), t.muted()));
     }
     let mut lines = Vec::new();
-    let reason = fix::proposal(u)
+    // Improve mode's inserts answer nothing in particular: no "for".
+    let reason = app
+        .shown_proposal(u)
         .map(|p| p.reason.clone())
-        .or_else(|| fix::target(u));
+        .or_else(|| fix::target(u))
+        .filter(|_| !improve);
     if let Some(r) = reason {
         let (what, severity) = fix::answers(&r);
         let (what, style) = match severity {
@@ -545,7 +555,7 @@ fn proposed_heading(app: &App, u: &Unit, pending: bool, w: usize) -> Vec<Line<'s
     } else {
         lines.push(Line::from(std::mem::take(&mut spans)));
     }
-    let by = tools::answer_label(app, u, DiveKind::Fix);
+    let by = tools::answer_label(app, u, app.shown_kind());
     let last = lines.last_mut().expect("a heading line");
     if last.width() + 2 + by.width() <= w {
         last.spans.push(Span::styled(format!("  {by}"), t.muted()));
@@ -572,7 +582,13 @@ fn severity_glyph(r: Risk) -> &'static str {
 /// there, whether its file still parses, then its lines as the code
 /// change draws its own. The `current` one has the accent border and the
 /// keys that put it in on its bottom edge.
-fn hunk_box(app: &App, p: &Proposal, i: usize, w: usize, current: bool) -> Vec<Vec<Line<'static>>> {
+pub(super) fn hunk_box(
+    app: &App,
+    p: &Proposal,
+    i: usize,
+    w: usize,
+    current: bool,
+) -> Vec<Vec<Line<'static>>> {
     let t = &app.theme;
     let h = &p.hunks[i];
     let border = if current { t.accent() } else { t.text() };
@@ -580,11 +596,18 @@ fn hunk_box(app: &App, p: &Proposal, i: usize, w: usize, current: bool) -> Vec<V
         HunkState::Proposed => (fix::state_word(h.state), t.muted()),
         HunkState::Applied => (fix::state_word(h.state), t.ok()),
         HunkState::Suggested => (fix::state_word(h.state), t.accent()),
+        HunkState::Picked => (fix::state_word(h.state), t.accent()),
+        HunkState::LeftOut => (fix::state_word(h.state), t.muted()),
     };
     let right = vec![Span::styled(format!(" {state} "), state_style)];
     let room = w.saturating_sub(state.width() + 6);
+    // An insert says what it does for the change before its place.
+    let place = match h.kind {
+        Some(k) if app.mode.improves() => format!("{} · {}", k.name(), fix::place(h)),
+        _ => fix::place(h),
+    };
     let title = vec![Span::styled(
-        format!(" {} ", truncate(&fix::place(h), room)),
+        format!(" {} ", truncate(&place, room)),
         t.bold(),
     )];
     let inner = w.saturating_sub(4);
@@ -612,7 +635,7 @@ fn hunk_box(app: &App, p: &Proposal, i: usize, w: usize, current: bool) -> Vec<V
 
 /// The keys on the current hunk's bottom edge: `p put · P put all`
 /// (`suggest` on a pull request), as far as there is something to put in.
-fn fix_keys(app: &App, p: &Proposal, i: usize) -> Vec<Span<'static>> {
+pub(super) fn fix_keys(app: &App, p: &Proposal, i: usize) -> Vec<Span<'static>> {
     let t = &app.theme;
     let verb = if app.review.pr.is_some() {
         "suggest"
@@ -620,11 +643,40 @@ fn fix_keys(app: &App, p: &Proposal, i: usize) -> Vec<Span<'static>> {
         "put"
     };
     let mut items = Vec::new();
-    if p.hunks[i].state == HunkState::Proposed {
-        items.push((app.keys.label(Action::FixApply), verb.to_string()));
-    }
-    if !p.open().is_empty() {
-        items.push((app.keys.label(Action::FixApplyAll), format!("{verb} all")));
+    let k = |a: Action| app.keys.label(a);
+    if app.mode.improves() {
+        // An insert is marked to add (`:w` puts it in) or left out, and
+        // either is taken back.
+        let state = p.hunks[i].state;
+        match state {
+            HunkState::Proposed | HunkState::LeftOut => {
+                items.push((k(Action::FixApply), "to add".into()))
+            }
+            HunkState::Picked => items.push((k(Action::FixApply), "take back".into())),
+            HunkState::Applied | HunkState::Suggested => {}
+        }
+        let open = p
+            .hunks
+            .iter()
+            .filter(|h| matches!(h.state, HunkState::Proposed | HunkState::LeftOut))
+            .count();
+        if open > 1 || (open == 1 && state == HunkState::Picked) {
+            items.push((k(Action::FixApplyAll), "all to add".into()));
+        }
+        match state {
+            HunkState::Proposed | HunkState::Picked | HunkState::Suggested => {
+                items.push((k(Action::InsertLeave), "leave out".into()));
+            }
+            HunkState::LeftOut => items.push((k(Action::InsertLeave), "take back".into())),
+            HunkState::Applied => {}
+        }
+    } else {
+        if p.hunks[i].state == HunkState::Proposed {
+            items.push((k(Action::FixApply), verb.to_string()));
+        }
+        if !p.open().is_empty() {
+            items.push((k(Action::FixApplyAll), format!("{verb} all")));
+        }
     }
     let mut spans = Vec::new();
     for (k, (key, what)) in items.into_iter().filter(|(k, _)| !k.is_empty()).enumerate() {
@@ -764,7 +816,7 @@ pub(super) fn box_bottom(w: usize, border: Style) -> Line<'static> {
 
 /// A box's bottom edge `w` cells wide, one cell in, drawn in `border`,
 /// with `right` on the right (nothing: [`box_bottom`]).
-fn box_bottom_with(w: usize, right: Vec<Span<'static>>, border: Style) -> Line<'static> {
+pub(super) fn box_bottom_with(w: usize, right: Vec<Span<'static>>, border: Style) -> Line<'static> {
     if right.is_empty() {
         return box_bottom(w, border);
     }
@@ -1196,6 +1248,7 @@ mod tests {
             status: UnitStatus::Changed,
             old_range: Some(Range::new(1, 20)),
             new_range: Some(Range::new(1, 20)),
+            nested: Vec::new(),
             renamed_from: None,
             fingerprint: format!("fp{i}"),
             changes: Vec::new(),

@@ -794,6 +794,7 @@ fn p_and_shift_p_put_proposed_hunks_into_the_code() {
         old: format!("l{line}"),
         new: format!("L{line}"),
         why: String::new(),
+        kind: None,
         parses: true,
         state: HunkState::Proposed,
     };
@@ -817,14 +818,16 @@ fn p_and_shift_p_put_proposed_hunks_into_the_code() {
         d.overlay(),
         &Overlay::ConfirmApply {
             id: "u0".into(),
-            hunks: vec![0]
+            hunks: vec![0],
+            kind: DiveKind::Fix,
         }
     );
     assert_eq!(
         d.keys("y"),
         vec![Effect::ApplyHunks {
             unit_id: "u0".into(),
-            hunks: vec![0]
+            hunks: vec![0],
+            kind: DiveKind::Fix,
         }]
     );
     // `P`: every one; esc says no.
@@ -833,7 +836,8 @@ fn p_and_shift_p_put_proposed_hunks_into_the_code() {
         d.overlay(),
         &Overlay::ConfirmApply {
             id: "u0".into(),
-            hunks: vec![0, 1]
+            hunks: vec![0, 1],
+            kind: DiveKind::Fix,
         }
     );
     assert!(d.keys("<esc>").is_empty());
@@ -1113,7 +1117,7 @@ fn space_m_opens_the_mode_picker_and_enter_takes_the_mode() {
     let mut d = Driver::new(3);
     assert!(d.keys("<space>m").is_empty());
     // Every tool until a mode is named: the picker is on `all`, the last.
-    assert_eq!(*d.overlay(), Overlay::Mode { sel: 2 });
+    assert_eq!(*d.overlay(), Overlay::Mode { sel: 3 });
     assert_eq!(d.keys("gg"), vec![]);
     assert_eq!(d.keys("<cr>"), vec![Effect::Save]);
     assert_eq!(d.app.mode, teer::mode::Mode::Review);

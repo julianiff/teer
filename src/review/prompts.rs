@@ -130,25 +130,42 @@ pub fn units_schema(unmentioned: bool) -> Value {
 
 const MAX_UNIT_LINES: u32 = 400;
 
-/// Code of one side of a unit with line numbers, as the agent sees it.
-pub fn numbered(content: Option<&str>, range: Option<super::model::Range>) -> String {
+/// Code of one side of a unit with line numbers, as the agent sees it. A
+/// nested unit (see [`Unit::folds`]) is one line, the one that names it,
+/// marked as folded: it is described on its own.
+pub fn numbered(
+    content: Option<&str>,
+    range: Option<super::model::Range>,
+    folds: &[(super::model::Range, &str)],
+) -> String {
     let (Some(content), Some(r)) = (content, range) else {
         return "(none)".into();
     };
+    let lines: Vec<&str> = content.lines().collect();
     let mut out = String::new();
-    let end = r.end.min(r.start + MAX_UNIT_LINES - 1);
-    for (i, line) in content.lines().enumerate() {
-        let n = i as u32 + 1;
-        if n < r.start {
-            continue;
-        }
-        if n > end {
+    let mut shown = 0;
+    let mut n = r.start.max(1);
+    while n <= r.end && n as usize <= lines.len() {
+        if shown == MAX_UNIT_LINES {
+            out.push_str(&format!("  ... ({} more lines)\n", r.end + 1 - n));
             break;
         }
-        out.push_str(&format!("{n:>5} | {line}\n"));
-    }
-    if end < r.end {
-        out.push_str(&format!("  ... ({} more lines)\n", r.end - end));
+        match folds.iter().find(|(f, _)| f.start == n) {
+            Some((f, symbol)) => {
+                out.push_str(&format!(
+                    "{n:>5} | {} ... [lines {}-{}: the unit {symbol}, folded]\n",
+                    super::diff::signature(&lines, *f),
+                    f.start,
+                    f.end
+                ));
+                n = f.end.max(n) + 1;
+            }
+            None => {
+                out.push_str(&format!("{n:>5} | {}\n", lines[n as usize - 1]));
+                n += 1;
+            }
+        }
+        shown += 1;
     }
     out
 }
@@ -222,8 +239,26 @@ pub(crate) fn unit_block(unit: &Unit, file: &ChangedFile) -> String {
         unit.callers.join(", ")
     };
     let mut kind = format!("{:?}", unit.kind);
-    let mut old = numbered(file.old_content.as_deref(), unit.old_range);
-    let mut new = numbered(file.new_content.as_deref(), unit.new_range);
+    use super::model::Side;
+    let mut old = numbered(
+        file.old_content.as_deref(),
+        unit.old_range,
+        &unit.folds(Side::Old),
+    );
+    let mut new = numbered(
+        file.new_content.as_deref(),
+        unit.new_range,
+        &unit.folds(Side::New),
+    );
+    let folded = if unit.nested.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<&str> = unit.nested.iter().map(|n| n.symbol.as_str()).collect();
+        format!(
+            "folded: {} (each is its own unit, described on its own; shown here as one line)\n",
+            names.join(", ")
+        )
+    };
     if unit.kind == UnitKind::File {
         // A whole file: say what kind, and of a long one show only the changes.
         kind = whole::file_type(&unit.file);
@@ -241,7 +276,7 @@ pub(crate) fn unit_block(unit: &Unit, file: &ChangedFile) -> String {
         }
     }
     format!(
-        "### Unit {id}\nfile: {file}\nsymbol: {sym} ({kind}, {status})\nold lines: {old_r}\nnew lines: {new_r}\ncallers: {callers}\n\nOLD:\n{old}\nNEW:\n{new}\n",
+        "### Unit {id}\nfile: {file}\nsymbol: {sym} ({kind}, {status})\nold lines: {old_r}\nnew lines: {new_r}\ncallers: {callers}\n{folded}\nOLD:\n{old}\nNEW:\n{new}\n",
         id = unit.id,
         file = unit.file.display(),
         sym = unit.symbol,
@@ -761,6 +796,10 @@ fn dive_task(kind: DiveKind) -> &'static str {
         DiveKind::Fix => {
             "Propose the smallest change to the code that fixes what matters most about this unit."
         }
+        DiveKind::Improve => {
+            "Propose what to add to this unit so the change is better: a check it needs, a case it misses, a test, \
+a clearer name. Each as one exact edit."
+        }
         DiveKind::Security => {
             "Find how this change can be abused: for each way, the path from where untrusted input enters to where it \
 does harm, and the control missing on it."
@@ -1128,8 +1167,19 @@ mod tests {
     fn numbered_respects_range() {
         let src = "a\nb\nc\nd\n";
         assert_eq!(
-            numbered(Some(src), Some(super::super::model::Range::new(2, 3))),
+            numbered(Some(src), Some(super::super::model::Range::new(2, 3)), &[]),
             "    2 | b\n    3 | c\n"
+        );
+    }
+
+    #[test]
+    fn numbered_folds_nested_units_to_the_line_that_names_them() {
+        let src =
+            "class A:\n    n = 0\n\n    @cached\n    def f(self):\n        return 1\n    m = 0\n";
+        let r = super::super::model::Range::new;
+        assert_eq!(
+            numbered(Some(src), Some(r(1, 7)), &[(r(4, 6), "A::f")]),
+            "    1 | class A:\n    2 |     n = 0\n    3 | \n    4 |     def f(self): ... [lines 4-6: the unit A::f, folded]\n    7 |     m = 0\n"
         );
     }
 

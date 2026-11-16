@@ -388,7 +388,7 @@ fn teer_help_lists_only_the_v2_surface() {
     };
     assert_eq!(
         section("Commands"),
-        vec!["review", "security", "pr", "notes", "app"],
+        vec!["review", "security", "improve", "pr", "notes", "app"],
         "{help}"
     );
     assert_eq!(

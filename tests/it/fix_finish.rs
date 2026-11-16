@@ -31,6 +31,7 @@ fn hunk(file: &str, lines: (u32, u32), old: &str, new: &str, why: &str) -> Propo
         old: old.into(),
         new: new.into(),
         why: why.into(),
+        kind: None,
         parses: true,
         state: HunkState::Proposed,
     }

@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::git::ChangedFile;
-use crate::review::model::{Decision, Prep, Unit, UnitKind, UnitStatus};
+use crate::review::model::{Decision, Nested, Prep, Unit, UnitKind, UnitStatus};
 use crate::util::hash_hex;
 use extract::{MODULE_SYMBOL, ParsedFile, Symbol, parse_source};
 use lang::Lang;
@@ -56,13 +56,66 @@ pub fn unit_id(file: &std::path::Path, symbol: &str) -> String {
     format!("{}::{}", file.to_string_lossy(), symbol)
 }
 
+/// The outermost symbols inside `sym` on each side (a class's methods, a
+/// module's classes and functions), old and new matched by symbol path.
+fn nested_in(
+    old: Option<(&ParsedFile, &Symbol)>,
+    new: Option<(&ParsedFile, &Symbol)>,
+) -> Vec<Nested> {
+    let mut out: Vec<Nested> = Vec::new();
+    for (is_new, (file, sym)) in [(false, old), (true, new)]
+        .into_iter()
+        .filter_map(|(is_new, side)| side.map(|s| (is_new, s)))
+    {
+        for inner in inside(file, sym) {
+            let range = Some(inner.range);
+            match out.iter_mut().find(|n| n.symbol == inner.path) {
+                Some(n) if is_new => n.new = range,
+                Some(n) => n.old = range,
+                None => out.push(Nested {
+                    symbol: inner.path.clone(),
+                    old: if is_new { None } else { range },
+                    new: if is_new { range } else { None },
+                }),
+            }
+        }
+    }
+    out.sort_by_key(|n| n.new.or(n.old).map_or(0, |r| r.start));
+    out
+}
+
+/// The outermost symbols whose lines lie inside `sym`'s, in file order. A
+/// symbol on a class's first line stays with the class (its header).
+fn inside<'a>(file: &'a ParsedFile, sym: &Symbol) -> Vec<&'a Symbol> {
+    let outer = sym.range;
+    let mut kept: Vec<&Symbol> = Vec::new();
+    for s in &file.symbols {
+        if s.kind == UnitKind::Module || s.path == sym.path {
+            continue;
+        }
+        let r = s.range;
+        let within = r.start >= outer.start
+            && r.end <= outer.end
+            && (sym.kind == UnitKind::Module || r.start > outer.start);
+        let in_kept = kept
+            .iter()
+            .any(|k| k.range.start <= r.start && r.end <= k.range.end);
+        if within && !in_kept {
+            kept.push(s);
+        }
+    }
+    kept
+}
+
 fn make_unit(
     file: &std::path::Path,
     sym: &Symbol,
     status: UnitStatus,
-    old: Option<&Symbol>,
-    new: Option<&Symbol>,
+    old: Option<(&ParsedFile, &Symbol)>,
+    new: Option<(&ParsedFile, &Symbol)>,
 ) -> Unit {
+    let nested = nested_in(old, new);
+    let (old, new) = (old.map(|(_, s)| s), new.map(|(_, s)| s));
     let old_text = old.map(|s| s.own_text.as_str()).unwrap_or("");
     let new_text = new.map(|s| s.own_text.as_str()).unwrap_or("");
     Unit {
@@ -73,6 +126,7 @@ fn make_unit(
         status,
         old_range: old.map(|s| s.range),
         new_range: new.map(|s| s.range),
+        nested,
         renamed_from: None,
         fingerprint: hash_hex(&[old_text.as_bytes(), new_text.as_bytes()]),
         changes: Vec::new(),
@@ -132,7 +186,13 @@ pub fn diff_symbols(
                 if s.path == MODULE_SYMBOL && status == UnitStatus::NoBehaviorChange {
                     continue;
                 }
-                units.push(make_unit(file, n, status, Some(s), Some(n)));
+                units.push(make_unit(
+                    file,
+                    n,
+                    status,
+                    old.map(|p| (p, s)),
+                    new.map(|p| (p, *n)),
+                ));
             }
             None => removed.push(s),
         }
@@ -155,7 +215,13 @@ pub fn diff_symbols(
         }) {
             used_added.insert(i);
             renamed.insert(r.path.clone());
-            let mut u = make_unit(file, a, UnitStatus::NoBehaviorChange, Some(r), Some(a));
+            let mut u = make_unit(
+                file,
+                a,
+                UnitStatus::NoBehaviorChange,
+                old.map(|p| (p, *r)),
+                new.map(|p| (p, *a)),
+            );
             u.renamed_from = Some(r.path.clone());
             u.nbc_reason = Some(format!("renamed from {}", r.path));
             units.push(u);
@@ -165,13 +231,25 @@ pub fn diff_symbols(
         if r.path == MODULE_SYMBOL && r.norm.is_empty() {
             continue;
         }
-        units.push(make_unit(file, r, UnitStatus::Removed, Some(r), None));
+        units.push(make_unit(
+            file,
+            r,
+            UnitStatus::Removed,
+            old.map(|p| (p, r)),
+            None,
+        ));
     }
     for (i, a) in added.into_iter().enumerate() {
         if used_added.contains(&i) || (a.path == MODULE_SYMBOL && a.norm.is_empty()) {
             continue;
         }
-        units.push(make_unit(file, a, UnitStatus::Added, None, Some(a)));
+        units.push(make_unit(
+            file,
+            a,
+            UnitStatus::Added,
+            None,
+            new.map(|p| (p, a)),
+        ));
     }
 
     // A class whose only change is its methods is reported through them.
@@ -200,6 +278,47 @@ mod tests {
             "fn sum_one(a: u32) -> u32 { a + 1 }\n",
         );
         assert_eq!(got, vec![("sum_one".into(), UnitStatus::NoBehaviorChange)]);
+    }
+
+    #[test]
+    fn nested_units_are_known_to_their_container() {
+        use crate::review::model::Range;
+        let src = "<?php\n\nnamespace App;\n\nclass Svc\n{\n    public function __construct()\n    {\n    }\n\n    public function run(): void\n    {\n    }\n}\n";
+        let n = parse_source(Lang::Php, src);
+        let units = diff_symbols(&PathBuf::from("f.php"), None, n.as_ref());
+        let nested = |symbol: &str| -> Vec<(String, Option<Range>)> {
+            let u = units.iter().find(|u| u.symbol == symbol).expect(symbol);
+            u.nested.iter().map(|n| (n.symbol.clone(), n.new)).collect()
+        };
+        assert_eq!(
+            nested(MODULE_SYMBOL),
+            vec![("Svc".to_string(), Some(Range::new(5, 14)))]
+        );
+        assert_eq!(
+            nested("Svc"),
+            vec![
+                ("Svc::__construct".to_string(), Some(Range::new(7, 9))),
+                ("Svc::run".to_string(), Some(Range::new(11, 13))),
+            ]
+        );
+        assert!(nested("Svc::run").is_empty());
+    }
+
+    #[test]
+    fn nested_units_keep_the_side_they_are_on() {
+        use crate::review::model::Range;
+        let old = "<?php\nclass A\n{\n    private int $n = 0;\n\n    public function gone(): void\n    {\n    }\n}\n";
+        let new = "<?php\nclass A\n{\n    private int $n = 1;\n}\n";
+        let o = parse_source(Lang::Php, old);
+        let n = parse_source(Lang::Php, new);
+        let units = diff_symbols(&PathBuf::from("f.php"), o.as_ref(), n.as_ref());
+        let a = units.iter().find(|u| u.symbol == "A").unwrap();
+        let got: Vec<(&str, Option<Range>, Option<Range>)> = a
+            .nested
+            .iter()
+            .map(|n| (n.symbol.as_str(), n.old, n.new))
+            .collect();
+        assert_eq!(got, vec![("A::gone", Some(Range::new(6, 8)), None)]);
     }
 
     #[test]

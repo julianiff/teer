@@ -189,12 +189,17 @@ impl Runtime {
                     });
                 });
             }
-            Effect::ApplyHunks { unit_id, hunks } => {
+            Effect::ApplyHunks {
+                unit_id,
+                hunks,
+                kind,
+            } => {
                 let tx = self.tx.clone();
                 let refuse = |unit_id: String, hunks: Vec<usize>, why: &str| {
                     let _ = tx.send(AppEvent::FixApplied {
                         unit_id,
                         hunks,
+                        kind,
                         result: Err(why.into()),
                     });
                 };
@@ -206,7 +211,7 @@ impl Runtime {
                 let Some(proposal) = app
                     .review
                     .unit(&unit_id)
-                    .and_then(|u| u.dive.results.get(&DiveKind::Fix))
+                    .and_then(|u| u.dive.results.get(&kind))
                     .and_then(|r| r.proposal.clone())
                 else {
                     refuse(unit_id, hunks, "there is no proposed change");
@@ -218,8 +223,48 @@ impl Runtime {
                     let _ = tx.send(AppEvent::FixApplied {
                         unit_id,
                         hunks,
+                        kind,
                         result,
                     });
+                });
+            }
+            Effect::ApplyInserts { picks } => {
+                let tx = self.tx.clone();
+                // A pull request's inserts become suggestions in the review.
+                if app.review.pr.is_some() {
+                    let why = "a pull request's code isn't changed here";
+                    let results = picks
+                        .into_iter()
+                        .map(|(id, hunks)| (id, hunks, Err(why.to_string())))
+                        .collect();
+                    let _ = tx.send(AppEvent::InsertsApplied { results });
+                    return false;
+                }
+                let jobs: Vec<(String, Vec<usize>, Option<crate::fix::Proposal>)> = picks
+                    .into_iter()
+                    .map(|(id, hunks)| {
+                        let p = app
+                            .review
+                            .unit(&id)
+                            .and_then(|u| u.dive.results.get(&DiveKind::Improve))
+                            .and_then(|r| r.proposal.clone());
+                        (id, hunks, p)
+                    })
+                    .collect();
+                let root = app.review.repo_root.clone();
+                // One after the other: two units' inserts may share a file.
+                tokio::task::spawn_blocking(move || {
+                    let results = jobs
+                        .into_iter()
+                        .map(|(id, hunks, p)| {
+                            let r = match p {
+                                Some(p) => crate::fix::apply::apply(&root, &p, &hunks),
+                                None => Err("there are no inserts".into()),
+                            };
+                            (id, hunks, r)
+                        })
+                        .collect();
+                    let _ = tx.send(AppEvent::InsertsApplied { results });
                 });
             }
             Effect::ProveFindings { unit_id } => {
@@ -359,7 +404,7 @@ impl Runtime {
                     });
                     return false;
                 }
-                if kind == DiveKind::Fix {
+                if matches!(kind, DiveKind::Fix | DiveKind::Improve) {
                     // Hunks are looked up where the agent reads the code.
                     let job = crate::fix::propose::Job::new(
                         &app.review,
@@ -369,7 +414,7 @@ impl Runtime {
                         app.cfg.second_opinion,
                     );
                     forward(tx, AppEvent::Dive, |dtx| {
-                        crate::fix::propose::run(adapter, session, job, dtx)
+                        crate::fix::propose::run_kind(adapter, session, job, dtx, kind)
                     });
                     return false;
                 }

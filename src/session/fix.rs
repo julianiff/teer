@@ -24,7 +24,13 @@ use crate::syntax::Cache;
 
 /// The change the agent proposed for `u`, when it has one.
 pub fn proposal(u: &Unit) -> Option<&Proposal> {
-    u.dive.results.get(&DiveKind::Fix)?.proposal.as_ref()
+    proposal_of(u, DiveKind::Fix)
+}
+
+/// The proposal of `kind` on `u`: its proposed change (`Fix`) or its
+/// inserts (`Improve`, see [`super::improve`]).
+pub fn proposal_of(u: &Unit, kind: DiveKind) -> Option<&Proposal> {
+    u.dive.results.get(&kind)?.proposal.as_ref()
 }
 
 /// What a proposed change for `u` would answer (`fix::propose::target`):
@@ -43,6 +49,7 @@ pub fn answers(r: &Reason) -> (String, Option<Risk>) {
         } => (crate::util::sanitize(title), Some(*severity)),
         Reason::Note => ("your note".into(), None),
         Reason::Advice => ("the advice".into(), None),
+        Reason::Improve => ("what would make it better".into(), None),
     }
 }
 
@@ -70,6 +77,8 @@ pub fn state_word(s: HunkState) -> &'static str {
         HunkState::Proposed => "proposed",
         HunkState::Applied => "put in",
         HunkState::Suggested => "suggested",
+        HunkState::Picked => "to add",
+        HunkState::LeftOut => "left out",
     }
 }
 
@@ -150,6 +159,21 @@ fn plural(n: usize, word: &str) -> String {
 }
 
 impl App {
+    /// The proposal the mode shows in a unit's text, and that `p` puts in:
+    /// the inserts in improve mode, else the proposed change.
+    pub fn shown_kind(&self) -> DiveKind {
+        if self.mode.improves() {
+            DiveKind::Improve
+        } else {
+            DiveKind::Fix
+        }
+    }
+
+    /// The proposal of [`App::shown_kind`] on `u`, when it has one.
+    pub fn shown_proposal<'a>(&self, u: &'a Unit) -> Option<&'a Proposal> {
+        proposal_of(u, self.shown_kind())
+    }
+
     /// After an audit came or was checked: when a high finding stands and
     /// `propose_fixes` allows it, the agent proposes a change to unit
     /// `id` (once). An audit whose findings a second model is still
@@ -276,11 +300,16 @@ impl App {
         let Some(id) = self.current_unit().map(|u| u.id.clone()) else {
             return Vec::new();
         };
-        let Some(p) = self.review.unit(&id).and_then(proposal) else {
-            self.status = format!(
-                "No proposed change: {} asks for one.",
-                self.keys.label(Action::ToolFix)
-            );
+        let kind = self.shown_kind();
+        let Some(p) = self.review.unit(&id).and_then(|u| proposal_of(u, kind)) else {
+            self.status = if kind == DiveKind::Improve {
+                "No insert here yet.".to_string()
+            } else {
+                format!(
+                    "No proposed change: {} asks for one.",
+                    self.keys.label(Action::ToolFix)
+                )
+            };
             return Vec::new();
         };
         if p.hunks.is_empty() {
@@ -333,17 +362,21 @@ impl App {
             return effects;
         }
         if self.review.pr.is_some() {
-            effects.extend(self.suggest_hunks(&id, &todo));
+            effects.extend(self.suggest_hunks(&id, &todo, kind));
             return effects;
         }
-        self.overlay = Overlay::ConfirmApply { id, hunks: todo };
+        self.overlay = Overlay::ConfirmApply {
+            id,
+            hunks: todo,
+            kind,
+        };
         effects
     }
 
     /// The question before hunks `hunks` of unit `id` are written: "Put
     /// this hunk into src/x.php? (+3 −1)", "Put 4 hunks into 2 files?".
-    pub fn apply_question(&self, id: &str, hunks: &[usize]) -> String {
-        let Some(p) = self.review.unit(id).and_then(proposal) else {
+    pub fn apply_question(&self, id: &str, hunks: &[usize], kind: DiveKind) -> String {
+        let Some(p) = self.review.unit(id).and_then(|u| proposal_of(u, kind)) else {
             return String::new();
         };
         let picked: Vec<&ProposedHunk> = hunks.iter().filter_map(|&i| p.hunks.get(i)).collect();
@@ -380,7 +413,13 @@ impl App {
 
     /// The answer to [`Overlay::ConfirmApply`]: yes writes hunks `hunks`
     /// of unit `id` to the working tree.
-    pub(crate) fn apply_answer(&mut self, id: String, hunks: Vec<usize>, yes: bool) -> Vec<Effect> {
+    pub(crate) fn apply_answer(
+        &mut self,
+        id: String,
+        hunks: Vec<usize>,
+        kind: DiveKind,
+        yes: bool,
+    ) -> Vec<Effect> {
         if !yes {
             return Vec::new();
         }
@@ -388,14 +427,23 @@ impl App {
             1 => "Putting the hunk in…".to_string(),
             n => format!("Putting {n} hunks in…"),
         };
-        vec![Effect::ApplyHunks { unit_id: id, hunks }]
+        vec![Effect::ApplyHunks {
+            unit_id: id,
+            hunks,
+            kind,
+        }]
     }
 
     /// On a pull request nothing is written: hunks `hunks` of unit `id`
     /// become suggestions for the review, and the unit is flagged when it
     /// was pending (a step `u` takes back).
-    fn suggest_hunks(&mut self, id: &str, hunks: &[usize]) -> Vec<Effect> {
-        if let Some(p) = self.review.proposal_mut(id) {
+    pub(crate) fn suggest_hunks(
+        &mut self,
+        id: &str,
+        hunks: &[usize],
+        kind: DiveKind,
+    ) -> Vec<Effect> {
+        if let Some(p) = self.review.proposal_mut(id, kind) {
             for &i in hunks {
                 if let Some(h) = p.hunks.get_mut(i) {
                     h.state = HunkState::Suggested;
@@ -422,11 +470,12 @@ impl App {
         &mut self,
         id: &str,
         hunks: &[usize],
+        kind: DiveKind,
         result: Result<Vec<PathBuf>, String>,
     ) -> Vec<Effect> {
         match result {
             Ok(files) => {
-                if let Some(p) = self.review.proposal_mut(id) {
+                if let Some(p) = self.review.proposal_mut(id, kind) {
                     for &i in hunks {
                         if let Some(h) = p.hunks.get_mut(i) {
                             h.state = HunkState::Applied;
@@ -457,7 +506,10 @@ impl App {
     /// click) went to; else the one whose box is at or nearest the top of
     /// the text; with no rows to go by, the first one not put in.
     pub fn fix_at(&self, rows: &[usize]) -> Option<usize> {
-        let p = self.review.unit(&self.unit.id).and_then(proposal)?;
+        let p = self
+            .review
+            .unit(&self.unit.id)
+            .and_then(|u| self.shown_proposal(u))?;
         let n = p.hunks.len();
         if let Some(i) = self.unit.fix.filter(|&i| i < n) {
             return Some(i);
@@ -475,7 +527,7 @@ impl App {
         let n = self
             .review
             .unit(&self.unit.id)
-            .and_then(proposal)
+            .and_then(|u| self.shown_proposal(u))
             .map_or(0, |p| p.hunks.len());
         if i < n {
             self.unit.fix = Some(i);

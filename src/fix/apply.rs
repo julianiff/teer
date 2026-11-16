@@ -18,7 +18,8 @@ use super::model::{HunkState, Proposal, ProposedHunk};
 const MAX_FILE_BYTES: usize = crate::git::MAX_WORKTREE_FILE_BYTES;
 
 /// Write hunks `hunks` (indexes into `proposal.hunks`) of `proposal` to the
-/// files under `root`, skipping those not in state `Proposed`. Each file
+/// files under `root`, skipping those neither proposed nor marked to add
+/// (`Picked`). Each file
 /// must be a plain file inside the repository (no symlink, nothing under
 /// `.git`) in which every chosen hunk's old text still occurs exactly once;
 /// otherwise nothing is written. The files written, relative to `root`.
@@ -32,7 +33,7 @@ pub fn apply(root: &Path, proposal: &Proposal, hunks: &[usize]) -> Result<Vec<Pa
     let mut by_file: BTreeMap<&Path, Vec<&ProposedHunk>> = BTreeMap::new();
     for &i in &chosen {
         let h = &proposal.hunks[i];
-        if h.state == HunkState::Proposed {
+        if matches!(h.state, HunkState::Proposed | HunkState::Picked) {
             by_file.entry(h.file.as_path()).or_default().push(h);
         }
     }

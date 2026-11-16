@@ -707,7 +707,7 @@ impl App {
         let n = self
             .review
             .unit(&self.unit.id)
-            .and_then(super::fix::proposal)
+            .and_then(|u| self.shown_proposal(u))
             .map_or(0, |p| p.hunks.len());
         match row.filter(|_| self.unit.fixes.borrow().len() == n) {
             Some(row) => {

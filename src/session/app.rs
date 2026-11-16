@@ -80,6 +80,13 @@ pub enum Overlay {
     ConfirmApply {
         id: String,
         hunks: Vec<usize>,
+        /// The proposal they are in: `Fix`, or `Improve` for inserts.
+        kind: DiveKind,
+    },
+    /// After the inserts marked to add were put in (`:w`): asks whether to
+    /// check the change again (a re-run), after what was written.
+    ConfirmCheck {
+        question: String,
     },
     /// The commits between base and head and the PR's description: the
     /// selected commit, and the selected one of the units it changed while
@@ -307,6 +314,14 @@ pub enum Effect {
     ApplyHunks {
         unit_id: String,
         hunks: Vec<usize>,
+        /// The proposal they are in: `Fix`, or `Improve` for inserts.
+        kind: DiveKind,
+    },
+    /// Write the inserts marked to add (`:w` in improve mode), unit by
+    /// unit in this order, each `(unit id, hunk indexes)` through
+    /// `fix::apply` with its hunks found again on disk first.
+    ApplyInserts {
+        picks: Vec<(String, Vec<usize>)>,
     },
     /// Run the security findings of a unit old against new: the agent
     /// writes an attacker's case for each, teer runs them in the sandbox
@@ -422,9 +437,19 @@ pub enum AppEvent {
     FixApplied {
         unit_id: String,
         hunks: Vec<usize>,
+        kind: DiveKind,
         result: Result<Vec<PathBuf>, String>,
     },
+    /// The inserts marked to add were written, unit by unit: each unit's
+    /// hunks and the files written, or why that unit's weren't.
+    InsertsApplied {
+        results: Vec<InsertResult>,
+    },
 }
+
+/// One unit's inserts as `Effect::ApplyInserts` wrote them: the unit's
+/// id, the hunks, and the files written or why none was.
+pub type InsertResult = (String, Vec<usize>, Result<Vec<PathBuf>, String>);
 
 /// Who changed the code since the notes went out, as the status line says
 /// it after the re-run.
@@ -437,6 +462,8 @@ pub enum ChangedBy {
     Copied,
     /// Proposed hunks the reviewer put in (`p`, `P`).
     Proposal,
+    /// The inserts marked to add, put in on `:w` (improve mode).
+    Inserts,
 }
 
 impl ChangedBy {
@@ -446,6 +473,7 @@ impl ChangedBy {
             ChangedBy::Agent(p) => format!("by {}", p.title()),
             ChangedBy::Copied => "since the notes were copied".into(),
             ChangedBy::Proposal => "by the proposed change".into(),
+            ChangedBy::Inserts => "by the inserts".into(),
         }
     }
 }
@@ -555,6 +583,12 @@ pub struct App {
     /// `s`: the session a result went to last, and the picker's pi row
     /// (see [`super::send`]).
     pub send: super::send::SendState,
+    /// Improve mode's list (see [`super::improve`]): the insert under the
+    /// cursor, by its place in [`App::inserts`].
+    pub isel: usize,
+    /// Units the agent was asked for inserts on and failed: not asked
+    /// again this session.
+    pub improve_failed: HashSet<String>,
 }
 
 impl App {
@@ -600,6 +634,8 @@ impl App {
             pressed: None,
             security: super::exposure::SecurityLens::load(),
             send: Default::default(),
+            isel: 0,
+            improve_failed: HashSet::new(),
             cfg,
         };
         app.rebuild_order();
@@ -839,6 +875,8 @@ impl App {
         self.review.set_session(session.filter(|_| self.has_agent));
         self.screen = Screen::Queue;
         effects.extend(self.prepare_start());
+        // Improve mode: what to add, for the units described already.
+        effects.extend(self.ask_inserts());
         // A review described in an earlier run that has no summary yet.
         if self.can_ask() && crate::review::intent::wants_summary(&self.review) {
             self.summary_asked = true;
@@ -917,8 +955,15 @@ impl App {
 
     // ---- Queries ---------------------------------------------------------
 
-    /// The selected unit; `None` when nothing is listed.
+    /// The selected unit; `None` when nothing is listed. In improve mode
+    /// the cursor is on an insert: its unit, or with no insert yet the
+    /// unit the cursor was on.
     pub fn selected(&self) -> Option<&Unit> {
+        if self.mode.improves()
+            && let Some(u) = self.insert_unit()
+        {
+            return Some(u);
+        }
         self.order.get(self.sel).map(|&i| &self.review.units[i])
     }
 
@@ -1068,9 +1113,20 @@ impl App {
                 let yes = self.keys.confirm(k);
                 return Some(self.unit_answer_web(yes).unwrap_or_default());
             }
-            Overlay::ConfirmApply { id, hunks } => {
+            Overlay::ConfirmApply { id, hunks, kind } => {
                 self.overlay = Overlay::None;
-                return Some(self.apply_answer(id, hunks, self.keys.confirm(k)));
+                return Some(self.apply_answer(id, hunks, kind, self.keys.confirm(k)));
+            }
+            Overlay::ConfirmCheck { .. } => {
+                self.overlay = Overlay::None;
+                if self.keys.confirm(k) {
+                    return Some(self.rerun_now());
+                }
+                self.status = format!(
+                    "Not checked again: {} re-runs the review later.",
+                    self.keys.label(Action::ReviewRerun)
+                );
+                return Some(Vec::new());
             }
             Overlay::ConfirmReset => {
                 self.overlay = Overlay::None;
@@ -1365,6 +1421,12 @@ impl App {
             }
             Action::ToolProve => return self.prove_findings(),
             Action::ToolFix => return self.propose_fix(),
+            // In improve mode `p` marks an insert to add and `P` every open
+            // one of its unit: `:w` puts them in.
+            Action::FixApply | Action::FixApplyAll if self.mode.improves() => {
+                return self.pick_insert(a == Action::FixApplyAll);
+            }
+            Action::InsertLeave => return self.leave_insert(),
             Action::FixApply => return self.apply_hunks(false),
             Action::FixApplyAll => return self.apply_hunks(true),
             Action::SendSession => return self.send_to_session(),
@@ -1598,6 +1660,10 @@ impl App {
     /// Select the unit at `to`.
     pub fn move_sel(&mut self, to: usize) -> Vec<Effect> {
         self.sel = to.min(self.order.len().saturating_sub(1));
+        // In improve mode a jump to a unit is to its first insert.
+        if self.mode.improves() {
+            self.insert_follow_unit();
+        }
         self.ensure_prepared()
     }
 
@@ -1606,6 +1672,12 @@ impl App {
     /// the unit view on any unit, `zf`, and `q` to quit (the review is
     /// saved, cursor and all).
     pub(crate) fn queue_action(&mut self, a: Action, count: Option<u32>) -> Vec<Effect> {
+        // Improve mode's list: the cursor is on an insert.
+        if self.mode.improves()
+            && let Some(effects) = self.improve_action(a, count)
+        {
+            return effects;
+        }
         let times = count.unwrap_or(1) as usize;
         match a {
             Action::MoveDown => return self.move_row(times as isize),
@@ -2431,6 +2503,7 @@ impl App {
         };
         let mut effects = vec![Effect::Save];
         effects.extend(self.prepare_start());
+        effects.extend(self.ask_inserts());
         effects
     }
 
@@ -2451,8 +2524,10 @@ impl App {
             AppEvent::Prep(p) => {
                 self.review.apply(p);
                 self.rebuild_order();
+                // Improve mode asks what to add once a unit is described.
+                let mut effects = self.ask_inserts();
                 if !self.review.units.iter().any(|u| u.prep == Prep::Pending) {
-                    let mut effects = vec![Effect::Save];
+                    effects.push(Effect::Save);
                     // Every unit described: one more cheap call sums the change up.
                     if self.can_ask()
                         && !self.summary_asked
@@ -2461,8 +2536,8 @@ impl App {
                         self.summary_asked = true;
                         effects.push(Effect::Summarize);
                     }
-                    return effects;
                 }
+                return effects;
             }
             AppEvent::Summary(r) => match r {
                 Ok(s) => {
@@ -2489,8 +2564,10 @@ impl App {
             AppEvent::FixApplied {
                 unit_id,
                 hunks,
+                kind,
                 result,
-            } => return self.fix_applied(&unit_id, &hunks, result),
+            } => return self.fix_applied(&unit_id, &hunks, kind, result),
+            AppEvent::InsertsApplied { results } => return self.inserts_applied(results),
             AppEvent::Dive(ev) => {
                 // About code a re-run changed since it was asked: dropped
                 // without a word (see `Review::apply_dive`).
@@ -2505,8 +2582,8 @@ impl App {
                     DiveEvent::Audit { id, .. } => {
                         self.progress.remove(&(id.clone(), DiveKind::Security));
                     }
-                    DiveEvent::Proposed { id, .. } => {
-                        self.progress.remove(&(id.clone(), DiveKind::Fix));
+                    DiveEvent::Proposed { id, kind, .. } => {
+                        self.progress.remove(&(id.clone(), *kind));
                     }
                     DiveEvent::AuditChecked { .. } | DiveEvent::Proved { .. } => {}
                     DiveEvent::Failed {
@@ -2515,6 +2592,10 @@ impl App {
                         self.progress.remove(&(id.clone(), *kind));
                         if current {
                             self.status = format!("Question ({kind:?}) failed: {error}");
+                            // Not asked again this session (see `ask_inserts`).
+                            if *kind == DiveKind::Improve {
+                                self.improve_failed.insert(id.clone());
+                            }
                         }
                     }
                 }
@@ -2557,6 +2638,7 @@ pub(crate) mod tests {
                 status: UnitStatus::Changed,
                 old_range: None,
                 new_range: None,
+                nested: Vec::new(),
                 renamed_from: None,
                 fingerprint: String::new(),
                 changes: Vec::new(),

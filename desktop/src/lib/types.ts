@@ -10,7 +10,7 @@ export type Risk = "low" | "medium" | "high";
 export type Marker = "added" | "changed" | "removed";
 export type Side = "old" | "new";
 export type DiveKind = "Recommend" | "Disagree" | "Tests" | "Security";
-export type RowKind = "Context" | "Removed" | "Added" | "Gap";
+export type RowKind = "Context" | "Removed" | "Added" | "Gap" | "Fold";
 export type Class =
   | "Keyword"
   | "Function"

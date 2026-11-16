@@ -48,17 +48,33 @@ pub fn proposal(u: &Unit) -> Option<&Proposal> {
     u.dive.results.get(&DiveKind::Fix)?.proposal.as_ref()
 }
 
-/// The hunks of `u`'s proposed change not put in yet: proposed, or
-/// suggested on a pull request.
+/// The proposals on `u`: its proposed change, then its inserts (improve
+/// mode), each with its kind.
+pub fn proposals(u: &Unit) -> Vec<(DiveKind, &Proposal)> {
+    [DiveKind::Fix, DiveKind::Improve]
+        .into_iter()
+        .filter_map(|k| Some((k, u.dive.results.get(&k)?.proposal.as_ref()?)))
+        .collect()
+}
+
+/// The hunks of `u`'s proposals that go out with the notes
+/// ([`goes_out`]).
 pub fn unapplied(u: &Unit) -> Vec<&ProposedHunk> {
-    proposal(u)
-        .map(|p| {
-            p.hunks
-                .iter()
-                .filter(|h| h.state != HunkState::Applied)
-                .collect()
-        })
-        .unwrap_or_default()
+    proposals(u)
+        .into_iter()
+        .flat_map(|(k, p)| p.hunks.iter().filter(move |h| goes_out(k, h.state)))
+        .collect()
+}
+
+/// Does a hunk in state `s` of a proposal of `kind` go out with the notes
+/// (and as a suggestion on a pull request)? Of a proposed change, the
+/// hunks not put in; of the inserts, only those marked to add. Suggested
+/// ones go either way.
+pub fn goes_out(kind: DiveKind, s: HunkState) -> bool {
+    match kind {
+        DiveKind::Improve => matches!(s, HunkState::Picked | HunkState::Suggested),
+        _ => matches!(s, HunkState::Proposed | HunkState::Suggested),
+    }
 }
 
 /// "1 note", "2 notes and 1 flagged unit without one", "1 note and 1
@@ -155,6 +171,7 @@ fn hunk(review: &Review, u: &Unit) -> Option<String> {
             Kind::Removed => format!("-{}", sanitize(&r.text)),
             Kind::Added => format!("+{}", sanitize(&r.text)),
             Kind::Gap => " …".into(),
+            Kind::Fold => format!(" {} …", sanitize(&r.text)),
         })
         .collect();
     if rows.len() > MAX_ROWS {
@@ -184,6 +201,7 @@ pub fn answers(reason: &Reason) -> String {
         } => format!("the finding \"{}\" ({})", one_line(title), severity.word()),
         Reason::Note => "the note".into(),
         Reason::Advice => "the advice".into(),
+        Reason::Improve => "what would make it better".into(),
     }
 }
 
@@ -193,11 +211,25 @@ pub fn answers(reason: &Reason) -> String {
 /// ([`unapplied`]) with its state and why, its diff under it. Empty
 /// without such hunks.
 pub fn proposed(u: &Unit) -> String {
-    let hunks = unapplied(u);
-    let Some(p) = proposal(u).filter(|_| !hunks.is_empty()) else {
+    proposals(u)
+        .into_iter()
+        .map(|(kind, p)| proposed_section(kind, p))
+        .collect()
+}
+
+/// One proposal's part of [`proposed`]: under "Proposed change", or
+/// "Inserts" for improve mode's. Empty without hunks not put in.
+fn proposed_section(kind: DiveKind, p: &Proposal) -> String {
+    let hunks: Vec<&ProposedHunk> = p.hunks.iter().filter(|h| goes_out(kind, h.state)).collect();
+    if hunks.is_empty() {
         return String::new();
+    }
+    let title = if kind == DiveKind::Improve {
+        "Inserts"
+    } else {
+        "Proposed change"
     };
-    let mut out = String::from("\n**Proposed change**\n\n");
+    let mut out = format!("\n**{title}**\n\n");
     out.push_str(&format!("- answers: {}\n", answers(&p.reason)));
     let summary = one_line(&p.summary);
     if !summary.is_empty() {
@@ -213,6 +245,7 @@ pub fn proposed(u: &Unit) -> String {
     for h in hunks {
         let state = match h.state {
             HunkState::Suggested => "suggested",
+            HunkState::Picked => "to add",
             _ => "proposed",
         };
         match one_line(&h.why) {

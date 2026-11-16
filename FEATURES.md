@@ -1,10 +1,10 @@
 # teer features
 
-[how it works](#how-it-works) · [start](#start) · [modes](#modes) · [agents](#agents) · [the queue](#the-queue) · [the unit view](#the-unit-view) · [security](#security) · [proposed changes](#proposed-changes) · [send to your agent](#send-to-your-agent) · [finish](#finish) · [the fix loop](#the-fix-loop) · [notes](#notes) · [keys](#keys) · [config](#config) · [safety](#safety) · [limits](#limits)
+[how it works](#how-it-works) · [start](#start) · [modes](#modes) · [agents](#agents) · [the queue](#the-queue) · [the unit view](#the-unit-view) · [security](#security) · [proposed changes](#proposed-changes) · [improve](#improve) · [send to your agent](#send-to-your-agent) · [finish](#finish) · [the fix loop](#the-fix-loop) · [notes](#notes) · [keys](#keys) · [config](#config) · [safety](#safety) · [limits](#limits)
 
 ## how it works
 
-1. **split** — teer parses the old and new version of every changed file and lists the units that changed: functions, methods, classes, top-level code. rust, python, typescript, javascript, php and go are split; any other text file is one whole-file unit. binary, huge and non-utf-8 files are listed as not shown.
+1. **split** — teer parses the old and new version of every changed file and lists the units that changed: functions, methods, classes, top-level code. a class or the top level shows only its own lines; a unit inside it (a method, a function) is folded to the line that names it, since it is listed on its own. rust, python, typescript, javascript, php and go are split; any other text file is one whole-file unit. binary, huge and non-utf-8 files are listed as not shown.
 2. **sort** — every unit gets a level from what the code shows. the agent can raise it, never lower it. a unit with no behavior change is accepted for you.
 3. **explain** — a fast model writes a one-line summary and up to three statements per unit. a statement that doesn't cite lines of its unit is dropped. a second model checks every description.
 4. **review** — down the queue, accept (`a`) or flag (`f`), and write a note (`i`) where you have something to say. `l` opens any unit to look closer.
@@ -62,13 +62,14 @@ besides the rule that set its level, a unit can have reasons to look, each a sen
 
 ## modes
 
-a review is for one thing, and teer keeps to the tools for it. the header shows the mode's icon (🔍 review, 🔒 security; `␣m` or a click on it changes the mode). a key of a tool the mode leaves out does nothing but say so, and the help (`?`) and the prefix hints don't list it.
+a review is for one thing, and teer keeps to the tools for it. the header shows the mode's icon (🔍 review, 🔒 security, ✨ improve; `␣m` or a click on it changes the mode). a key of a tool the mode leaves out does nothing but say so, and the help (`?`) and the prefix hints don't list it.
 
 | mode | for | tools |
 | --- | --- | --- |
 | `review` | what the change does, and whether it is right: yours, your agent's, or a pull request | what changed, written into the code · ask `K`, which offers the advice · tests `<space>t` · proposed changes `<space>e` `p` `P` · commits `<space>c` · send to your agent `s` |
 | `security` | how the change can be abused, and nothing else | the [security order](#security) with its attack-surface card · the risks written into the code · ask `K`, which offers the checks that follow each risk up · the full check `<space>x` · prove `<space>p` · proposed changes · send to your agent |
-| `all` | every tool at once | all of the above, and `zs` |
+| `improve` | what to add so the change is better | the [inserts](#improve) the agent writes, listed in place of the units · to add `a` · leave out `x` · `:w` puts them in · flag for your agent `f` · send to your agent |
+| `all` | every tool at once | the tools of review and security, and `zs` |
 
 both modes work the same way: comments in the code, and one tile where the agent is asked, which offers the questions worth asking next. what the comments say and what the tile offers is the mode's.
 
@@ -76,7 +77,7 @@ every mode has the queue, accept and flag, notes, undo, find, `gd` `gr` `gf`, th
 
 **which mode** — the first that applies:
 
-1. the command: `teer review`, `teer security`.
+1. the command: `teer review`, `teer security`, `teer improve`.
 2. the mode you chose for this review before: it is saved with it.
 3. `mode` in the config (`mode = "all"` for everything, always).
 4. else `review`.
@@ -249,6 +250,25 @@ what it drops is counted and logged to `teer.log`. a hunk whose file has a new s
 **on a pull request** nothing is written. `p` and `P` make the hunks suggestions and flag the unit (`u` takes that back). on `:w` a suggested hunk is posted as a github suggestion on its lines when they're in the pr diff, so the author can commit it with one click; it replaces whole lines even when the change starts mid-line, and joins your note when that sits on the same lines. a hunk outside the diff, in another file, or past the 50 inline comments goes into the summary's "proposed changes" as a diff, and so does every suggestion when github refuses inline comments. hunks you never suggested stay out of the post.
 
 **in the notes.** the notes you copy (`y`, `teer notes`) or hand to your agent carry each proposed change not put in yet: what it answers, what it does, the check.s word, and each hunk as a diff. your agent is asked to put them in, or say why not. the flagged list says `✎ change proposed: 2 hunks` under a unit that has some.
+
+## improve
+
+`teer improve` (or `␣m` → improve): what to add so the change is better. the agent writes inserts for each unit, and the queue lists them in place of the units. the inserts are asked for in this mode only: when the mode goes on, every listed unit that needs an agent and is described is asked once, in the queue's order; a unit described later is asked then. another mode hides the list and keeps the inserts.
+
+**the list** — a box per kind, the most needed first: **fills a gap** (a check the change needs, a case it misses, an error path), **makes it stronger** (a test, a guard against misuse), **polish** (a name, a docstring). a row is one insert: `+`, its file, its unit, why it is there, and at the right edge where it stands: proposed, to add, put in, suggested, left out. under the boxes, how many units have nothing to add and how many the agent still looks at; the header counts them while it does. the bar counts the inserts: `2 to add · 1 proposed · 1 put in · 1 left out`, and names `:w` while some are to add. with no insert yet, one line says what the agent is doing.
+
+**the preview** — beside the list from 110 columns, else below: the unit, what the agent said of its inserts with the second model's word, then the hunk in a box as the unit view draws it, with the keys on its edge.
+
+nothing is written while you go through the list: you mark, and `:w` writes.
+
+- `j` `k` move; `n` `N` go to the next and previous insert still proposed; `]f` `[f` to the next and previous file; a click selects one.
+- `a` (or `p`) marks the insert **to add** and goes on to the next one still proposed; `P` marks every open insert of its unit. `a` on one to add takes it back.
+- `x` leaves the insert out: not put in, not sent; it goes on to the next one too. `x` again takes it back.
+- `:w` offers **put N inserts in** first: it writes every insert to add into your working tree at once, unit by unit, each found again on disk first. then teer asks whether to check the change again (a re-run, which in this mode asks the agent about the changed units again); it never re-runs on its own. `r` re-runs later. on a pull request there is no such step: the inserts to add go as suggestions with the review you post, on their lines when they are in the diff, else in the summary.
+- `f` flags its unit: its inserts to add go to your agent with the notes, under **Inserts**. `i` writes a note on the unit.
+- `l` looks closer: the unit view at the insert, the inserts under the code change in place of the proposed change, `p` `P` `x` on the one at the top.
+
+an insert is a hunk the agent wrote, checked as a [proposed change](#proposed-changes) is: its text found once in a file that exists, the file still parsing, a second model's word. a unit with nothing to add is a fine answer. `␣e`, the tests tile and the security tools are not in this mode.
 
 ## send to your agent
 
