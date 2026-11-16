@@ -68,7 +68,7 @@ a review is for one thing, and teer keeps to the tools for it. the header shows 
 | --- | --- | --- |
 | `review` | what the change does, and whether it is right: yours, your agent's, or a pull request | what changed, written into the code · ask `K`, which offers the advice · tests `<space>t` · proposed changes `<space>e` `p` `P` · commits `<space>c` · send to your agent `s` |
 | `security` | how the change can be abused, and nothing else | the [security order](#security) with its attack-surface card · the risks written into the code · ask `K`, which offers the checks that follow each risk up · the full check `<space>x` · prove `<space>p` · proposed changes · send to your agent |
-| `improve` | what to add so the change is better | the [inserts](#improve) the agent writes, listed in place of the units · put in `a` · leave out `x` · flag for your agent `f` · send to your agent |
+| `improve` | what to add so the change is better | the [inserts](#improve) the agent writes, listed in place of the units · to add `a` · leave out `x` · `:w` puts them in · flag for your agent `f` · send to your agent |
 | `all` | every tool at once | the tools of review and security, and `zs` |
 
 both modes work the same way: comments in the code, and one tile where the agent is asked, which offers the questions worth asking next. what the comments say and what the tile offers is the mode's.
@@ -255,16 +255,17 @@ what it drops is counted and logged to `teer.log`. a hunk whose file has a new s
 
 `teer improve` (or `␣m` → improve): what to add so the change is better. the agent writes inserts for each unit, and the queue lists them in place of the units. the inserts are asked for in this mode only: when the mode goes on, every listed unit that needs an agent and is described is asked once, in the queue's order; a unit described later is asked then. another mode hides the list and keeps the inserts.
 
-**the list** — a box per kind, the most needed first: **fills a gap** (a check the change needs, a case it misses, an error path), **makes it stronger** (a test, a guard against misuse), **polish** (a name, a docstring). a row is one insert: `+`, its file, its unit, why it is there, and at the right edge where it stands: proposed, put in, suggested, left out. under the boxes, how many units have nothing to add and how many the agent still looks at; the header counts them while it does. the bar counts the inserts: `3 proposed · 1 put in · 1 left out`. with no insert yet, one line says what the agent is doing.
+**the list** — a box per kind, the most needed first: **fills a gap** (a check the change needs, a case it misses, an error path), **makes it stronger** (a test, a guard against misuse), **polish** (a name, a docstring). a row is one insert: `+`, its file, its unit, why it is there, and at the right edge where it stands: proposed, to add, put in, suggested, left out. under the boxes, how many units have nothing to add and how many the agent still looks at; the header counts them while it does. the bar counts the inserts: `2 to add · 1 proposed · 1 put in · 1 left out`, and names `:w` while some are to add. with no insert yet, one line says what the agent is doing.
 
 **the preview** — beside the list from 110 columns, else below: the unit, what the agent said of its inserts with the second model's word, then the hunk in a box as the unit view draws it, with the keys on its edge.
 
-keys on an insert:
+nothing is written while you go through the list: you mark, and `:w` writes.
 
 - `j` `k` move; `n` `N` go to the next and previous insert still proposed; `]f` `[f` to the next and previous file; a click selects one.
-- `a` (or `p`) puts the insert into your working tree after a y/n question; `P` every open insert of its unit. on a pull request they become suggestions, posted on `:w`. then teer reviews again.
-- `x` leaves the insert out: not put in, not sent. `x` again takes it back.
-- `f` flags its unit: the insert goes to your agent with the notes, under **Inserts**. `i` writes a note on the unit.
+- `a` (or `p`) marks the insert **to add** and goes on to the next one still proposed; `P` marks every open insert of its unit. `a` on one to add takes it back.
+- `x` leaves the insert out: not put in, not sent; it goes on to the next one too. `x` again takes it back.
+- `:w` offers **put N inserts in** first: it writes every insert to add into your working tree at once, unit by unit, each found again on disk first. then teer asks whether to check the change again (a re-run, which in this mode asks the agent about the changed units again); it never re-runs on its own. `r` re-runs later. on a pull request there is no such step: the inserts to add go as suggestions with the review you post, on their lines when they are in the diff, else in the summary.
+- `f` flags its unit: its inserts to add go to your agent with the notes, under **Inserts**. `i` writes a note on the unit.
 - `l` looks closer: the unit view at the insert, the inserts under the code change in place of the proposed change, `p` `P` `x` on the one at the top.
 
 an insert is a hunk the agent wrote, checked as a [proposed change](#proposed-changes) is: its text found once in a file that exists, the file still parsing, a second model's word. a unit with nothing to add is a fine answer. `␣e`, the tests tile and the security tools are not in this mode.

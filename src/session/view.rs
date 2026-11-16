@@ -635,6 +635,11 @@ pub enum OverlayView {
     ConfirmApply {
         question: String,
     },
+    /// After the inserts to add were put in: asks whether to check the
+    /// change again.
+    ConfirmCheck {
+        question: String,
+    },
     Commits(CommitsView),
     Finish(FinishView),
     Jump(JumpView),
@@ -1752,6 +1757,9 @@ fn overlay(app: &App) -> OverlayView {
         },
         Overlay::ConfirmApply { id, hunks, kind } => OverlayView::ConfirmApply {
             question: app.apply_question(id, hunks, *kind),
+        },
+        Overlay::ConfirmCheck { question } => OverlayView::ConfirmCheck {
+            question: question.clone(),
         },
         Overlay::SendTo {
             targets,

@@ -596,6 +596,7 @@ pub(super) fn hunk_box(
         HunkState::Proposed => (fix::state_word(h.state), t.muted()),
         HunkState::Applied => (fix::state_word(h.state), t.ok()),
         HunkState::Suggested => (fix::state_word(h.state), t.accent()),
+        HunkState::Picked => (fix::state_word(h.state), t.accent()),
         HunkState::LeftOut => (fix::state_word(h.state), t.muted()),
     };
     let right = vec![Span::styled(format!(" {state} "), state_style)];
@@ -642,22 +643,39 @@ pub(super) fn fix_keys(app: &App, p: &Proposal, i: usize) -> Vec<Span<'static>> 
         "put"
     };
     let mut items = Vec::new();
-    if p.hunks[i].state == HunkState::Proposed {
-        items.push((app.keys.label(Action::FixApply), verb.to_string()));
-    }
-    if !p.open().is_empty() {
-        items.push((app.keys.label(Action::FixApplyAll), format!("{verb} all")));
-    }
-    // An insert can be left out, and taken back.
+    let k = |a: Action| app.keys.label(a);
     if app.mode.improves() {
-        match p.hunks[i].state {
-            HunkState::Proposed | HunkState::Suggested => {
-                items.push((app.keys.label(Action::InsertLeave), "leave out".into()));
+        // An insert is marked to add (`:w` puts it in) or left out, and
+        // either is taken back.
+        let state = p.hunks[i].state;
+        match state {
+            HunkState::Proposed | HunkState::LeftOut => {
+                items.push((k(Action::FixApply), "to add".into()))
             }
-            HunkState::LeftOut => {
-                items.push((app.keys.label(Action::InsertLeave), "take back".into()));
+            HunkState::Picked => items.push((k(Action::FixApply), "take back".into())),
+            HunkState::Applied | HunkState::Suggested => {}
+        }
+        let open = p
+            .hunks
+            .iter()
+            .filter(|h| matches!(h.state, HunkState::Proposed | HunkState::LeftOut))
+            .count();
+        if open > 1 || (open == 1 && state == HunkState::Picked) {
+            items.push((k(Action::FixApplyAll), "all to add".into()));
+        }
+        match state {
+            HunkState::Proposed | HunkState::Picked | HunkState::Suggested => {
+                items.push((k(Action::InsertLeave), "leave out".into()));
             }
+            HunkState::LeftOut => items.push((k(Action::InsertLeave), "take back".into())),
             HunkState::Applied => {}
+        }
+    } else {
+        if p.hunks[i].state == HunkState::Proposed {
+            items.push((k(Action::FixApply), verb.to_string()));
+        }
+        if !p.open().is_empty() {
+            items.push((k(Action::FixApplyAll), format!("{verb} all")));
         }
     }
     let mut spans = Vec::new();

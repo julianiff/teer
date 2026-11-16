@@ -83,6 +83,11 @@ pub enum Overlay {
         /// The proposal they are in: `Fix`, or `Improve` for inserts.
         kind: DiveKind,
     },
+    /// After the inserts marked to add were put in (`:w`): asks whether to
+    /// check the change again (a re-run), after what was written.
+    ConfirmCheck {
+        question: String,
+    },
     /// The commits between base and head and the PR's description: the
     /// selected commit, and the selected one of the units it changed while
     /// the cursor is in that list.
@@ -312,6 +317,12 @@ pub enum Effect {
         /// The proposal they are in: `Fix`, or `Improve` for inserts.
         kind: DiveKind,
     },
+    /// Write the inserts marked to add (`:w` in improve mode), unit by
+    /// unit in this order, each `(unit id, hunk indexes)` through
+    /// `fix::apply` with its hunks found again on disk first.
+    ApplyInserts {
+        picks: Vec<(String, Vec<usize>)>,
+    },
     /// Run the security findings of a unit old against new: the agent
     /// writes an attacker's case for each, teer runs them in the sandbox
     /// (`security::prove`).
@@ -429,7 +440,16 @@ pub enum AppEvent {
         kind: DiveKind,
         result: Result<Vec<PathBuf>, String>,
     },
+    /// The inserts marked to add were written, unit by unit: each unit's
+    /// hunks and the files written, or why that unit's weren't.
+    InsertsApplied {
+        results: Vec<InsertResult>,
+    },
 }
+
+/// One unit's inserts as `Effect::ApplyInserts` wrote them: the unit's
+/// id, the hunks, and the files written or why none was.
+pub type InsertResult = (String, Vec<usize>, Result<Vec<PathBuf>, String>);
 
 /// Who changed the code since the notes went out, as the status line says
 /// it after the re-run.
@@ -442,6 +462,8 @@ pub enum ChangedBy {
     Copied,
     /// Proposed hunks the reviewer put in (`p`, `P`).
     Proposal,
+    /// The inserts marked to add, put in on `:w` (improve mode).
+    Inserts,
 }
 
 impl ChangedBy {
@@ -451,6 +473,7 @@ impl ChangedBy {
             ChangedBy::Agent(p) => format!("by {}", p.title()),
             ChangedBy::Copied => "since the notes were copied".into(),
             ChangedBy::Proposal => "by the proposed change".into(),
+            ChangedBy::Inserts => "by the inserts".into(),
         }
     }
 }
@@ -1094,6 +1117,17 @@ impl App {
                 self.overlay = Overlay::None;
                 return Some(self.apply_answer(id, hunks, kind, self.keys.confirm(k)));
             }
+            Overlay::ConfirmCheck { .. } => {
+                self.overlay = Overlay::None;
+                if self.keys.confirm(k) {
+                    return Some(self.rerun_now());
+                }
+                self.status = format!(
+                    "Not checked again: {} re-runs the review later.",
+                    self.keys.label(Action::ReviewRerun)
+                );
+                return Some(Vec::new());
+            }
             Overlay::ConfirmReset => {
                 self.overlay = Overlay::None;
                 if self.keys.confirm(k) {
@@ -1387,11 +1421,10 @@ impl App {
             }
             Action::ToolProve => return self.prove_findings(),
             Action::ToolFix => return self.propose_fix(),
-            // On improve mode's list, the insert under the cursor.
-            Action::FixApply | Action::FixApplyAll
-                if self.mode.improves() && self.screen == Screen::Queue =>
-            {
-                return self.put_insert(a == Action::FixApplyAll);
+            // In improve mode `p` marks an insert to add and `P` every open
+            // one of its unit: `:w` puts them in.
+            Action::FixApply | Action::FixApplyAll if self.mode.improves() => {
+                return self.pick_insert(a == Action::FixApplyAll);
             }
             Action::InsertLeave => return self.leave_insert(),
             Action::FixApply => return self.apply_hunks(false),
@@ -2534,6 +2567,7 @@ impl App {
                 kind,
                 result,
             } => return self.fix_applied(&unit_id, &hunks, kind, result),
+            AppEvent::InsertsApplied { results } => return self.inserts_applied(results),
             AppEvent::Dive(ev) => {
                 // About code a re-run changed since it was asked: dropped
                 // without a word (see `Review::apply_dive`).

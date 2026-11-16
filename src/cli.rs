@@ -127,9 +127,11 @@ pub enum Command {
     ///
     /// The agent writes inserts for each unit: a check the change needs, a case it misses,
     /// a test, a clearer name. The queue lists them in place of the units, by what each
-    /// does (fills a gap, makes it stronger, polish); `a` puts one into the code (a
-    /// suggestion on a pull request), `x` leaves it out, `f` flags its unit so it goes to
-    /// your agent with the notes. The inserts are asked for in this mode only.
+    /// does (fills a gap, makes it stronger, polish); `a` marks one to add, `x` leaves it
+    /// out, and `:w` puts the marked ones into the code at once (suggestions on a pull
+    /// request), then asks whether to check the change again. `f` flags a unit so its
+    /// inserts to add go to your agent with the notes. The inserts are asked for in this
+    /// mode only.
     #[command(
         after_help = "Examples:\n  teer improve\n  teer improve 482\n  teer improve --base main"
     )]

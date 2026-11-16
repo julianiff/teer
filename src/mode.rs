@@ -90,8 +90,8 @@ impl Mode {
                  changes · send to your agent"
             }
             Mode::Improve => {
-                "inserts the agent writes, listed by what each does · put in · leave out · flag \
-                 for your agent · send to your agent"
+                "inserts the agent writes, listed by what each does · mark to add or leave out · \
+                 :w puts them in · flag for your agent · send to your agent"
             }
             Mode::All => "the tools of review and security",
         }

@@ -77,6 +77,7 @@ pub fn state_word(s: HunkState) -> &'static str {
         HunkState::Proposed => "proposed",
         HunkState::Applied => "put in",
         HunkState::Suggested => "suggested",
+        HunkState::Picked => "to add",
         HunkState::LeftOut => "left out",
     }
 }

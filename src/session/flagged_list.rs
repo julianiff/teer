@@ -81,25 +81,40 @@ pub fn security_line(u: &Unit) -> Option<SecurityLine> {
     }
 }
 
-/// What `u`'s entry says about its proposed change, on one line, without
-/// the glyph: `change proposed: 2 hunks`, `change proposed: 1 suggested`,
-/// or both. `None` when every hunk is in the code, or it has none.
+/// What `u`'s entry says about its proposals, on one line, without the
+/// glyph: `change proposed: 2 hunks`, `change proposed: 1 suggested`, or
+/// both; and `2 inserts to add` for the inserts marked so. `None` when
+/// every hunk is in the code, or it has none.
 pub fn proposal_line(u: &Unit) -> Option<String> {
     let hunks = crate::notes::unapplied(u);
     let suggested = hunks
         .iter()
         .filter(|h| h.state == HunkState::Suggested)
         .count();
-    let open = hunks.len() - suggested;
+    let to_add = hunks
+        .iter()
+        .filter(|h| h.state == HunkState::Picked)
+        .count();
+    let open = hunks.len() - suggested - to_add;
+    let mut parts = Vec::new();
     let what = match (open, suggested) {
-        (0, 0) => return None,
-        (1, 0) => "1 hunk".to_string(),
-        (n, 0) => format!("{n} hunks"),
-        (0, s) => format!("{s} suggested"),
-        (1, s) => format!("1 hunk, {s} suggested"),
-        (n, s) => format!("{n} hunks, {s} suggested"),
+        (0, 0) => None,
+        (1, 0) => Some("1 hunk".to_string()),
+        (n, 0) => Some(format!("{n} hunks")),
+        (0, s) => Some(format!("{s} suggested")),
+        (1, s) => Some(format!("1 hunk, {s} suggested")),
+        (n, s) => Some(format!("{n} hunks, {s} suggested")),
     };
-    Some(format!("change proposed: {what}"))
+    if let Some(what) = what {
+        parts.push(format!("change proposed: {what}"));
+    }
+    if to_add > 0 {
+        parts.push(format!(
+            "{to_add} insert{} to add",
+            if to_add == 1 { "" } else { "s" }
+        ));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 /// The flagged list's state.

@@ -3,11 +3,19 @@
 //! insert is a hunk of a unit's `Improve` proposal (see [`crate::fix`]),
 //! in a box by what it does for the change ([`InsertKind`]: fills a gap,
 //! makes it stronger, polish); in a box, by the queue's order of the
-//! units, then by line. The cursor moves over inserts: `a` (or `p`) puts
-//! the one under it into the code (a suggestion on a pull request), `P`
-//! every open one of its unit, `x` leaves it out (and takes it back), `f`
-//! flags its unit so the insert goes to your agent with the notes, `l`
-//! looks closer at it in the unit view, `i` writes a note on its unit.
+//! units, then by line.
+//!
+//! Nothing is written while the reviewer goes through the list: the
+//! cursor moves over inserts, `a` (or `p`) marks the one under it to add
+//! ([`HunkState::Picked`]) and goes on to the next one still proposed, `P`
+//! marks every open insert of its unit, `x` leaves it out; either mark is
+//! taken back with the same key. `:w` then puts every insert to add into
+//! the working tree at once ([`App::put_inserts`]), and asks whether to
+//! check the change again: it never re-runs on its own. On a pull request
+//! the inserts to add go as suggestions with the review posted. `f` flags
+//! the insert's unit, so its inserts to add go to your agent with the
+//! notes; `l` looks closer at it in the unit view; `i` writes a note on
+//! its unit.
 //!
 //! The inserts are asked for in this mode only: when it is on (at start,
 //! or with `<space>m`), every listed unit that needs an agent and is
@@ -15,9 +23,10 @@
 //! is asked then. A unit with nothing to add is counted under the boxes.
 //! Another mode hides the list and keeps the inserts.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
 
-use super::app::{App, Effect, Overlay, Screen};
+use super::app::{App, ChangedBy, Effect, InsertResult, Overlay, Screen};
 use crate::fix::{HunkState, InsertKind, Proposal, ProposedHunk};
 use crate::keymap::Action;
 use crate::review::model::{Decision, DiveKind, Prep, Unit};
@@ -31,6 +40,16 @@ pub struct Insert {
     pub kind: InsertKind,
 }
 
+/// How many inserts stand in each state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InsertCounts {
+    pub proposed: usize,
+    pub to_add: usize,
+    pub put_in: usize,
+    pub suggested: usize,
+    pub left_out: usize,
+}
+
 /// The inserts of `u`, once the agent answered: none yet, or a proposal
 /// with no hunk (nothing to add).
 pub fn inserts_of(u: &Unit) -> Option<&Proposal> {
@@ -41,6 +60,11 @@ pub fn inserts_of(u: &Unit) -> Option<&Proposal> {
 /// is polish.
 pub fn kind_of(h: &ProposedHunk) -> InsertKind {
     h.kind.unwrap_or(InsertKind::Polish)
+}
+
+/// `1 insert`, `3 inserts`.
+fn plural(n: usize, word: &str) -> String {
+    format!("{n} {word}{}", if n == 1 { "" } else { "s" })
 }
 
 impl App {
@@ -86,6 +110,18 @@ impl App {
         inserts_of(&self.review.units[i.unit])?.hunks.get(i.hunk)
     }
 
+    /// The insert a key acts on, by unit id and hunk: in the unit view the
+    /// current hunk of the unit on show, else the one under the list's
+    /// cursor.
+    fn insert_target(&self) -> Option<(String, usize)> {
+        if self.screen == Screen::Unit {
+            let hunk = self.current_fix()?;
+            return Some((self.unit.id.clone(), hunk));
+        }
+        let i = self.insert_at()?;
+        Some((self.review.units[i.unit].id.clone(), i.hunk))
+    }
+
     /// The listed units an agent is asked about, by index.
     fn askable(&self) -> Vec<usize> {
         self.order
@@ -128,19 +164,54 @@ impl App {
             .count()
     }
 
-    /// The inserts by state: proposed, put in, suggested, left out.
-    pub fn insert_counts(&self) -> (usize, usize, usize, usize) {
-        let mut n = (0, 0, 0, 0);
+    /// The inserts by state.
+    pub fn insert_counts(&self) -> InsertCounts {
+        let mut n = InsertCounts::default();
         for i in self.inserts() {
             match self.insert_hunk(i).map(|h| h.state) {
-                Some(HunkState::Proposed) => n.0 += 1,
-                Some(HunkState::Applied) => n.1 += 1,
-                Some(HunkState::Suggested) => n.2 += 1,
-                Some(HunkState::LeftOut) => n.3 += 1,
+                Some(HunkState::Proposed) => n.proposed += 1,
+                Some(HunkState::Picked) => n.to_add += 1,
+                Some(HunkState::Applied) => n.put_in += 1,
+                Some(HunkState::Suggested) => n.suggested += 1,
+                Some(HunkState::LeftOut) => n.left_out += 1,
                 None => {}
             }
         }
         n
+    }
+
+    /// The inserts marked to add, by unit in the queue's order, each
+    /// unit's hunks in order: what `:w` puts in.
+    pub fn picks(&self) -> Vec<(String, Vec<usize>)> {
+        let mut out: Vec<(String, Vec<usize>)> = Vec::new();
+        let mut by_unit: Vec<Insert> = self.inserts();
+        by_unit.sort_by_key(|i| {
+            (
+                self.position_of(&self.review.units[i.unit].id)
+                    .unwrap_or(usize::MAX),
+                i.unit,
+                i.hunk,
+            )
+        });
+        for i in by_unit {
+            if !self
+                .insert_hunk(i)
+                .is_some_and(|h| h.state == HunkState::Picked)
+            {
+                continue;
+            }
+            let id = &self.review.units[i.unit].id;
+            match out.last_mut() {
+                Some((last, hunks)) if last == id => hunks.push(i.hunk),
+                _ => out.push((id.clone(), vec![i.hunk])),
+            }
+        }
+        out
+    }
+
+    /// How many inserts are marked to add.
+    pub fn picked_count(&self) -> usize {
+        self.insert_counts().to_add
     }
 
     /// Ask the agent what to add to every unit not asked yet, in the
@@ -204,6 +275,26 @@ impl App {
         self.select_insert(to)
     }
 
+    /// The next insert still proposed below `from`, by its place.
+    fn next_open(&self, from: usize) -> Option<usize> {
+        let all = self.inserts();
+        (from + 1..all.len()).find(|&k| {
+            self.insert_hunk(all[k])
+                .is_some_and(|h| h.state == HunkState::Proposed)
+        })
+    }
+
+    /// After a mark on the list: the cursor on to the next insert still
+    /// proposed, when there is one below.
+    fn advance_insert(&mut self) {
+        if self.screen == Screen::Queue
+            && let Some(k) = self.next_open(self.isel)
+        {
+            self.isel = k;
+            self.insert_sync();
+        }
+    }
+
     /// `n` (`N`): the `times`-th next (previous) insert still proposed.
     fn jump_insert(&mut self, forward: bool, times: usize) -> Vec<Effect> {
         let all = self.inserts();
@@ -260,9 +351,9 @@ impl App {
 
     // ---- The keys --------------------------------------------------------
 
-    /// The list's keys: moves over the inserts, `a` puts the insert in,
-    /// `f` flags its unit, `l` looks closer. `None` for what the queue
-    /// handles as usual.
+    /// The list's keys: moves over the inserts, `a` marks the insert to
+    /// add, `f` flags its unit, `l` looks closer. `None` for what the
+    /// queue handles as usual.
     pub(crate) fn improve_action(&mut self, a: Action, count: Option<u32>) -> Option<Vec<Effect>> {
         let times = count.unwrap_or(1) as usize;
         Some(match a {
@@ -277,73 +368,89 @@ impl App {
             Action::MovePrevPending => self.jump_insert(false, times),
             Action::MoveNextFile => self.jump_insert_file(true, times),
             Action::MovePrevFile => self.jump_insert_file(false, times),
-            Action::DecideAccept => self.put_insert(false),
+            Action::DecideAccept => self.pick_insert(false),
             Action::DecideFlag => self.flag_insert(),
             Action::ViewOpen => self.open_insert(),
             _ => return None,
         })
     }
 
-    /// `a`, `p` (`P`: `all`): put the insert under the cursor (every open
-    /// insert of its unit) into the working tree, after asking; on a pull
-    /// request, keep it as a suggestion for the review.
-    pub(crate) fn put_insert(&mut self, all: bool) -> Vec<Effect> {
-        let Some(i) = self.insert_at() else {
+    /// `a`, `p` (`P`: `all`): mark the insert to add, and on to the next
+    /// one still proposed; on one to add, take it back. `all`: every open
+    /// insert of its unit. Nothing is written: `:w` puts them in.
+    pub(crate) fn pick_insert(&mut self, all: bool) -> Vec<Effect> {
+        let Some((id, hunk)) = self.insert_target() else {
             self.status = "No insert under the cursor yet.".into();
             return Vec::new();
         };
-        let u = &self.review.units[i.unit];
-        let id = u.id.clone();
-        let Some(p) = inserts_of(u) else {
+        let finish = self.keys.label(Action::FinishOpen);
+        let Some(p) = self.review.proposal_mut(&id, DiveKind::Improve) else {
+            self.status = "No insert here.".into();
             return Vec::new();
         };
-        let state = p.hunks[i.hunk].state;
-        let todo: Vec<usize> = if all {
-            p.open()
-        } else if state == HunkState::Proposed {
-            vec![i.hunk]
-        } else {
-            Vec::new()
-        };
-        if todo.is_empty() {
-            let finish = self.keys.label(Action::FinishOpen);
-            let back = self.keys.label(Action::InsertLeave);
-            self.status = match state {
-                HunkState::Applied => "This insert is put in already.".to_string(),
-                HunkState::Suggested => {
-                    format!(
-                        "This insert is suggested already: it goes into the review on {finish}."
-                    )
-                }
-                HunkState::LeftOut => format!("This insert is left out: {back} takes it back."),
-                HunkState::Proposed => "No insert of this unit is open.".to_string(),
+        if all {
+            let open: Vec<usize> = (0..p.hunks.len())
+                .filter(|&i| matches!(p.hunks[i].state, HunkState::Proposed | HunkState::LeftOut))
+                .collect();
+            for &i in &open {
+                p.hunks[i].state = HunkState::Picked;
+            }
+            let n = p
+                .hunks
+                .iter()
+                .filter(|h| h.state == HunkState::Picked)
+                .count();
+            self.status = if open.is_empty() {
+                "Every insert of this unit is to add, put in or suggested already.".into()
+            } else {
+                format!(
+                    "{} of this unit to add: {finish} puts them in.",
+                    plural(n, "insert")
+                )
             };
+            self.advance_insert();
+            return vec![Effect::Save];
+        }
+        let Some(h) = p.hunks.get_mut(hunk) else {
             return Vec::new();
-        }
-        if self.review.pr.is_some() {
-            return self.suggest_hunks(&id, &todo, DiveKind::Improve);
-        }
-        self.overlay = Overlay::ConfirmApply {
-            id,
-            hunks: todo,
-            kind: DiveKind::Improve,
         };
-        Vec::new()
+        let picked = match h.state {
+            HunkState::Proposed | HunkState::LeftOut => {
+                h.state = HunkState::Picked;
+                true
+            }
+            HunkState::Picked => {
+                h.state = HunkState::Proposed;
+                self.status = "Taken back: proposed again.".into();
+                return vec![Effect::Save];
+            }
+            HunkState::Applied => {
+                self.status = "This insert is put in already.".into();
+                return Vec::new();
+            }
+            HunkState::Suggested => {
+                self.status = format!(
+                    "This insert is suggested already: it goes into the review on {finish}."
+                );
+                return Vec::new();
+            }
+        };
+        debug_assert!(picked);
+        let n = self.picked_count();
+        self.status = format!("To add: {finish} puts {} in.", plural(n, "insert"));
+        self.advance_insert();
+        vec![Effect::Save]
     }
 
     /// `x`: leave the insert out (under the cursor on the list; the current
-    /// hunk in the unit view), or take one left out back.
+    /// hunk in the unit view), and on to the next one still proposed; on
+    /// one left out, take it back.
     pub(crate) fn leave_insert(&mut self) -> Vec<Effect> {
-        let target = if self.screen == Screen::Unit {
-            self.current_fix().map(|h| (self.unit.id.clone(), h))
-        } else {
-            self.insert_at()
-                .map(|i| (self.review.units[i.unit].id.clone(), i.hunk))
-        };
-        let Some((id, hunk)) = target else {
+        let Some((id, hunk)) = self.insert_target() else {
             self.status = "No insert under the cursor yet.".into();
             return Vec::new();
         };
+        let back = self.keys.label(Action::InsertLeave);
         let Some(p) = self.review.proposal_mut(&id, DiveKind::Improve) else {
             self.status = "No insert here.".into();
             return Vec::new();
@@ -351,11 +458,11 @@ impl App {
         let Some(h) = p.hunks.get_mut(hunk) else {
             return Vec::new();
         };
-        let back = self.keys.label(Action::InsertLeave);
         match h.state {
-            HunkState::Proposed | HunkState::Suggested => {
+            HunkState::Proposed | HunkState::Picked | HunkState::Suggested => {
                 h.state = HunkState::LeftOut;
                 self.status = format!("Left out: not put in, not sent. {back} takes it back.");
+                self.advance_insert();
             }
             HunkState::LeftOut => {
                 h.state = HunkState::Proposed;
@@ -369,8 +476,8 @@ impl App {
         vec![Effect::Save]
     }
 
-    /// `f`: flag the insert's unit, so the insert goes to your agent with
-    /// the notes (`:w`).
+    /// `f`: flag the insert's unit, so its inserts to add go to your agent
+    /// with the notes (`:w`).
     fn flag_insert(&mut self) -> Vec<Effect> {
         let Some(u) = self.insert_unit() else {
             self.status = "No insert under the cursor yet.".into();
@@ -381,13 +488,15 @@ impl App {
         let finish = self.keys.label(Action::FinishOpen);
         if u.decision == Decision::Investigate {
             self.status = format!(
-                "{name} is flagged already: the insert goes to your agent with the notes ({finish})."
+                "{name} is flagged already: its inserts to add go to your agent with the notes \
+({finish})."
             );
             return Vec::new();
         }
         self.decide_ids(&[id], Decision::Investigate);
-        self.status =
-            format!("Flagged {name}: the insert goes to your agent with the notes ({finish}).");
+        self.status = format!(
+            "Flagged {name}: its inserts to add go to your agent with the notes ({finish})."
+        );
         vec![Effect::Save]
     }
 
@@ -409,5 +518,81 @@ impl App {
         let effects = self.open_unit(id);
         self.show_fix(i.hunk);
         effects
+    }
+
+    // ---- `:w` --------------------------------------------------------------
+
+    /// The sheet's "put N inserts in": write every insert to add to the
+    /// working tree at once, unit by unit ([`Effect::ApplyInserts`]).
+    pub(crate) fn put_inserts(&mut self) -> Vec<Effect> {
+        let picks = self.picks();
+        if picks.is_empty() {
+            self.status = format!(
+                "No insert to add: {} marks one.",
+                self.keys.label(Action::DecideAccept)
+            );
+            return Vec::new();
+        }
+        let n: usize = picks.iter().map(|(_, h)| h.len()).sum();
+        self.overlay = Overlay::None;
+        self.status = format!("Putting {} in…", plural(n, "insert"));
+        vec![Effect::ApplyInserts { picks }]
+    }
+
+    /// The inserts to add were written (or not), unit by unit: mark the
+    /// written ones put in, say what was done, and ask whether to check
+    /// the change again. Nothing re-runs on its own.
+    pub(crate) fn inserts_applied(&mut self, results: Vec<InsertResult>) -> Vec<Effect> {
+        let mut files: BTreeSet<PathBuf> = BTreeSet::new();
+        let mut put = 0;
+        let mut failed: Vec<String> = Vec::new();
+        for (id, hunks, result) in results {
+            match result {
+                Ok(written) => {
+                    if let Some(p) = self.review.proposal_mut(&id, DiveKind::Improve) {
+                        for &i in &hunks {
+                            if let Some(h) = p.hunks.get_mut(i) {
+                                h.state = HunkState::Applied;
+                                put += 1;
+                            }
+                        }
+                    }
+                    files.extend(written);
+                }
+                Err(e) => {
+                    let name = self
+                        .review
+                        .unit(&id)
+                        .map(|u| crate::util::sanitize(&u.symbol))
+                        .unwrap_or(id);
+                    failed.push(format!("{name}: {e}"));
+                }
+            }
+        }
+        let mut said = if put > 0 {
+            format!(
+                "Put {} into {}.",
+                plural(put, "insert"),
+                plural(files.len(), "file")
+            )
+        } else {
+            "Nothing put in.".to_string()
+        };
+        if !failed.is_empty() {
+            said.push_str(&format!(" Not put in: {}.", failed.join("; ")));
+        }
+        self.status = said.clone();
+        if put == 0 {
+            return Vec::new();
+        }
+        // The re-run's status says what the change did, if one is asked for.
+        self.fix_by = Some(ChangedBy::Inserts);
+        self.overlay = Overlay::ConfirmCheck {
+            question: format!(
+                "{said} Check the change again? The agent looks at what changed, and at what to \
+add to it."
+            ),
+        };
+        vec![Effect::Save]
     }
 }

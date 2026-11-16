@@ -26,6 +26,16 @@ use crate::keymap::{Action, Edit, Key, Sheet};
 use crate::review::model::{Decision, PrInfo};
 use crate::util::sanitize;
 
+/// `1 insert`, `3 inserts`.
+fn inserts(n: usize) -> String {
+    units_of(n, "insert")
+}
+
+/// `1 file`, `2 files`.
+fn units_of(n: usize, word: &str) -> String {
+    format!("{n} {word}{}", if n == 1 { "" } else { "s" })
+}
+
 /// What the review is of, as the sheet tells its rows apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Reviewing {
@@ -41,6 +51,9 @@ pub enum Reviewing {
 /// A next step the sheet offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Step {
+    /// Write the inserts marked to add to the working tree (improve mode),
+    /// then ask whether to check the change again.
+    PutInserts,
     /// Close the sheet on the first pending unit.
     KeepReviewing,
     /// Hand the notes to Claude Code or Codex; with the model API, copy
@@ -75,6 +88,7 @@ impl Step {
     /// The verb on the `⏎` hint.
     pub fn verb(self, api: bool) -> &'static str {
         match self {
+            Step::PutInserts => "put in",
             Step::KeepReviewing => "keep reviewing",
             Step::SendNotes if api => "copy",
             Step::SendNotes => "send",
@@ -144,6 +158,11 @@ impl App {
     pub fn finish_steps(&self) -> Vec<Step> {
         let (_, flagged, pending) = self.decision_counts();
         let mut steps = Vec::new();
+        // Inserts marked to add: the default, pending units or not. On a
+        // pull request they go as suggestions with the post.
+        if self.reviewing() != Reviewing::Pr && !self.picks().is_empty() {
+            steps.push(Step::PutInserts);
+        }
         if pending > 0 {
             steps.push(Step::KeepReviewing);
         }
@@ -176,6 +195,7 @@ impl App {
     pub fn step_label(&self, s: Step) -> String {
         let n = self.review.pr.as_ref().map_or(0, |p| p.number);
         match s {
+            Step::PutInserts => format!("put {} in", inserts(self.picked_count())),
             Step::KeepReviewing => "keep reviewing".into(),
             Step::SendNotes => match self.cfg.provider() {
                 Provider::Api => "copy the notes for your agent and wait for the changes".into(),
@@ -210,6 +230,28 @@ same for {} s, it re-runs the review on what changed. {} stops waiting; {} re-ru
             )
         };
         Some(match step {
+            Step::PutInserts => {
+                let picks = self.picks();
+                let files: std::collections::BTreeSet<&std::path::Path> = picks
+                    .iter()
+                    .flat_map(|(id, hunks)| {
+                        let u = self.review.unit(id);
+                        hunks.iter().filter_map(move |&i| {
+                            super::improve::inserts_of(u?)?
+                                .hunks
+                                .get(i)
+                                .map(|h| h.file.as_path())
+                        })
+                    })
+                    .collect();
+                format!(
+                    "Writes the {} marked to add into {}, each found again on disk first: a unit's \
+inserts stay out when one of them isn't there once. Then teer asks whether to check the change \
+again; it doesn't re-run on its own.",
+                    inserts(self.picked_count()),
+                    units_of(files.len(), "file")
+                )
+            }
             Step::KeepReviewing => format!(
                 "Goes to the first pending unit. {} comes back here.",
                 k(Action::FinishOpen)
@@ -415,7 +457,8 @@ teer; the review is saved."
     /// `⏎` on `step`: with units still pending, ask first (keeping on
     /// reviewing doesn't).
     fn ask_step(&mut self, step: Step) -> Vec<Effect> {
-        if step != Step::KeepReviewing && self.decision_counts().2 > 0 {
+        let decides = !matches!(step, Step::KeepReviewing | Step::PutInserts);
+        if decides && self.decision_counts().2 > 0 {
             self.finish.confirm = Some(step);
             return Vec::new();
         }
@@ -424,6 +467,7 @@ teer; the review is saved."
 
     fn run_step(&mut self, step: Step) -> Vec<Effect> {
         match step {
+            Step::PutInserts => self.put_inserts(),
             Step::KeepReviewing => self.keep_reviewing(),
             Step::SendNotes => self.send_notes(),
             Step::Yank => {

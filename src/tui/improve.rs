@@ -26,7 +26,7 @@ use crate::keymap::Action;
 use crate::review::attention::Level;
 use crate::review::model::{DiveKind, Risk};
 use crate::session::improve::{Insert, inserts_of};
-use crate::session::{fix, names, tools};
+use crate::session::{names, tools};
 use crate::util::{sanitize, truncate, truncate_pad, wrap};
 
 /// Cells of a row before its path: the bar's column, a gap, `+`, a gap.
@@ -250,6 +250,7 @@ fn row(
     let (state, state_style) = match app.insert_hunk(i).map(|h| h.state) {
         Some(HunkState::Applied) => ("put in", t.ok()),
         Some(HunkState::Suggested) => ("suggested", t.accent()),
+        Some(HunkState::Picked) => ("to add", t.accent()),
         Some(HunkState::LeftOut) => ("left out", t.muted()),
         _ => ("proposed", t.text()),
     };
@@ -375,35 +376,48 @@ fn draw_insert(f: &mut Frame, app: &App, area: Rect, pane: Pane, i: Insert) {
     );
 }
 
-/// The bottom bar's counts on the list: `2 proposed · 1 put in · 1 left
-/// out`, the states with none left out; with no insert proposed, that.
+/// The bottom bar's counts on the list: `2 to add · 1 proposed · 1 put
+/// in`, each state with some; with inserts to add, the key that puts
+/// them in (a click target, by its index); with none at all, that.
 pub(super) fn count_spans(app: &App) -> (Vec<Span<'static>>, Option<usize>) {
     let t = &app.theme;
-    let (proposed, put_in, suggested, left_out) = app.insert_counts();
-    let sep = || Span::styled(" · ", t.muted());
+    let c = app.insert_counts();
+    let sep = |spans: &mut Vec<Span<'static>>| {
+        if !spans.is_empty() {
+            spans.push(Span::styled(" · ", t.muted()));
+        }
+    };
     let mut spans = Vec::new();
-    if proposed > 0 {
-        spans.push(Span::styled(format!("{proposed} proposed"), t.bold()));
-    } else if put_in + suggested + left_out == 0 {
-        spans.push(Span::styled("No insert yet", t.muted()));
-    } else {
-        spans.push(Span::styled("No insert left", t.bold()));
+    if c.to_add > 0 {
+        spans.push(Span::styled(
+            format!("{} to add", c.to_add),
+            t.accent().add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+    }
+    if c.proposed > 0 {
+        sep(&mut spans);
+        let style = if c.to_add > 0 { t.text() } else { t.bold() };
+        spans.push(Span::styled(format!("{} proposed", c.proposed), style));
     }
     for (n, what, style) in [
-        (put_in, "put in", t.ok()),
-        (suggested, "suggested", t.accent()),
-        (left_out, "left out", t.muted()),
+        (c.put_in, "put in", t.ok()),
+        (c.suggested, "suggested", t.accent()),
+        (c.left_out, "left out", t.muted()),
     ] {
         if n > 0 {
-            spans.push(sep());
+            sep(&mut spans);
             spans.push(Span::styled(format!("{n} {what}"), style));
         }
     }
-    (spans, None)
-}
-
-/// The word of a hunk's state the list and the bar use.
-#[allow(dead_code)]
-fn state_word(s: HunkState) -> &'static str {
-    fix::state_word(s)
+    if spans.is_empty() {
+        spans.push(Span::styled("No insert yet", t.muted()));
+    }
+    let mut finish = None;
+    if c.to_add > 0 {
+        spans.push(Span::raw("  "));
+        finish = Some(spans.len());
+        spans.push(Span::styled(app.keys.label(Action::FinishOpen), t.accent()));
+        spans.push(Span::styled(" puts them in", t.muted()));
+    }
+    (spans, finish)
 }

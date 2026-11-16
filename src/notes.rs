@@ -57,14 +57,24 @@ pub fn proposals(u: &Unit) -> Vec<(DiveKind, &Proposal)> {
         .collect()
 }
 
-/// The hunks of `u`'s proposals not put in yet and not left out:
-/// proposed, or suggested on a pull request.
+/// The hunks of `u`'s proposals that go out with the notes
+/// ([`goes_out`]).
 pub fn unapplied(u: &Unit) -> Vec<&ProposedHunk> {
     proposals(u)
         .into_iter()
-        .flat_map(|(_, p)| p.hunks.iter())
-        .filter(|h| matches!(h.state, HunkState::Proposed | HunkState::Suggested))
+        .flat_map(|(k, p)| p.hunks.iter().filter(move |h| goes_out(k, h.state)))
         .collect()
+}
+
+/// Does a hunk in state `s` of a proposal of `kind` go out with the notes
+/// (and as a suggestion on a pull request)? Of a proposed change, the
+/// hunks not put in; of the inserts, only those marked to add. Suggested
+/// ones go either way.
+pub fn goes_out(kind: DiveKind, s: HunkState) -> bool {
+    match kind {
+        DiveKind::Improve => matches!(s, HunkState::Picked | HunkState::Suggested),
+        _ => matches!(s, HunkState::Proposed | HunkState::Suggested),
+    }
 }
 
 /// "1 note", "2 notes and 1 flagged unit without one", "1 note and 1
@@ -209,11 +219,7 @@ pub fn proposed(u: &Unit) -> String {
 /// One proposal's part of [`proposed`]: under "Proposed change", or
 /// "Inserts" for improve mode's. Empty without hunks not put in.
 fn proposed_section(kind: DiveKind, p: &Proposal) -> String {
-    let hunks: Vec<&ProposedHunk> = p
-        .hunks
-        .iter()
-        .filter(|h| matches!(h.state, HunkState::Proposed | HunkState::Suggested))
-        .collect();
+    let hunks: Vec<&ProposedHunk> = p.hunks.iter().filter(|h| goes_out(kind, h.state)).collect();
     if hunks.is_empty() {
         return String::new();
     }
@@ -238,6 +244,7 @@ fn proposed_section(kind: DiveKind, p: &Proposal) -> String {
     for h in hunks {
         let state = match h.state {
             HunkState::Suggested => "suggested",
+            HunkState::Picked => "to add",
             _ => "proposed",
         };
         match one_line(&h.why) {

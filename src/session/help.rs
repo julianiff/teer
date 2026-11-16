@@ -390,9 +390,10 @@ pub fn improve_describe(a: Action) -> Option<&'static str> {
         Action::MoveLast => "last insert",
         Action::MoveNextPending => "next insert still proposed",
         Action::MovePrevPending => "previous insert still proposed",
-        Action::DecideAccept | Action::FixApply => "put the insert in",
-        Action::FixApplyAll => "put every insert of its unit in",
-        Action::DecideFlag => "flag its unit: the insert goes to your agent with the notes",
+        Action::DecideAccept | Action::FixApply => "mark the insert to add (again: take it back)",
+        Action::FixApplyAll => "mark every insert of its unit to add",
+        Action::DecideFlag => "flag its unit: its inserts to add go to your agent with the notes",
+        Action::FinishOpen => "put the inserts to add in",
         Action::ViewOpen => "look closer at the insert",
         _ => return None,
     })

@@ -1,7 +1,8 @@
 //! Improve mode (see FEATURES.md, improve): the inserts the agent
 //! proposes, asked for in this mode only, listed in place of the units by
-//! what each does; the keys on one; the preview; the header and the bar;
-//! another mode hides the list and keeps the inserts.
+//! what each does; `a` and `x` as marks, `:w` putting the inserts to add
+//! in at once and then asking whether to check again; the preview; the
+//! header and the bar; another mode hides the list and keeps the inserts.
 
 use crate::common;
 
@@ -10,11 +11,13 @@ use std::path::PathBuf;
 use common::v2::{Driver, review, unit};
 use teer::fix::{HunkState, InsertKind, Proposal, ProposedHunk, Reason};
 use teer::git::{ChangedFile, FileStatus};
+use teer::keymap::Action;
 use teer::mode::Mode;
 use teer::review::dive::DiveEvent;
-use teer::review::model::{Decision, DiveKind, DiveResult, Range, SessionRef, Unit};
+use teer::review::model::{Decision, DiveKind, DiveResult, PrInfo, Range, SessionRef, Unit};
 use teer::security::SecondCheck;
 use teer::session::app::{AppEvent, Effect, Overlay, Screen};
+use teer::session::finish::Step;
 use teer::tui::app::Target;
 
 /// Twenty lines `l1`..`l20`, changed at lines 2 and 17.
@@ -301,13 +304,35 @@ fn the_cursor_moves_over_the_inserts_and_the_queues_cursor_follows() {
 }
 
 #[test]
-fn the_keys_put_an_insert_in_leave_it_out_flag_its_unit_and_look_closer() {
+fn a_marks_an_insert_to_add_x_leaves_it_out_and_either_key_takes_it_back() {
     let mut d = listed();
-    // `x` leaves the insert out, and takes it back.
+    // `a`: to add, and on to the next insert still proposed.
+    assert_eq!(d.keys("a"), vec![Effect::Save]);
+    assert_eq!(states(&d, "u0"), [HunkState::Picked, HunkState::Proposed]);
+    assert!(
+        d.status().starts_with("To add: :w puts 1 insert in"),
+        "{}",
+        d.status()
+    );
+    assert_eq!(d.app.isel, 1);
+    let s = d.render(100, 30);
+    let row = s.lines().find(|l| l.contains("cast the id")).unwrap();
+    assert!(row.trim_end().ends_with("to add │"), "{row}");
+    let bar = s.lines().last().unwrap();
+    assert!(bar.contains("1 to add · 2 proposed"), "{bar}");
+    assert!(bar.contains(":w puts them in"), "{bar}");
+    // `a` on one to add takes it back; the cursor stays.
+    d.keys("k");
+    d.keys("a");
+    assert_eq!(states(&d, "u0"), [HunkState::Proposed, HunkState::Proposed]);
+    assert_eq!(d.app.isel, 0);
+    assert_eq!(d.status(), "Taken back: proposed again.");
+    // `x` leaves out, and on to the next; `x` again takes it back.
     d.keys("j");
     assert_eq!(d.keys("x"), vec![Effect::Save]);
     assert_eq!(states(&d, "u1"), [HunkState::LeftOut]);
-    assert!(d.status().starts_with("Left out"), "{}", d.status());
+    assert_eq!(d.app.isel, 2);
+    d.keys("k");
     let s = d.render(100, 30);
     let row = s.lines().find(|l| l.contains("empty cart")).unwrap();
     assert!(row.trim_end().ends_with("left out │"), "{row}");
@@ -318,56 +343,147 @@ fn the_keys_put_an_insert_in_leave_it_out_flag_its_unit_and_look_closer() {
             .contains("2 proposed · 1 left out"),
         "{s}"
     );
-    // `a` on one left out says so; `x` takes it back.
-    assert!(d.keys("a").is_empty());
-    assert_eq!(d.overlay(), &Overlay::None);
-    assert!(d.status().contains("left out"), "{}", d.status());
     d.keys("x");
     assert_eq!(states(&d, "u1"), [HunkState::Proposed]);
-    // `a` puts the insert under the cursor in, after asking.
-    d.keys("gg");
-    assert!(d.keys("a").is_empty());
-    assert_eq!(
-        d.overlay(),
-        &Overlay::ConfirmApply {
-            id: "u0".into(),
-            hunks: vec![0],
-            kind: DiveKind::Improve,
-        }
-    );
-    let s = d.render(100, 30);
-    assert!(s.contains("Put this hunk into a.rs? (+1 −1)"), "{s}");
-    assert_eq!(
-        d.keys("y"),
-        vec![Effect::ApplyHunks {
-            unit_id: "u0".into(),
-            hunks: vec![0],
-            kind: DiveKind::Improve,
-        }]
-    );
-    // Written: put in, and the review runs again.
-    let e = d.app.on_app_event(AppEvent::FixApplied {
-        unit_id: "u0".into(),
-        hunks: vec![0],
-        kind: DiveKind::Improve,
-        result: Ok(vec![PathBuf::from("a.rs")]),
-    });
-    assert_eq!(e, vec![Effect::Save, Effect::Rerun]);
-    assert_eq!(states(&d, "u0"), [HunkState::Applied, HunkState::Proposed]);
-    // `P` puts every open insert of the unit in.
+    // `a` on one left out marks it to add; `x` on one to add leaves it out.
+    d.keys("x");
+    d.keys("k");
+    d.keys("a");
+    assert_eq!(states(&d, "u1"), [HunkState::Picked]);
+    d.keys("k");
+    d.keys("x");
+    assert_eq!(states(&d, "u1"), [HunkState::LeftOut]);
+    // `P`: every open insert of the unit, left out ones too.
     d.keys("G");
     d.keys("P");
-    assert_eq!(
-        d.overlay(),
-        &Overlay::ConfirmApply {
-            id: "u0".into(),
-            hunks: vec![1],
-            kind: DiveKind::Improve,
-        }
+    assert_eq!(states(&d, "u0"), [HunkState::Picked, HunkState::Picked]);
+    assert!(
+        d.status().starts_with("2 inserts of this unit to add"),
+        "{}",
+        d.status()
     );
+    // Nothing was written, and nothing asked.
+    assert!(
+        !d.effects.iter().any(|e| matches!(
+            e,
+            Effect::ApplyHunks { .. } | Effect::ApplyInserts { .. } | Effect::Rerun
+        )),
+        "{:?}",
+        d.effects
+    );
+    assert_eq!(d.overlay(), &Overlay::None);
+}
+
+#[test]
+fn w_puts_the_inserts_to_add_in_at_once_then_asks_whether_to_check_again() {
+    let mut d = listed();
+    // Nothing to add yet: the sheet has no such step.
+    d.app.press(Action::FinishOpen, None);
+    assert!(matches!(d.overlay(), Overlay::Finish { .. }));
+    assert!(!d.app.finish_steps().contains(&Step::PutInserts));
     d.keys("<esc>");
-    // `f` flags the insert's unit: the insert goes with the notes.
-    d.keys("gg");
+    d.keys("a");
+    d.keys("a");
+    assert_eq!(
+        d.app.picks(),
+        vec![("u0".to_string(), vec![0]), ("u1".to_string(), vec![0])]
+    );
+    d.app.press(Action::FinishOpen, None);
+    assert_eq!(d.app.finish_steps()[0], Step::PutInserts);
+    assert_eq!(d.app.step_label(Step::PutInserts), "put 2 inserts in");
+    let s = d.render(100, 40);
+    assert!(s.contains("put 2 inserts in"), "{s}");
+    assert!(
+        s.contains("Writes the 2 inserts marked to add into 2 files"),
+        "{s}"
+    );
+    // ⏎ writes them at once, without a word about the pending units.
+    let e = d.keys("<cr>");
+    assert_eq!(
+        e,
+        vec![Effect::ApplyInserts {
+            picks: vec![("u0".into(), vec![0]), ("u1".into(), vec![0])],
+        }]
+    );
+    assert_eq!(d.overlay(), &Overlay::None);
+    assert_eq!(d.status(), "Putting 2 inserts in…");
+    // Written: put in, and teer asks whether to check again; no re-run on
+    // its own.
+    let e = d.app.on_app_event(AppEvent::InsertsApplied {
+        results: vec![
+            ("u0".into(), vec![0], Ok(vec![PathBuf::from("a.rs")])),
+            ("u1".into(), vec![0], Ok(vec![PathBuf::from("b.rs")])),
+        ],
+    });
+    assert_eq!(e, vec![Effect::Save]);
+    assert_eq!(states(&d, "u0"), [HunkState::Applied, HunkState::Proposed]);
+    assert_eq!(states(&d, "u1"), [HunkState::Applied]);
+    assert!(
+        matches!(d.overlay(), Overlay::ConfirmCheck { .. }),
+        "{:?}",
+        d.overlay()
+    );
+    let s = d.render(100, 30);
+    assert!(
+        s.contains("Put 2 inserts into 2 files. Check the change again?"),
+        "{s}"
+    );
+    assert!(s.lines().last().unwrap().contains("2 put in"), "{s}");
+    // No: nothing more happens; `r` re-runs later.
+    assert!(d.keys("n").is_empty());
+    assert_eq!(d.overlay(), &Overlay::None);
+    assert!(
+        d.status().starts_with("Not checked again: ") && d.status().contains("re-runs"),
+        "{}",
+        d.status()
+    );
+    // Yes: the review runs again.
+    d.app.overlay = Overlay::ConfirmCheck {
+        question: "again?".into(),
+    };
+    assert_eq!(d.keys("y"), vec![Effect::Rerun]);
+    // A unit whose inserts weren't written keeps them to add, and the
+    // status says why; nothing is asked then.
+    d.keys("G");
+    d.keys("a");
+    let e = d.app.on_app_event(AppEvent::InsertsApplied {
+        results: vec![(
+            "u0".into(),
+            vec![1],
+            Err("a.rs changed since the change was proposed".into()),
+        )],
+    });
+    assert!(e.is_empty());
+    assert_eq!(states(&d, "u0")[1], HunkState::Picked);
+    assert_eq!(d.overlay(), &Overlay::None);
+    assert_eq!(
+        d.status(),
+        "Nothing put in. Not put in: s0: a.rs changed since the change was proposed."
+    );
+}
+
+#[test]
+fn on_a_pull_request_the_inserts_to_add_go_as_suggestions_with_the_review() {
+    let mut d = listed();
+    d.app.review.pr = Some(PrInfo::default());
+    d.keys("a");
+    d.app.press(Action::FinishOpen, None);
+    assert!(!d.app.finish_steps().contains(&Step::PutInserts));
+    d.keys("<esc>");
+    let entries = teer::approve::collect_suggestions(&d.app.review, &d.app.order);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].id, "u0");
+    assert_eq!(entries[0].why, "cast the id before it is used");
+}
+
+#[test]
+fn f_flags_the_unit_and_l_looks_closer_where_p_and_x_work_too() {
+    let mut d = listed();
+    d.keys("G");
+    d.keys("a");
+    assert_eq!(states(&d, "u0"), [HunkState::Proposed, HunkState::Picked]);
+    assert_eq!(d.app.isel, 2);
+    // `f` flags the insert's unit: its inserts to add go with the notes.
     assert_eq!(d.keys("f"), vec![Effect::Save]);
     assert_eq!(
         d.app.review.unit("u0").unwrap().decision,
@@ -376,10 +492,9 @@ fn the_keys_put_an_insert_in_leave_it_out_flag_its_unit_and_look_closer() {
     assert!(d.status().starts_with("Flagged s0"), "{}", d.status());
     let notes = teer::notes::proposed(d.app.review.unit("u0").unwrap());
     assert!(notes.contains("**Inserts**"), "{notes}");
-    assert!(notes.contains("say what the rule is"), "{notes}");
-    assert!(!notes.contains("cast the id"), "put in already:\n{notes}");
+    assert!(notes.contains("to add: say what the rule is"), "{notes}");
+    assert!(!notes.contains("cast the id"), "not to add:\n{notes}");
     // `l` looks closer: the unit view at the insert, under "Inserts".
-    d.keys("G");
     d.keys("l");
     assert_eq!(d.screen(), Screen::Unit);
     assert_eq!(d.app.unit.id, "u0");
@@ -387,7 +502,17 @@ fn the_keys_put_an_insert_in_leave_it_out_flag_its_unit_and_look_closer() {
     let s = d.render(100, 40);
     assert!(s.contains(" Inserts"), "{s}");
     assert!(s.contains("polish · a.rs:11-13"), "{s}");
-    assert!(s.contains("x leave out"), "{s}");
+    assert!(
+        s.contains("p take back · P all to add · x leave out"),
+        "{s}"
+    );
+    // `p` there takes it back, `x` leaves it out.
+    d.keys("p");
+    assert_eq!(states(&d, "u0"), [HunkState::Proposed, HunkState::Proposed]);
+    d.keys("x");
+    assert_eq!(states(&d, "u0"), [HunkState::Proposed, HunkState::LeftOut]);
+    let s = d.render(100, 40);
+    assert!(s.contains("p to add · P all to add · x take back"), "{s}");
     d.keys("h");
     assert_eq!(d.screen(), Screen::Queue);
     assert_eq!(d.app.isel, 2);
@@ -403,7 +528,7 @@ fn the_preview_shows_the_summary_the_check_and_the_hunk_with_its_keys() {
     assert!(s.contains("✓ check agrees"), "{s}");
     assert!(s.contains("+ L5 = int(l5)"), "{s}");
     assert!(s.contains("fills a gap · a.rs:4-6"), "{s}");
-    assert!(s.contains("p put · P put all · x leave out"), "{s}");
+    assert!(s.contains("p to add · P all to add · x leave out"), "{s}");
     // Beside the list on a wide terminal.
     let s = d.render(160, 40);
     let row = s.lines().find(|l| l.contains("cast the id")).unwrap();

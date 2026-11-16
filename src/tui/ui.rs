@@ -66,6 +66,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Overlay::ConfirmApply { id, hunks, kind } => {
             draw_confirm(f, app, app.apply_question(id, hunks, *kind))
         }
+        Overlay::ConfirmCheck { question } => draw_confirm(f, app, question.clone()),
         Overlay::Finish { .. } => super::finish::draw(f, app),
         Overlay::Jump { kind, query, sel } => draw_jump(f, app, kind, query, *sel),
         Overlay::SendTo {

@@ -228,6 +228,45 @@ impl Runtime {
                     });
                 });
             }
+            Effect::ApplyInserts { picks } => {
+                let tx = self.tx.clone();
+                // A pull request's inserts become suggestions in the review.
+                if app.review.pr.is_some() {
+                    let why = "a pull request's code isn't changed here";
+                    let results = picks
+                        .into_iter()
+                        .map(|(id, hunks)| (id, hunks, Err(why.to_string())))
+                        .collect();
+                    let _ = tx.send(AppEvent::InsertsApplied { results });
+                    return false;
+                }
+                let jobs: Vec<(String, Vec<usize>, Option<crate::fix::Proposal>)> = picks
+                    .into_iter()
+                    .map(|(id, hunks)| {
+                        let p = app
+                            .review
+                            .unit(&id)
+                            .and_then(|u| u.dive.results.get(&DiveKind::Improve))
+                            .and_then(|r| r.proposal.clone());
+                        (id, hunks, p)
+                    })
+                    .collect();
+                let root = app.review.repo_root.clone();
+                // One after the other: two units' inserts may share a file.
+                tokio::task::spawn_blocking(move || {
+                    let results = jobs
+                        .into_iter()
+                        .map(|(id, hunks, p)| {
+                            let r = match p {
+                                Some(p) => crate::fix::apply::apply(&root, &p, &hunks),
+                                None => Err("there are no inserts".into()),
+                            };
+                            (id, hunks, r)
+                        })
+                        .collect();
+                    let _ = tx.send(AppEvent::InsertsApplied { results });
+                });
+            }
             Effect::ProveFindings { unit_id } => {
                 let tx = self.tx.clone();
                 let Some(unit) = app.review.unit(&unit_id).cloned() else {

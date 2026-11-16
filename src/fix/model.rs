@@ -183,6 +183,10 @@ pub enum HunkState {
     Applied,
     /// On a pull request: to be posted as a suggestion.
     Suggested,
+    /// An insert marked to add (`a`): `:w` writes it to the working tree,
+    /// or posts it as a suggestion on a pull request. `a` again takes it
+    /// back.
+    Picked,
     /// Left out by the reviewer (`x` on an insert): not put in, and not
     /// sent with the notes. `x` again takes it back.
     LeftOut,
