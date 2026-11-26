@@ -190,8 +190,7 @@ fn decision(a: &App, id: &str) -> Decision {
 /// `fee` flagged with a note, `total` and `tax` accepted.
 fn reviewed(a: &mut App) {
     for id in [TOTAL, TAX] {
-        select(a, id);
-        press(a, "a");
+        common::v2::in_unit_view(a, id, "a");
     }
     select(a, FEE);
     press(a, "iadd one instead of doubling<cr>f");
@@ -535,19 +534,15 @@ async fn notes_on_changed_code_stay_until_acted_on() {
         assert_eq!(u.decision, Decision::Pending, "{id}");
         assert!(u.note_is_stale(), "{id}");
     }
-    // Both lead their level.
-    let first: Vec<&str> = a.order[..2]
-        .iter()
-        .map(|&i| a.review.units[i].id.as_str())
-        .collect();
-    assert!(first.contains(&FEE) && first.contains(&TOTAL), "{first:?}");
+    // The row of their file says it changed.
+    let file = a.review.unit(FEE).unwrap().file.clone();
+    assert!(a.file_facts(&file).unwrap().changed);
     // The notes go out again, saying the code changed.
     let md = teer::notes::markdown(&a.review);
     assert!(md.contains("_The code changed after this note"), "{md}");
 
     // `a` accepts and puts the note away: kept on the unit, out of the notes.
-    select(&mut a, FEE);
-    press(&mut a, "a");
+    common::v2::in_unit_view(&mut a, FEE, "a");
     let fee = a.review.unit(FEE).unwrap();
     assert_eq!(fee.decision, Decision::Accepted);
     assert!(fee.dive.note.is_empty());

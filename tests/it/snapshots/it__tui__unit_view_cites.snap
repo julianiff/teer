@@ -3,10 +3,11 @@ source: tests/it/tui.rs
 expression: card
 ---
 " your changes                                                                   "
-" ▲ charge_order  checkout.py:8-12                                       pending "
+" ┃ charge_order  checkout.py:8-12                                       pending "
 "                                                                                "
+"▌┃ charge_order                                                                 "
 " Why this level                                                                 "
-" ▲ high risk                                                                    "
+" ┃ high risk                                                                    "
 "                                                                                "
 " What changed                                                                   "
 " ┃ agent (haiku, sonnet)                                                        "
@@ -24,5 +25,5 @@ expression: card
 " │     ╭ low ───────────────────────────────╮                                 │ "
 " │     │ No longer sends the receipt email. │                                 │ "
 " │     ╰────────────────────────────────────╯                                 │ "
-" … 7 more lines · ^d scroll · gf editor                                         "
-" 4 pending · 0 flagged · 3 accepted                                      ? keys "
+" … 56 more lines · ^d scroll · gf editor                                        "
+" 4 pending · 3 accepted                                                  ? keys "

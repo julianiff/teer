@@ -42,6 +42,7 @@ pub fn unit(i: usize, file: &str) -> Unit {
         dive_pending: Default::default(),
         checks: Default::default(),
         security: Vec::new(),
+        signature: None,
     }
 }
 
@@ -50,6 +51,12 @@ pub fn unit(i: usize, file: &str) -> Unit {
 pub fn units(n: usize) -> Vec<Unit> {
     assert!(n <= 30, "f10.rs would sort before f2.rs");
     (0..n).map(|i| unit(i, &format!("f{}.rs", i / 3))).collect()
+}
+
+/// `n` units, a file each (`f00.rs`: u0, `f01.rs`: u1, ...): a row of the
+/// queue's tree per unit, so a key on a row is a key on its unit.
+pub fn singles(n: usize) -> Vec<Unit> {
+    (0..n).map(|i| unit(i, &format!("f{i:02}.rs"))).collect()
 }
 
 /// A working-tree review of `units`.
@@ -86,6 +93,21 @@ pub fn press(app: &mut App, keys: &str) -> Vec<Effect> {
         .collect()
 }
 
+/// Type `keys` on unit `id` alone, in the unit view: the queue's `a` and
+/// `f` decide on a unit's whole file. The cursor goes to the unit, `l`
+/// opens it, `keys` go in, and the view closes again.
+pub fn in_unit_view(app: &mut App, id: &str, keys: &str) -> Vec<Effect> {
+    let units = &app.review.units;
+    let pos = (app.order.iter().position(|&i| units[i].id == id))
+        .unwrap_or_else(|| panic!("{id} is listed"));
+    app.move_sel(pos);
+    let mut effects = press(app, "l");
+    assert_eq!((app.screen, app.unit.id.as_str()), (Screen::Unit, id));
+    effects.extend(press(app, keys));
+    app.unit_click_back();
+    effects
+}
+
 /// The screen `app` draws at `w` x `h`, one line per row.
 pub fn screen(app: &App, w: u16, h: u16) -> String {
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -113,6 +135,11 @@ impl Driver {
         Driver::of(units(n))
     }
 
+    /// `n` pending units, a file each (see [`singles`]), default keys.
+    pub fn singles(n: usize) -> Driver {
+        Driver::of(singles(n))
+    }
+
     /// A review of `units` with the default keys.
     pub fn of(units: Vec<Unit>) -> Driver {
         Driver::with(review(units), Keymap::default())
@@ -133,6 +160,14 @@ impl Driver {
     /// effects of these keys (also added to [`Driver::effects`]).
     pub fn keys(&mut self, keys: &str) -> Vec<Effect> {
         let out = press(&mut self.app, keys);
+        self.effects.extend(out.iter().cloned());
+        out
+    }
+
+    /// Type `keys` on unit `id` alone, in the unit view (see
+    /// [`in_unit_view`]); the effects of these keys.
+    pub fn unit_keys(&mut self, id: &str, keys: &str) -> Vec<Effect> {
+        let out = in_unit_view(&mut self.app, id, keys);
         self.effects.extend(out.iter().cloned());
         out
     }

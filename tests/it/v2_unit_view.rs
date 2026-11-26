@@ -29,7 +29,7 @@ use teer::tui::app::App;
 
 // ---- Helpers -----------------------------------------------------------
 
-/// A description of `risk`: high makes a unit ▲, medium ◆, low ●.
+/// A description of `risk`: high makes a unit ┃, medium ┃, low ┃.
 fn change(risk: Risk) -> Change {
     Change {
         marker: Marker::Changed,
@@ -48,7 +48,7 @@ fn rated(i: usize, file: &str, risk: Risk) -> Unit {
     u
 }
 
-/// ▲ ◆ ● in `f0.rs`, ▲ ◆ ▲ in `f1.rs`.
+/// ┃ ┃ ┃ in `f0.rs`, ┃ ┃ ┃ in `f1.rs`.
 fn mixed() -> Vec<Unit> {
     vec![
         rated(0, "f0.rs", Risk::High),

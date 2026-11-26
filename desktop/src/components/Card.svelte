@@ -1,5 +1,5 @@
 <script lang="ts">
-  // One unit as the preview, the unit view and the flagged list show it:
+  // One unit as the unit view and the flagged list show it:
   // why it has its level, what the agent said, the code change with the
   // statements in it, the note, the answers asked about it. What the agent
   // wrote is plain text. What can be done with the unit goes under its

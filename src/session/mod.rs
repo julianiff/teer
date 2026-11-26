@@ -5,13 +5,13 @@
 //! [`App`] and feeds it keys; another front end can do the same.
 
 pub mod app;
-pub mod exposure;
 pub mod finish;
 pub mod fix;
 pub mod flagged_list;
 pub mod help;
 pub mod improve;
 pub mod jump;
+pub mod lens;
 pub mod mode;
 pub mod names;
 pub mod prove;
@@ -19,6 +19,7 @@ pub mod runtime;
 pub mod send;
 pub mod suggest;
 pub mod tools;
+pub mod tree;
 pub mod unit;
 pub mod view;
 

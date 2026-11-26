@@ -37,11 +37,13 @@ Every button sits where its action acts, with its key beside it and in its
 tooltip, so the keymap is learned by clicking (`View.actions`: each
 action's key, words and state, by id; the window places them):
 
-- on the unit's card, under its name: accept, flag, note, accept the file,
-  undo, and in the queue's preview open, ask, tests;
-- on a queue row under the mouse: accept and flag (the row is selected
-  first); over the list: units or files, find a unit; under it, the units
-  accepted for you shown or hidden;
+- on the queue, on the selected file's head: accept, flag (both for the
+  file's pending units) and undo; on the head of the unit `open` and a
+  note act on: open and note; on a file's row under the mouse: accept and
+  flag (the row is selected first); under the tree: the units accepted for
+  you shown or hidden, find a unit;
+- on the unit's card in the unit view, under its name: accept, flag, note,
+  accept the file, undo;
 - over the unit view: back, the pending units before and after, and the
   closer looks (ask with the advice, tests, security), each opening its
   tile; on the code, its hunks, what it calls, its callers, the editor; on
@@ -51,6 +53,26 @@ action's key, words and state, by id; the window places them):
   their lists, `?` every key;
 - on the open panel (notes, jump lists, commits, the sheet), its keys
   (`View.panel`); in the help, every key.
+
+The queue is the tree of the changed files (`View.queue.rows`) with the
+selected file's code changes beside it (`View.preview`: its units in line
+order, each a slim head, one line on what it does, and its diff with the
+statements written in). A row says only what there is to act on:
+
+- in front of a file, its level as a mark in the level's colour; a folded
+  directory has the mark of the most critical level under it, an open one
+  none; the mark is dimmed once every unit under it is accepted;
+- after the name: flagged (⚑), disputed (⚠), changed since the last look
+  (↻), being described (a dot). A file with every unit accepted is dimmed,
+  as in the terminal. No counts;
+- a file teer can't show is muted, with why in its tooltip; the cursor
+  skips it;
+- a click selects a row and folds or opens a directory
+  (`host::Click::Row`, by the row's id); a double click on a file, or a
+  click on a unit's head, opens the unit view (`host::Click::Open`).
+
+Why a unit has its level, its commits, who described it and the answers
+are in the unit view.
 
 View › Show Buttons (⇧⌘B, or "hide the buttons" in the palette) hides them
 in every window, leaving the keys alone as in the terminal; the panels'

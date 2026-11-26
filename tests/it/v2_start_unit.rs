@@ -371,8 +371,6 @@ fn a_url_or_a_number_opens_the_pull_request_path() {
     for args in [
         &["7", "--no-agent"][..],
         &["https://github.com/acme/shop/pull/7", "--no-agent"],
-        &["pr", "7", "--no-agent"],
-        &["pr", "https://github.com/acme/shop/pull/7", "--no-agent"],
     ] {
         let out = teer(&r.path(), args, None);
         assert!(!out.status.success(), "{args:?}");
@@ -412,7 +410,7 @@ fn pr_without_a_url_is_the_picker_and_notes_stay_a_command() {
     ]);
     let d = tempfile::tempdir().unwrap();
     let gh = script(d.path(), "gh", "echo \"$@\" >> \"$0.args\"\necho '[]'");
-    // Not a terminal: the picker's lists are printed, as `teer pr list` does.
+    // Not a terminal: the picker's lists are printed, as `teer pr` does.
     let out = teer(&r.path(), &["pr"], Some(&gh));
     assert!(
         out.status.success(),

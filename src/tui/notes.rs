@@ -9,7 +9,6 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use super::app::{App, Target};
-use super::diff;
 use super::ui::{self, fixed};
 use crate::keymap::Action;
 use crate::review::model::Unit;
@@ -73,28 +72,6 @@ pub fn card(app: &App, u: &Unit, w: usize) -> Vec<Line<'static>> {
         border,
     ));
     out
-}
-
-/// The code box of `u` (see [`diff::draw_box`]) with the note's card under
-/// it. Without room for both, the box alone.
-pub fn draw_box(f: &mut Frame, app: &App, area: Rect, u: &Unit, notes: diff::Notes) -> bool {
-    let card = card(app, u, area.width as usize);
-    let rows = diff::box_rows(app, u, area.width, notes);
-    let h = area.height as usize;
-    if card.is_empty() || rows == 0 || h < card.len() + 3 {
-        return diff::draw_box(f, app, area, u, notes);
-    }
-    let box_h = rows.min(h - card.len());
-    let [code, below] = Layout::vertical([
-        Constraint::Length(box_h as u16),
-        Constraint::Length(card.len() as u16),
-    ])
-    .areas(area);
-    if !diff::draw_box(f, app, code, u, notes) {
-        return false;
-    }
-    f.render_widget(Paragraph::new(card), below);
-    true
 }
 
 fn rounded(title: String, style: Style) -> Block<'static> {

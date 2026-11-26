@@ -53,7 +53,7 @@
           disabled={r.link === null}
           onclick={() => r.link !== null && api.click({ kind: "Link", i: r.link })}
         >
-          <span class="lvl-{r.level ?? 'Routine'}">●</span>
+          <span class="lvl-{r.level ?? 'Routine'}">┃</span>
           <span class="mono">{r.name}</span>
           <span class="muted small">{r.place} · {r.why}</span>
         </button>

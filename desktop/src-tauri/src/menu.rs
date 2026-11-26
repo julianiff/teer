@@ -23,7 +23,6 @@ const ACTIONS: &[(&str, &str, Option<&str>)] = &[
 
 const VIEW_ACTIONS: &[(&str, &str)] = &[
     ("Show Units Accepted for You", "toggle.auto_accepted"),
-    ("List by File", "toggle.by_file"),
     ("Every Key", "help.open"),
 ];
 

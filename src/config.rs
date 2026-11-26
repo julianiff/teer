@@ -9,7 +9,6 @@
 //! provider = "claude"       # claude | codex | api; `teer setup` picks it (asked on first start)
 //! prepare_model = "haiku"   # fast model that describes units; "default" = the CLI's own
 //! prepare_effort = "low"    # low | medium | high | xhigh | max | default
-//! order = "story"           # inside a file, story: units that call each other together, caller first | line
 //! auto_accept = "no_behavior_change"  # accept units with no behavior change for you (za shows them) | none
 //! second_opinion = true     # a second model checks each description; disagreements are reasons to look
 //! second_model = "sonnet"   # model of that check, also of the Flagged questions with an API
@@ -45,18 +44,6 @@ pub enum Theme {
     Dark,
     Light,
     Mono,
-}
-
-/// How units are ordered inside a file of the list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Order {
-    /// Units that call each other stay together, the caller first (see
-    /// `review::story`).
-    #[default]
-    Story,
-    /// Line by line.
-    Line,
 }
 
 /// Which units teer accepts for the reviewer before the review opens.
@@ -251,7 +238,6 @@ pub struct Config {
     pub prepare_model: Option<String>,
     /// The effort for describing units; `default` leaves the provider's own.
     pub prepare_effort: Option<String>,
-    pub order: Order,
     /// Which units are accepted for the reviewer (`za` shows them in the list).
     pub auto_accept: AutoAccept,
     /// After describing units, a second model checks each description; where
@@ -293,7 +279,6 @@ impl Default for Config {
             api: ApiConfig::default(),
             prepare_model: None,
             prepare_effort: None,
-            order: Order::Story,
             auto_accept: AutoAccept::NoBehaviorChange,
             second_opinion: true,
             second_model: None,

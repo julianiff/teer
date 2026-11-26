@@ -9,6 +9,7 @@ use crate::keymap::Action;
 
 /// The actions the queue handles, for the help, in the order it lists them
 /// inside each of its groups (Move, Decide, Look closer, More, Finish).
+/// `A` and `F` do there what `a` and `f` do, which the help lists.
 pub const QUEUE: &[Action] = &[
     Action::MoveDown,
     Action::MoveUp,
@@ -26,14 +27,13 @@ pub const QUEUE: &[Action] = &[
     Action::DecideAccept,
     Action::DecideFlag,
     Action::InsertLeave,
-    Action::DecideAcceptFile,
-    Action::DecideFlagFile,
     Action::NoteEdit,
     Action::VisualStart,
     Action::HistoryUndo,
     Action::HistoryRedo,
     Action::HistoryRepeat,
     Action::ViewOpen,
+    Action::ViewBack,
     Action::AskOpen,
     Action::GotoDefinition,
     Action::GotoCallers,
@@ -42,8 +42,7 @@ pub const QUEUE: &[Action] = &[
     Action::ToolSecurity,
     Action::ToolFix,
     Action::ToggleAutoAccepted,
-    Action::ToggleByFile,
-    Action::ToggleSecurityOrder,
+    Action::ToggleSurface,
     Action::ToolHistory,
     Action::ToolNotes,
     Action::ToolFlagged,
@@ -62,6 +61,8 @@ pub const QUEUE: &[Action] = &[
 pub const UNIT: &[Action] = &[
     Action::MoveNextPending,
     Action::MovePrevPending,
+    Action::MoveNextUnit,
+    Action::MovePrevUnit,
     Action::MoveNextHunk,
     Action::MovePrevHunk,
     Action::MoveNextFile,
@@ -130,6 +131,7 @@ pub const FLAGGED: &[Action] = &[
     Action::FindUnit,
     Action::ViewBack,
     Action::DecideAccept,
+    Action::DecideFlag,
     Action::NoteEdit,
     Action::HistoryUndo,
     Action::HistoryRedo,
@@ -158,6 +160,7 @@ pub fn flagged_describe(a: Action) -> Option<&'static str> {
         Action::MovePrevPending | Action::MoveUp => "previous flagged unit",
         Action::ViewOpen => "look closer at it",
         Action::DecideAccept => "accept it: it leaves the list",
+        Action::DecideFlag => "remove its flag: it leaves the list",
         Action::ToolFlagged => "back",
         _ => return None,
     })
@@ -274,16 +277,17 @@ pub fn group_of(a: Action) -> usize {
     use Action::*;
     match a {
         MoveDown | MoveUp | MoveFirst | MoveLast | MoveNextPending | MovePrevPending
-        | MoveNextHunk | MovePrevHunk | MoveNextFile | MovePrevFile | ScrollHalfDown
-        | ScrollHalfUp | ScrollPageDown | ScrollPageUp | FindUnit | ViewBack => 0,
+        | MoveNextHunk | MovePrevHunk | MoveNextFile | MovePrevFile | MoveNextUnit
+        | MovePrevUnit | ScrollHalfDown | ScrollHalfUp | ScrollPageDown | ScrollPageUp
+        | FindUnit | ViewBack => 0,
         DecideAccept | DecideFlag | NoteEdit | DecideAcceptFile | DecideFlagFile | VisualStart
         | HistoryUndo | HistoryRedo | HistoryRepeat | NoteDelete | FixApply | FixApplyAll
         | InsertLeave => 1,
         ViewOpen | AskOpen | GotoDefinition | GotoCallers | GotoEditor | ToolTests
         | ToolSecurity | ToolProve | ToolFix | ToolFlagged | MoveNextTile | MovePrevTile
         | ToggleZoom | SendSession => 2,
-        ToggleAutoAccepted | ToggleByFile | ToggleSecurityOrder | ToolHistory | ToolNotes
-        | ToolSettings | ToolMode | HelpOpen => 3,
+        ToggleAutoAccepted | ToggleSurface | ToolHistory | ToolNotes | ToolSettings | ToolMode
+        | HelpOpen => 3,
         FinishOpen | FinishYank | FinishApp | ReviewRerun | ReviewReset | ViewClose => 4,
     }
 }
@@ -295,6 +299,7 @@ pub const PAIRS: &[(Action, Action)] = &[
     (Action::MoveNextPending, Action::MovePrevPending),
     (Action::MoveNextFile, Action::MovePrevFile),
     (Action::MoveNextHunk, Action::MovePrevHunk),
+    (Action::MoveNextUnit, Action::MovePrevUnit),
     (Action::ScrollHalfDown, Action::ScrollHalfUp),
     (Action::ScrollPageDown, Action::ScrollPageUp),
     (Action::DecideAccept, Action::DecideFlag),
@@ -376,8 +381,27 @@ pub fn describe(app: &App, a: Action) -> &'static str {
         (None, a) if app.screen == Screen::Queue && app.mode.improves() => {
             improve_describe(a).unwrap_or(a.describe())
         }
+        (None, a) if app.screen == Screen::Queue => queue_describe(a).unwrap_or(a.describe()),
         _ => a.describe(),
     }
+}
+
+/// What the queue says an action does where `?` lists it, when that
+/// differs from the keymap's words: the cursor is on a file or a
+/// directory of the tree.
+pub fn queue_describe(a: Action) -> Option<&'static str> {
+    Some(match a {
+        Action::MoveFirst => "first row",
+        Action::MoveLast => "last row",
+        Action::MoveNextPending => "next pending file",
+        Action::MovePrevPending => "previous pending file",
+        Action::DecideAccept => "accept the file's pending units",
+        Action::DecideFlag => "flag the file's pending units",
+        Action::VisualStart => "select rows",
+        Action::ViewOpen => "look closer or open",
+        Action::ViewBack => "fold or go up",
+        _ => return None,
+    })
 }
 
 /// What improve mode's list says an action does where `?` lists it, when
@@ -427,6 +451,13 @@ pub fn relevant(app: &App, a: Action) -> bool {
         // In the flagged list these go through the flagged units.
         MoveNextPending | MovePrevPending => app.screen == Screen::Flagged || pending(),
         MoveNextFile | MovePrevFile => files(),
+        MoveNextUnit | MovePrevUnit => in_unit && app.unit_mates().len() > 1,
+        // In the queue it folds a directory, or goes to it: the tree's,
+        // not the list of inserts'.
+        ViewBack if app.screen == Screen::Queue => {
+            let dir = |r: &super::tree::TreeRow| r.kind == super::tree::RowKind::Dir;
+            !app.mode.improves() && app.rows().iter().any(dir)
+        }
         MoveNextHunk | MovePrevHunk => {
             !in_unit || app.unit.hunks.borrow().len() + app.unit.fixes.borrow().len() > 1
         }
@@ -443,7 +474,7 @@ pub fn relevant(app: &App, a: Action) -> bool {
                 > 1
         }),
         GotoCallers => unit.is_some_and(|u| !u.callers.is_empty()),
-        ToolSecurity | ToggleSecurityOrder => app.security.enabled,
+        ToolSecurity | ToggleSurface => app.security.enabled,
         ToolProve => unit.is_some_and(|u| {
             u.dive
                 .results
@@ -538,7 +569,7 @@ mod tests {
             Action::DecideAccept,
             Action::DecideFlag,
             Action::ToggleAutoAccepted,
-            Action::ToggleByFile,
+            Action::ViewBack,
             Action::FinishOpen,
             Action::ToolHistory,
         ] {

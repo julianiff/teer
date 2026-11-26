@@ -14,7 +14,6 @@ pub mod prepare;
 pub mod prompts;
 pub mod scope;
 pub mod store;
-pub mod story;
 pub mod test_search;
 pub mod validate;
 

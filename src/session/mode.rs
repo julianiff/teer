@@ -22,17 +22,17 @@ impl App {
         )
     }
 
-    /// Put the review in `mode`: the queue in its order (the security
-    /// order for `security`), the unit view with its tiles. The cursor
-    /// stays on its unit. The caller says so and saves.
+    /// Put the review in `mode`: the queue with what it shows (the
+    /// attack-surface card for `security`), the unit view with its tiles.
+    /// The cursor stays on its unit. The caller says so and saves.
     pub fn set_mode(&mut self, mode: Mode) {
         let was = self.mode;
         self.mode = mode;
-        if mode.security_order() {
-            self.security.by_exposure = self.security.enabled;
-        } else if mode != Mode::All || was.security_order() {
-            // `all` keeps what `zs` set, but not another mode's order.
-            self.security.by_exposure = false;
+        if mode.shows_surface() {
+            self.security.surface = self.security.enabled;
+        } else if mode != Mode::All || was.shows_surface() {
+            // `all` keeps what `zs` set, but not another mode's card.
+            self.security.surface = false;
         }
         self.rebuild_order();
         // Improve mode's cursor is on an insert: the unit's first one.
@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(a.overlay, Overlay::None);
         assert_eq!(a.mode, Mode::Security);
         assert_eq!(a.review.mode, Some(Mode::Security));
-        assert!(a.security.by_exposure);
+        assert!(a.security.surface);
         assert!(a.status.starts_with("Mode: security."), "{}", a.status);
         // esc leaves the mode as it was.
         press(&mut a, "<space>m<esc>");
@@ -197,12 +197,12 @@ mod tests {
     fn leaving_security_ends_its_order() {
         let mut a = app();
         a.set_mode(Mode::Security);
-        assert!(a.security.by_exposure);
+        assert!(a.security.surface);
         a.set_mode(Mode::Review);
-        assert!(!a.security.by_exposure);
+        assert!(!a.security.surface);
         a.set_mode(Mode::Security);
         a.set_mode(Mode::All);
-        assert!(!a.security.by_exposure);
+        assert!(!a.security.surface);
     }
 
     #[test]

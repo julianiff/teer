@@ -634,6 +634,61 @@ pub struct Unmentioned {
     pub evidence: Vec<LineRef>,
 }
 
+/// A signature with this many parameters or more is long.
+pub const LONG_SIGNATURE: u32 = 7;
+
+/// A function's parameter list, measured from the code (no agent). The
+/// receiver (`self`, `this`) is not counted.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Signature {
+    pub params: u32,
+    /// With a default value or a type that takes "nothing".
+    pub optional: u32,
+    /// The size of the largest group of parameters of one type: those a
+    /// caller can swap with no error from the compiler.
+    pub alike: u32,
+    /// That type, without what makes it nullable; empty when the group
+    /// has no type written.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub alike_type: String,
+    /// How many parameters it had before the change; `None` when the
+    /// function is new.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<u32>,
+}
+
+impl Signature {
+    /// How many parameters the change added.
+    pub fn added(&self) -> u32 {
+        self.before.map_or(0, |b| self.params.saturating_sub(b))
+    }
+
+    /// The change made a long parameter list, or made one longer: worth
+    /// a look, and a question.
+    pub fn grew_long(&self) -> bool {
+        self.params >= LONG_SIGNATURE && self.before.is_none_or(|b| self.params > b)
+    }
+
+    /// `11 parameters, 3 new, 9 optional, 9 of type string`.
+    pub fn words(&self) -> String {
+        let mut out = vec![format!("{} parameters", self.params)];
+        if self.added() > 0 {
+            out.push(format!("{} new", self.added()));
+        }
+        if self.optional > 0 {
+            out.push(format!("{} optional", self.optional));
+        }
+        if self.alike > 1 {
+            out.push(if self.alike_type.is_empty() {
+                format!("{} with no type", self.alike)
+            } else {
+                format!("{} of type {}", self.alike, self.alike_type)
+            });
+        }
+        out.join(", ")
+    }
+}
+
 /// What teer checked about a unit beyond its description.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Checks {
@@ -768,6 +823,10 @@ pub struct Unit {
     /// `security::facts`). Found again on every build.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub security: Vec<crate::security::Fact>,
+    /// Its parameter list measured, for a function or method that is
+    /// still there (see `units::signature`). Found again on every build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<Signature>,
 }
 
 impl Unit {

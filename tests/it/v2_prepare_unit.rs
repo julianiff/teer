@@ -80,10 +80,7 @@ fn no_behavior_change_is_accepted_for_you_hidden_and_counted() {
     // They count as accepted for finishing.
     assert_eq!(d.app.decision_counts(), (2, 0, 1));
     let screen = d.render(80, 20);
-    assert!(
-        screen.contains("2 units accepted for you, za shows them"),
-        "{screen}"
-    );
+    assert!(screen.contains("za shows 2 accepted for you"), "{screen}");
     assert!(!screen.contains("No behavior change"), "{screen}");
 }
 
@@ -106,18 +103,14 @@ fn za_lists_them_and_u_takes_one_back() {
         vec![unit(0, "a.rs"), same(1, "a.rs"), same(2, "b.rs")],
         Config::default(),
     );
-    // Listed by file: a box holds files.
-    d.keys("zf");
     d.keys("za");
     assert!(d.app.show_auto);
-    // Last, in a box of their own when their file has nothing else.
+    // In the tree with the rest, behind their own icon.
     assert_eq!(listed(&d), ["u0", "u1", "u2"]);
     let screen = d.render(80, 24);
-    assert!(screen.contains("Accepted for you · 1 file"), "{screen}");
-    assert!(
-        screen.contains("2 units accepted for you, za hides them"),
-        "{screen}"
-    );
+    assert!(screen.contains(" ○ b.rs"), "{screen}");
+    assert!(screen.contains(" ○ s1 ✓"), "{screen}");
+    assert!(screen.contains("za hides 2 accepted for you"), "{screen}");
 
     d.select_id("u2");
     d.keys("u");
@@ -230,31 +223,31 @@ fn marks_become_reasons_and_rows_show_only_the_dispute() {
             "Not mentioned in the commits or PR description: Also stops sending the receipt.",
         ]
     );
-    let rows = teer::tui::slim::build_queue(&d.app, 60, true);
+    let rows = teer::tui::slim::build_queue(&d.app, 60);
     let row: String = rows.lines[rows.spans[0].0]
         .spans
         .iter()
         .map(|s| s.content.as_ref())
         .collect();
-    assert!(row.contains("◆ ") && row.contains("s0 ⚠"), "{row}");
+    assert_eq!(row.trim_end(), "▌┃ pay.rs ⚠");
     let screen = d.render(140, 30);
     for glyph in ['$', '≠'] {
         assert!(!screen.contains(glyph), "{glyph}:\n{screen}");
     }
-    // The preview says why in the review box.
-    assert!(screen.contains("╭ review "), "{screen}");
+    // Why it has its level is in its view, not in the pane.
+    assert!(screen.contains("┃ s0 ⚠"), "{screen}");
+    assert!(!screen.contains("Expensive to undo"), "{screen}");
+    let mut d = d;
+    d.keys("l");
+    let view = d.render(140, 40);
     assert!(
-        screen.contains("· Expensive to undo: Charges the card again on retry."),
-        "{screen}"
-    );
-    assert!(
-        screen.contains("· Not mentioned in the commits or PR description"),
-        "{screen}"
+        view.contains("Expensive to undo: Charges the card again on retry."),
+        "{view}"
     );
 }
 
-/// Unit `id` in `file` at line `line`, its level set by `level`: ▲ removed
-/// while something still calls it, ◆ changed and not described, ●
+/// Unit `id` in `file` at line `line`, its level set by `level`: ┃ removed
+/// while something still calls it, ┃ changed and not described, ┃
 /// changed and needing no description.
 fn at_level(id: &str, file: &str, line: u32, level: Level) -> Unit {
     let mut u = unit(0, file);
@@ -274,7 +267,7 @@ fn at_level(id: &str, file: &str, line: u32, level: Level) -> Unit {
 }
 
 #[test]
-fn queue_order_is_level_then_file_with_callers_first_and_starts_on_a_pending_attention_unit() {
+fn the_units_are_listed_by_file_then_line_and_the_review_starts_on_a_pending_attention_unit() {
     let mut caller = at_level("caller", "a.rs", 20, Level::Routine);
     let mut callee = at_level("callee", "a.rs", 5, Level::Routine);
     caller.callees = vec!["callee".into()];
@@ -291,20 +284,16 @@ fn queue_order_is_level_then_file_with_callers_first_and_starts_on_a_pending_att
         same(9, "a.rs"),
     ];
     let mut d = driver(units, Config::default());
-    // The queue, by level: ▲, ◆, ●, each by path, callers before callees.
+    // File by file by path, in a file by line, whatever the levels are.
     assert_eq!(
         listed(&d),
-        ["done", "close_c", "look_a", "look_b", "caller", "callee"]
+        ["done", "callee", "caller", "look_a", "look_b", "close_c"]
     );
-    // The review starts on the first pending ▲, whatever the grouping.
+    // The review starts on the first pending ┃.
     assert_eq!(d.selected().as_deref(), Some("close_c"));
-    // By file (`zf`), files go by their most attention unit, then by path.
-    d.keys("zf");
-    assert_eq!(
-        listed(&d),
-        ["done", "look_a", "caller", "callee", "close_c", "look_b"]
-    );
-    assert_eq!(d.selected().as_deref(), Some("close_c"));
+    // A file's lead unit: its most critical pending one.
+    d.keys("gg");
+    assert_eq!(d.selected().as_deref(), Some("look_a"));
 }
 
 #[test]

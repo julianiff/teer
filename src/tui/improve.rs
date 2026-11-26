@@ -57,7 +57,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         draw_none(f, app, area);
         return;
     }
-    let (list, pane) = preview::layout_fit(area, true, ListSize::FULL);
+    let (list, pane) = preview::layout_fit(area, ListSize::FULL);
     let padded = list.height as usize >= slim::PADDING_MIN_ROWS;
     let rows = build_rows(app, &inserts, list.width as usize, padded);
     let sel = app.isel.min(inserts.len() - 1);

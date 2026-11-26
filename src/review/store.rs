@@ -5,7 +5,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde_json::Value;
 
 use super::model::{PrInfo, Prep, Review};
 use crate::util::hash_hex;
@@ -171,51 +170,12 @@ pub fn load_latest(repo: &Path, pr: Option<&PrInfo>) -> Option<Review> {
 /// The review saved at `path`, unless it doesn't parse or a newer teer
 /// saved it in a format this one doesn't know.
 fn read(path: &Path) -> Option<Review> {
-    let mut json: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-    if json.get("version").and_then(Value::as_u64).unwrap_or(0) == 0 {
-        migrate_v1(&mut json);
-    }
-    drop_removed_answers(&mut json);
-    let mut review: Review = serde_json::from_value(json).ok()?;
+    let mut review: Review = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     // The cursor moves more often than the review is saved.
     if let Ok(id) = std::fs::read_to_string(cursor_path(path)) {
         review.cursor = (!id.is_empty()).then_some(id);
     }
     (review.version <= CURRENT).then_some(review)
-}
-
-/// A review teer v1 saved (format 0), as JSON, in v2's states. v1 resolved
-/// a flagged unit as "needs fix" or "ok" on its Flagged screen
-/// (`dive.resolution`); v2 has no such state, so a unit with either is
-/// flagged, its note kept, unless it was accepted since. Flagged units stay
-/// flagged, with or without a note. The resolution itself is dropped as the
-/// review loads. v1 kept no swipe position or cursor, so the queue opens on
-/// its first pending ▲ (`App::new`).
-fn migrate_v1(review: &mut Value) {
-    let units = review.get_mut("units").and_then(Value::as_array_mut);
-    for u in units.into_iter().flatten() {
-        let resolved = u.pointer("/dive/resolution").is_some_and(|r| !r.is_null());
-        let accepted = u.get("decision").and_then(Value::as_str) == Some("Accepted");
-        if resolved && !accepted {
-            u["decision"] = Value::from("Investigate");
-        }
-    }
-}
-
-/// Answers of tools teer no longer has (old against new, `Behavior`; the
-/// diagram, `Visualize`) are
-/// left out as a saved review loads: the rest of it stays.
-fn drop_removed_answers(review: &mut Value) {
-    let units = review.get_mut("units").and_then(Value::as_array_mut);
-    for u in units.into_iter().flatten() {
-        if let Some(results) = u
-            .pointer_mut("/dive/results")
-            .and_then(Value::as_object_mut)
-        {
-            results.remove("Behavior");
-            results.remove("Visualize");
-        }
-    }
 }
 
 /// Carry decisions and agent answers over from a previous review for units
@@ -615,80 +575,6 @@ mod tests {
         r
     }
 
-    /// What teer 0.1 wrote: no `version`, no `history`.
-    const V1_REVIEW: &str = r#"{
-      "id": "v1",
-      "repo_root": "/teer-tests/v1",
-      "base": "abc123",
-      "head": "WORKTREE",
-      "head_commit": "def456",
-      "agent_session": { "agent": "claude", "id": "", "cwd": "/teer-tests/v1" },
-      "created_at": "2026-10-27T12:00:00Z",
-      "files": [],
-      "units": [{
-        "id": "a.rs::f", "file": "a.rs", "symbol": "f", "kind": "Function",
-        "status": "Changed", "old_range": null, "new_range": null,
-        "fingerprint": "fp", "changes": [], "callers": [], "callees": [],
-        "decision": "Accepted"
-      }],
-      "skipped": [],
-      "questions": []
-    }"#;
-
-    fn write_v1(text: &str) {
-        let path = review_path(
-            Path::new("/teer-tests/v1"),
-            None,
-            "abc123",
-            "WORKTREE",
-            "def456",
-        );
-        write_atomic(&path, text.as_bytes()).unwrap();
-    }
-
-    #[test]
-    fn a_review_saved_before_versions_loads_as_version_0() {
-        write_v1(V1_REVIEW);
-        let r = load(
-            Path::new("/teer-tests/v1"),
-            None,
-            "abc123",
-            "WORKTREE",
-            "def456",
-        )
-        .expect("a v1 file loads");
-        assert_eq!(r.version, 0);
-        assert!(r.history.is_empty());
-        assert_eq!(r.units[0].decision, Decision::Accepted);
-        // Who accepted it wasn't kept then; the reasons come with the levels.
-        assert_eq!(r.units[0].accepted_by, None);
-        assert!(r.units[0].reasons.is_empty());
-        // Saved again, it is the current format.
-        let path = save(&r).unwrap();
-        let json: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        assert_eq!(json["version"], CURRENT);
-        assert_eq!(
-            load_latest(Path::new("/teer-tests/v1"), None)
-                .unwrap()
-                .version,
-            CURRENT
-        );
-    }
-
-    #[test]
-    fn an_answer_of_a_removed_tool_is_left_out_and_the_review_still_loads() {
-        let r = saved_at("/teer-tests/removed-tool", vec![unit("x")]);
-        let path = save(&r).unwrap();
-        let mut json: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        json["units"][0]["dive"]["results"]["Behavior"] =
-            serde_json::json!({"text": "2 cases ran", "sources": [], "behavior": {"cases": []}});
-        write_atomic(&path, &serde_json::to_vec(&json).unwrap()).unwrap();
-        let back = load_latest(&r.repo_root, None).expect("it loads");
-        assert!(back.units[0].dive.results.is_empty());
-    }
-
     #[test]
     fn a_review_from_a_newer_teer_is_not_loaded() {
         let mut r = saved_at("/teer-tests/newer", vec![unit("x")]);
@@ -768,73 +654,6 @@ mod tests {
         );
         merge_previous(&mut new, &back);
         assert_eq!(new.cursor.as_deref(), Some("b"));
-    }
-
-    #[test]
-    fn a_v1_resolution_becomes_a_flag_with_its_note() {
-        use Decision::*;
-        // Each unit, its decision, the resolution v1 saved with it, its note.
-        let v1 = [
-            ("fix", Investigate, "NeedsFix", "the +1"),
-            ("ok", Investigate, "Ok", ""),
-            ("plain", Investigate, "", ""),
-            // Reset after resolving it: the fix still stands.
-            ("reset", Pending, "NeedsFix", "why"),
-            // Accepted after resolving it: accepted.
-            ("later", Accepted, "NeedsFix", "n"),
-            ("note", Pending, "", "a question"),
-        ];
-        let units = v1
-            .iter()
-            .map(|&(id, decision, _, note)| {
-                let mut u = named(id, "1");
-                u.decision = decision;
-                u.dive.note = note.into();
-                u
-            })
-            .collect();
-        let r = saved_at("/teer-tests/v1-resolutions", units);
-        let path = save(&r).unwrap();
-        // Saved by v1: no version, and a resolution on the resolved units.
-        let mut json: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        json.as_object_mut().unwrap().remove("version");
-        for (u, (_, _, resolution, _)) in json["units"].as_array_mut().unwrap().iter_mut().zip(v1) {
-            u["dive"]["resolution"] = match resolution {
-                "" => serde_json::Value::Null,
-                r => r.into(),
-            };
-        }
-        write_atomic(&path, &serde_json::to_vec(&json).unwrap()).unwrap();
-
-        let back = load(&r.repo_root, None, &r.base, &r.head, &r.head_commit).unwrap();
-        let got: Vec<(&str, Decision, &str)> = back
-            .units
-            .iter()
-            .map(|u| (u.id.as_str(), u.decision, u.dive.note.as_str()))
-            .collect();
-        assert_eq!(
-            got,
-            vec![
-                ("fix", Investigate, "the +1"),
-                ("ok", Investigate, ""),
-                ("plain", Investigate, ""),
-                ("reset", Investigate, "why"),
-                ("later", Accepted, "n"),
-                ("note", Pending, "a question"),
-            ]
-        );
-        // The resolution is gone once it loads.
-        save(&back).unwrap();
-        let saved = std::fs::read_to_string(&path).unwrap();
-        assert!(!saved.contains("\"resolution\""), "{saved}");
-
-        // A file of this teer keeps what it says.
-        let mut r = back;
-        r.units[1].decision = Pending;
-        save(&r).unwrap();
-        let back = load(&r.repo_root, None, &r.base, &r.head, &r.head_commit).unwrap();
-        assert_eq!(back.units[1].decision, Pending);
     }
 
     #[test]

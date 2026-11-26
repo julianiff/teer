@@ -47,6 +47,7 @@ fn unit(i: usize) -> Unit {
         dive_pending: Default::default(),
         checks: Default::default(),
         security: Vec::new(),
+        signature: None,
     };
     match i % 4 {
         1 => u.prep = Prep::Unavailable,
@@ -215,13 +216,10 @@ fn not_while_a_unit_is_flagged_and_never_a_sheet_at_launch() {
     assert!(!says_done(&a));
     // Nothing is pending, but the bar counts the flagged unit.
     assert!(bar(&a).contains("1 flagged"), "{}", bar(&a));
-    // Accepting the flagged one too finishes it.
-    a.sel = a
-        .order
-        .iter()
-        .position(|&i| a.review.units[i].decision == Decision::Investigate)
-        .unwrap();
-    key(&mut a, 'a');
+    // Accepting the flagged one too finishes it: in its view, the
+    // queue's `a` takes only what is pending.
+    let flagged = a.review.units[0].id.clone();
+    common::v2::in_unit_view(&mut a, &flagged, "a");
     assert!(says_done(&a), "{}", bar(&a));
     // A review accepted before it was opened opens on the queue, no sheet.
     let mut b = three();

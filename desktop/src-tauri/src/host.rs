@@ -45,8 +45,9 @@ pub enum Input {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind")]
 pub enum Click {
-    /// A queue row: the cursor goes there.
-    Row { pos: usize },
+    /// A row of the queue's tree, by its id (`view::TreeRow::id`): the
+    /// cursor goes there, and a directory folds or opens.
+    Row { id: String },
     /// A unit: the unit view opens on it.
     Open { id: String },
     /// A tile of the unit view, or its text (`None`): it takes the focus.
@@ -353,8 +354,7 @@ impl Session {
                 None => Vec::new(),
             },
             Input::Click(c) => match c {
-                Click::Row { pos } if pos < app.order.len() => app.move_sel(pos),
-                Click::Row { .. } => Vec::new(),
+                Click::Row { id } => app.click_row(&id),
                 Click::Open { id } => app.open_unit(id),
                 Click::Tile { id } => {
                     app.unit_click_tile(id.map(TileId::panel));

@@ -18,6 +18,7 @@ use teer::keymap::{Action, KeySpec, Keymap, Outcome, parse_keys};
 use teer::review::model::{Decision, Review};
 use teer::review::{BuildOptions, build_review};
 use teer::session::app::{DraftState, JumpKind, Overlay, Screen};
+use teer::session::tree::RowKind;
 use teer::tui::app::{App, Target};
 use teer::tui::ui;
 
@@ -109,7 +110,7 @@ fn a_prefix_shows_each_key_that_can_follow() {
     // The tile keys do nothing here.
     assert!(!line.contains("next tile"), "{line}");
     // Cut to a narrow terminal: the counts give way first.
-    let narrow = bar(&app, 30);
+    let narrow = bar(&app, 24);
     assert!(narrow.starts_with(" g  g first unit"), "{narrow}");
     assert!(narrow.trim_end().ends_with('…'), "{narrow}");
 
@@ -182,16 +183,22 @@ fn an_unknown_command_shows_in_the_bar_whole() {
 #[test]
 fn visual_mode_says_so_and_marks_its_rows() {
     let (mut app, _repo) = app();
-    app.visual = Some(app.review.units[app.order[0]].id.clone());
-    app.sel = 1;
+    let files: Vec<usize> = (app.rows().iter().enumerate())
+        .filter(|(_, r)| r.kind == RowKind::File)
+        .map(|(i, _)| i)
+        .collect();
+    let (from, to) = (files[0], *files.last().unwrap());
+    app.visual = Some(app.rows()[from].id());
+    app.select_row(to);
     let buf = draw(&app, 120, 30);
     let line = rows(&buf).pop().unwrap();
     assert!(
         line.contains("  -- VISUAL --  a accept   f flag   h leave"),
         "{line}"
     );
-    assert!(line.trim_end().ends_with("2 units"), "{line}");
-    // The rows from the anchor to the cursor, and no other.
+    // The marked rows say how much it holds: no count.
+    assert!(!line.contains("unit"), "{line}");
+    // The rows from the anchor to the cursor, and no other, to their end.
     let visual = app.theme.visual().bg;
     assert!(visual.is_some());
     let marked: Vec<usize> = app
@@ -199,11 +206,11 @@ fn visual_mode_says_so_and_marks_its_rows() {
         .borrow()
         .iter()
         .filter_map(|(r, t)| match t {
-            Target::Unit(pos) if buf[(r.x + 6, r.y)].style().bg == visual => Some(*pos),
+            Target::Row(i) if buf[(r.right() - 1, r.y)].style().bg == visual => Some(*i),
             _ => None,
         })
         .collect();
-    assert_eq!(marked, vec![0, 1]);
+    assert_eq!(marked, (from..=to).collect::<Vec<_>>());
     // The buttons apply to the selection.
     let t = targets(&app);
     assert!(t.contains(&Target::Action(Action::DecideAccept)));
@@ -225,11 +232,11 @@ fn the_help_lists_the_queues_keys_from_the_keymap() {
         "More",
         "Finish",
         "j/↓ k/↑  move down / up",
-        "gg/home G/end  first / last unit",
-        "a f  accept / flag the unit",
-        "V  select lines",
+        "gg/home G/end  first / last row",
+        "a f  accept / flag the file's pending units",
+        "V  select rows",
         "␣t  tests that cover this unit",
-        "zf  list by file or by level",
+        "za  show units accepted for you",
         "any key closes",
     ] {
         assert!(screen.contains(want), "{want}:\n{screen}");
@@ -249,8 +256,8 @@ fn the_help_follows_the_screen() {
     for want in ["keys · unit", "h/esc  back"] {
         assert!(screen.contains(want), "{want}:\n{screen}");
     }
-    assert!(!screen.contains("list by file or by level"), "{screen}");
-    assert!(!screen.contains("select lines"), "{screen}");
+    assert!(!screen.contains("show units accepted for you"), "{screen}");
+    assert!(!screen.contains("select rows"), "{screen}");
     assert!(!screen.contains("needs fix"), "{screen}");
 }
 
@@ -259,8 +266,11 @@ fn the_help_shows_rebound_keys() {
     let (mut app, _repo) = app_with(rebound(&[("decide.accept", "y"), ("visual.start", "v")]));
     app.overlay = Overlay::Help;
     let screen = text(&app, 160, 50);
-    assert!(screen.contains("y f  accept / flag the unit"), "{screen}");
-    assert!(screen.contains("v  select lines"), "{screen}");
+    assert!(
+        screen.contains("y f  accept / flag the file's pending units"),
+        "{screen}"
+    );
+    assert!(screen.contains("v  select rows"), "{screen}");
 }
 
 #[test]

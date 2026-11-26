@@ -1,4 +1,4 @@
-//! `teer pr list`: the open pull requests of this repository that are
+//! `teer pr`: the open pull requests of this repository that are
 //! waiting for your review, assigned to you, or yours. On a terminal they
 //! open in a picker (the CLI's `pr_list`); the one picked is reviewed.
 //!

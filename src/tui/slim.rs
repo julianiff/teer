@@ -1,20 +1,15 @@
-//! The queue's boxes, one per level: needs a close look, worth a look,
-//! routine. Listed by unit ([`Grouping::Unit`], the default), each unit
-//! sits in its own level's box, its file named on its row (see
-//! [`super::queue::row`]). Listed by file (`zf`, [`Grouping::File`]), a
-//! file sits in the box of the most attention one of its units needs, its
-//! name a label nobody selects (with how many of its units are decided on
-//! the right), its units under it, most attention first. Each unit is
-//! behind its level's icon: `▲` needs a close look, `◆` worth a look, `●`
-//! routine. The cursor only ever moves over units. Units with no behavior
-//! change are accepted for you and not listed; a line under the boxes says
-//! how many, and `za` lists them, behind `○`, in an "Accepted for you" box.
-//! A muted box closes the list: changed files teer can't show. Each box is
-//! a rounded box with a titled top edge, drawn by hand as plain lines so
-//! scrolling and click mapping stay line based. By exposure (`zs`), a
-//! "Security" box above the level boxes holds the units with security
-//! facts or findings, most exposed first, each still behind its level's
-//! icon (see [`crate::session::exposure`]).
+//! The queue's rows: the tree of the changed files (see
+//! [`crate::session::tree`]), a row each, indented under its directory. In
+//! front of a file, the mark of the most attention one of its units needs:
+//! a vertical line `┃`, red for a close look, yellow for worth a look and
+//! grey for routine; `○` accepted for you, muted. After its name only what there
+//! is to act on or know: `⚑` flagged, `⚠` disputed by the second model, `↻`
+//! changed by the last re-run, a spinner while it is described. A file with
+//! nothing left to do is muted.
+//! A directory is behind `▾`, or `▸` while it is folded, then in the colour
+//! of the most attention under it. Files teer can't show are muted rows the
+//! cursor skips. A line under the tree names the key that shows the units
+//! accepted for you.
 //!
 //! Also the pieces other screens draw units with: names, places, levels'
 //! styles, statements and the models that wrote them.
@@ -27,25 +22,27 @@ use super::app::App;
 use crate::config::Role;
 use crate::keymap::Action;
 use crate::review::attention::Level;
-use crate::review::model::{Decision, Prep, Unit, UnitStatus};
-use crate::session::app::Grouping;
+use crate::review::model::{Prep, Risk, Unit, UnitStatus};
+use crate::session::tree::{RowKind, TreeRow};
 use crate::util::{sanitize, truncate, truncate_pad, wrap};
 
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// A list as lines, and which item each line is: the queue's tree rows,
+/// improve mode's inserts.
 pub struct Rows {
     pub lines: Vec<Line<'static>>,
-    /// Which unit, by position in `App::order`, each line is.
+    /// Which item, by its index, each line is.
     pub owner: Vec<Option<usize>>,
-    /// First and one-past-last line of each unit, by position.
+    /// First and one-past-last line of each item, by index.
     pub spans: Vec<(usize, usize)>,
-    /// Line of the name of each unit's file, by position; listed by unit,
-    /// the unit's own line.
+    /// Line of the head each item is kept in view with, by index: its own
+    /// line where it has none.
     pub heads: Vec<usize>,
-    /// Line of the title edge of the box each unit's file sits in, by position.
+    /// Line of the title edge of the box each item sits in, by index.
     pub titles: Vec<usize>,
-    /// One past the last line to keep in view below each unit, by position:
-    /// its own line, or for the last unit of a box, the box's bottom edge
+    /// One past the last line to keep in view below each item, by index:
+    /// its own line, or for the last item of a box, the box's bottom edge
     /// and, with blank lines, the one after it.
     pub ends: Vec<usize>,
 }
@@ -60,16 +57,6 @@ impl Rows {
 impl App {
     pub fn spinner(&self) -> &'static str {
         SPINNER[(self.tick % 10) as usize]
-    }
-}
-
-/// Text badge for the decision ("✓ accepted"), empty when pending.
-pub fn badge_text(app: &App, u: &Unit) -> Span<'static> {
-    let t = &app.theme;
-    match u.decision {
-        Decision::Accepted => Span::styled("✓ accepted", t.muted()),
-        Decision::Investigate => Span::styled("⚑ investigate", t.muted()),
-        Decision::Pending => Span::raw(""),
     }
 }
 
@@ -126,11 +113,18 @@ pub fn prep_note(app: &App, u: &Unit) -> Option<String> {
 
 pub fn level_style(app: &App, level: Level) -> Style {
     let t = &app.theme;
-    match level {
-        Level::Same => t.muted(),
-        Level::Routine => t.text(),
+    let style = match level {
+        Level::Same => return t.muted(),
+        Level::Routine => t.muted(),
         Level::Look => Style::new().fg(t.risk_medium),
         Level::Attention => Style::new().fg(t.risk_high),
+    };
+    // The three share one mark (a vertical line): without colour its
+    // weight tells them apart.
+    match level {
+        Level::Attention if t.mono() => style.add_modifier(Modifier::BOLD | Modifier::REVERSED),
+        Level::Look if t.mono() => style.add_modifier(Modifier::BOLD),
+        _ => style,
     }
 }
 
@@ -222,82 +216,8 @@ pub(super) fn icon_style(app: &App, level: Level) -> Style {
     }
 }
 
-/// `path` in `w` cells, its folders muted and the file name in `style`.
-pub(super) fn path_spans(app: &App, path: &str, w: usize, style: Style) -> Vec<Span<'static>> {
-    let fitted = fit_path(path, w);
-    let (dir, name) = match fitted.rfind('/') {
-        Some(i) => fitted.split_at(i + 1),
-        None => ("", fitted.as_str()),
-    };
-    let pad = w.saturating_sub(fitted.width());
-    vec![
-        Span::styled(dir.to_string(), app.theme.muted()),
-        Span::styled(name.to_string(), style),
-        Span::raw(" ".repeat(pad)),
-    ]
-}
-
-/// How far a file is: a spinner while preparing, `⚑` when a unit is
-/// flagged, and decided units of all (`⠋ ⚑ 2/5`).
-fn file_count(app: &App, units: &[&Unit]) -> String {
-    let done = units
-        .iter()
-        .filter(|u| u.decision != Decision::Pending)
-        .count();
-    let busy = units.iter().any(|u| u.prep == Prep::Pending);
-    let flagged = units.iter().any(|u| u.decision == Decision::Investigate);
-    format!(
-        "{}{}{done}/{}",
-        if busy {
-            format!("{} ", app.spinner())
-        } else {
-            String::new()
-        },
-        if flagged { "⚑ " } else { "" },
-        units.len()
-    )
-}
-
-/// The name of the file whose first unit is at `pos`, and how many of its
-/// units are decided.
-fn file_spans(app: &App, pos: usize, name_w: usize, count_w: usize) -> Vec<Span<'static>> {
-    let t = &app.theme;
-    let units: Vec<&Unit> = app
-        .file_range(pos)
-        .map(|p| &app.review.units[app.order[p]])
-        .collect();
-    let done = units.iter().all(|u| u.decision != Decision::Pending);
-    let style = if done { t.accepted_row() } else { t.text() }.add_modifier(Modifier::BOLD);
-    let mut spans = vec![Span::raw(" ")];
-    let path = units[0].file.display().to_string();
-    spans.extend(path_spans(app, &path, name_w, style));
-    if count_w > 0 {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            format!("{:>count_w$}", truncate(&file_count(app, &units), count_w)),
-            t.muted(),
-        ));
-    }
-    spans
-}
-
-/// A muted row nobody selects, two cells in: a file with nothing to decide
-/// or a unit with no behavior change, then why.
-fn muted_row(app: &App, lead: &str, name: &str, why: &str, width: usize) -> Line<'static> {
-    let t = &app.theme;
-    let mut line = Line::from(vec![
-        Span::raw(format!("   {lead}")),
-        Span::styled(sanitize(name), t.muted()),
-        Span::styled(format!("  {}", sanitize(why)), t.muted()),
-    ]);
-    clip(&mut line, width);
-    let pad = width.saturating_sub(line.width());
-    line.spans.push(Span::raw(" ".repeat(pad)));
-    line
-}
-
-/// The line that closes the list when units were accepted for you: how
-/// many, and the key that shows or hides them. `None` when there are none.
+/// The line under the tree when units were accepted for you: the key that
+/// shows or hides them, and how many. `None` when there are none.
 pub fn auto_line(app: &App) -> Option<String> {
     let n = app.auto_accepted();
     if n == 0 {
@@ -305,143 +225,16 @@ pub fn auto_line(app: &App) -> Option<String> {
     }
     let does = if app.show_auto { "hides" } else { "shows" };
     let key = app.keys.label(Action::ToggleAutoAccepted);
-    Some(format!(
-        "{} accepted for you, {key} {does} them",
-        plural(n, "unit")
-    ))
+    Some(format!("{key} {does} {n} accepted for you"))
 }
 
-/// Widest count a file name can show (`⠋ ⚑ done/total`), for sizing the
-/// count column; 0 when no file has a unit to decide, or files have no
-/// names to show it beside (listed by unit).
-fn widest_count(app: &App) -> usize {
-    if app.grouping == Grouping::Unit {
-        return 0;
-    }
-    (0..app.order.len())
-        .filter(|&pos| app.starts_file(pos))
-        .map(|pos| {
-            let n = app.file_range(pos).len();
-            format!("⠋ ⚑ {n}/{n}").width()
-        })
-        .max()
-        .unwrap_or(0)
-}
-
-/// Widths of a file's name row of `width` cells: the path, and the count
-/// column (zero when there is none, or no room). Layout: a blank, the path,
-/// 2 spaces, count. The count goes first when the path would fall under 10
-/// cells.
-fn column_widths(width: usize, widest: usize) -> (usize, usize) {
-    if widest == 0 || width < 1 + 10 + 2 + widest {
-        return (width.saturating_sub(1), 0);
-    }
-    (width - 1 - 2 - widest, widest)
-}
-
-/// Widest list [`fit_width`] looks at.
-const FIT_MAX: usize = 512;
-
-/// Narrowest queue in which every file shows its whole path and count, every
-/// unit its whole row (as wide as [`super::queue::rows_width`] says), every
-/// level's box its whole title and the line about units accepted for you
-/// fits on one line (the muted box's title is cut as needed).
+/// Narrowest queue in which every row of the tree shows whole and the
+/// line about units accepted for you fits on one line.
 pub fn fit_width(app: &App) -> usize {
-    let widest = widest_count(app);
-    let path = |p: &std::path::Path| sanitize(&p.display().to_string()).width();
-    let by_file = app.grouping == Grouping::File;
-    // A file's path, beside its count; any other row's whole width.
-    let mut file = 0;
-    let mut row = super::queue::rows_width(app);
-    for (pos, &i) in app.order.iter().enumerate() {
-        if by_file && app.starts_file(pos) {
-            file = file.max(path(&app.review.units[i].file));
-        }
-    }
-    for f in &app.review.skipped {
-        row = row.max(3 + path(&f.path));
-    }
-    // The line under the boxes takes the borders' cells too: a blank, the
-    // glyph and a blank, then its text.
-    if let Some(text) = auto_line(app) {
-        row = row.max((1 + 2 + text.width()).saturating_sub(3));
-    }
-    // A title, its spaces, the corners and a few dashes.
-    let title = boxes_of(app)
-        .into_iter()
-        .map(|(kind, files)| box_title(app, kind, &files).width() + 7)
-        .max()
-        .unwrap_or(0);
-    // Borders and the blank cell before the right one take 3.
-    (4..FIT_MAX)
-        .find(|&width| {
-            let (n, c) = column_widths(width - 3, widest);
-            n >= file && c >= widest && width - 3 >= row && width >= title
-        })
-        .unwrap_or(FIT_MAX)
-}
-
-/// What a box of the queue holds: the units with security facts or
-/// findings (by exposure), or a level's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Boxed {
-    Security,
-    Level(Level),
-}
-
-/// The boxes, the security box first (by exposure), then the levels' most
-/// attention first: each with the positions of the first units of the
-/// files in it.
-fn boxes_of(app: &App) -> Vec<(Boxed, Vec<usize>)> {
-    let mut boxes: Vec<(Boxed, Vec<usize>)> = Vec::new();
-    for pos in (0..app.order.len()).filter(|&p| app.starts_file(p)) {
-        let kind = if app.in_security_box(pos) {
-            Boxed::Security
-        } else {
-            Boxed::Level(app.file_level(pos))
-        };
-        match boxes.last_mut() {
-            Some((k, files)) if *k == kind => files.push(pos),
-            _ => boxes.push((kind, vec![pos])),
-        }
-    }
-    boxes
-}
-
-/// A box's title: `Worth a look · 3 files`, or listed by unit `· 5 units`;
-/// the security box's `Security · 2 units`. `files`: the positions of the
-/// first units of its files.
-fn box_title(app: &App, kind: Boxed, files: &[usize]) -> String {
-    let n = match app.grouping {
-        Grouping::File => plural(files.len(), "file"),
-        Grouping::Unit => {
-            let units = files.iter().map(|&p| app.file_range(p).len()).sum();
-            plural(units, "unit")
-        }
-    };
-    let name = match kind {
-        Boxed::Security => "Security",
-        Boxed::Level(level) => box_name(level),
-    };
-    format!("{name} · {n}")
-}
-
-/// A box's title style: its level's, the security box's that of the most
-/// attention one of its units needs.
-fn box_style(app: &App, kind: Boxed) -> Style {
-    match kind {
-        Boxed::Security => level_style(app, app.security_box_level()),
-        Boxed::Level(level) => level_style(app, level),
-    }
-}
-
-/// What a level's box is called. Only units accepted for you are listed at
-/// [`Level::Same`] (see [`App::shown_level`]).
-fn box_name(level: Level) -> &'static str {
-    match level {
-        Level::Same => "Accepted for you",
-        _ => level.title(),
-    }
+    let rows = app.rows();
+    let row = rows.iter().map(|r| row_width(app, r)).max().unwrap_or(0);
+    let auto = auto_line(app).map_or(0, |text| LEAD + text.width());
+    row.max(auto) + 1
 }
 
 fn border(app: &App, text: String) -> Span<'static> {
@@ -470,192 +263,194 @@ pub(super) fn bottom_edge(app: &App, width: usize) -> Line<'static> {
     )])
 }
 
-/// Cells before a unit's name: the gutter, two blanks, its icon and a blank.
-pub(super) const UNIT_LEAD: usize = 5;
-
-/// What unit `ui`'s name is indented by in a story: `↳ ` under the unit
-/// that calls it, two more cells per level down to the third.
-pub(super) fn indent(app: &App, ui: usize) -> String {
-    match app.depth.get(ui).copied().unwrap_or(0) {
-        0 => String::new(),
-        depth => format!("{}↳ ", "  ".repeat(depth.min(3) - 1)),
-    }
-}
-
-/// Fewest list rows at which a blank line separates the boxes, and the
-/// files inside them.
+/// Fewest list rows at which a blank line separates the boxes of improve
+/// mode's list.
 pub const PADDING_MIN_ROWS: usize = 14;
 
-/// Is the unit at `pos` inside the visual selection, which runs from its
-/// anchor to the cursor?
-pub fn in_visual(app: &App, pos: usize) -> bool {
-    app.visual_rows().is_some_and(|rows| rows.contains(&pos))
+/// Cells of a row before its name at depth 0: the cursor's bar, the mark,
+/// a gap.
+const LEAD: usize = 3;
+/// Cells a row is indented by for each directory it is under.
+const INDENT: usize = 2;
+
+/// What follows a file's name, each after a blank: `⚑` when one of its
+/// units is flagged, `⚠` when a second model disputes one, `↻` when the
+/// last re-run changed one, a spinner while one is described.
+fn file_marks(app: &App, row: &TreeRow) -> Vec<Span<'static>> {
+    let t = &app.theme;
+    let mut marks = Vec::new();
+    let Some(f) = app.file_facts(&row.path) else {
+        return marks;
+    };
+    if f.flagged {
+        marks.push(Span::styled(" ⚑", t.badge_investigate()));
+    }
+    if f.disputed {
+        marks.push(Span::styled(" ⚠", t.risk(Risk::Medium)));
+    }
+    if f.changed {
+        marks.push(Span::styled(" ↻", t.accent()));
+    }
+    if f.preparing {
+        marks.push(Span::styled(format!(" {}", app.spinner()), t.muted()));
+    }
+    marks
 }
 
-/// Rows being built: the lines so far, and how a content line of `inner`
-/// cells is put between the box's borders.
-struct Builder<'a> {
-    app: &'a App,
-    rows: Rows,
-    width: usize,
-    /// Content cells of a row: inside the borders and the blank before the
-    /// right one, or the whole width when there is no room for a box.
-    inner: usize,
-    boxes: bool,
-    padded: bool,
-    /// Where the last file's rows start in the box being drawn.
-    last: Option<usize>,
-    /// The last unit, by position, in the box being drawn.
-    last_unit: Option<usize>,
+/// Why teer can't show the file of `row`, after two blanks.
+fn skipped_why(app: &App, row: &TreeRow) -> Option<String> {
+    let why = app.skipped_why(&row.path)?;
+    Some(format!("  {}", sanitize(why)))
 }
 
-impl Builder<'_> {
-    fn row(&mut self, mut spans: Vec<Span<'static>>, owner: Option<usize>) {
-        let line = if self.boxes {
-            spans.insert(0, border(self.app, "│".into()));
-            spans.push(Span::raw(" "));
-            spans.push(border(self.app, "│".into()));
-            Line::from(spans)
+/// The cells `row` takes, written out whole.
+fn row_width(app: &App, row: &TreeRow) -> usize {
+    let tail = match row.kind {
+        RowKind::Skipped => skipped_why(app, row).map_or(0, |why| why.width()),
+        RowKind::File => file_marks(app, row).iter().map(Span::width).sum(),
+        RowKind::Dir => 0,
+    };
+    LEAD + INDENT * row.depth + sanitize(&row.name).width() + tail
+}
+
+/// Row `i` of the tree, `width` cells: the bar when it is under the
+/// cursor, its indent, its mark, its name, and what follows it.
+///
+/// A file's mark is its level's icon, in the level's colour when it needs
+/// a look and muted when it is routine; its name is muted too once nothing
+/// is left to do on it. A directory's mark is `▾`, or `▸` while it is
+/// folded, then in the colour of the most attention under it. A file teer
+/// can't show is muted, with why when there is room for it. A name too
+/// long is cut (a directory's chain at the front); the marks after it
+/// stay. Inside the visual selection the row is marked.
+fn tree_row(app: &App, i: usize, row: &TreeRow, selected: bool, width: usize) -> Line<'static> {
+    let t = &app.theme;
+    let quiet = t.muted();
+    let (mark, mark_style, name_style, tail) = match row.kind {
+        RowKind::Dir => {
+            let done = app.dir_done(&row.path);
+            let level = app.dir_level(&row.path).filter(|_| row.folded && !done);
+            (
+                if row.folded { "▸" } else { "▾" },
+                level.map_or(quiet, |l| icon_style(app, l)),
+                if done { quiet } else { t.text() },
+                Vec::new(),
+            )
+        }
+        RowKind::File => {
+            let facts = app.file_facts(&row.path);
+            let level = facts.map_or(Level::Routine, |f| f.level);
+            let done = facts.is_some_and(|f| f.done);
+            (
+                level.icon(),
+                if done { quiet } else { icon_style(app, level) },
+                if done || level == Level::Same {
+                    quiet
+                } else {
+                    t.text()
+                },
+                file_marks(app, row),
+            )
+        }
+        RowKind::Skipped => (
+            " ",
+            quiet,
+            quiet,
+            skipped_why(app, row)
+                .map(|why| Span::styled(why, quiet))
+                .into_iter()
+                .collect(),
+        ),
+    };
+    let lead = LEAD + INDENT * row.depth;
+    let mut tail_w: usize = tail.iter().map(Span::width).sum();
+    let mut name = sanitize(&row.name);
+    let mut tail = tail;
+    // Why a file can't be shown gives way to its name.
+    if row.kind == RowKind::Skipped && lead + name.width() + tail_w > width {
+        tail.clear();
+        tail_w = 0;
+    }
+    // A directory's chain is cut at the front, so its last part stays.
+    let room = width.saturating_sub(lead + tail_w);
+    name = match row.kind {
+        RowKind::Dir => fit_path(&name, room),
+        _ => truncate(&name, room),
+    };
+    let name_style = if selected {
+        name_style.add_modifier(Modifier::BOLD)
+    } else {
+        name_style
+    };
+    let mut spans = vec![
+        if selected {
+            Span::styled("▌", t.accent())
         } else {
-            Line::from(spans)
-        };
-        self.rows.push(line, owner);
+            Span::raw(" ")
+        },
+        Span::raw(" ".repeat(INDENT * row.depth)),
+        Span::styled(format!("{mark} "), mark_style),
+        Span::styled(name, name_style),
+    ];
+    spans.extend(tail);
+    let mut line = Line::from(spans);
+    clip(&mut line, width);
+    let pad = width.saturating_sub(line.width());
+    line.spans.push(Span::raw(" ".repeat(pad)));
+    // The cursor's row has the selection's background; a row of the
+    // visual selection its own, and the bar.
+    let behind = if app.visual_rows().is_some_and(|rows| rows.contains(&i)) {
+        line.spans[0] = Span::styled("▌", t.accent());
+        Some(t.visual())
+    } else {
+        selected.then(|| t.selected_entry())
+    };
+    if let Some(bg) = behind {
+        for s in line.spans.iter_mut().skip(1) {
+            s.style = s.style.patch(bg);
+        }
     }
-
-    /// Close the box being drawn and open one titled `title`, a blank line
-    /// between them. Below 4 cells there are no boxes: nothing is drawn.
-    fn open_box(&mut self, title: &str, style: Style) -> usize {
-        self.close_box();
-        if self.padded && !self.rows.lines.is_empty() {
-            self.rows.push(Line::raw(" ".repeat(self.width)), None);
-        }
-        let line = self.rows.lines.len();
-        if self.boxes {
-            let edge = top_edge(self.app, self.width, title, style);
-            self.rows.push(edge, None);
-        }
-        line
-    }
-
-    fn close_box(&mut self) {
-        if self.boxes && self.last.is_some() {
-            let edge = bottom_edge(self.app, self.width);
-            self.rows.push(edge, None);
-        }
-        if let Some(pos) = self.last_unit.take() {
-            self.rows.ends[pos] = self.rows.lines.len() + usize::from(self.padded);
-        }
-        self.last = None;
-    }
-
-    /// Before a file's rows: a blank line separates a file with more than
-    /// its own row from its neighbours in the box; files teer can't show,
-    /// one row each, sit together. `one`: this file is one row.
-    fn file_gap(&mut self, one: bool) {
-        if let Some(start) = self.last
-            && self.padded
-            && !(one && self.rows.lines.len() - start == 1)
-        {
-            self.row(vec![Span::raw(" ".repeat(self.inner))], None);
-        }
-        self.last = Some(self.rows.lines.len());
-    }
+    line
 }
 
-/// The queue's rows (see [`super::queue::row`]), `width` cells wide, with
-/// blank lines between boxes and files when `padded`.
-pub fn build_queue(app: &App, width: u16, padded: bool) -> Rows {
+/// The queue's rows, `width` cells wide: the tree, then after a blank
+/// line the line about the units accepted for you.
+pub fn build_queue(app: &App, width: u16) -> Rows {
     let t = &app.theme;
     let width = width as usize;
-    // Below 4 cells there is no room for a box: bare rows.
-    let boxes = width >= 4;
-    let inner = if boxes { width - 3 } else { width };
-    let mut b = Builder {
-        app,
-        rows: Rows {
-            lines: Vec::new(),
-            owner: Vec::new(),
-            spans: vec![(0, 0); app.order.len()],
-            heads: vec![0; app.order.len()],
-            titles: vec![0; app.order.len()],
-            ends: vec![0; app.order.len()],
-        },
-        width,
-        inner,
-        boxes,
-        padded: padded && boxes,
-        last: None,
-        last_unit: None,
+    let tree = app.rows();
+    let at = app.cursor_row();
+    let mut rows = Rows {
+        lines: Vec::new(),
+        owner: Vec::new(),
+        spans: Vec::new(),
+        heads: Vec::new(),
+        titles: Vec::new(),
+        ends: Vec::new(),
     };
-    let by_file = app.grouping == Grouping::File;
-    let (name_w, count_w) = column_widths(inner, widest_count(app));
-    // Listed by unit, a row names its file in front of its name.
-    let path_w = super::queue::path_column(app, inner);
-    for (kind, files) in boxes_of(app) {
-        let title = b.open_box(&box_title(app, kind, &files), box_style(app, kind));
-        for &start in &files {
-            if by_file {
-                b.file_gap(false);
-            } else if b.last.is_none() {
-                // Listed by unit, a box's units follow each other.
-                b.last = Some(b.rows.lines.len());
-            }
-            let head = b.rows.lines.len();
-            if by_file {
-                b.row(file_spans(app, start, name_w, count_w), None);
-            }
-            for pos in app.file_range(start) {
-                let line = b.rows.lines.len();
-                let row = super::queue::row(app, pos, inner, path_w);
-                b.row(row.spans, Some(pos));
-                b.rows.spans[pos] = (line, line + 1);
-                // With no file name above it, a unit is its own head.
-                b.rows.heads[pos] = if by_file { head } else { line };
-                b.rows.titles[pos] = title;
-                b.rows.ends[pos] = line + 1;
-                b.last_unit = Some(pos);
-            }
-        }
+    for (i, row) in tree.iter().enumerate() {
+        let line = rows.lines.len();
+        rows.push(
+            tree_row(app, i, row, at == Some(i), width),
+            (row.kind != RowKind::Skipped).then_some(i),
+        );
+        rows.spans.push((line, line + 1));
+        rows.heads.push(line);
+        rows.titles.push(line);
+        rows.ends.push(line + 1);
     }
-    // A muted box nobody selects: changed files teer can't show.
-    let skipped = &app.review.skipped;
-    if !skipped.is_empty() {
-        let title = format!("Not shown · {}", plural(skipped.len(), "file"));
-        b.open_box(&title, level_style(app, Level::Same));
-        for f in skipped {
-            b.file_gap(true);
-            let path = sanitize(&f.path.display().to_string());
-            b.row(muted_row(app, "", &path, &f.why, inner).spans, None);
-        }
-    }
-    b.close_box();
-    // How many units were accepted for you, under the boxes, wrapped
-    // rather than cut: it names the key.
+    // Wrapped rather than cut: it names the key.
     if let Some(text) = auto_line(app) {
-        if b.padded && !b.rows.lines.is_empty() {
-            b.rows.push(Line::raw(" ".repeat(width)), None);
+        if !rows.lines.is_empty() {
+            rows.push(Line::raw(" ".repeat(width)), None);
         }
-        // It leads with the glyph of a unit accepted for you.
-        let text = format!("{} {text}", Level::Same.icon());
-        for l in wrap(&text, width.saturating_sub(1)) {
-            let l = truncate_pad(&format!(" {l}"), width);
-            b.rows.push(Line::styled(l, t.muted()), None);
+        let lead = " ".repeat(LEAD);
+        for l in wrap(&text, width.saturating_sub(LEAD)) {
+            let l = truncate_pad(&format!("{lead}{l}"), width);
+            rows.push(Line::styled(l, t.muted()), None);
         }
-    }
-    // A blank line under the last box, so the list visibly ends.
-    if b.padded && !b.rows.lines.is_empty() {
-        b.rows.push(Line::raw(" ".repeat(width)), None);
-    }
-    let mut rows = b.rows;
-    for line in &mut rows.lines {
-        clip(line, width);
     }
     rows
-}
-
-/// `1 file`, `3 files`.
-fn plural(n: usize, word: &str) -> String {
-    format!("{n} {word}{}", if n == 1 { "" } else { "s" })
 }
 
 #[cfg(test)]
@@ -663,7 +458,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::keymap::Keymap;
-    use crate::review::model::{LineRef, Range, Review, Side, UnitKind};
+    use crate::review::model::{Decision, LineRef, Range, Review, Side, UnitKind};
     use crate::session::names::{agent_label, cite_text};
     use std::path::PathBuf;
 
@@ -692,6 +487,7 @@ mod tests {
             dive_pending: Default::default(),
             checks: Default::default(),
             security: Vec::new(),
+            signature: None,
         }
     }
 
@@ -723,27 +519,36 @@ mod tests {
             mode: None,
         };
         let mut app = App::new(review, Config::default(), Keymap::default());
-        // Listed by file (`zf`): each file's name above its units.
-        app.grouping = Grouping::File;
         app.rebuild_order();
         app
     }
 
-    /// The queue's rows with blank lines between boxes and files.
     fn build(app: &App, width: u16) -> Rows {
-        build_queue(app, width, true)
+        build_queue(app, width)
     }
 
     fn text_of(l: &Line) -> String {
         l.spans.iter().map(|s| s.content.to_string()).collect()
     }
 
+    /// The rows as text, without the blanks at their ends.
+    fn texts(app: &App, width: u16) -> Vec<String> {
+        let rows = build(app, width);
+        rows.lines
+            .iter()
+            .map(|l| text_of(l).trim_end().to_string())
+            .collect()
+    }
+
+    const DIR: &str = "src/some/deep/dir";
+
     #[test]
     fn lines_fit_exactly_at_any_width() {
         let app = app();
         for width in [30u16, 60, 80, 120] {
             let rows = build(&app, width);
-            assert_eq!(rows.spans.len(), app.order.len());
+            // The directory and its three files.
+            assert_eq!(rows.spans.len(), 4);
             for l in &rows.lines {
                 assert_eq!(l.width(), width as usize, "width {width}: {l:?}");
             }
@@ -756,6 +561,11 @@ mod tests {
         app.review.units[0].symbol = "bad\nname\twith\0controls\r".into();
         app.review.units[0].summary = Some("line one\nline two\u{85}\u{1b}[31m".into());
         app.review.units[0].file = PathBuf::from("src/we\nird\u{1b}name.rs");
+        app.review.skipped.push(crate::git::SkippedFile {
+            path: PathBuf::from("src/lo\tgo.png"),
+            status: crate::git::FileStatus::Modified,
+            why: "bin\nary".into(),
+        });
         app.rebuild_order();
         for width in 0u16..=40 {
             let rows = build(&app, width);
@@ -873,74 +683,87 @@ mod tests {
     }
 
     #[test]
-    fn the_count_column_fits_the_counts_and_drops_first_when_narrow() {
-        // No file with a unit to decide: no column.
-        assert_eq!(column_widths(58, 0), (57, 0));
-        assert_eq!(column_widths(58, 9), (58 - 3 - 9, 9));
-        // No room for a name of 10 next to the count: the count goes.
-        assert_eq!(column_widths(21, 9), (20, 0));
-        assert_eq!(column_widths(22, 9), (10, 9));
-        for inner in 0..120 {
-            let (n, f) = column_widths(inner, 9);
-            assert!(f == 0 || (f == 9 && n >= 10), "{inner}: {n} {f}");
-            assert!(
-                1 + n + if f > 0 { 2 + f } else { 0 } <= inner.max(1),
-                "{inner}"
-            );
-        }
-    }
-
-    #[test]
-    fn each_unit_sits_under_its_files_name_in_its_levels_box() {
-        let rows = build(&app(), 80);
-        let title = text_of(&rows.lines[0]);
-        assert!(title.starts_with("╭─ Worth a look · 3 files ─"), "{title}");
-        let first = text_of(&rows.lines[1]);
-        assert!(
-            first.starts_with("│ src/some/deep/dir/file_with_long_name_0.rs"),
-            "{first}"
-        );
-        assert!(first.ends_with("1/1 │"), "{first}");
-        assert_eq!(rows.owner[1], None, "a file's name is not selectable");
-        for (pos, &(s, _)) in rows.spans.iter().enumerate() {
-            assert_eq!(rows.titles[pos], 0);
-            assert_eq!(rows.heads[pos] + 1, s);
-            assert!(text_of(&rows.lines[rows.heads[pos]]).contains(&format!("_{pos}.rs")));
-        }
-    }
-
-    #[test]
-    fn every_unit_is_exactly_one_line() {
+    fn a_row_is_a_mark_a_name_and_only_what_there_is_to_act_on() {
         let app = app();
-        for width in [30u16, 60, 80, 120] {
-            let rows = build(&app, width);
-            for (pos, &(s, e)) in rows.spans.iter().enumerate() {
-                assert_eq!(e - s, 1, "pos {pos} width {width}");
-                assert_eq!(rows.owner[s], Some(pos));
-                assert_eq!(rows.lines[s].width(), width as usize);
-            }
+        assert_eq!(
+            texts(&app, 80),
+            [
+                format!(" ▾ {DIR}"),
+                "▌  ┃ file_with_long_name_0.rs".into(),
+                "   ┃ file_with_long_name_1.rs ⚑".into(),
+                "   ┃ file_with_long_name_2.rs".into(),
+            ]
+        );
+        let rows = build(&app, 80);
+        for (i, &(s, e)) in rows.spans.iter().enumerate() {
+            assert_eq!((e - s, rows.owner[s]), (1, Some(i)));
         }
     }
 
-    /// Style of the cell at `x` on the first line of the row at `pos`,
-    /// read back from a rendered buffer.
-    fn cell_style(app: &App, pos: usize, x: u16, width: u16) -> Style {
+    #[test]
+    fn a_name_too_long_is_cut_and_its_marks_stay() {
+        let app = app();
+        let rows = texts(&app, 24);
+        assert_eq!(rows[2], "   ┃ file_with_long_n… ⚑");
+    }
+
+    #[test]
+    fn a_file_teer_cant_show_says_why_while_there_is_room() {
+        let mut app = app();
+        app.review.skipped.push(crate::git::SkippedFile {
+            path: PathBuf::from(format!("{DIR}/logo.png")),
+            status: crate::git::FileStatus::Modified,
+            why: "binary".into(),
+        });
+        let rows = build(&app, 80);
+        let at = rows.lines.len() - 1;
+        assert_eq!(text_of(&rows.lines[at]).trim_end(), "     logo.png  binary");
+        // The cursor skips it.
+        assert_eq!(rows.owner[at], None);
+        assert_eq!(texts(&app, 16)[at], "     logo.png");
+        // The list is as wide as it takes to say it.
+        assert!(fit_width(&app) > "     logo.png  binary".len());
+    }
+
+    #[test]
+    fn the_units_accepted_for_you_are_one_line_that_names_its_key() {
+        let mut app = app();
+        assert_eq!(auto_line(&app), None);
+        app.review.units[2].decision = Decision::Accepted;
+        app.review.units[2].accepted_by = Some(crate::review::model::AcceptedBy::Auto);
+        assert_eq!(
+            auto_line(&app).as_deref(),
+            Some("za shows 1 accepted for you")
+        );
+        let rows = texts(&app, 80);
+        let n = rows.len();
+        assert_eq!(rows[n - 2], "");
+        assert_eq!(rows[n - 1], "   za shows 1 accepted for you");
+        app.show_auto = true;
+        assert_eq!(
+            auto_line(&app).as_deref(),
+            Some("za hides 1 accepted for you")
+        );
+    }
+
+    /// Style of the cell at `x` on tree row `i`, read back from a rendered
+    /// buffer.
+    fn cell_style(app: &App, i: usize, x: u16, width: u16) -> Style {
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
         use ratatui::widgets::{Paragraph, Widget};
         let rows = build(app, width);
-        let line = rows.lines[rows.spans[pos].0].clone();
+        let line = rows.lines[rows.spans[i].0].clone();
         let area = Rect::new(0, 0, width, 1);
         let mut buf = Buffer::empty(area);
         Paragraph::new(line).render(area, &mut buf);
         buf[(x, 0)].style()
     }
 
-    fn pos_of(app: &App, d: Decision) -> usize {
-        app.order
-            .iter()
-            .position(|&i| app.review.units[i].decision == d)
-            .unwrap()
+    /// The tree row of the file whose unit is decided `d`.
+    fn row_of(app: &App, d: Decision) -> usize {
+        let u = app.review.units.iter().find(|u| u.decision == d).unwrap();
+        app.rows().iter().position(|r| r.path == u.file).unwrap()
     }
 
     fn themed_app(theme: crate::config::Theme) -> App {
@@ -950,69 +773,134 @@ mod tests {
         app
     }
 
-    // Cells in a unit row: border 0, gutter 1, icon 4, name from 6.
-    const NAME_X: u16 = 6;
+    // Cells of a file's row under one directory: the bar 0, the mark 3,
+    // the name from 5.
+    const MARK_X: u16 = 3;
+    const NAME_X: u16 = 5;
 
     #[test]
-    fn accepted_rows_are_dimmed_and_pending_rows_are_not() {
+    fn a_file_with_nothing_left_to_do_is_dimmed_and_the_others_are_not() {
         use crate::config::Theme;
         for theme in [Theme::Dark, Theme::Light, Theme::Mono] {
-            let mut app = themed_app(theme);
-            // Keep the selection off the rows under test.
-            app.sel = pos_of(&app, Decision::Investigate);
-            let acc = pos_of(&app, Decision::Accepted);
-            let pend = pos_of(&app, Decision::Pending);
-            let muted = app.theme.accepted_row();
-            let x = NAME_X;
-            let a = cell_style(&app, acc, x, 120);
-            let p = cell_style(&app, pend, x, 120);
-            assert_ne!(a, p, "{theme:?}");
-            if theme == Theme::Mono {
-                assert!(a.add_modifier.contains(Modifier::DIM), "{theme:?}");
-                assert!(!p.add_modifier.contains(Modifier::DIM), "{theme:?}");
-            } else {
-                assert_eq!(a.fg, muted.fg, "{theme:?}");
-                assert_ne!(p.fg, muted.fg, "{theme:?}");
+            let app = themed_app(theme);
+            let muted = app.theme.muted();
+            let dimmed = |s: Style| {
+                if theme == Theme::Mono {
+                    s.add_modifier.contains(Modifier::DIM)
+                } else {
+                    s.fg == muted.fg
+                }
+            };
+            let done = row_of(&app, Decision::Accepted);
+            assert!(dimmed(cell_style(&app, done, NAME_X, 120)), "{theme:?}");
+            assert!(dimmed(cell_style(&app, done, MARK_X, 120)), "{theme:?}");
+            for d in [Decision::Pending, Decision::Investigate] {
+                let row = row_of(&app, d);
+                assert!(!dimmed(cell_style(&app, row, NAME_X, 120)), "{theme:?}");
             }
         }
     }
 
     #[test]
-    fn flagged_names_have_their_own_style_and_are_not_greyed() {
+    fn the_mark_has_the_colour_of_the_level_and_a_routine_one_is_calm() {
+        let mut app = app();
+        let pending = app
+            .review
+            .units
+            .iter()
+            .position(|u| u.decision == Decision::Pending);
+        let row = row_of(&app, Decision::Pending);
+        for (level, icon) in [
+            (Level::Attention, "┃"),
+            (Level::Look, "┃"),
+            (Level::Routine, "┃"),
+        ] {
+            app.levels[pending.unwrap()].level = level;
+            assert!(texts(&app, 80)[row].starts_with(&format!("   {icon} ")));
+            let mark = cell_style(&app, row, MARK_X, 80);
+            let want = match level {
+                Level::Routine => app.theme.muted().fg,
+                _ => level_style(&app, level).fg,
+            };
+            assert_eq!(mark.fg, want, "{level:?}");
+        }
+        assert_ne!(app.theme.muted().fg, level_style(&app, Level::Look).fg);
+    }
+
+    #[test]
+    fn a_folded_directory_has_the_colour_of_the_most_attention_under_it() {
+        let mut app = app();
+        let pending = app
+            .review
+            .units
+            .iter()
+            .position(|u| u.decision == Decision::Pending);
+        app.levels[pending.unwrap()].level = Level::Attention;
+        // Open: its files say it.
+        assert_eq!(cell_style(&app, 0, 1, 80).fg, app.theme.muted().fg);
+        app.folded.insert(PathBuf::from(DIR));
+        app.dir = Some(PathBuf::from(DIR));
+        assert_eq!(texts(&app, 80), [format!("▌▸ {DIR}")]);
+        assert_eq!(cell_style(&app, 0, 1, 80).fg, Some(app.theme.risk_high));
+        // With nothing left to do under it, it is calm.
+        for u in &mut app.review.units {
+            u.decision = Decision::Accepted;
+        }
+        assert_eq!(cell_style(&app, 0, 1, 80).fg, app.theme.muted().fg);
+        assert_eq!(cell_style(&app, 0, 3, 80).fg, app.theme.muted().fg);
+    }
+
+    #[test]
+    fn a_flagged_file_has_the_flag_after_its_name() {
+        use crate::config::Theme;
+        for theme in [Theme::Dark, Theme::Mono] {
+            let app = themed_app(theme);
+            let row = row_of(&app, Decision::Investigate);
+            let flag = NAME_X + "file_with_long_name_1.rs ".len() as u16;
+            let (got, want) = (
+                cell_style(&app, row, flag, 120),
+                app.theme.badge_investigate(),
+            );
+            assert_eq!(got.add_modifier, want.add_modifier, "{theme:?}");
+            if theme == Theme::Dark {
+                assert_eq!(got.fg, want.fg);
+            }
+        }
+    }
+
+    #[test]
+    fn a_file_the_last_rerun_changed_says_so_after_its_name() {
+        let mut app = app();
+        let id = app.review.units[2].id.clone();
+        app.changed.insert(id);
+        assert_eq!(texts(&app, 80)[3], "   ┃ file_with_long_name_2.rs ↻");
+    }
+
+    #[test]
+    fn the_cursors_row_has_the_bar_a_bold_name_and_the_selections_background() {
         use crate::config::Theme;
         for theme in [Theme::Dark, Theme::Mono] {
             let mut app = themed_app(theme);
-            app.sel = pos_of(&app, Decision::Pending);
-            let inv = cell_style(&app, pos_of(&app, Decision::Investigate), NAME_X, 120);
-            let pend = cell_style(&app, pos_of(&app, Decision::Pending), NAME_X, 120);
-            assert_ne!(inv, pend, "{theme:?}");
-            assert!(!inv.add_modifier.contains(Modifier::DIM), "{theme:?}");
-            if theme == Theme::Mono {
-                assert!(inv.add_modifier.contains(Modifier::UNDERLINED));
-            } else {
-                assert_eq!(inv.fg, app.theme.flagged_row().fg, "{theme:?}");
+            let row = row_of(&app, Decision::Accepted);
+            app.select_row(row);
+            let rows = build(&app, 120);
+            let line = &rows.lines[rows.spans[row].0];
+            assert_eq!(line.spans[0].content, "▌");
+            assert_eq!(line.width(), 120);
+            let name = cell_style(&app, row, NAME_X, 120);
+            assert!(name.add_modifier.contains(Modifier::BOLD));
+            // To the row's end, on the blanks too.
+            use ratatui::style::Color::Reset;
+            let bg = |i, x| cell_style(&app, i, x, 120).bg.unwrap_or(Reset);
+            for x in [NAME_X, 119] {
+                assert_eq!(bg(row, x), app.theme.selected_entry().bg.unwrap_or(Reset));
             }
-            assert!(inv.add_modifier.contains(Modifier::BOLD), "{theme:?}");
+            // The other rows have neither.
+            let other = row_of(&app, Decision::Pending);
+            let rows = build(&app, 120);
+            assert_eq!(rows.lines[rows.spans[other].0].spans[0].content, " ");
+            assert_eq!(bg(other, NAME_X), Reset);
         }
-    }
-
-    #[test]
-    fn removed_names_are_struck_through() {
-        let mut app = app();
-        app.review.units[2].status = UnitStatus::Removed;
-        app.sel = pos_of(&app, Decision::Accepted);
-        let pos = pos_of(&app, Decision::Pending);
-        assert!(
-            cell_style(&app, pos, NAME_X, 120)
-                .add_modifier
-                .contains(Modifier::CROSSED_OUT)
-        );
-        let other = pos_of(&app, Decision::Investigate);
-        assert!(
-            !cell_style(&app, other, NAME_X, 120)
-                .add_modifier
-                .contains(Modifier::CROSSED_OUT)
-        );
     }
 
     #[test]
@@ -1020,56 +908,27 @@ mod tests {
         use crate::config::Theme;
         for theme in [Theme::Dark, Theme::Mono] {
             let mut app = themed_app(theme);
-            assert_eq!(app.order.len(), 3);
-            let marked = |app: &App, pos: usize| {
-                let s = cell_style(app, pos, NAME_X, 120);
+            let marked = |app: &App, i: usize| {
+                let s = cell_style(app, i, NAME_X, 120);
                 if theme == Theme::Mono {
                     s.add_modifier.contains(Modifier::REVERSED)
                 } else {
                     s.bg.is_some() && s.bg == app.theme.visual().bg
                 }
             };
-            let gutter = |app: &App, pos: usize| {
+            let bar = |app: &App, i: usize| {
                 let rows = build(app, 120);
-                rows.lines[rows.spans[pos].0].spans[1].content.to_string()
+                rows.lines[rows.spans[i].0].spans[0].content.to_string()
             };
-            for (anchor, sel) in [(0, 1), (1, 0)] {
-                app.visual = Some(app.review.units[app.order[anchor]].id.clone());
-                app.sel = sel;
-                assert!(marked(&app, 0) && marked(&app, 1), "{theme:?}");
-                assert!(!marked(&app, 2), "{theme:?}");
-                assert_eq!(gutter(&app, 0), "▌");
-                assert_eq!(gutter(&app, 1), "▌");
-                assert_eq!(gutter(&app, 2), " ");
-            }
-            app.visual = None;
-            assert!((0..3).all(|pos| !marked(&app, pos)), "{theme:?}");
-        }
-    }
-
-    #[test]
-    fn selected_accepted_row_keeps_gutter_and_dimmed_text() {
-        use crate::config::Theme;
-        for theme in [Theme::Dark, Theme::Mono] {
-            let mut app = themed_app(theme);
-            app.sel = pos_of(&app, Decision::Accepted);
-            let pos = app.sel;
-            let rows = build(&app, 120);
-            let line = &rows.lines[rows.spans[pos].0];
-            assert_eq!(line.spans[1].content, "▌");
-            assert_eq!(line.width(), 120);
-            let name = cell_style(&app, pos, NAME_X, 120);
-            if theme == Theme::Mono {
-                assert!(name.add_modifier.contains(Modifier::DIM));
-            } else {
-                assert_eq!(name.fg, app.theme.accepted_row().fg);
-            }
-            // The gutter keeps the selection style.
-            let gutter = cell_style(&app, pos, 1, 120);
-            if theme == Theme::Mono {
-                assert!(gutter.add_modifier.contains(Modifier::BOLD));
-            } else {
-                assert_eq!(gutter.fg, app.theme.accent().fg);
+            for (anchor, at) in [(1, 2), (2, 1)] {
+                app.visual = Some(app.rows()[anchor].id());
+                app.select_row(at);
+                assert!(marked(&app, 1) && marked(&app, 2), "{theme:?}");
+                assert_eq!((bar(&app, 1), bar(&app, 2)), ("▌".into(), "▌".into()));
+                assert_eq!(bar(&app, 3), " ");
+                if theme == Theme::Mono {
+                    assert!(!marked(&app, 3));
+                }
             }
         }
     }

@@ -1,7 +1,7 @@
 //! The review as a front end draws it: [`snapshot`] turns an [`App`] into
 //! a [`View`], plain data any front end can render, in Rust or as JSON
-//! (serde). It says what is on show and what it means: the queue's level
-//! boxes and rows, the unit under the cursor, the unit view's text and
+//! (serde). It says what is on show and what it means: the queue's tree
+//! of files, the file under the cursor, the unit view's text and
 //! tiles, the flagged list, the overlay, the bar. It never says how it
 //! looks: no widths, no colours, no wrapping. Text the agent wrote stays
 //! plain text; the front end must not take it for markup.
@@ -13,8 +13,9 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use super::app::{App, DraftState, Grouping, JumpKind, NOTE_MAX, Overlay, Screen};
+use super::app::{App, DraftState, JumpKind, NOTE_MAX, Overlay, Screen};
 use super::finish::{Reviewing, Step, head_check};
+use super::tree::{FileFacts, RowKind};
 use super::unit::Panel;
 use super::{help, names, tools};
 use crate::approve;
@@ -39,16 +40,17 @@ pub struct View {
     pub header: Header,
     pub bar: Bar,
     pub queue: Queue,
-    /// The unit under the queue's cursor, as its preview shows it.
-    pub preview: Option<Card>,
+    /// The file under the queue's cursor, as its preview shows it; `None`
+    /// on a directory.
+    pub preview: Option<FilePreview>,
     /// The unit view, while it is on show.
     pub unit: Option<UnitScreen>,
     /// The flagged list, while it is on show.
     pub flagged: Option<FlaggedScreen>,
     pub overlay: OverlayView,
     /// What a front end puts up as buttons where they act (the unit's
-    /// decisions on its card, the tiles beside it, the grouping over the
-    /// list), by action id: each one's key, what it does, whether it can.
+    /// decisions on its card, the tiles beside it), by action id: each
+    /// one's key, what it does, whether it can.
     /// Every key is in the help.
     pub actions: BTreeMap<&'static str, ActionView>,
     /// What the open panel's keys do (the notes, a jump list, the
@@ -115,7 +117,7 @@ pub struct Bar {
     /// The command being typed after `:`, and the commands it can become.
     pub command: Option<String>,
     pub commands: Vec<Hint>,
-    /// Visual mode: how many units the selection holds, and what applies.
+    /// Visual mode: how many rows the selection holds, and what applies.
     pub visual: Option<usize>,
     pub visual_actions: Vec<Hint>,
     /// The note being typed on the bar (not from the notes view).
@@ -135,24 +137,74 @@ pub struct NoteEditor {
     pub max: usize,
 }
 
-/// The queue: units in level boxes, most attention first; by exposure
-/// (`zs`), the security box above them.
+/// The queue: the tree of the changed files.
 #[derive(Debug, Clone, Serialize)]
 pub struct Queue {
-    pub grouping: Grouping,
-    pub boxes: Vec<LevelBox>,
-    /// Changed files teer can't show, in a muted box nobody selects.
-    pub skipped: Vec<Skipped>,
-    /// How many units were accepted for you and the key that shows them.
-    pub auto_line: Option<String>,
-    /// The cursor, by position in the queue's order.
-    pub sel: usize,
-    /// The units accepted for you are listed.
-    pub show_auto: bool,
-    /// The attack-surface card over the boxes, while the security lens is
+    /// The tree's rows as they are listed now, top to bottom.
+    pub rows: Vec<TreeRow>,
+    /// The attack-surface card over the tree, while the security lens is
     /// on; absent when it is off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub surface: Option<SurfaceView>,
+}
+
+/// A row of the tree: a directory, a file, or a file teer can't show.
+#[derive(Debug, Clone, Serialize)]
+pub struct TreeRow {
+    /// What a click on the row sends back (`host::Click::Row`), as it
+    /// is: the same across re-runs and folds. Not for show.
+    pub id: String,
+    pub kind: RowKind,
+    /// How many directory rows it is under.
+    pub depth: usize,
+    /// A file's name; a directory's, joined with those it alone holds
+    /// (`src/tui`).
+    pub name: String,
+    /// From the repository's root.
+    pub path: String,
+    /// A directory whose rows are hidden.
+    pub folded: bool,
+    /// The most attention a unit of the file, or under the directory,
+    /// needs; `None` where no unit is listed.
+    pub level: Option<Level>,
+    /// A file's units: done, flagged, being described, disputed, changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<FileState>,
+    /// Why teer can't show the file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// On a directory: every unit under it is accepted, so its level asks
+    /// for nothing more.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub settled: bool,
+    pub selected: bool,
+    pub in_visual: bool,
+}
+
+/// What a file's row says about its units.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct FileState {
+    /// Every one of its units is accepted: nothing is left to do on it.
+    pub done: bool,
+    /// One is flagged.
+    pub flagged: bool,
+    /// One is being described.
+    pub preparing: bool,
+    /// A second model disputes one (`⚠`).
+    pub disputed: bool,
+    /// The last re-run found one changed or new.
+    pub changed: bool,
+}
+
+/// The file under the queue's cursor: its units in line order, each with
+/// its code and the statements written into it.
+#[derive(Debug, Clone, Serialize)]
+pub struct FilePreview {
+    pub path: String,
+    /// The unit `view.open`, a note and the tools act on, by id: the
+    /// file's lead unit, or the one a jump went to.
+    pub selected: String,
+    pub cards: Vec<Card>,
 }
 
 /// The attack-surface card: a row per class the change touches, most
@@ -166,72 +218,6 @@ pub struct SurfaceView {
     pub checked: String,
     /// `denial of service · business logic · crypto details`.
     pub not: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct LevelBox {
-    pub level: Level,
-    /// `Worth a look · 3 files`; the security box's `Security · 2 units`.
-    pub title: String,
-    pub files: Vec<FileGroup>,
-    /// The security box (by exposure): the units with security facts or
-    /// findings, most exposed first; `level` is the most attention one of
-    /// them needs.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub security: bool,
-}
-
-/// One file's units in a box. Listed by unit, the front end leaves the
-/// file's own row out; each row names its file.
-#[derive(Debug, Clone, Serialize)]
-pub struct FileGroup {
-    pub path: String,
-    /// Units of it decided, and how many it has here.
-    pub done: usize,
-    pub total: usize,
-    /// One of its units is being described.
-    pub busy: bool,
-    /// One of its units is flagged.
-    pub flagged: bool,
-    pub rows: Vec<QueueRow>,
-}
-
-/// A unit's row.
-#[derive(Debug, Clone, Serialize)]
-pub struct QueueRow {
-    /// Its position in the queue's order: what the cursor moves over.
-    pub pos: usize,
-    pub id: String,
-    pub level: Level,
-    pub icon: &'static str,
-    pub path: String,
-    pub name: String,
-    /// A whole file: named by its path already.
-    pub whole_file: bool,
-    /// How far it is read beneath the unit that calls it (0 at the top).
-    pub depth: usize,
-    pub decision: Decision,
-    /// `pending`, `accepted`, `flagged`.
-    pub state: &'static str,
-    /// The start of a flagged unit's note.
-    pub note: Option<String>,
-    /// A second model disputes it (`⚠`).
-    pub disputed: bool,
-    /// It has a note its state doesn't show (`✎`).
-    pub noted: bool,
-    /// The unit was removed.
-    pub removed: bool,
-    pub preparing: bool,
-    pub selected: bool,
-    pub in_visual: bool,
-    /// The last re-run found it changed or new.
-    pub changed: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct Skipped {
-    pub path: String,
-    pub why: String,
 }
 
 /// One unit as the preview, the unit view and the flagged list show it.
@@ -598,7 +584,8 @@ pub struct ActionView {
     pub what: String,
     /// Needs an agent, and there is none.
     pub off: bool,
-    /// A toggle's state (listed by file, zoomed); `None` for the rest.
+    /// A toggle's state (zoomed, the units accepted for you listed);
+    /// `None` for the rest.
     pub on: Option<bool>,
 }
 
@@ -798,7 +785,7 @@ pub fn snapshot(app: &App, syntax: Option<&Cache>) -> View {
         bar: bar(app),
         queue: queue(app),
         preview: (app.screen == Screen::Queue)
-            .then(|| app.selected().map(|u| card(app, u, Notes::Inline, syntax)))
+            .then(|| preview(app, syntax))
             .flatten(),
         unit: (app.screen == Screen::Unit)
             .then(|| unit_screen(app, syntax))
@@ -949,33 +936,10 @@ fn plural(n: usize, word: &str) -> String {
     format!("{n} {word}{}", if n == 1 { "" } else { "s" })
 }
 
-/// What a level's box is called. Only units accepted for you are listed at
-/// [`Level::Same`].
-fn box_name(level: Level) -> &'static str {
-    match level {
-        Level::Same => "Accepted for you",
-        _ => level.title(),
-    }
-}
-
-/// The line under the boxes about the units accepted for you.
-pub fn auto_line(app: &App) -> Option<String> {
-    let n = app.auto_accepted();
-    if n == 0 {
-        return None;
-    }
-    let does = if app.show_auto { "hides" } else { "shows" };
-    let key = app.keys.label(Action::ToggleAutoAccepted);
-    Some(format!(
-        "{} accepted for you, {key} {does} them",
-        plural(n, "unit")
-    ))
-}
-
 /// The attack-surface card while the security lens is on.
 fn surface(app: &App) -> Option<SurfaceView> {
     use crate::security::surface::{CHECKED, NOT_CHECKED, surface};
-    (app.security.enabled && app.security.by_exposure).then(|| SurfaceView {
+    (app.security.enabled && app.security.surface).then(|| SurfaceView {
         rows: surface(&app.review).rows,
         checked: CHECKED.join(" · "),
         not: NOT_CHECKED.join(" · "),
@@ -983,99 +947,64 @@ fn surface(app: &App) -> Option<SurfaceView> {
 }
 
 fn queue(app: &App) -> Queue {
-    let mut boxes: Vec<LevelBox> = Vec::new();
+    let at = app.cursor_row();
     let visual = app.visual_rows();
-    for start in (0..app.order.len()).filter(|&p| app.starts_file(p)) {
-        let security = app.in_security_box(start);
-        let level = if security {
-            app.security_box_level()
-        } else {
-            app.file_level(start)
-        };
-        let range = app.file_range(start);
-        let units: Vec<&Unit> = range
-            .clone()
-            .map(|p| &app.review.units[app.order[p]])
-            .collect();
-        let rows = range
-            .map(|pos| {
-                let ui = app.order[pos];
-                let u = &app.review.units[ui];
-                let level = app.shown_level(ui);
-                QueueRow {
-                    pos,
-                    id: u.id.clone(),
-                    level,
-                    icon: level.icon(),
-                    path: sanitize(&u.file.display().to_string()),
-                    name: names::row_name(u),
-                    whole_file: u.kind == UnitKind::File,
-                    depth: app.depth.get(ui).copied().unwrap_or(0),
-                    decision: u.decision,
-                    state: names::state_word(u),
-                    note: (u.decision == Decision::Investigate)
-                        .then(|| names::note_start(u))
-                        .flatten(),
-                    disputed: !app.level_of(ui).doubts.is_empty(),
-                    noted: u.decision != Decision::Investigate && !u.dive.note.trim().is_empty(),
-                    removed: u.status == UnitStatus::Removed,
-                    preparing: u.prep == Prep::Pending,
-                    selected: pos == app.sel,
-                    in_visual: visual.as_ref().is_some_and(|r| r.contains(&pos)),
-                    changed: app.changed.contains(&u.id),
-                }
-            })
-            .collect();
-        let group = FileGroup {
-            path: sanitize(&units[0].file.display().to_string()),
-            done: units
-                .iter()
-                .filter(|u| u.decision != Decision::Pending)
-                .count(),
-            total: units.len(),
-            busy: units.iter().any(|u| u.prep == Prep::Pending),
-            flagged: units.iter().any(|u| u.decision == Decision::Investigate),
-            rows,
-        };
-        match boxes.last_mut() {
-            Some(b) if b.level == level && b.security == security => b.files.push(group),
-            _ => boxes.push(LevelBox {
-                level,
-                title: String::new(),
-                files: vec![group],
-                security,
-            }),
-        }
-    }
-    for b in &mut boxes {
-        let n = match app.grouping {
-            Grouping::File => plural(b.files.len(), "file"),
-            Grouping::Unit => plural(b.files.iter().map(|f| f.total).sum(), "unit"),
-        };
-        let name = if b.security {
-            "Security"
-        } else {
-            box_name(b.level)
-        };
-        b.title = format!("{name} · {n}");
-    }
+    let rows = app
+        .rows()
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let facts = match r.kind {
+                RowKind::File => app.file_facts(&r.path),
+                _ => None,
+            };
+            TreeRow {
+                id: r.id(),
+                kind: r.kind,
+                depth: r.depth,
+                name: sanitize(&r.name),
+                path: sanitize(&r.path.display().to_string()),
+                folded: r.folded,
+                level: match r.kind {
+                    RowKind::Dir => app.dir_level(&r.path),
+                    _ => facts.map(|f| f.level),
+                },
+                file: facts.map(file_state),
+                why: app.skipped_why(&r.path).map(sanitize),
+                settled: r.kind == RowKind::Dir && app.dir_done(&r.path),
+                selected: at == Some(i),
+                in_visual: visual.as_ref().is_some_and(|v| v.contains(&i)),
+            }
+        })
+        .collect();
     Queue {
-        grouping: app.grouping,
-        boxes,
-        skipped: app
-            .review
-            .skipped
-            .iter()
-            .map(|f| Skipped {
-                path: sanitize(&f.path.display().to_string()),
-                why: sanitize(&f.why),
-            })
-            .collect(),
-        auto_line: auto_line(app),
-        sel: app.sel,
-        show_auto: app.show_auto,
+        rows,
         surface: surface(app),
     }
+}
+
+fn file_state(f: FileFacts) -> FileState {
+    FileState {
+        done: f.done,
+        flagged: f.flagged,
+        preparing: f.preparing,
+        disputed: f.disputed,
+        changed: f.changed,
+    }
+}
+
+/// The file of the queue's selected unit: its listed units, by line.
+fn preview(app: &App, syntax: Option<&Cache>) -> Option<FilePreview> {
+    let selected = app.selected()?;
+    let file = &selected.file;
+    Some(FilePreview {
+        path: sanitize(&file.display().to_string()),
+        selected: selected.id.clone(),
+        cards: app
+            .file_units(file)
+            .map(|p| card(app, &app.review.units[app.order[p]], Notes::Inline, syntax))
+            .collect(),
+    })
 }
 
 /// How a card's statements go with its code.
@@ -1504,8 +1433,7 @@ pub const BUTTONS: &[Action] = &[
     Action::GotoCallers,
     Action::GotoEditor,
     Action::FindUnit,
-    Action::ToggleByFile,
-    Action::ToggleSecurityOrder,
+    Action::ToggleSurface,
     Action::ToggleAutoAccepted,
     Action::ToggleZoom,
     Action::MoveNextPending,
@@ -1528,6 +1456,7 @@ fn actions(app: &App) -> BTreeMap<&'static str, ActionView> {
         .map(|&a| {
             let what = match app.screen {
                 Screen::Flagged => help::flagged_describe(a),
+                Screen::Queue if !app.mode.improves() => help::queue_describe(a),
                 _ => None,
             }
             .unwrap_or(a.describe());
@@ -1555,8 +1484,7 @@ fn window_actions(actions: &[Action]) -> Vec<Action> {
 /// Whether the toggle `a` is on; `None` for what isn't one.
 fn toggled(app: &App, a: Action) -> Option<bool> {
     match a {
-        Action::ToggleByFile => Some(app.grouping == Grouping::File),
-        Action::ToggleSecurityOrder => Some(app.security.by_exposure),
+        Action::ToggleSurface => Some(app.security.surface),
         Action::ToggleAutoAccepted => Some(app.show_auto),
         Action::ToggleZoom => Some(app.unit.zoom),
         _ => None,
@@ -1905,45 +1833,107 @@ mod tests {
     }
 
     #[test]
-    fn the_queue_lists_every_unit_once_in_its_levels_box() {
-        let a = app(5);
+    fn the_queue_is_the_tree_of_the_files_and_the_preview_the_cursors_file() {
+        // u0..u2 in f0.rs, u3 and u4 in f1.rs.
+        let mut a = app(5);
+        a.review.units[3].decision = Decision::Investigate;
+        a.review.units[1].prep = Prep::Pending;
+        a.changed.insert("u4".into());
         let v = snapshot(&a, None);
-        let rows: Vec<&QueueRow> = v
-            .queue
-            .boxes
-            .iter()
-            .flat_map(|b| &b.files)
-            .flat_map(|f| &f.rows)
-            .collect();
-        assert_eq!(rows.len(), a.order.len());
-        for (k, r) in rows.iter().enumerate() {
-            assert_eq!(r.pos, k);
-            assert_eq!(r.selected, k == a.sel);
-        }
-        for b in &v.queue.boxes {
-            assert!(
-                b.files
-                    .iter()
-                    .flat_map(|f| &f.rows)
-                    .all(|r| r.level == b.level)
-            );
-            assert!(b.title.starts_with(box_name(b.level)), "{}", b.title);
-        }
-        assert_eq!(v.bar.pending, 5);
-        assert!(v.preview.is_some());
+        let rows = &v.queue.rows;
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["f0.rs", "f1.rs"]);
+        assert!(rows.iter().all(|r| r.kind == RowKind::File && r.depth == 0));
+        assert_eq!(
+            (rows[0].id.as_str(), rows[0].path.as_str()),
+            ("f0.rs", "f0.rs")
+        );
+        assert!(rows[0].selected && !rows[1].selected);
+        assert_eq!(rows[0].level, Some(Level::Routine));
+        let (f0, f1) = (rows[0].file.unwrap(), rows[1].file.unwrap());
+        assert!(f0.preparing && !f0.flagged && !f0.done && !f0.changed);
+        assert!(f1.flagged && f1.changed && !f1.preparing && !f1.done);
+        assert_eq!(v.bar.pending, 4);
+        // The preview: the file's units, in line order.
+        let p = v.preview.expect("the file under the cursor");
+        assert_eq!(p.path, "f0.rs");
+        let ids: Vec<&str> = p.cards.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["u0", "u1", "u2"]);
         assert!(v.unit.is_none());
     }
 
     #[test]
+    fn directories_are_rows_with_the_level_under_them_and_no_preview() {
+        let mut a = app(4);
+        for (u, file) in
+            a.review
+                .units
+                .iter_mut()
+                .zip(["src/tui/a.rs", "src/tui/a.rs", "src/b.rs", "c.rs"])
+        {
+            u.file = file.into();
+        }
+        a.review.skipped = vec![crate::git::SkippedFile {
+            path: "src/logo.png".into(),
+            status: crate::git::FileStatus::Added,
+            why: "binary".into(),
+        }];
+        a.rebuild_order();
+        a.levels[0].level = Level::Attention;
+        let v = snapshot(&a, None);
+        let rows: Vec<(RowKind, usize, &str, &str)> = v
+            .queue
+            .rows
+            .iter()
+            .map(|r| (r.kind, r.depth, r.name.as_str(), r.id.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (RowKind::Dir, 0, "src", "src/"),
+                (RowKind::Dir, 1, "tui", "src/tui/"),
+                (RowKind::File, 2, "a.rs", "src/tui/a.rs"),
+                (RowKind::File, 1, "b.rs", "src/b.rs"),
+                (RowKind::Skipped, 1, "logo.png", "src/logo.png"),
+                (RowKind::File, 0, "c.rs", "c.rs"),
+            ]
+        );
+        let rows = &v.queue.rows;
+        assert_eq!(rows[0].level, Some(Level::Attention), "the most under it");
+        assert_eq!(rows[3].level, Some(Level::Routine));
+        assert!(rows[0].file.is_none() && rows[4].file.is_none());
+        assert_eq!(
+            (rows[4].level, rows[4].why.as_deref()),
+            (None, Some("binary"))
+        );
+        // A click on a directory selects and folds it: no preview.
+        a.click_row("src/");
+        let v = snapshot(&a, None);
+        let names: Vec<&str> = v.queue.rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["src", "c.rs"]);
+        assert!(v.queue.rows[0].folded && v.queue.rows[0].selected);
+        assert!(v.preview.is_none());
+        // Visual mode marks its rows.
+        press(&mut a, "Vj");
+        let v = snapshot(&a, None);
+        assert!(v.queue.rows.iter().all(|r| r.in_visual));
+        assert_eq!(v.bar.visual, Some(2));
+    }
+
+    #[test]
     fn deciding_shows_in_the_rows_and_the_counts() {
-        let mut a = app(3);
+        let mut a = app(4);
         a.sel = 0;
         press(&mut a, "a");
         let v = snapshot(&a, None);
-        let first = &v.queue.boxes[0].files[0].rows[0];
-        assert_eq!(first.decision, Decision::Accepted);
-        assert_eq!(first.state, "accepted");
-        assert_eq!((v.bar.accepted, v.bar.pending), (1, 2));
+        let rows = &v.queue.rows;
+        assert!(rows[0].file.unwrap().done && !rows[0].selected);
+        assert!(!rows[1].file.unwrap().done && rows[1].selected);
+        assert_eq!((v.bar.accepted, v.bar.pending), (3, 1));
+        assert_eq!(
+            v.actions["decide.accept"].what,
+            "accept the file's pending units"
+        );
     }
 
     #[test]
@@ -2033,6 +2023,7 @@ mod tests {
         let json = serde_json::to_value(snapshot(&a, None)).unwrap();
         assert_eq!(json["screen"], "Queue");
         assert_eq!(json["overlay"]["kind"], "None");
-        assert!(json["queue"]["boxes"].is_array());
+        assert_eq!(json["queue"]["rows"][0]["kind"], "File");
+        assert_eq!(json["preview"]["path"], "f0.rs");
     }
 }

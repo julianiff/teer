@@ -1,9 +1,10 @@
-//! The queue on screen (v2 Phase 4): the header says what is reviewed with
-//! the change's summary under it; the rows show each unit's glyph, file,
-//! name and state with the start of its note, and `⚠` when disputed; a
-//! line counts the units accepted for you; the preview sits beside or
-//! below; the bottom bar counts, keeps the mode and says when nothing is
-//! pending; the note line; the help.
+//! The queue on screen: the header says what is reviewed with the change's
+//! summary under it; the tree lists the changed files under their
+//! directories, each behind the icon of its level, with `⚑` when flagged
+//! and `⚠` when disputed; a line names the key that shows the units
+//! accepted for you; the pane with the file's changes sits beside or below;
+//! the bottom bar counts, keeps the mode and says when nothing is pending;
+//! the note line; the help.
 
 use crate::common;
 
@@ -22,15 +23,15 @@ use teer::review::model::{
     BranchNames, Change, Commit, Decision, LineRef, Marker, PrInfo, PrMeta, Prep, Review, Risk,
     SecondOpinion, Side, Unit, UnitStatus, Verdict,
 };
-use teer::session::app::{Grouping, Overlay, Screen};
+use teer::session::app::{Overlay, Screen};
 use teer::tui::app::{App, Target};
-use teer::tui::{preview, ui};
+use teer::tui::{preview, slim, ui};
 
-/// The note on the flagged unit: longer than the 40 characters a row shows.
+/// The note on the flagged unit.
 const NOTE: &str = "The retry is gone and nothing replaces it when the call times out.";
 
 /// Unit `u{i}` named `name` in `file`, described with one statement of
-/// `risk`: high is ▲, medium ◆, low ●.
+/// `risk`: high is ┃, medium ┃, low ┃.
 fn described(i: usize, file: &str, name: &str, risk: Risk) -> Unit {
     let mut u = unit(i, file);
     u.symbol = name.into();
@@ -71,8 +72,8 @@ fn no_change(i: usize, file: &str) -> Unit {
     u
 }
 
-/// ▲ `refund` pending, ◆ `create_order` flagged with [`NOTE`], ● `cart_row`
-/// accepted, ● `total` pending; two units accepted for you.
+/// ┃ `refund` pending, ┃ `create_order` flagged with [`NOTE`], ┃ `cart_row`
+/// accepted, ┃ `total` pending; two units accepted for you.
 fn units() -> Vec<Unit> {
     let mut flagged = described(1, "src/api/routes.rs", "create_order", Risk::Medium);
     flagged.decision = Decision::Investigate;
@@ -94,7 +95,7 @@ fn queue_of(review: Review) -> App {
     let _env = isolate_env();
     let mut app = App::new(review, Config::default(), Keymap::default());
     app.screen = Screen::Queue;
-    app.grouping = Grouping::Unit;
+
     app.rebuild_order();
     app.sel = 0;
     // The rows where they always were: the attack-surface card over them
@@ -129,13 +130,24 @@ fn bar(app: &App, w: u16) -> String {
     rows(&draw(app, w, 30)).pop().unwrap()
 }
 
-/// The row of unit `name` drawn `w` x `h`.
-fn row_of(app: &App, name: &str, w: u16, h: u16) -> String {
-    let s = screen(app, w, h);
-    s.lines()
-        .find(|l| l.starts_with("│") && l.contains(name))
-        .unwrap_or_else(|| panic!("{name} is listed:\n{s}"))
-        .to_string()
+/// The tree drawn beside the pane, `w` x `h`: its rows without the
+/// header, the bar and the blank rows under it.
+fn tree(app: &App, w: u16, h: u16) -> Vec<String> {
+    assert!(w >= 110, "beside the pane");
+    let s = rows(&draw(app, w, h));
+    let mut tree: Vec<String> = s[1..s.len() - 1]
+        .iter()
+        .map(|l| l.split('│').next().unwrap().trim_end().to_string())
+        .collect();
+    while tree.last().is_some_and(String::is_empty) {
+        tree.pop();
+    }
+    tree
+}
+
+/// The tree's row of the file or directory `name`, by its index.
+fn row_at(app: &App, name: &str) -> usize {
+    (app.rows().iter().position(|r| r.name == name)).unwrap_or_else(|| panic!("{name} is listed"))
 }
 
 fn pos_of(app: &App, id: &str) -> usize {
@@ -174,10 +186,15 @@ fn the_header_says_what_is_reviewed_with_the_summary_under_it() {
     let s = rows(&draw(&app, 120, 30));
     assert_eq!(s[0].trim_end(), " your changes");
     assert_eq!(s[1].trim_end(), " Adds refunds and retries failed charges.");
-    // One line, cut on a narrow terminal.
+    // Two lines on a narrow terminal.
     let s = rows(&draw(&app, 30, 20));
-    assert!(s[1].ends_with('…'), "{}", s[1]);
-    assert!(!s[2].contains("charges"), "{}", s[2]);
+    assert_eq!(s[1].trim_end(), " Adds refunds and retries");
+    assert_eq!(s[2].trim_end(), " failed charges.");
+    // Never more than two: the second one is cut.
+    let s = rows(&draw(&app, 16, 20));
+    assert_eq!(s[1].trim_end(), " Adds refunds");
+    assert!(s[2].trim_end().ends_with('…'), "{}", s[2]);
+    assert!(!s[3].contains("charges"), "{}", s[3]);
 
     // A branch, by its name.
     let mut r = review(units());
@@ -190,8 +207,8 @@ fn the_header_says_what_is_reviewed_with_the_summary_under_it() {
     let app = queue_of(r);
     let s = rows(&draw(&app, 120, 30));
     assert_eq!(s[0].trim_end(), " feature/refunds");
-    // No summary yet: the list starts under the header.
-    assert!(s[1].starts_with("╭─ Needs a close look"), "{}", s[1]);
+    // No summary yet: the tree starts under the header.
+    assert!(s[1].starts_with(" ▾ src"), "{}", s[1]);
 
     // A pull request, by its title, then its number.
     let mut r = review(units());
@@ -224,103 +241,138 @@ fn the_header_leaves_the_flagged_count_to_the_bar() {
 // ---- Rows --------------------------------------------------------------
 
 #[test]
-fn rows_show_glyph_path_name_and_state() {
+fn the_tree_lists_directories_and_files_behind_their_marks() {
     let app = queue();
-    let refund = row_of(&app, "refund", 100, 40);
-    assert!(
-        refund.contains("▌  ▲ src/billing/charge.rs  refund"),
-        "{refund}"
+    assert_eq!(
+        tree(&app, 160, 40),
+        [
+            " ▾ src",
+            "   ▾ api",
+            "▌    ┃ routes.rs ⚑",
+            "   ▾ billing",
+            "     ┃ charge.rs",
+            "   ▾ ui",
+            "     ┃ cart.rs",
+            "",
+            "   za shows 2 accepted for you",
+        ]
     );
-    assert!(refund.trim_end().ends_with("pending │"), "{refund}");
-    let cart = row_of(&app, "cart_row", 100, 40);
-    assert!(cart.contains("● src/ui/cart.rs"), "{cart}");
-    assert!(cart.trim_end().ends_with("accepted │"), "{cart}");
-    // Flagged: the first 40 characters of the note, and no more.
-    let first: String = NOTE.chars().take(40).collect();
-    let more: String = NOTE.chars().take(41).collect();
-    let flagged = row_of(&app, "create_order", 100, 40);
-    assert!(flagged.contains("◆ src/api/routes.rs"), "{flagged}");
-    assert!(
-        flagged.contains(&format!("flagged · “{first}…”")),
-        "{flagged}"
-    );
-    assert!(!flagged.contains(&more), "{flagged}");
-    // A short note whole, without the ellipsis.
-    let mut app = queue();
-    let i = app.order[pos_of(&app, "u1")];
-    app.review.units[i].dive.note = "Retry?".into();
-    let flagged = row_of(&app, "create_order", 100, 40);
-    assert!(flagged.contains("flagged · “Retry?” │"), "{flagged}");
-    // No note: the state alone.
-    app.review.units[i].dive.note.clear();
-    let flagged = row_of(&app, "create_order", 100, 40);
-    assert!(flagged.trim_end().ends_with("flagged │"), "{flagged}");
 }
 
 #[test]
-fn rows_are_grouped_by_level_then_file() {
-    let app = queue();
-    let s = screen(&app, 160, 40);
-    let at = |what: &str| {
-        s.find(what)
-            .unwrap_or_else(|| panic!("{what} is drawn:\n{s}"))
+fn a_row_says_no_more_than_its_mark_its_name_and_what_to_act_on() {
+    let mut app = queue();
+    let rows = tree(&app, 160, 40).join("\n");
+    // No state in words, no path, no note, no count.
+    let first: String = NOTE.chars().take(10).collect();
+    for gone in ["pending", "flagged", "src/", &first, "1/", "unit"] {
+        assert!(!rows.contains(gone), "{gone}:\n{rows}");
+    }
+    // A file with nothing left to do steps back: its row is muted.
+    let cart = row_at(&app, "cart.rs");
+    let name_fg = |app: &App| {
+        let buf = draw(app, 160, 40);
+        let (r, _) = *targets(app)
+            .iter()
+            .find(|(_, t)| *t == Target::Row(cart))
+            .unwrap();
+        let x = rows_text(&buf, r.y).find("cart.rs").unwrap() as u16;
+        (buf[(x - 2, r.y)].style().fg, buf[(x, r.y)].style().fg)
     };
-    assert!(at("Needs a close look · 1 unit") < at("refund"));
-    assert!(at("refund") < at("Worth a look · 1 unit"));
-    assert!(at("Worth a look") < at("create_order"));
-    assert!(at("create_order") < at("Routine · 2 units"));
-    // In a level, by file: cart.rs's units together.
-    assert!(at("Routine") < at("cart_row") && at("Routine") < at("total"));
+    let muted = app.theme.muted().fg;
+    assert_ne!(name_fg(&app).1, muted);
+    let i = app.order[pos_of(&app, "u3")];
+    app.review.units[i].decision = Decision::Accepted;
+    assert_eq!(name_fg(&app), (muted, muted));
+}
+
+/// Row `y` of `buf`, a byte per cell up to the first wide one.
+fn rows_text(buf: &Buffer, y: u16) -> String {
+    (0..buf.area.width)
+        .map(|x| {
+            let s = buf[(x, y)].symbol();
+            if s.len() == 1 { s } else { "?" }
+        })
+        .collect()
+}
+
+#[test]
+fn the_mark_in_front_has_the_colour_of_the_files_level() {
+    let app = queue();
+    let buf = draw(&app, 160, 40);
+    let mark = |name: &str| {
+        let i = row_at(&app, name);
+        let (r, _) = *targets(&app)
+            .iter()
+            .find(|(_, t)| *t == Target::Row(i))
+            .unwrap();
+        let x = rows_text(&buf, r.y).find(name).unwrap() as u16 - 2;
+        (buf[(x, r.y)].symbol().to_string(), buf[(x, r.y)].style().fg)
+    };
+    let t = &app.theme;
+    assert_eq!(mark("charge.rs"), ("┃".into(), Some(t.risk_high)));
+    assert_eq!(mark("routes.rs"), ("┃".into(), Some(t.risk_medium)));
+    // A routine file is calm.
+    assert_eq!(mark("cart.rs"), ("┃".into(), t.muted().fg));
+    // An open directory has no colour of its own.
+    assert_eq!(mark("billing"), ("▾".into(), t.muted().fg));
+}
+
+#[test]
+fn a_folded_directory_has_the_colour_of_the_most_attention_under_it() {
+    let mut app = queue();
+    let billing = row_at(&app, "billing");
+    app.select_row(billing);
+    common::v2::press(&mut app, "l");
+    let rows = tree(&app, 160, 40);
+    assert_eq!(rows[3], "▌  ▸ billing");
+    assert!(!rows.iter().any(|r| r.contains("charge.rs")), "{rows:?}");
+    let buf = draw(&app, 160, 40);
+    assert_eq!(buf[(3, 4)].symbol(), "▸");
+    assert_eq!(buf[(3, 4)].style().fg, Some(app.theme.risk_high));
+    // The pane beside a directory is empty.
+    let pane = preview_area(&app);
+    for y in pane.y..pane.bottom() {
+        let text: String = (pane.x + 1..pane.right())
+            .map(|x| buf[(x, y)].symbol())
+            .collect();
+        assert_eq!(text.trim(), "", "row {y}");
+    }
+    // `l` opens it again.
+    common::v2::press(&mut app, "l");
+    assert_eq!(tree(&app, 160, 40)[4], "     ┃ charge.rs");
 }
 
 #[test]
 fn a_disputed_unit_shows_the_warning() {
     let mut us = units();
     us[3] = disputed(us[3].clone());
-    let app = queue_of(review(us));
-    let total = row_of(&app, "total", 100, 40);
-    assert!(total.contains("total ⚠"), "{total}");
-    for name in ["refund", "create_order", "cart_row"] {
-        let row = row_of(&app, name, 160, 40);
-        assert!(!row.contains('⚠'), "{row}");
-    }
-}
-
-#[test]
-fn listed_by_file_the_files_are_labels_and_rows_leave_the_path_out() {
-    let mut app = queue();
-    app.grouping = Grouping::File;
-    app.rebuild_order();
+    let mut app = queue_of(review(us));
+    let rows = tree(&app, 160, 40);
+    let cart = row_at(&app, "cart.rs");
+    assert!(rows[cart].ends_with("cart.rs ⚠"), "{rows:?}");
+    assert_eq!(rows.iter().filter(|r| r.contains('⚠')).count(), 1);
+    // In the pane, on the unit it is about.
+    app.select_row(cart);
     let s = screen(&app, 160, 40);
-    assert!(s.contains("│ src/ui/cart.rs"), "{s}");
-    let total = row_of(&app, "total", 100, 40);
-    assert!(!total.contains("cart.rs"), "{total}");
-    assert!(total.trim_end().ends_with("pending │"), "{total}");
-}
-
-#[test]
-fn the_auto_line_counts_units_accepted_for_you_and_za_shows_them() {
-    let mut app = queue();
-    let s = screen(&app, 160, 40);
+    assert!(s.contains("total ⚠"), "{s}");
     assert!(
-        s.contains(" ○ 2 units accepted for you, za shows them"),
+        !s.contains("cart_row ⚠") && !s.contains("cart_row ✓ ⚠"),
         "{s}"
     );
-    assert!(!s.contains("Accepted for you ·"), "{s}");
+}
+
+#[test]
+fn the_auto_line_names_the_key_that_shows_the_units_accepted_for_you() {
+    let mut app = queue();
+    let s = screen(&app, 160, 40);
+    assert!(s.contains("   za shows 2 accepted for you"), "{s}");
+    assert!(!s.contains("style.rs"), "{s}");
     app.show_auto = true;
     app.rebuild_order();
-    let s = screen(&app, 160, 40);
-    assert!(s.contains("Accepted for you · 2 units"), "{s}");
-    assert!(
-        s.contains("○ 2 units accepted for you, za hides them"),
-        "{s}"
-    );
-    let auto = row_of(&app, "s5", 100, 40);
-    assert!(
-        auto.contains("○ src/ui/style.rs ") && auto.contains(" s5 "),
-        "{auto}"
-    );
-    assert!(auto.trim_end().ends_with("accepted │"), "{auto}");
+    let rows = tree(&app, 160, 40);
+    assert!(rows.contains(&"     ○ style.rs".to_string()), "{rows:?}");
+    assert_eq!(rows.last().unwrap(), "   za hides 2 accepted for you");
     // None accepted for you: no line.
     let app = queue_of(review(units().into_iter().take(4).collect()));
     assert!(!screen(&app, 160, 40).contains("accepted for you"));
@@ -329,77 +381,94 @@ fn the_auto_line_counts_units_accepted_for_you_and_za_shows_them() {
 #[test]
 fn visual_rows_are_marked() {
     let mut app = queue();
-    app.visual = Some(app.review.units[app.order[0]].id.clone());
-    app.sel = 1;
+    let (from, to) = (row_at(&app, "routes.rs"), row_at(&app, "charge.rs"));
+    app.visual = Some(app.rows()[from].id());
+    app.select_row(to);
     let buf = draw(&app, 160, 40);
     let visual = app.theme.visual().bg;
     assert!(visual.is_some());
     let marked: Vec<usize> = targets(&app)
         .iter()
         .filter_map(|(r, t)| match t {
-            Target::Unit(pos) if buf[(r.x + 6, r.y)].style().bg == visual => Some(*pos),
+            Target::Row(i) if buf[(r.right() - 1, r.y)].style().bg == visual => Some(*i),
             _ => None,
         })
         .collect();
-    assert_eq!(marked, vec![0, 1]);
+    assert_eq!(marked, (from..=to).collect::<Vec<_>>());
 }
 
 #[test]
 fn a_click_on_a_row_selects_it() {
     let mut app = queue();
-    draw(&app, 160, 40);
-    let pos = pos_of(&app, "u3");
-    let (r, _) = *targets(&app)
-        .iter()
-        .find(|(_, t)| *t == Target::Unit(pos))
-        .expect("the row is a target");
-    for kind in [
-        MouseEventKind::Down(MouseButton::Left),
-        MouseEventKind::Up(MouseButton::Left),
-    ] {
-        app.on_mouse(MouseEvent {
-            kind,
-            column: r.x + 8,
-            row: r.y,
-            modifiers: KeyModifiers::NONE,
-        });
-    }
-    assert_eq!(app.sel, pos);
+    let click = |app: &mut App, name: &str| {
+        draw(app, 160, 40);
+        let i = row_at(app, name);
+        let (r, _) = *targets(app)
+            .iter()
+            .find(|(_, t)| *t == Target::Row(i))
+            .expect("the row is a target");
+        // Not a double click.
+        app.last_click = None;
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            app.on_mouse(MouseEvent {
+                kind,
+                column: r.x + 8,
+                row: r.y,
+                modifiers: KeyModifiers::NONE,
+            });
+        }
+    };
+    // A file: the cursor on it, its lead unit selected.
+    click(&mut app, "cart.rs");
+    assert_eq!(app.selected().map(|u| u.id.as_str()), Some("u3"));
+    // A directory: the cursor on it, and it folds; again, it opens.
+    click(&mut app, "ui");
+    assert_eq!(app.on_dir(), Some(std::path::Path::new("src/ui")));
+    assert!(!tree(&app, 160, 40).iter().any(|r| r.contains("cart.rs")));
+    click(&mut app, "ui");
+    assert!(tree(&app, 160, 40).iter().any(|r| r.contains("cart.rs")));
 }
 
-// ---- Preview -----------------------------------------------------------
+// ---- The pane ------------------------------------------------------------
 
-/// Where the preview was drawn: the area it registered for the wheel.
+/// Where the pane was drawn: the area it registered for the wheel.
 fn preview_area(app: &App) -> Rect {
     targets(app)
         .iter()
         .find_map(|(r, t)| (*t == Target::Detail).then_some(*r))
-        .expect("a preview")
+        .expect("a pane")
 }
 
 #[test]
-fn the_preview_sits_beside_on_a_wide_terminal_and_below_on_a_narrow_one() {
+fn the_pane_sits_beside_on_a_wide_terminal_and_below_on_a_narrow_one() {
     let app = queue();
     let s = screen(&app, 160, 40);
     let wide = preview_area(&app);
     assert!(wide.x > 0 && wide.y == 1, "{wide:?}");
-    // The review box, with what the agent said in it.
-    let why = s.find("╭ review ").expect(&s);
-    let said = s.find("Summary of refund.").expect(&s);
-    assert!(why < said, "{s}");
-    let line = s.lines().find(|l| l.contains("╭ review ")).unwrap();
-    let x = line.find("╭ review ").unwrap();
-    assert!(
-        line[..x].contains('│') || line[..x].contains('╯'),
-        "beside the list: {line}"
-    );
+    // The unit's head line, then what the agent says it does.
+    let line = s
+        .lines()
+        .find(|l| l.contains("┃ create_order ⚑"))
+        .expect(&s);
+    assert!(line.starts_with(" ▾ src"), "beside the tree: {line}");
+    assert!(s.contains("│   Summary of create_order."), "{s}");
 
     let s = screen(&app, 100, 40);
     let narrow = preview_area(&app);
     assert!(narrow.x == 0 && narrow.y > 1, "{narrow:?}");
-    assert!(s.contains("Summary of refund."), "{s}");
-    let line = s.lines().find(|l| l.contains("╭ review ")).unwrap();
-    assert!(line.starts_with(" ╭ review "), "below the list: {line}");
+    let lines: Vec<&str> = s.lines().collect();
+    let head = (lines
+        .iter()
+        .position(|l| l.starts_with(" ┃ create_order ⚑")))
+    .expect(&s);
+    assert!(lines[head - 1].starts_with("────"), "under the rule: {s}");
+    assert!(
+        lines[head + 1].starts_with("   Summary of create_order."),
+        "{s}"
+    );
 
     // The layout the queue draws is the one `layout_of` gives it.
     for w in [100u16, 160] {
@@ -412,52 +481,76 @@ fn the_preview_sits_beside_on_a_wide_terminal_and_below_on_a_narrow_one() {
 }
 
 #[test]
-fn beside_the_preview_the_queue_takes_up_to_45_percent() {
-    let app = queue();
-    let (list, _) = preview::layout_of(&app, Rect::new(0, 1, 120, 38));
-    assert!(list.width > 42 && list.width <= 54, "{list:?}");
+fn the_pane_leaves_what_the_unit_view_is_for() {
+    let mut app = queue();
+    app.has_agent = true;
+    let s = screen(&app, 160, 40);
+    for gone in [
+        "review",
+        "agent",
+        "haiku",
+        "code change",
+        "Why this level",
+        "src/api/routes.rs",
+        "Nothing selected",
+    ] {
+        assert!(!s.contains(gone), "{gone}:\n{s}");
+    }
 }
 
 #[test]
-fn a_change_with_code_previews_why_then_its_code() {
+fn beside_the_pane_the_tree_is_as_wide_as_its_rows_and_at_most_45_percent() {
+    let app = queue();
+    let (list, _) = preview::layout_of(&app, Rect::new(0, 1, 120, 38));
+    assert_eq!(list.width as usize, slim::fit_width(&app));
+    assert_eq!(list.width, 31);
+    // A long name: no wider than 45%.
+    let mut us = units();
+    us[0].file = format!("src/billing/{}.rs", "long_".repeat(20)).into();
+    let app = queue_of(review(us));
+    let (list, _) = preview::layout_of(&app, Rect::new(0, 1, 120, 38));
+    assert_eq!(list.width, 54);
+    // A short tree: no narrower than 24.
+    let app = queue_of(review(vec![described(0, "a.rs", "f", Risk::Low)]));
+    let (list, _) = preview::layout_of(&app, Rect::new(0, 1, 120, 38));
+    assert_eq!(list.width, 24);
+}
+
+#[test]
+fn the_pane_shows_every_unit_of_the_file_in_line_order_with_its_code() {
     let repo = common::FixtureRepo::new();
     repo.write("checkout.py", common::PY_OLD).commit("init");
     repo.write("checkout.py", common::PY_NEW);
     let r = teer::review::build_review(&repo.path(), &Default::default()).unwrap();
     let app = queue_of(r);
-    let name = app.selected().unwrap().symbol.clone();
-    // Beside the rows: the selected unit's row, then why, then its code.
-    let s = screen(&app, 160, 40);
-    let lines: Vec<&str> = s.lines().collect();
-    let why = lines
-        .iter()
-        .position(|l| l.contains("╭ review "))
-        .expect(&s);
-    let code = lines
-        .iter()
-        .position(|l| l.contains("╭ code change"))
-        .expect(&s);
-    assert!(why < code, "{s}");
-    assert!(
-        lines[why - 1].contains(&format!("{name}  pending │")),
-        "{s}"
-    );
-    let x = lines[code].find("╭ code change").unwrap();
-    assert!(x > lines[code].find('│').unwrap_or(0), "{s}");
-    // Below the rows on a narrow terminal.
-    let s = screen(&app, 100, 40);
-    let lines: Vec<&str> = s.lines().collect();
-    let why = lines
-        .iter()
-        .position(|l| l.contains("╭ review "))
-        .expect(&s);
-    let code = lines
-        .iter()
-        .position(|l| l.contains("╭ code change"))
-        .expect(&s);
-    let last_row = lines.iter().rposition(|l| l.starts_with('╰')).unwrap();
-    assert!(last_row < why && why < code, "{s}");
-    assert!(lines[code].starts_with(" ╭ code change"), "{s}");
+    let listed: Vec<String> = (app.order.iter())
+        .map(|&i| app.review.units[i].symbol.clone())
+        .collect();
+    assert!(listed.len() > 1, "{listed:?}");
+    for (w, beside) in [(160u16, true), (100, false)] {
+        let s = screen(&app, w, 60);
+        let lines: Vec<&str> = s.lines().collect();
+        let at = |text: &str| {
+            (lines.iter().position(|l| l.contains(text))).unwrap_or_else(|| panic!("{text}:\n{s}"))
+        };
+        // A head line per unit, top to bottom as in the file, each with
+        // its code under it.
+        let heads: Vec<usize> = listed.iter().map(|n| at(&format!(" {n}"))).collect();
+        assert!(heads.windows(2).all(|p| p[0] < p[1]), "{heads:?}\n{s}");
+        let code = at("def charge_order(order):");
+        assert!(heads[0] < code && code < heads[1], "{s}");
+        assert!(lines[code].contains("  8   def charge_order"), "{s}");
+        let tree = at("checkout.py");
+        if beside {
+            assert_eq!(tree, heads[0], "{s}");
+            assert!(lines[code].find('│').is_some(), "{s}");
+        } else {
+            assert!(tree < heads[0], "{s}");
+            assert!(lines[code].starts_with("     8   def"), "{s}");
+        }
+        // No box around the code, no title, no count of lines.
+        assert!(!s.contains("code change") && !s.contains("+2"), "{s}");
+    }
 }
 
 // ---- Bottom bar --------------------------------------------------------
@@ -529,14 +622,16 @@ fn the_finish_key_in_the_bar_follows_the_keymap() {
 #[test]
 fn the_bottom_bar_keeps_the_mode_after_the_counts() {
     let mut app = queue();
-    app.visual = Some(app.review.units[app.order[0]].id.clone());
-    app.sel = 1;
+    app.visual = Some(app.rows()[row_at(&app, "routes.rs")].id());
+    let to = row_at(&app, "charge.rs");
+    app.select_row(to);
     let line = bar(&app, 120);
     assert!(
         line.starts_with(" 2 pending · 1 flagged · 3 accepted  -- VISUAL --  a accept"),
         "{line}"
     );
-    assert!(line.trim_end().ends_with("2 units"), "{line}");
+    // The marked rows say how much it holds.
+    assert!(line.trim_end().ends_with("h leave"), "{line}");
     let t = targets(&app);
     assert!(
         t.iter()
@@ -645,9 +740,11 @@ fn the_help_lists_the_queues_keys() {
     let s = screen(&app, 160, 50);
     for want in [
         "keys · queue",
-        "a f  accept / flag the unit",
+        "a f  accept / flag the file's pending units",
         "za  show units accepted for you",
-        "zf  list by file or by level",
+        "l/⏎ h/esc  look closer or open / fold or go up",
+        "⚑ flagged",
+        "✓ accepted",
         ":w  finish",
         "○ accepted for you",
         "⚠ disputed",
@@ -666,10 +763,7 @@ fn an_empty_queue_says_what_is_left() {
     // Only units accepted for you: the line that shows them.
     let app = queue_of(review(vec![no_change(0, "a.rs"), no_change(1, "b.rs")]));
     let s = screen(&app, 100, 20);
-    assert!(
-        s.contains("○ 2 units accepted for you, za shows them"),
-        "{s}"
-    );
+    assert!(s.contains("   za shows 2 accepted for you"), "{s}");
     assert!(
         bar(&app, 100).starts_with(" Nothing pending. :w to finish · 2 accepted"),
         "{}",
@@ -682,7 +776,7 @@ fn an_empty_queue_says_what_is_left() {
 #[test]
 fn every_size_draws() {
     let mut app = queue();
-    app.visual = Some(app.review.units[app.order[0]].id.clone());
+    app.visual = Some(app.rows()[0].id());
     for (w, h) in [
         (20, 6),
         (40, 12),

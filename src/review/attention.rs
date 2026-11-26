@@ -49,9 +49,9 @@ impl Level {
     pub fn icon(self) -> &'static str {
         match self {
             Level::Same => "○",
-            Level::Routine => "●",
-            Level::Look => "◆",
-            Level::Attention => "▲",
+            // One vertical line; its colour says the level (red, yellow,
+            // grey: `tui::slim::level_style`).
+            Level::Routine | Level::Look | Level::Attention => "┃",
         }
     }
 
@@ -196,6 +196,12 @@ pub fn assess(review: &Review, u: &Unit) -> Assessment {
     if signature_changed(review, u) && n_callers > 0 {
         level = level.max(Level::Look);
         reasons.push(format!("signature changed, {}", callers(n_callers)));
+    }
+    // A parameter list the change made long, or longer: each caller has
+    // to get the order right.
+    if let Some(s) = u.signature.as_ref().filter(|s| s.grew_long()) {
+        level = level.max(Level::Look);
+        reasons.push(format!("long signature: {}", s.words()));
     }
     let size = changed_lines(review, u);
     // A lock file or a test snapshot is routine whatever its size.
@@ -611,6 +617,50 @@ mod tests {
             let a = assess(&review, &unit(file));
             assert_eq!(a.cost.is_some(), expensive, "{file}");
             assert_eq!(a.level >= Level::Look, expensive, "{file}");
+        }
+    }
+
+    #[test]
+    fn a_signature_the_change_made_long_is_worth_a_look() {
+        use crate::review::model::Signature;
+        let unit = |params: u32, before: Option<u32>| -> Unit {
+            let mut u: Unit = serde_json::from_value(serde_json::json!({
+                "id": "x", "file": "src/Oauth.php", "symbol": "F::create", "kind": "Method",
+                "status": "Changed", "old_range": null, "new_range": null,
+                "fingerprint": "x", "changes": [], "callers": [], "callees": [],
+                "decision": "Pending", "prep": "Skipped"
+            }))
+            .unwrap();
+            u.signature = Some(Signature {
+                params,
+                optional: 9,
+                alike: 9,
+                alike_type: "string".into(),
+                before,
+            });
+            u
+        };
+        let review: Review = serde_json::from_value(serde_json::json!({
+            "id": "r", "repo_root": "/r", "base": "b", "head": "h", "head_commit": "h",
+            "agent_session": null, "created_at": "2026-10-16T00:00:00Z", "files": [], "units": []
+        }))
+        .unwrap();
+        let a = assess(&review, &unit(11, Some(8)));
+        assert_eq!(a.level, Level::Look);
+        assert_eq!(
+            a.reasons,
+            ["long signature: 11 parameters, 3 new, 9 optional, 9 of type string"]
+        );
+        // A new function with a long list, too.
+        assert_eq!(assess(&review, &unit(11, None)).level, Level::Look);
+        // Long before and no longer now, or short: nothing to say.
+        for (params, before) in [(11, Some(11)), (10, Some(11)), (6, Some(3)), (6, None)] {
+            let a = assess(&review, &unit(params, before));
+            assert_eq!(
+                (a.level, a.reasons.len()),
+                (Level::Routine, 0),
+                "{params} {before:?}"
+            );
         }
     }
 

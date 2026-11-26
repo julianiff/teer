@@ -27,10 +27,13 @@ async fn the_queue_as_data() {
     let app = app_for(review, Config::default());
     insta::assert_snapshot!("view_queue", json(&app));
     let v = view(&app);
-    // The preview is the unit under the cursor; its code is coloured.
+    // The preview is the file under the cursor: its units, their code
+    // coloured.
     let preview = v.preview.expect("a preview");
-    assert_eq!(preview.id, app.selected_id().unwrap());
-    let code = preview.code.expect("its code");
+    let lead = app.selected().unwrap();
+    assert_eq!(preview.path, lead.file.display().to_string());
+    assert!(preview.cards.iter().any(|c| c.id == lead.id));
+    let code = preview.cards[0].code.clone().expect("its code");
     assert!(
         code.rows
             .iter()
@@ -67,8 +70,7 @@ async fn the_unit_view_as_data() {
 async fn flagged_units_the_sheet_and_the_notes_as_data() {
     let (review, _repo) = fixture_review().await;
     let mut app = app_for(review, Config::default());
-    select(&mut app, "charge_order");
-    keys(&mut app, "f");
+    on_unit(&mut app, "charge_order", "f");
     keys(&mut app, "<space>f");
     let v = view(&app);
     let flagged = v.flagged.expect("the flagged list");
@@ -80,6 +82,19 @@ async fn flagged_units_the_sheet_and_the_notes_as_data() {
         panic!("the sheet");
     };
     assert_eq!(f.notes.len(), 1);
+}
+
+/// `keys` on the unit named `symbol` alone, in the unit view: the queue's
+/// `a` and `f` decide on a unit's whole file.
+fn on_unit(app: &mut App, symbol: &str, keys: &str) {
+    let units = &app.review.units;
+    let id = units
+        .iter()
+        .find(|u| u.symbol == symbol)
+        .unwrap()
+        .id
+        .clone();
+    crate::common::v2::in_unit_view(app, &id, keys);
 }
 
 fn decision(app: &App, symbol: &str) -> teer::review::model::Decision {
@@ -99,12 +114,11 @@ async fn the_buttons_have_their_keys_their_words_and_their_state() {
     let v = view(&app);
     let accept = &v.actions["decide.accept"];
     assert_eq!((accept.keys.as_str(), accept.on), ("a", None));
-    assert_eq!(v.actions["toggle.by_file"].on, Some(false));
-    keys(&mut app, "zf");
-    assert_eq!(view(&app).actions["toggle.by_file"].on, Some(true));
+    assert_eq!(accept.what, "accept the file's pending units");
+    assert_eq!(v.actions["toggle.auto_accepted"].on, Some(false));
+    assert!(!v.actions.contains_key("toggle.by_file"));
     // A note and a flag: the bar counts them, for its links to their lists.
-    select(&mut app, "charge_order");
-    keys(&mut app, "f");
+    on_unit(&mut app, "charge_order", "f");
     keys(&mut app, "ichecked<cr>");
     let v = view(&app);
     assert_eq!((v.bar.flagged, v.bar.notes), (1, 1));

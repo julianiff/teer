@@ -885,8 +885,8 @@ mod agent {
         let back: Review = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(unit(&back, "g").checks.unmentioned, Some(g));
 
-        // The queue's preview and the unit view say it as a reason, under
-        // The review box.
+        // The queue's pane says it in the code; the unit view also as a
+        // reason for the level.
         let want = "· Not mentioned in the commits or PR description: Also triples the result.";
         let text = |app: &App, w, h| {
             let t = render(app, w, h);
@@ -896,13 +896,11 @@ mod agent {
         r.units[gi].decision = Decision::Investigate;
         let mut app = App::new(r, Config::default(), Keymap::default());
         app.sel = app.order.iter().position(|&i| i == gi).unwrap();
-        assert!(
-            text(&app, 160, 30).contains(want),
-            "{}",
-            text(&app, 160, 30)
-        );
-        assert!(text(&app, 160, 30).contains("╭ review "));
-        assert!(!text(&app, 160, 30).contains('≠'));
+        let pane = text(&app, 160, 30);
+        assert!(pane.contains("╭ not mentioned ─"), "{pane}");
+        assert!(pane.contains("│ Also triples the result."), "{pane}");
+        assert!(!pane.contains(want), "{pane}");
+        assert!(!pane.contains('≠'));
         app.on_action(teer::keymap::Action::ViewOpen);
         assert_eq!(app.screen, Screen::Unit);
         let unit_view = text(&app, 160, 40);

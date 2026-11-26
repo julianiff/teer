@@ -212,40 +212,26 @@ fn key(app: &mut App, c: char) {
 }
 
 #[test]
-fn the_queue_shows_whole_files_and_the_files_it_cant_show_last() {
-    let a = App::new(review(), Config::default(), Keymap::default());
+fn the_tree_lists_whole_files_and_the_files_it_cant_show() {
+    let mut a = App::new(review(), Config::default(), Keymap::default());
+    let readme = a.rows().iter().position(|r| r.name == "README.md").unwrap();
+    a.select_row(readme);
     let t = draw(&a, 120, 50);
-    // A whole file goes by its path in the queue, "whole file" its name,
-    // and by its file name over the preview.
-    assert!(
-        t.lines()
-            .any(|l| l.starts_with("│▌  ◆ README.md") && l.contains("whole file pending")),
-        "{t}"
-    );
-    assert!(
-        t.lines().any(|l| l.trim_end().ends_with("╮  README.md")),
-        "{t}"
-    );
-    // Files teer can't show are muted rows with why, in a box of their own
-    // after every other, and can't be selected.
+    // A whole file is a row like any other; the pane beside it shows its
+    // change with no head line: the tree names it.
+    assert!(t.lines().any(|l| l.starts_with("▌┃ README.md ")), "{t}");
+    assert_eq!(t.matches("README.md").count(), 1, "{t}");
+    assert!(!t.contains("whole file"), "{t}");
+    assert!(t.contains("+ Run it with `make run`."), "{t}");
+    // Files teer can't show are rows with why, where the tree has them,
+    // and can't be selected.
     let rows: Vec<&str> = t.lines().collect();
-    let latin1 = rows
-        .iter()
-        .position(|l| l.starts_with("│   latin1.txt  not UTF-8"))
-        .unwrap_or_else(|| panic!("{t}"));
-    let logo = rows
-        .iter()
-        .position(|l| l.starts_with("│   logo.png  binary"))
-        .unwrap_or_else(|| panic!("{t}"));
-    let title = rows
-        .iter()
-        .position(|l| l.starts_with("╭─ Not shown · 2 files"))
-        .unwrap_or_else(|| panic!("{t}"));
-    let last_unit = rows
-        .iter()
-        .rposition(|l| l.chars().nth(4).is_some_and(|c| "▲◆●".contains(c)))
-        .unwrap();
-    assert!(title > last_unit && latin1 > title && logo > latin1, "{t}");
+    let at = |row: &str| {
+        (rows.iter().position(|l| l.starts_with(row))).unwrap_or_else(|| panic!("{row}:\n{t}"))
+    };
+    let latin1 = at("   latin1.txt  not UTF-8");
+    let logo = at("   logo.png  binary");
+    assert!(at(" ┃ config.json") < latin1 && latin1 < logo, "{t}");
     let targets = a.targets.borrow();
     for y in [latin1, logo] {
         assert!(
@@ -268,25 +254,24 @@ fn a_change_of_only_a_binary_file_still_says_so() {
     assert!(r.units.is_empty());
     let a = App::new(r, Config::default(), Keymap::default());
     let t = draw(&a, 80, 20);
-    assert!(t.contains("╭─ Not shown · 1 file"), "{t}");
     assert!(
-        t.lines().any(|l| l.starts_with("│   logo.png  binary")),
+        t.lines().any(|l| l.trim_end() == "   logo.png  binary"),
         "{t}"
     );
 }
 
 #[test]
-fn a_file_too_large_to_describe_says_so_and_shows_its_diff() {
+fn a_file_too_large_to_describe_shows_its_diff() {
     let mut a = App::new(review(), Config::default(), Keymap::default());
-    a.sel = a
-        .order
-        .iter()
-        .position(|&i| a.review.units[i].file.ends_with("big.md"))
-        .unwrap();
+    let big = a.rows().iter().position(|r| r.name == "big.md").unwrap();
+    a.select_row(big);
+    let t = draw(&a, 200, 40);
+    assert!(t.contains("+ line 0"), "{t}");
+    // Why nobody described it is with the unit's reasons, in its view.
+    assert!(!t.contains("too large to describe"), "{t}");
+    key(&mut a, 'l');
     let t = draw(&a, 200, 40);
     assert!(t.contains("too large to describe; read the diff"), "{t}");
-    assert!(t.contains("code change"), "{t}");
-    assert!(t.contains("+ line 0"), "{t}");
 }
 
 #[test]

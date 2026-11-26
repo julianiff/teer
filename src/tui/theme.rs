@@ -111,7 +111,7 @@ impl Theme {
         }
     }
 
-    fn mono(&self) -> bool {
+    pub(crate) fn mono(&self) -> bool {
         self.name == ThemeName::Mono
     }
 
@@ -270,16 +270,6 @@ impl Theme {
             Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
             Style::new().fg(self.removed).add_modifier(Modifier::BOLD)
-        }
-    }
-
-    /// `accepted` at the end of a queue row: green, quieter than
-    /// [`Theme::ok`]; dimmed without colour.
-    pub fn accepted_state(&self) -> Style {
-        if self.mono() {
-            Style::new().add_modifier(Modifier::DIM)
-        } else {
-            Style::new().fg(self.added)
         }
     }
 

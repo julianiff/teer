@@ -1,12 +1,12 @@
 <script lang="ts">
   // What the unit on show can be done with, on its card under its name:
   // the decision first, then a closer look, undo at the end. `on` names
-  // the screen: the queue's preview; the unit view, whose closer looks are
-  // the tiles beside it; the flagged list, flagged already.
+  // the screen: the unit view, whose closer looks are the tiles beside
+  // it; the flagged list, flagged already.
   import { ui } from "../lib/ui.svelte";
   import Act from "./Act.svelte";
 
-  let { on }: { on: "queue" | "unit" | "flagged" } = $props();
+  let { on }: { on: "unit" | "flagged" } = $props();
 </script>
 
 {#if ui.buttons}

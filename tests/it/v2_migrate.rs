@@ -1,62 +1,30 @@
-//! Phase 8, landing v1 users safely (M1–M6 of `docs/v2-map.md` §11): the
-//! v1 surface is gone; `teer --base main` and `teer pr list` still work for
-//! one release, with a hint; a review saved by v1 loads and goes on in the
-//! queue; a v1 `[keys]` table maps over, with one warning per removed
-//! action and nothing written back; `?` groups the keys from the keymap;
-//! `teer --help` shows the v2 surface only.
-//!
-//! The saved review (`tests/fixtures/v1/review.json`) was written by teer
-//! v1 (`e394565`, `teer --json --no-agent`) for the `calc.py` change below,
-//! then given a v1 user's decisions: `total` flagged, resolved "needs fix",
-//! with a note; `fee` flagged, resolved "ok"; `tax` flagged; `discount`
-//! accepted; `rounding` pending. The config (`tests/fixtures/v1/config.toml`)
-//! uses v1's action names.
-//!
-//! Names Phase 8's code may choose differently are kept in the helpers
-//! right below, so they can be adapted in one place.
+//! What v2 left of v1 (M1, M5, M6 of `docs/v2-map.md` §11): the v1 surface
+//! is gone, its command forms included; `?` groups the keys from the
+//! keymap; `teer --help` shows the v2 surface only.
 
 use crate::common;
 
 use std::collections::HashMap;
 use std::path::Path;
 
-use common::run::{ConfigFile, Fakes, Session, launch, repo, save_v1_review, v1_fixture, v1_repo};
+use common::run::{repo, v1_repo};
 use common::sandbox::{Sandbox, stderr, stdout};
 use common::v2::Driver;
-use serde_json::Value;
 use teer::config::Config;
 use teer::keymap::{Action, KeySpec, Keymap};
-use teer::review::model::{Decision, Review};
-use teer::review::store;
+use teer::review::{BuildOptions, build_review};
 use teer::session::app::{Overlay, Screen};
 
-use Decision::{Accepted as A, Investigate as F, Pending as P};
-
-// ---- Guesses about names Phase 8 chooses ------------------------------------------
-
-/// The warning for a v1 `[keys]` entry whose action is gone.
-fn removed_warning(name: &str) -> String {
-    format!("`[keys].{name}` is no longer used")
-}
-
-/// The one line an old form prints about the new one: the only line on
-/// stderr.
-fn hint(stderr: &str) -> Option<String> {
-    let lines: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty()).collect();
-    match lines[..] {
-        [one] => Some(one.to_string()),
-        _ => None,
-    }
-}
+// ---- Names the tests match -------------------------------------------------------------
 
 /// The help's groups, in order (matched without case).
 const HELP_GROUPS: [&str; 5] = ["Move", "Decide", "Look closer", "More", "Finish"];
 
-/// The row of the help that describes accepting a unit (from the keymap's
-/// descriptions: "accept the unit", or "accept / flag the unit" when the
-/// help pairs it with flagging).
+/// The row of the help that describes accepting: "accept the unit", or
+/// "accept / flag the unit" when the help pairs it with flagging; in the
+/// queue, where a row is a file, "accept / flag the file's pending units".
 fn is_accept_row(what: &str) -> bool {
-    what.starts_with("accept") && what.contains("the unit")
+    what.starts_with("accept") && (what.contains("the unit") || what.contains("the file's"))
 }
 
 /// What `teer --help` may show besides the v2 surface: clap's own help.
@@ -64,48 +32,6 @@ const CLAP_OWN_COMMANDS: [&str; 1] = ["help"];
 const CLAP_OWN_FLAGS: [&str; 2] = ["-h", "--help"];
 
 // ---- Fixtures ------------------------------------------------------------------------
-
-fn decision(r: &Review, symbol: &str) -> Decision {
-    r.units
-        .iter()
-        .find(|u| u.symbol == symbol)
-        .unwrap()
-        .decision
-}
-
-fn note(r: &Review, symbol: &str) -> String {
-    r.units
-        .iter()
-        .find(|u| u.symbol == symbol)
-        .unwrap()
-        .dive
-        .note
-        .clone()
-}
-
-/// Every `resolution` a saved form of `r` still carries (v1's "ok" and
-/// "needs fix").
-fn resolutions(r: &Review) -> Vec<Value> {
-    let v = serde_json::to_value(r).unwrap();
-    v["units"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|u| u["dive"].get("resolution").cloned())
-        .filter(|r| !r.is_null())
-        .collect()
-}
-
-/// A clean branch `feature`, two commits ahead of `main`.
-fn feature_branch() -> common::FixtureRepo {
-    let r = repo();
-    r.write("shop.py", "def price(q):\n    return q * 10\n")
-        .commit("init");
-    r.git(&["checkout", "-q", "-b", "feature"]);
-    r.write("shop.py", "def price(q):\n    return q * 12\n")
-        .commit("raise prices");
-    r
-}
 
 /// The text of each column of `screen` row by row: rows cut at runs of two
 /// or more spaces and at box borders.
@@ -168,18 +94,10 @@ fn v1_surface_removed() {
         .collect();
     assert!(v1.is_empty(), "{v1:?}");
     // "Needs fix" is gone: nothing a review saves or shows has it.
-    let built = save_v1_review(&r);
-    let loaded = store::load(
-        &built.repo_root,
-        None,
-        &built.base,
-        &built.head,
-        &built.head_commit,
-    )
-    .expect("loads");
-    let saved = serde_json::to_string(&loaded).unwrap();
+    let built = build_review(&r.path(), &BuildOptions::default()).unwrap();
+    let saved = serde_json::to_string(&built).unwrap();
     assert!(!saved.contains("resolution"), "{saved}");
-    let mut d = Driver::open(loaded, Config::default());
+    let mut d = Driver::open(built, Config::default());
     let queue = d.render(140, 40).to_lowercase();
     assert!(!queue.contains("needs fix"), "{queue}");
     d.keys("l");
@@ -192,154 +110,23 @@ fn v1_surface_removed() {
 // ---- M2 ------------------------------------------------------------------------------
 
 #[test]
-fn old_forms_hint() {
-    // `teer --base main`: still the branch since main, and a hint.
+fn v1_forms_removed() {
     let sb = Sandbox::new();
-    let r = feature_branch();
-    let out = sb.run(&r.path(), &["--base", "main", "--json", "--no-agent"]);
-    assert!(out.status.success(), "{}", stderr(&out));
-    let v: Value = serde_json::from_slice(&out.stdout).expect("the review as JSON");
-    let main = r.git(&["rev-parse", "main"]).trim().to_string();
-    assert_eq!(v["base"], main.as_str());
-    let line = hint(&stderr(&out)).unwrap_or_else(|| panic!("one hint: {:?}", stderr(&out)));
-    assert!(line.contains("base"), "{line}");
-
-    // `teer pr list`: the list, as `teer pr` prints it without a terminal,
-    // and a hint naming `teer pr`.
-    let sb = Sandbox::new();
-    sb.gh("echo \"$@\" >> \"$(dirname \"$0\")/gh.log\"\necho '[]'");
     let r = repo();
     r.write("shop.py", "x = 1\n").commit("init");
-    r.git(&[
-        "remote",
-        "add",
-        "origin",
-        "https://github.com/acme/shop.git",
-    ]);
-    for form in [&["pr", "list"][..], &["pr", "ls"][..]] {
+    for form in [
+        &["pr", "list"][..],
+        &["pr", "ls"],
+        &["pr", "https://github.com/acme/shop/pull/7"],
+    ] {
         let out = sb.run(&r.path(), form);
-        assert!(out.status.success(), "{form:?}: {}", stderr(&out));
+        assert!(!out.status.success(), "{form:?}: {}", stdout(&out));
         assert!(
-            stdout(&out).contains("No open pull requests in acme/shop"),
+            stderr(&out).contains("Usage: teer pr"),
             "{form:?}: {}",
-            stdout(&out)
+            stderr(&out)
         );
-        let line = hint(&stderr(&out)).unwrap_or_else(|| panic!("{form:?}: {}", stderr(&out)));
-        assert!(line.contains("teer pr"), "{form:?}: {line}");
     }
-    // `teer pr` itself prints no hint.
-    let out = sb.run(&r.path(), &["pr"]);
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(stderr(&out).trim(), "", "no hint for the new form");
-}
-
-// ---- M3 ------------------------------------------------------------------------------
-
-#[tokio::test]
-async fn v1_review_fixture_loads() {
-    let r = v1_repo();
-    let built = save_v1_review(&r);
-    let loaded = store::load(
-        &built.repo_root,
-        None,
-        &built.base,
-        &built.head,
-        &built.head_commit,
-    )
-    .expect("a review saved by v1 loads");
-    // Needs fix: flagged, the note kept. Resolved ok: flagged. Flagged
-    // without a note: flagged. The rest as they were.
-    assert_eq!(decision(&loaded, "total"), F);
-    assert_eq!(note(&loaded, "total"), "charges the fee twice");
-    assert_eq!(decision(&loaded, "fee"), F);
-    assert_eq!(decision(&loaded, "tax"), F);
-    assert_eq!(note(&loaded, "tax"), "");
-    assert_eq!(decision(&loaded, "discount"), A);
-    assert_eq!(decision(&loaded, "rounding"), P);
-    let total = loaded.units.iter().find(|u| u.symbol == "total").unwrap();
-    assert!(!total.note_is_stale(), "written on this code");
-    assert_eq!(resolutions(&loaded), Vec::<Value>::new());
-
-    // `teer` on the same change goes on in the queue with it.
-    let config = ConfigFile::new("second_opinion = false\n");
-    let fakes = Fakes::new();
-    let l = launch(&r.path(), &["--no-agent"], &config.path())
-        .await
-        .unwrap()
-        .expect("a review");
-    assert_eq!(decision(&l.review, "total"), F);
-    assert_eq!(note(&l.review, "total"), "charges the fee twice");
-    let mut s = Session::launched(l, common::run::model(&[]), fakes.tools());
-    assert_eq!(s.app.screen, Screen::Queue);
-    let screen = s.render(140, 30);
-    assert!(screen.contains("charges the fee twice"), "{screen}");
-    assert!(!screen.to_lowercase().contains("needs fix"), "{screen}");
-    s.go_to("rounding");
-    s.keys("a");
-    assert_eq!(s.decision("rounding"), A);
-    assert_eq!(s.counts(), (2, 3, 0));
-    s.keys(":w<cr>");
-    assert!(matches!(s.app.overlay, Overlay::Finish { .. }));
-    assert!(s.render(140, 40).contains("charges the fee twice"));
-    // Saved again in v2's format.
-    let path = store::review_path(
-        &built.repo_root,
-        None,
-        &built.base,
-        &built.head,
-        &built.head_commit,
-    );
-    let saved: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    assert!(saved["version"].as_u64() >= Some(store::CURRENT as u64));
-    let again: Review = serde_json::from_value(saved).unwrap();
-    assert_eq!(resolutions(&again), Vec::<Value>::new());
-}
-
-// ---- M4 ------------------------------------------------------------------------------
-
-#[test]
-fn v1_keys_config() {
-    let config = ConfigFile::new(&std::fs::read_to_string(v1_fixture("config.toml")).unwrap());
-    let cfg = Config::load(&config.path()).expect("a v1 config loads");
-    let (keys, warnings) = cfg.keymap().expect("its keys load");
-    // Mapped to their v2 actions.
-    assert_eq!(keys.label(Action::DecideAccept), "e");
-    assert_eq!(keys.label(Action::HistoryUndo), "U");
-    // One warning per removed action, none for the ones that map.
-    for gone in ["swipe", "prev_card"] {
-        let n = warnings
-            .iter()
-            .filter(|w| w.contains(&removed_warning(gone)))
-            .count();
-        assert_eq!(n, 1, "{gone}: {warnings:?}");
-    }
-    assert_eq!(warnings.len(), 2, "{warnings:?}");
-
-    // On start: the warnings once each, the review, and the config as it was.
-    let sb = Sandbox::new();
-    sb.config(&std::fs::read_to_string(v1_fixture("config.toml")).unwrap());
-    let before = std::fs::read(sb.config_path()).unwrap();
-    let listing = |d: &Path| {
-        let mut v: Vec<String> = std::fs::read_dir(d)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        v.sort();
-        v
-    };
-    let files = listing(sb.root.path());
-    let r = v1_repo();
-    let out = sb.run(&r.path(), &["--json", "--no-agent"]);
-    assert!(out.status.success(), "{}", stderr(&out));
-    let err = stderr(&out);
-    for gone in ["swipe", "prev_card"] {
-        assert_eq!(err.matches(&removed_warning(gone)).count(), 1, "{err}");
-    }
-    for kept in ["accept", "undo"] {
-        assert!(!err.contains(&format!("[keys].{kept}")), "{kept}: {err}");
-    }
-    assert_eq!(std::fs::read(sb.config_path()).unwrap(), before);
-    assert_eq!(listing(sb.root.path()), files, "nothing written next to it");
 }
 
 // ---- M5 ------------------------------------------------------------------------------

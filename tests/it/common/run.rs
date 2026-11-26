@@ -346,7 +346,7 @@ pub const DRAFT_SUBJECT: &str = "Charge the fee once";
 pub const DRAFT_BODY: &str = "Drafted by the mock model.";
 
 /// The mock model: describes every unit with one change statement citing
-/// its first new line, at high risk (▲) for the units whose symbol is in
+/// its first new line, at high risk (┃) for the units whose symbol is in
 /// `high` and low risk otherwise; recommends [`RECOMMEND`]; answers every
 /// question with [`ANSWER`], streaming a step and a partial answer first;
 /// sums the change up; drafts [`DRAFT_SUBJECT`]. Anything else fails.
@@ -795,8 +795,8 @@ impl Session {
         self.app.review.unit(&id).map(|u| u.symbol.clone())
     }
 
-    /// Put the cursor on the unit with `symbol`, by moving it down the
-    /// list with `j` (so the move is saved as any other).
+    /// Put the cursor on the unit with `symbol`, as a jump to it does (the
+    /// find list, a link), the move saved as any other.
     pub fn go_to(&mut self, symbol: &str) {
         let id = self.id(symbol);
         let pos = self
@@ -805,11 +805,24 @@ impl Session {
             .iter()
             .position(|&i| self.app.review.units[i].id == id)
             .unwrap_or_else(|| panic!("{symbol} is listed"));
-        self.keys("gg");
-        for _ in 0..pos {
-            self.keys("j");
-        }
+        let effects = self.app.move_sel(pos);
+        let effects = self.app.save_cursor(effects);
+        self.run(effects);
         assert_eq!(self.selected().as_deref(), Some(symbol));
+    }
+
+    /// Type `keys` on the unit with `symbol` alone, in the unit view: the
+    /// queue's `a` and `f` decide on a unit's whole file. The cursor goes
+    /// to the unit, `l` opens it, `keys` go in, and the view closes again.
+    pub fn on_unit(&mut self, symbol: &str, keys: &str) -> Vec<Effect> {
+        self.go_to(symbol);
+        self.keys("l");
+        assert_eq!(self.app.unit.id, self.id(symbol));
+        let effects = self.keys(keys);
+        self.app.unit_click_back();
+        let saved = self.app.save_cursor(Vec::new());
+        self.run(saved);
+        effects
     }
 
     /// Symbols in list order.
@@ -862,69 +875,16 @@ pub fn run_agent(
         .status()
 }
 
-// ---- What teer v1 saved ----------------------------------------------------------------
+// ---- A small change of five units ---------------------------------------------------
 
-/// `calc.py` before and after the change teer v1 (`e394565`) reviewed and
-/// saved as `tests/fixtures/v1/review.json` (`teer --json --no-agent`),
-/// with a v1 user's decisions put in: `total` flagged, resolved "needs
-/// fix", with a note; `fee` flagged, resolved "ok"; `tax` flagged;
-/// `discount` accepted; `rounding` pending.
+/// `calc.py` before and after a change of five functions.
 pub const V1_CALC_OLD: &str = "def total(a, b):\n    return a + b\n\n\ndef fee(x):\n    return x + 1\n\n\ndef tax(x):\n    return x * 0.2\n\n\ndef discount(x):\n    return x - 1\n\n\ndef rounding(x):\n    return round(x)\n";
 pub const V1_CALC_NEW: &str = "def total(a, b):\n    return a + b + fee(a)\n\n\ndef fee(x):\n    return x + 2\n\n\ndef tax(x):\n    return x * 0.25\n\n\ndef discount(x):\n    return x - 2\n\n\ndef rounding(x):\n    return round(x, 2)\n";
 
-/// A file of `tests/fixtures/v1`: `review.json`, `config.toml`.
-pub fn v1_fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/v1")
-        .join(name)
-}
-
-/// A repo with the change v1 reviewed: `calc.py` changed, not committed.
+/// A repo with that change: `calc.py` changed, not committed.
 pub fn v1_repo() -> FixtureRepo {
     let r = repo();
     r.write("calc.py", V1_CALC_OLD).commit("init");
     r.write("calc.py", V1_CALC_NEW);
     r
-}
-
-/// Put v1's saved review of `repo`'s change where teer looks for it (the
-/// fixture with this repo's path and commits). What v2 builds for the
-/// change.
-pub fn save_v1_review(repo: &FixtureRepo) -> Review {
-    let built = teer::review::build_review(&repo.path(), &BuildOptions::default()).unwrap();
-    let text = std::fs::read_to_string(v1_fixture("review.json")).unwrap();
-    let mut v: Value = serde_json::from_str(&text).unwrap();
-    // The fixture's units are this change's: same ids, same code.
-    let fingerprints = |units: &Value| -> Vec<(String, String)> {
-        units
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|u| {
-                (
-                    u["id"].as_str().unwrap().to_string(),
-                    u["fingerprint"].as_str().unwrap().to_string(),
-                )
-            })
-            .collect()
-    };
-    let now = serde_json::to_value(&built.units).unwrap();
-    assert_eq!(
-        fingerprints(&v["units"]),
-        fingerprints(&now),
-        "v2 knows the v1 units by the same ids and fingerprints"
-    );
-    v["repo_root"] = json!(built.repo_root);
-    v["base"] = json!(built.base);
-    v["head_commit"] = json!(built.head_commit);
-    let path = store::review_path(
-        &built.repo_root,
-        None,
-        &built.base,
-        &built.head,
-        &built.head_commit,
-    );
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
-    built
 }

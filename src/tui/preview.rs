@@ -1,51 +1,62 @@
-//! Live preview pane for the unit under the cursor in the queue.
+//! The pane beside the queue's tree (below it on a narrow terminal): the
+//! changes of the file under the cursor. Each of its listed units in line
+//! order, in one text that scrolls: a head line (the level's icon, the
+//! unit's name, and `✓` or `⚑` once it is decided), what the agent says it
+//! does, then its code change with the agent's statements written into it
+//! (see [`super::diff`]), the reviewer's note and the answers to what the
+//! reviewer asked about it. A file that is one whole
+//! unit has no head line: the tree names it. On a directory the pane is
+//! empty.
+//!
+//! Also what other screens say about a unit (its head, its review, why it
+//! has its level), and the scrolling of a text cut to its rows.
+
+use std::ops::Range;
+use std::path::Path;
 
 use crate::session::names;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Padding, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use super::app::{App, Target};
 use super::slim;
-use crate::review::model::{Prep, Unit};
+use crate::review::model::{Decision, Prep, Risk, Unit, UnitKind, UnitStatus};
 use crate::util::{truncate, wrap};
 
-/// Width at which the preview sits beside the list.
+/// Width at which the pane sits beside the list.
 const SIDE_WIDTH: u16 = 110;
 /// The list never gets fewer rows than this when a bottom pane is drawn.
 const MIN_LIST_ROWS: u16 = 3;
-/// Bounds of a bottom pane, border included.
+/// Bounds of a bottom pane, its top edge included.
 const MIN_PANE_ROWS: u16 = 5;
-const MAX_PANE_ROWS: u16 = 12;
-/// Upper bound of a bottom pane that shows a code change.
-const MAX_CODE_PANE_ROWS: u16 = 24;
-/// The fewest rows the code change's box gets under the unit: its borders
-/// and three rows of code.
-pub const MIN_BOX_ROWS: usize = 5;
+const MAX_PANE_ROWS: u16 = 24;
 /// Narrowest list beside the pane; it is never wider than [`SIDE_LIST_MOST`].
 const MIN_SIDE_LIST: u16 = 24;
-/// Widest list beside the pane, in percent: its rows name the file and the
-/// state too; the code change gets the rest.
+/// Widest list beside the pane, in percent: the code change gets the rest.
 const SIDE_LIST_MOST: u32 = 45;
+/// Most lines of what the agent says a unit does, over its code.
+const SUMMARY_LINES: usize = 2;
+/// Cells a unit's text is indented by: under its name, past the bar and
+/// the icon.
+const UNDER_NAME: usize = 3;
 
-/// Which edge of the list the preview sits on.
+/// Which edge of the list the pane sits on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Side,
     Bottom,
 }
 
-/// What the list needs to show all of itself: its width (whole paths and
-/// names, file counts, whole box titles) and its rows, without and with the
-/// blank rows between boxes and files.
+/// What the list needs to show all of itself: its width (every row whole)
+/// and its rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListSize {
     pub width: u16,
     pub rows: u16,
-    pub padded_rows: u16,
 }
 
 impl ListSize {
@@ -53,7 +64,6 @@ impl ListSize {
     pub const FULL: ListSize = ListSize {
         width: u16::MAX,
         rows: u16::MAX,
-        padded_rows: u16::MAX,
     };
 
     /// The size of `app`'s queue, as far as a layout of `area` needs it.
@@ -65,36 +75,25 @@ impl ListSize {
                 ..ListSize::FULL
             };
         }
-        // Every unit is a line: a list this long takes all it gets.
-        if app.order.len() >= area.height as usize {
+        // Every row of the tree is a line: a list this long takes all it gets.
+        if app.rows().len() >= area.height as usize {
             return ListSize::FULL;
         }
-        let count = |padded| slim::build_queue(app, area.width, padded).lines.len() as u16;
-        let rows = count(false);
-        let padded_rows = if rows as usize >= slim::PADDING_MIN_ROWS {
-            count(true)
-        } else {
-            rows
-        };
         ListSize {
-            rows,
-            padded_rows,
+            rows: slim::build_queue(app, area.width).lines.len() as u16,
             ..ListSize::FULL
         }
     }
 }
 
-/// Splits `area` into the list and the preview pane, which is always there
-/// unless the area is too small to hold one. At 110 columns or more the pane
-/// sits beside the list, and the list is as wide as `list` needs, at least
-/// 24 columns and at most 45%. Otherwise the pane sits below and takes about
-/// 40% of the height (5 to 12 rows), or with `code` (the selected unit shows
-/// its code change) about 60%, up to 24 rows, so the diff is visible below
-/// the statements. It takes more when the list leaves more free; the list
-/// keeps its rows (with the blank rows between boxes and files once it has
-/// 14) and at
-/// least 3. A pane under 2 rows is not drawn.
-pub fn layout_fit(area: Rect, code: bool, list: ListSize) -> (Rect, Option<(Rect, Pane)>) {
+/// Splits `area` into the list and the pane, which is always there unless
+/// the area is too small to hold one. At 110 columns or more the pane sits
+/// beside the list, and the list is as wide as `list` needs, at least 24
+/// columns and at most 45%. Otherwise the pane sits below and takes about
+/// 60% of the height (5 to 24 rows), and more when the list leaves more
+/// free; the list keeps its rows, at least 3. A pane under 2 rows is not
+/// drawn.
+pub fn layout_fit(area: Rect, list: ListSize) -> (Rect, Option<(Rect, Pane)>) {
     if area.width == 0 || area.height == 0 {
         return (area, None);
     }
@@ -105,17 +104,8 @@ pub fn layout_fit(area: Rect, code: bool, list: ListSize) -> (Rect, Option<(Rect
             Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area);
         return (list, Some((pane, Pane::Side)));
     }
-    let wanted = if code {
-        (area.height * 3 / 5).clamp(MIN_PANE_ROWS, MAX_CODE_PANE_ROWS)
-    } else {
-        (area.height * 2 / 5).clamp(MIN_PANE_ROWS, MAX_PANE_ROWS)
-    };
-    let need = if (list.rows as usize) < slim::PADDING_MIN_ROWS {
-        list.rows
-    } else {
-        list.padded_rows
-    };
-    let free = area.height.saturating_sub(need.max(MIN_LIST_ROWS));
+    let wanted = (area.height * 3 / 5).clamp(MIN_PANE_ROWS, MAX_PANE_ROWS);
+    let free = area.height.saturating_sub(list.rows.max(MIN_LIST_ROWS));
     let rows = wanted
         .max(free)
         .min(area.height.saturating_sub(MIN_LIST_ROWS));
@@ -128,73 +118,7 @@ pub fn layout_fit(area: Rect, code: bool, list: ListSize) -> (Rect, Option<(Rect
 
 /// The queue and the pane for `app` in `area`.
 pub fn layout_of(app: &App, area: Rect) -> (Rect, Option<(Rect, Pane)>) {
-    let code = app.selected().is_some_and(|u| super::diff::shows(app, u));
-    layout_fit(area, code, ListSize::of(app, area))
-}
-
-/// The change itself as lines: its name, then a blank row before each
-/// group of [`unit_groups`]. The review (what the agent wrote, the level
-/// and why) is in a box of its own (see [`review_box`]). With `statements`
-/// its statements are listed too; the preview writes them into the code
-/// change instead when it shows one (see [`super::diff`]).
-/// Not `framed` (no room for the box's edges): behind the bar instead.
-pub fn unit_lines(
-    app: &App,
-    u: &Unit,
-    w: usize,
-    statements: bool,
-    framed: bool,
-) -> Vec<Line<'static>> {
-    let name = truncate(&names::row_name(u), w);
-    let mut lines = vec![Line::styled(format!(" {name}"), app.theme.bold())];
-    // The flagged list says it under the unit's name instead.
-    lines.extend(proposed_line(app, u, w, 1));
-    let mut groups = unit_groups(app, u, w, statements).into_iter();
-    let said = groups.next().unwrap_or_default();
-    let said = if framed {
-        review_box(app, u, w, statements)
-    } else {
-        said
-    };
-    for g in std::iter::once(said)
-        .chain(groups)
-        .filter(|g| !g.is_empty())
-    {
-        lines.push(Line::default());
-        lines.extend(g);
-    }
-    lines
-}
-
-/// The title of the box around the review of a unit.
-pub const REVIEW_TITLE: &str = " review ";
-
-/// The review of `u` (see [`review_text`]) in a box `w` cells wide, one
-/// cell in, as the code change has its own: `review` on its top edge and
-/// who wrote it on the right. Empty when there is nothing to say (yet).
-pub fn review_box(app: &App, u: &Unit, w: usize, statements: bool) -> Vec<Line<'static>> {
-    let t = &app.theme;
-    let (by, text) = review_text(app, u, w.saturating_sub(4), statements);
-    if text.is_empty() {
-        return Vec::new();
-    }
-    let border = t.muted();
-    let by = by.map_or_else(Vec::new, |by| {
-        let by = truncate(
-            &format!(" {} ", by.trim()),
-            w.saturating_sub(REVIEW_TITLE.width() + 4),
-        );
-        vec![Span::styled(by, t.muted())]
-    });
-    let mut lines = vec![super::unit::box_top(
-        w,
-        vec![Span::styled(REVIEW_TITLE, t.bold())],
-        by,
-        border,
-    )];
-    lines.extend(text.into_iter().map(|l| super::unit::box_row(l, w, border)));
-    lines.push(super::unit::box_bottom(w, border));
-    lines
+    layout_fit(area, ListSize::of(app, area))
 }
 
 /// The first line, in `w` cells after one blank: the name, a spinner while
@@ -470,8 +394,10 @@ pub struct Scroll {
     pub offset: usize,
     /// How far the blocks can scroll.
     pub max: usize,
-    /// Rows left under the last one shown.
-    pub below: usize,
+    /// Lines of the blocks above the first one shown.
+    pub above: usize,
+    /// Which of `lines` are the blocks': the rest say what is cut.
+    pub shown: Range<usize>,
 }
 
 /// [`scrolled`] from `offset`, for an area that keeps its own scroll.
@@ -480,33 +406,6 @@ pub fn scroll_rows(
     blocks: Vec<Vec<Line<'static>>>,
     w: usize,
     h: usize,
-    indent: usize,
-    editor: bool,
-    offset: usize,
-) -> Scroll {
-    scroll_in(app, blocks, w, (h, h), indent, editor, offset)
-}
-
-/// [`scroll_rows`] for a box that leaves its bottom edge off while rows are
-/// left below: what is left in `h - 1` rows when it fits there, which
-/// leaves a row for the edge; else `h` rows, the last saying what is left.
-pub fn scroll_open(
-    app: &App,
-    blocks: Vec<Vec<Line<'static>>>,
-    w: usize,
-    h: usize,
-    editor: bool,
-    offset: usize,
-) -> Scroll {
-    scroll_in(app, blocks, w, (h.saturating_sub(1), h), 0, editor, offset)
-}
-
-/// [`scroll_rows`] in `fit` rows when what is left fits there, else in `h`.
-fn scroll_in(
-    app: &App,
-    blocks: Vec<Vec<Line<'static>>>,
-    w: usize,
-    (fit, h): (usize, usize),
     indent: usize,
     editor: bool,
     offset: usize,
@@ -522,16 +421,16 @@ fn scroll_in(
         })
         .collect();
     // The row that says what is above, when there is room for it.
-    let head = usize::from(fit >= 3);
+    let head = usize::from(h >= 3);
     // Scrolled furthest, the last block is at the bottom: the first start
     // from which the rest fits under that row.
-    let max = if total <= fit {
+    let max = if total <= h {
         0
     } else {
         starts
             .iter()
             .copied()
-            .find(|&s| s > 0 && total - s + head <= fit)
+            .find(|&s| s > 0 && total - s + head <= h)
             .unwrap_or_else(|| starts.last().copied().unwrap_or(0))
     };
     let offset = offset.min(max);
@@ -558,8 +457,8 @@ fn scroll_in(
     }
     let rest = total - above;
     // Keep a row for what is left when not everything fits.
-    let budget = if rest + top <= fit {
-        fit - top
+    let budget = if rest + top <= h {
+        h - top
     } else {
         h.saturating_sub(top + 1)
     };
@@ -577,6 +476,7 @@ fn scroll_in(
         out.extend(b);
     }
     let left = rest - used;
+    let shown = top..top + used;
     if left > 0 && h > top {
         let mut more = format!(
             "… {left} more line{} · {} scroll",
@@ -592,10 +492,159 @@ fn scroll_in(
         lines: out,
         offset,
         max,
-        below: left,
+        above,
+        shown,
     }
 }
 
+/// The changes of a file as the pane draws them.
+#[derive(Default)]
+pub struct FileText {
+    /// Its rows, each the lines it wraps into (see [`scrolled`]).
+    pub blocks: Vec<Vec<Line<'static>>>,
+    /// The line each unit starts at, by its position in the queue's order.
+    pub starts: Vec<(usize, usize)>,
+    /// The lines that are code, and the columns its line numbers and signs
+    /// take there.
+    pub code: Vec<(Range<usize>, u16)>,
+    /// How many lines the blocks hold.
+    lines: usize,
+}
+
+impl FileText {
+    fn push(&mut self, block: Vec<Line<'static>>) {
+        self.lines += block.len();
+        self.blocks.push(block);
+    }
+}
+
+/// A unit's head line in the pane, `w` cells: the bar when it is the
+/// `selected` one of several, the level's icon, its name (struck through
+/// when the change removes it), then `✓` once it is accepted, `⚑` flagged,
+/// `⚠` when a second model disputes it, a spinner while it is described.
+/// An accepted unit's line is muted.
+pub(super) fn head_line(
+    app: &App,
+    pos: usize,
+    u: &Unit,
+    selected: bool,
+    w: usize,
+) -> Line<'static> {
+    let t = &app.theme;
+    let level = app.shown_level(app.order[pos]);
+    let done = u.decision == Decision::Accepted;
+    let mut tail = Vec::new();
+    match u.decision {
+        Decision::Accepted => tail.push(Span::styled(" ✓", t.muted())),
+        Decision::Investigate => tail.push(Span::styled(" ⚑", t.badge_investigate())),
+        Decision::Pending => {}
+    }
+    if !app.levels[app.order[pos]].doubts.is_empty() {
+        tail.push(Span::styled(" ⚠", t.risk(Risk::Medium)));
+    }
+    if u.prep == Prep::Pending {
+        tail.push(Span::styled(format!(" {}", app.spinner()), t.muted()));
+    }
+    let tail_w: usize = tail.iter().map(Span::width).sum();
+    let name = truncate(&names::row_name(u), w.saturating_sub(UNDER_NAME + tail_w));
+    let mut name_style = if done { t.muted() } else { t.bold() };
+    if u.status == UnitStatus::Removed {
+        name_style = name_style.add_modifier(Modifier::CROSSED_OUT);
+    }
+    let icon_style = if done {
+        t.muted()
+    } else {
+        slim::icon_style(app, level)
+    };
+    let mut spans = vec![
+        if selected {
+            Span::styled("▌", t.accent())
+        } else {
+            Span::raw(" ")
+        },
+        Span::styled(format!("{} ", level.icon()), icon_style),
+        Span::styled(name, name_style),
+    ];
+    spans.extend(tail);
+    Line::from(spans)
+}
+
+/// `line` after `by` blank cells.
+fn indented(line: Line<'static>, by: usize) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ".repeat(by))];
+    spans.extend(line.spans);
+    Line::from(spans).style(line.style)
+}
+
+/// The changes of `file`, `w` cells wide: its listed units in line order,
+/// a blank line between them. Of each: its head line (none for a file that
+/// is one whole unit, which the tree names), that a change is proposed,
+/// what the agent says it does in at most [`SUMMARY_LINES`] lines (or why
+/// it has no behavior change), its code change with the statements written
+/// into it (listed when its code can't be shown), the reviewer's note and
+/// the answers to what the reviewer asked about it. The reasons, the
+/// callers and the commits are in the unit view.
+pub fn file_text(app: &App, file: &Path, w: usize) -> FileText {
+    let t = &app.theme;
+    let at = app.file_units(file);
+    let several = at.len() > 1;
+    let mut text = FileText::default();
+    let body_w = w.saturating_sub(UNDER_NAME);
+    for pos in at {
+        let u = &app.review.units[app.order[pos]];
+        if !text.blocks.is_empty() {
+            text.push(vec![Line::default()]);
+        }
+        text.starts.push((pos, text.lines));
+        if several || u.kind != UnitKind::File {
+            let selected = several && pos == app.sel;
+            text.push(vec![head_line(app, pos, u, selected, w)]);
+        }
+        if let Some(l) = proposed_line(app, u, w, UNDER_NAME) {
+            text.push(vec![l]);
+        }
+        let said = u.summary.as_deref().map(|s| (s, t.text()));
+        let said = said.or(u.nbc_reason.as_deref().map(|s| (s, t.muted())));
+        if let Some((s, style)) = said {
+            let mut lines = wrap(s, body_w);
+            if lines.len() > SUMMARY_LINES {
+                lines.truncate(SUMMARY_LINES);
+                if let Some(last) = lines.last_mut() {
+                    *last = format!("{}…", truncate(last, body_w.saturating_sub(1)));
+                }
+            }
+            for l in lines {
+                text.push(vec![indented(Line::styled(l, style), UNDER_NAME)]);
+            }
+        }
+        let code = super::diff::code_change_of(app, u, body_w, super::diff::Notes::Inline);
+        let first = text.lines;
+        for block in code.blocks {
+            text.push(block.into_iter().map(|l| indented(l, UNDER_NAME)).collect());
+        }
+        if text.lines > first {
+            text.code.push((first..text.lines, code.gutter));
+        } else if u.prep == Prep::Ready {
+            // No code to write them into: the statements, listed.
+            for l in slim::statement_lines(app, u, body_w, 0) {
+                text.push(vec![indented(l, UNDER_NAME)]);
+            }
+        }
+        // What the reviewer wrote and asked: seen where the code is.
+        let own = super::notes::card(app, u, body_w)
+            .into_iter()
+            .chain(super::ask::note_lines(app, &u.id, body_w));
+        for l in own {
+            text.push(vec![indented(l, UNDER_NAME)]);
+        }
+    }
+    text
+}
+
+/// Draw the pane into `area`: the changes of the file under the cursor
+/// (see [`file_text`]), scrolled with the detail keys and the wheel. When
+/// a jump put the cursor on a unit that isn't its file's lead, that unit
+/// is scrolled into view. Nothing on a directory.
 pub fn draw_preview(f: &mut Frame, app: &App, area: Rect, pane: Pane) {
     if area.width < 4 || area.height < 2 {
         return;
@@ -603,65 +652,45 @@ pub fn draw_preview(f: &mut Frame, app: &App, area: Rect, pane: Pane) {
     // The wheel over the pane scrolls it.
     app.targets.borrow_mut().push((area, Target::Detail));
     super::ui::text_area(app, area, 0);
-    let t = &app.theme;
-    // Beside the list a blank column is enough; below it, a plain rule
-    // shows where the list ends.
-    let block = match pane {
-        Pane::Side => Block::new().padding(Padding::left(1)),
-        Pane::Bottom => Block::new().borders(Borders::TOP).border_style(t.muted()),
+    // A plain rule shows where the list ends: two columns of text side
+    // by side read as one without it.
+    let edge = match pane {
+        Pane::Side => Borders::LEFT,
+        Pane::Bottom => Borders::TOP,
     };
-    let unit = app.selected();
+    let block = Block::new().borders(edge).border_style(app.theme.muted());
     let inner = block.inner(area);
     f.render_widget(block, area);
+    let Some(u) = app.selected() else {
+        app.pane_unit.take();
+        return;
+    };
     if inner.width < 2 || inner.height == 0 {
         return;
     }
-    let w = inner.width.saturating_sub(2) as usize;
+    let w = (inner.width - 1) as usize;
     let h = inner.height as usize;
-    let one = |lines: Vec<Line<'static>>| -> Vec<Vec<Line<'static>>> {
-        lines.into_iter().map(|l| vec![l]).collect()
-    };
-    let Some(u) = unit else {
-        let lines = vec![Line::styled(" Nothing selected", t.muted())];
-        f.render_widget(
-            Paragraph::new(scrolled(app, one(lines), w, h, 1, false)),
-            inner,
-        );
-        return;
-    };
-    // What there is to say on top, the code change in its own box below,
-    // taking the rest and scrolling on its own, with the statements in it.
-    let boxed = super::diff::shows(app, u) && h > MIN_BOX_ROWS;
-    let mut head = unit_lines(app, u, w, !boxed, true);
-    if boxed {
-        // No room for all of it: without the box's edges.
-        if head.len() > h - MIN_BOX_ROWS {
-            head = unit_lines(app, u, w, false, false);
-        }
-        let air = usize::from(h >= head.len() + 1 + MIN_BOX_ROWS);
-        let head_h = head.len().min(h - MIN_BOX_ROWS);
-        let [top, _, code] = Layout::vertical([
-            Constraint::Length(head_h as u16),
-            Constraint::Length(air as u16),
-            Constraint::Min(0),
-        ])
-        .areas(inner);
-        let code = Rect::new(
-            code.x + 1,
-            code.y,
-            code.width.saturating_sub(2),
-            code.height,
-        );
-        if super::notes::draw_box(f, app, code, u, super::diff::Notes::Inline) {
-            f.render_widget(Paragraph::new(cut(app, head, head_h)), top);
-            return;
+    let text = file_text(app, &u.file, w);
+    // A unit just jumped to starts the pane, unless the file starts with it.
+    let mut offset = app.detail_offset();
+    if app.pane_unit.replace(u.id.clone()) != u.id && !app.on_lead() {
+        let start = text.starts.iter().find(|(pos, _)| *pos == app.sel);
+        offset = start.map_or(offset, |&(_, line)| line);
+    }
+    let s = scroll_rows(app, text.blocks, w, h, 1, false, offset);
+    keep_scroll(app, &s, h);
+    // Where the code is drawn, a drag leaves its line numbers out.
+    let x = (UNDER_NAME as u16).min(inner.width);
+    for (lines, gutter) in &text.code {
+        let from = lines.start.max(s.above);
+        let to = lines.end.min(s.above + s.shown.len());
+        if from < to {
+            let y = inner.y + (s.shown.start + from - s.above) as u16;
+            let code = Rect::new(inner.x + x, y, inner.width - x, (to - from) as u16);
+            super::ui::text_area(app, code, *gutter);
         }
     }
-    let head = unit_lines(app, u, w, true, true);
-    f.render_widget(
-        Paragraph::new(scrolled(app, one(head), w, h, 1, false)),
-        inner,
-    );
+    f.render_widget(Paragraph::new(s.lines), inner);
 }
 
 /// The first `h` of `lines`; when some are left out, the last row says so.
@@ -679,11 +708,7 @@ mod tests {
     use crate::review::model::Decision;
 
     fn layout(area: Rect) -> (Rect, Option<(Rect, Pane)>) {
-        layout_for(area, false)
-    }
-
-    fn layout_for(area: Rect, code: bool) -> (Rect, Option<(Rect, Pane)>) {
-        layout_fit(area, code, ListSize::FULL)
+        layout_fit(area, ListSize::FULL)
     }
 
     fn r(w: u16, h: u16) -> Rect {
@@ -706,12 +731,12 @@ mod tests {
     #[test]
     fn narrow_gets_a_bottom_pane_sized_to_the_height() {
         for (h, want) in [
-            (20u16, 8u16),
-            (22, 8),
-            (28, 11),
-            (30, 12),
-            (60, 12),
-            (12, 5),
+            (20u16, 12u16),
+            (22, 13),
+            (28, 16),
+            (30, 18),
+            (60, 24),
+            (12, 7),
         ] {
             let (l, p) = layout(r(100, h));
             let (p, pane) = p.unwrap();
@@ -728,7 +753,7 @@ mod tests {
             let (l, p) = layout(r(100, h));
             let (p, _) = p.unwrap();
             assert!(l.height >= 3, "h {h}");
-            assert_eq!(p.height, (h - 3).min(5), "h {h}");
+            assert_eq!(p.height, (h - 3).min((h * 3 / 5).max(5)), "h {h}");
         }
         // Under 2 spare rows there is no pane at all.
         for h in 0u16..=4 {
@@ -749,36 +774,33 @@ mod tests {
             (110, 0, 24),
             (200, 70, 70),
         ] {
-            let (l, p) = layout_fit(r(w, 30), true, size(need));
+            let (l, p) = layout_fit(r(w, 30), size(need));
             let (p, pane) = p.unwrap();
             assert_eq!(pane, Pane::Side);
             assert_eq!(l.width, want, "{w} {need}");
             assert_eq!((p.x, p.width), (want, w - want), "{w} {need}");
         }
         // A list of unknown size gets the most it can.
-        assert_eq!(layout_for(r(120, 30), true).0.width, 54);
+        assert_eq!(layout(r(120, 30)).0.width, 54);
     }
 
     #[test]
     fn below_a_short_list_the_pane_takes_the_free_rows() {
-        let size = |rows, padded_rows| ListSize {
+        let size = |rows| ListSize {
             rows,
-            padded_rows,
             ..ListSize::FULL
         };
-        for (h, rows, padded, want) in [
-            // One unit: the box edges and its row.
-            (28u16, 3u16, 3u16, 25u16),
-            (28, 10, 12, 18),
+        for (h, rows, want) in [
+            (28u16, 3u16, 25u16),
+            (28, 10, 18),
             // Not less than the usual share of about 60%.
-            (28, 13, 15, 16),
-            // From 14 rows on the list has blank rows between its boxes.
-            (40, 14, 15, 25),
+            (28, 13, 16),
+            (40, 14, 26),
             // The list keeps 3 rows, on tiny terminals too.
-            (40, 2, 2, 37),
-            (5, 1, 1, 2),
+            (40, 2, 37),
+            (5, 1, 2),
         ] {
-            let (l, p) = layout_fit(r(100, h), true, size(rows, padded));
+            let (l, p) = layout_fit(r(100, h), size(rows));
             let (p, _) = p.unwrap();
             assert_eq!(p.height, want, "h {h} rows {rows}");
             assert_eq!(l.height + p.height, h);
@@ -842,6 +864,7 @@ mod tests {
                 dive_pending: Default::default(),
                 checks: Default::default(),
                 security: Vec::new(),
+                signature: None,
             }]
         } else {
             Vec::new()
@@ -886,20 +909,28 @@ mod tests {
     }
 
     #[test]
-    fn renders_selected_unit_in_both_panes() {
+    fn the_pane_shows_the_unit_under_the_cursor_and_what_the_agent_says() {
         let app = app(true);
         for (pane, w, h) in [(Pane::Side, 50, 20), (Pane::Bottom, 100, 8)] {
             let out = render(&app, w, h, pane);
-            assert!(out.contains("my_symbol"), "{pane:?}:\n{out}");
+            // The level's icon, the name, and that it is accepted.
+            assert!(out.contains("┃ my_symbol ✓"), "{pane:?}:\n{out}");
+            assert!(out.contains("   Does a thing"), "{pane:?}:\n{out}");
+            // What the unit view is for stays there.
+            for word in ["caller_fn", "agent", "src/f.rs"] {
+                assert!(!out.contains(word), "{pane:?} {word}:\n{out}");
+            }
         }
     }
 
     #[test]
-    fn renders_empty_state_and_tiny_areas() {
+    fn with_nothing_under_the_cursor_the_pane_is_empty() {
         let app = app(false);
-        for (pane, w, h) in [(Pane::Side, 50, 20), (Pane::Bottom, 100, 8)] {
-            assert!(render(&app, w, h, pane).contains("Nothing selected"));
-        }
+        // Only the rule that ends the list.
+        let out = render(&app, 50, 20, Pane::Side);
+        assert!(out.lines().all(|l| l.trim_end() == "│"), "{out}");
+        let out = render(&app, 100, 8, Pane::Bottom);
+        assert_eq!(out.trim(), "─".repeat(100), "{out}");
         render(&app, 3, 1, Pane::Side);
         render(&app, 5, 2, Pane::Bottom);
     }

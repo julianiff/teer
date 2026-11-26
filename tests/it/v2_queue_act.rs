@@ -8,12 +8,12 @@ use crate::common;
 
 use std::path::PathBuf;
 
-use common::v2::{Driver, review, unit, units};
+use common::v2::{Driver, review, singles, unit};
 use teer::keymap::Keymap;
 use teer::review::model::{Change, Decision, Marker, Prep, Review, Risk, Unit, UnitStatus};
 use teer::review::prepare::PrepareEvent;
 use teer::review::store;
-use teer::session::app::{AppEvent, Effect, Grouping, Overlay, Screen};
+use teer::session::app::{AppEvent, Effect, Overlay, Screen};
 
 use Decision::{Accepted as A, Investigate as F, Pending as P};
 
@@ -40,10 +40,10 @@ fn note_line(d: &Driver) -> Option<(String, String)> {
     }
 }
 
-/// A review of `n` units (see `common::v2::units`) saved under its own
-/// repo path, so tests don't share a file.
+/// A review of `n` units, a file each (see `common::v2::singles`), saved
+/// under its own repo path, so tests don't share a file.
 fn saved(n: usize, repo: &str) -> Review {
-    let mut r = review(units(n));
+    let mut r = review(singles(n));
     r.repo_root = PathBuf::from(repo);
     r
 }
@@ -56,21 +56,15 @@ fn load(r: &Review) -> Review {
 // ---- Where it opens -----------------------------------------------------------
 
 #[test]
-fn teer_opens_on_the_queue_by_level() {
-    let mut d = Driver::new(6);
+fn teer_opens_on_the_queue_on_the_tree_of_the_files() {
+    let d = Driver::new(6);
     assert_eq!(d.screen(), Screen::Queue);
-    assert_eq!(d.app.grouping, Grouping::Unit);
-    d.keys("zf");
-    assert_eq!(
-        d.app.grouping,
-        Grouping::File,
-        "zf switches to the file boxes"
-    );
-    d.keys("zf");
-    assert_eq!(d.app.grouping, Grouping::Unit);
+    let names: Vec<String> = d.app.rows().into_iter().map(|r| r.name).collect();
+    assert_eq!(names, ["f0.rs", "f1.rs"]);
+    assert_eq!(d.app.cursor_row(), Some(0));
 }
 
-/// Unit `u{i}` in `file`, removed while something still calls it: ▲.
+/// Unit `u{i}` in `file`, removed while something still calls it: ┃.
 fn close_look(i: usize, file: &str) -> Unit {
     let mut u = unit(i, file);
     u.status = UnitStatus::Removed;
@@ -88,7 +82,7 @@ fn it_starts_on_the_first_pending_close_look() {
     r.units[1].decision = A;
     let d = Driver::with(r, Keymap::default());
     assert_eq!(d.selected().as_deref(), Some("u2"));
-    assert_eq!(d.sel(), 1, "▲ first: u1, u2, then u0");
+    assert_eq!(d.sel(), 2, "the tree keeps its order: a.rs, b.rs, c.rs");
 }
 
 #[test]
@@ -145,7 +139,7 @@ fn past_the_last_pending_unit_it_goes_on_from_the_top() {
 
 #[test]
 fn counts_decide_this_unit_and_the_next_pending_ones() {
-    let mut d = Driver::new(9);
+    let mut d = Driver::singles(9);
     decide(&mut d, &[P, A, F, P, P, P]);
     d.keys("3a");
     assert_eq!(d.decisions()[..6], [A, A, F, A, A, P]);
@@ -164,7 +158,7 @@ fn counts_decide_this_unit_and_the_next_pending_ones() {
 
 #[test]
 fn f_flags_without_asking_for_a_note() {
-    let mut d = Driver::new(6);
+    let mut d = Driver::singles(6);
     let effects = d.keys("f");
     assert!(effects.contains(&Effect::Save), "{effects:?}");
     assert_eq!(d.decision_of("u0"), F);
@@ -257,28 +251,26 @@ fn upper_f_flags_the_files_pending_units_without_asking_for_a_note() {
 
 #[test]
 fn visual_f_flags_every_selected_unit_without_asking_for_a_note() {
-    let mut d = Driver::new(6);
+    let mut d = Driver::singles(6);
     decide(&mut d, &[P, A, P]);
     d.keys("Vjjf");
-    assert_eq!(d.decisions()[..3], [F, F, F], "the accepted one too");
+    assert_eq!(d.decisions()[..3], [F, A, F], "the accepted one stays");
     assert_eq!(*d.overlay(), Overlay::None);
     assert_eq!(d.sel(), 3);
     assert_eq!(d.app.visual, None);
 }
 
-/// The list moves under a selection (a description comes in and raises a
-/// unit to ▲, listed first): the selection keeps its units, and `a`
-/// decides those, not the rows they were on.
+/// A description comes in under a selection and raises a unit to ┃: the
+/// tree keeps its order, the selection its rows.
 #[test]
-fn a_selection_keeps_its_units_when_a_description_moves_the_list() {
-    let mut all = units(6);
+fn a_selection_keeps_its_rows_when_a_description_comes_in() {
+    let mut all = singles(6);
     for u in &mut all {
         u.prep = Prep::Pending;
     }
     let mut d = Driver::of(all);
     d.select(0);
     d.keys("Vj");
-    assert_eq!((d.id_at(0), d.id_at(1)), ("u0".into(), "u1".into()));
     d.app.on_app_event(AppEvent::Prep(PrepareEvent::Ready {
         id: "u5".into(),
         fingerprint: "fp5".into(),
@@ -295,11 +287,9 @@ fn a_selection_keeps_its_units_when_a_description_moves_the_list() {
         dropped: Vec::new(),
         checking: false,
     }));
-    assert_eq!(d.id_at(0), "u5", "▲ first");
+    assert_eq!((d.id_at(0), d.id_at(5)), ("u0".into(), "u5".into()));
     assert_eq!(d.selected().as_deref(), Some("u1"));
-    assert_eq!(d.app.visual_rows(), Some(1..=2));
-    let bar = d.bar(140, 30);
-    assert!(bar.contains("2 units"), "{bar}");
+    assert_eq!(d.app.visual_rows(), Some(0..=1));
     d.keys("a");
     assert_eq!(d.decision_of("u0"), A);
     assert_eq!(d.decision_of("u1"), A);
@@ -311,7 +301,7 @@ fn a_selection_keeps_its_units_when_a_description_moves_the_list() {
 /// you, hidden) ends the selection.
 #[test]
 fn a_selection_whose_first_unit_leaves_the_list_ends() {
-    let mut d = Driver::new(6);
+    let mut d = Driver::singles(6);
     d.select(1);
     d.keys("Vj");
     d.app.review.unit_mut("u1").unwrap().status = UnitStatus::NoBehaviorChange;
@@ -354,7 +344,7 @@ fn undo_and_redo_take_file_actions_back_and_forth() {
 
 #[test]
 fn undo_takes_back_a_selections_flag_and_leaves_a_note_typed_with_i() {
-    let mut d = Driver::new(6);
+    let mut d = Driver::singles(6);
     d.keys("Vjf");
     d.select(4);
     d.keys("iown<cr>");
@@ -383,7 +373,7 @@ fn the_queue_has_no_needs_fix() {
 
 #[test]
 fn every_move_saves_the_cursor() {
-    let mut d = Driver::new(6);
+    let mut d = Driver::singles(6);
     // A move saves only the cursor (the review can be tens of megabytes).
     let effects = d.keys("j");
     assert_eq!(effects, vec![Effect::SaveCursor]);

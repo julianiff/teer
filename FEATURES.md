@@ -7,7 +7,7 @@
 1. **split** — teer parses the old and new version of every changed file and lists the units that changed: functions, methods, classes, top-level code. a class or the top level shows only its own lines; a unit inside it (a method, a function) is folded to the line that names it, since it is listed on its own. rust, python, typescript, javascript, php and go are split; any other text file is one whole-file unit. binary, huge and non-utf-8 files are listed as not shown.
 2. **sort** — every unit gets a level from what the code shows. the agent can raise it, never lower it. a unit with no behavior change is accepted for you.
 3. **explain** — a fast model writes a one-line summary and up to three statements per unit. a statement that doesn't cite lines of its unit is dropped. a second model checks every description.
-4. **review** — down the queue, accept (`a`) or flag (`f`), and write a note (`i`) where you have something to say. `l` opens any unit to look closer.
+4. **review** — down the tree of changed files, read each file's changes beside it, accept (`a`) or flag (`f`), and write a note (`i`) where you have something to say. `l` opens a unit to look closer.
 5. **finish** — `:w` reads your decisions and offers one next step: send the notes to your agent, commit, request changes or approve.
 6. **fix loop** — when the agent is done with your notes, teer reviews again on its own and puts only the changed units back.
 
@@ -17,9 +17,9 @@ your place is saved on every change: decisions, notes, undo history and the curs
 
 | | level | when |
 | --- | --- | --- |
-| `▲` | needs a close look | removed but still called · the agent rates it high risk · a [security](#security) fact that needs it (an auth check gone, a secret, `pull_request_target`) · a high security finding that stands |
-| `◆` | worth a look | signature changed and it has callers · 40+ changed lines · medium risk · a disputed statement · expensive to undo · couldn't be described · a security fact (a new route, a sink reachable from one) · a medium security finding that stands |
-| `●` | routine | everything else that changes behavior · removed with no callers · lock files, snapshots |
+| red `┃` | needs a close look | removed but still called · the agent rates it high risk · a [security](#security) fact that needs it (an auth check gone, a secret, `pull_request_target`) · a high security finding that stands |
+| yellow `┃` | worth a look | signature changed and it has callers · a parameter list the change made long (7 or more, and more than before; teer counts them) · 40+ changed lines · medium risk · a disputed statement · expensive to undo · couldn't be described · a security fact (a new route, a sink reachable from one) · a medium security finding that stands |
+| grey `┃` | routine | everything else that changes behavior · removed with no callers · lock files, snapshots |
 | `○` | no behavior change | formatting or comments · renamed locals · renamed with the same body |
 
 `○` units are accepted for you and left out of the queue; `za` shows them, `u` on one makes it pending again. `auto_accept = "none"` turns this off, and they wait as routine.
@@ -29,7 +29,7 @@ your place is saved on every change: decisions, notes, undo history and the curs
 besides the rule that set its level, a unit can have reasons to look, each a sentence under "why this level":
 
 - **expensive to undo** — deletes or rewrites data, changes a schema, sends, charges or publishes, changes a public api. files under `migrations/` always count.
-- **disputed**, a statement the check disputes: the statement, quoted, and what it says instead. this one also shows as `⚠` on the unit's row.
+- **disputed**, a statement the check disputes: the statement, quoted, and what it says instead. this one also shows as `⚠` on the file's row and the unit's head.
 - **not mentioned in the commits or pr description** — a behavior change nobody wrote down.
 - **security** — each security fact teer found in the change, or another tool reported (see [security](#security)), prefixed `security:`.
 
@@ -93,6 +93,7 @@ every mode has the queue, accept and flag, notes, undo, find, `gd` `gr` `gf`, th
 **asking** is the same in every mode: `K` opens the ask tile, and over the question line it lists what is worth asking next, numbered. `enter` on an empty question asks the first, a number and `enter` that one, a click works too; anything else you type is your own question.
 
 - `review` offers the advice: what to do about the unit, step by step.
+  for a function whose parameter list the change made long, it also offers two questions with the numbers teer counted (parameters, new, optional, of one type): is the signature a design weakness, and do the callers pass the arguments by position.
 - `security` offers the checks that follow up each risk in the code ("which callers check that the user owns the asset?"), written by the model that saw the risk, and last the full check of every path into the unit (the security tile). an answer starts with its verdict: `Holds:` (the control is there, with its lines), `Open:` (nothing stops it) or `Unclear:`.
 - every answer says what it leaves open: those questions are offered next, first in the list. so you follow one risk as deep as it is worth, and leave the others alone.
 
@@ -121,26 +122,25 @@ setup also checks what else teer needs: git, gh (and whether it's logged in), yo
 
 ## the queue
 
-what teer opens on. one box per level, most critical first; in each, units by file, callers before callees (`↳`). the cursor starts on the first pending unit.
+what teer opens on: the tree of the changed files on the left, the changes of the file under the cursor on the right. the cursor starts on the file of the first pending unit that needs a close look.
 
 - **header** — what you review ("your changes", "feature since main, 6 commits", "PR #482 by ana") and a line about the whole change. `<space>c` shows the pr's title and description and every commit, with its message and the units it changed.
-- **rows** — level, file, unit, `⚠` when a statement is disputed, and where it stands: pending, accepted, or flagged with the start of its note.
-- **accepted for you** — a line under the boxes: "14 units accepted for you, za shows them".
-- **preview** — beside the list from 110 columns, else below: why the unit got its level, the agent's summary, and the change with each statement written under the lines it cites. `<c-d>` `<c-u>` scroll it.
-- **bottom bar** — `4 pending · 1 flagged · 37 accepted`, then a key sequence you started and what can follow it, `-- VISUAL --`, or the `:` line.
+- **the tree** — directories and files as an editor lists them, directories first. in front of a file, the icon of the most attention one of its units needs: a vertical line `┃`, red, yellow or grey. after its name only what there is to act on: `⚑` flagged, `⚠` a statement is disputed, `↻` changed by the last re-run, a spinner while the agent describes it. a file with nothing left to do is muted. a folded directory (`▸`) has the colour of the most attention under it. a file teer can't show is a muted row with why (`binary`), and the cursor skips it.
+- **accepted for you** — a line under the tree: "za shows 14 accepted for you". a file that holds nothing else is listed only then, behind `○`.
+- **the changes** — beside the tree from 110 columns, else below: every unit of the file in line order. of each, a head line (icon, name, `✓` accepted or `⚑` flagged), what the agent says it does, and its change with each statement written under the lines it cites. your note and the answers to what you asked are under it. `<c-d>` `<c-u>` scroll it. why a unit got its level, its callers and its commits are in the unit view. on a directory it is empty.
+- **bottom bar** — `4 pending · 1 flagged · 37 accepted` (a count of none is left out), then a key sequence you started and what can follow it, `-- VISUAL --`, or the `:` line.
 
 deciding:
 
-- `a` accepts, `f` flags; neither asks for anything. both go to the next pending unit, not the next row. when nothing is pending, the bar says "Nothing pending. :w to finish".
-- `A` and `F` do the same for the pending units of the file under the cursor (listed by level, the ones in its box), never for ones you decided.
-- a count decides more: `3a` accepts this unit and the next two pending ones.
-- `V` starts a selection, `j` `k` grow it, `a` or `f` decide every unit in it, `esc` leaves it.
-- `u` undoes the last decision, `<c-r>` redoes it, `.` repeats it on the unit under the cursor, with its count. the undo history is saved with the review.
-- `i` opens a note line at the bottom, with the note so far, without changing the decision: `enter` saves it (empty is no note), `esc` drops the edit.
+- `a` accepts and `f` flags the pending units of the file under the cursor; neither asks for anything, and a unit you decided is left alone. both go to the next file with a pending unit. when nothing is pending, the bar says "Nothing pending. :w to finish". to decide on one unit of a file, or again on a decided one, open it (`l`).
+- a count decides more: `3a` accepts this file and the next two with pending units.
+- `V` starts a selection of rows, `j` `k` grow it, `a` or `f` decide every file in it (under a folded directory, all of its files), `esc` leaves it.
+- `u` undoes the last decision, `<c-r>` redoes it, `.` repeats it on the file under the cursor, with its count. the undo history is saved with the review.
+- `i` opens a note line at the bottom for the unit the keys act on (the one with the `▌` bar in the changes), with the note so far, without changing the decision: `enter` saves it (empty is no note), `esc` drops the edit.
 
-moving: `n` `N` go to the next and previous pending unit, `]f` `[f` to the next and previous file, `/` finds a unit by file or name. `zf` lists by file instead: each file in the box of its most critical unit.
+moving: `j` `k` go row by row. `l` or `enter` on a file opens its unit, on a directory folds or opens it; `h` folds an open directory, else goes to the directory the row is in. `n` `N` go to the next and previous file with a pending unit, `]f` `[f` to the next and previous file, `/` finds a unit by file or name and puts the changes at it.
 
-**mouse** — click to select, wheel to scroll, drag to copy, double-click to copy a word (`src/app.rs:120` and urls count as one).
+**mouse** — click to select (a directory also folds or opens), wheel to scroll the changes or move the cursor over the tree, drag to copy, double-click to copy a word (`src/app.rs:120` and urls count as one).
 
 ## the unit view
 
@@ -150,6 +150,8 @@ moving: `n` `N` go to the next and previous pending unit, `]f` `[f` to the next 
 2. **why this level** — the rule that set it and the [reasons](#reasons).
 3. **what changed** — the summary, then the diff in its box with each statement under the lines it cites. `]c` `[c` jump between hunks.
 4. **check** — the verdict on every statement, only when it disputes one.
+
+a file with several units shows them all in this text, in line order, each under its head line. the bar marks the current unit: the title, the tiles and your decisions are its. `]]` `[[` go to the next and the previous unit of the file, decided or not; the unit you scroll to the top is the current one too.
 
 beside the text, two tiles are open from the start (in the `security` [mode](#modes), the security tile in place of the ask tile):
 
@@ -172,7 +174,7 @@ each of these opens a tile (the ones the [mode](#modes) has), tmux style, next t
 
 `a` `f` `A` `F` `u` `.` work as in the queue; after `a` or `f` the next pending unit opens here. `n` `N` move without deciding, and close the tiles but the first one. `h` on the text goes back to the queue, on the unit you were looking at.
 
-**flagged units** — `<space>f`, here or in the queue, lists every unit you flagged one after another, each as the queue's preview shows it: why it has its level, the agent's summary, the whole change in its box with the statements written in, your note under it. one is selected, with the `▌` bar and a background behind it. `j` `k` (or `n` `N`) select the next and previous one and scroll it to the top, a click selects one, `]c` `[c` jump from hunk to hunk, `<c-d>` `<c-u>` scroll. `l` or `enter` looks closer at the selected one (`h` comes back), `a` accepts it and it leaves the list, `i` writes its note, `h` or `<space>f` goes back.
+**flagged units** — `<space>f`, here or in the queue, lists every unit you flagged one after another: why it has its level, the agent's summary, the whole change in its box with the statements written in, your note under it. one is selected, with the `▌` bar and a background behind it. `j` `k` (or `n` `N`) select the next and previous one and scroll it to the top, a click selects one, `]c` `[c` jump from hunk to hunk, `<c-d>` `<c-u>` scroll. `l` or `enter` looks closer at the selected one (`h` comes back), `a` accepts it and it leaves the list, `i` writes its note, `h` or `<space>f` goes back.
 
 like statements, every claim in the advice and the tools must cite real lines. what doesn't is dropped and logged to `teer.log`.
 
@@ -182,31 +184,31 @@ a lens over the review, not a scanner of the whole repo: teer finds security fac
 
 **facts, without an agent.** at prep, teer reads every change for security facts and puts each under "why this level", prefixed `security:`. in php, typescript/javascript and go:
 
-- an authorization check gone (`denyAccessUnlessGranted`, `#[IsGranted]`, `@UseGuards`, `requireAuth` middleware…): `▲` when the code is reachable
-- a new action or route without the check all its siblings have: `◆`
-- new routes, handlers, commands and server actions: `◆`
-- raw sql, shell, eval, file paths, outgoing requests or unescaped html given something that isn't a literal: `◆` when reachable from an entry point (up to four calls up), else a note
+- an authorization check gone (`denyAccessUnlessGranted`, `#[IsGranted]`, `@UseGuards`, `requireAuth` middleware…): close look when the code is reachable
+- a new action or route without the check all its siblings have: worth a look
+- new routes, handlers, commands and server actions: worth a look
+- raw sql, shell, eval, file paths, outgoing requests or unescaped html given something that isn't a literal: worth a look when reachable from an entry point (up to four calls up), else a note
 
 tests, fixtures and mocks are no entry points and reach no sinks: only real keys count there.
 
 in every file:
 
-- hard-coded secrets: `▲`, the value never shown
+- hard-coded secrets: close look, the value never shown
 - passwords or tokens logged
-- packages added or bumped, install scripts (`▲`), a lock changed without its manifest
-- `pull_request_target` and `${{ github.event… }}` in `run:` (`▲`), wider permissions, actions not pinned to a commit
+- packages added or bumped, install scripts (close look), a lock changed without its manifest
+- `pull_request_target` and `${{ github.event… }}` in `run:` (close look), wider permissions, actions not pinned to a commit
 - open ingress and public buckets in terraform
 - cors `*`, cookie flags off, tls verification off, debug on
 - weak crypto: a note
 
-**the security order.** `zs` puts the units with security facts or standing findings in a security box above the level boxes, most exposed first, under an attack-surface card: the entry points, sinks, removed or missing checks, secrets, packages, ci and config the change touches, most severe first, and on its last line what teer checked and what nobody did. with nothing found the card is one muted line that still says what was checked. on a short terminal it is one line; a click on an item selects its unit. `zs` again lists by level, without the card: there each fact is a reason under its unit.
+**the attack surface.** `zs` shows a card over the tree: the entry points, sinks, removed or missing checks, secrets, packages, ci and config the change touches, most severe first, and on its last line what teer checked and what nobody did. with nothing found the card is one muted line that still says what was checked. on a short terminal it is one line; a click on an item selects its unit. `zs` again hides the card: each fact stays a reason under its unit.
 
 **the security tile (`<space>x`).** asks the agent how the change can be abused. teer gives it the call chains into the unit from its call graph (up to four calls to the entry points), the checks its catalog finds along them, what the unit calls, and the facts teer found, as hints, not conclusions. each finding must show a path: where untrusted input enters, each call on the way, and where it does harm, every step citing real lines.
 
 - a finding whose lines don't exist, or whose path doesn't pass through the unit, is dropped and counted
 - a path whose calls teer's graph can't confirm shows "path not verified" and never raises the level
 - a second model checks each finding against the cited code, which teer reads itself; a disputed finding shows `⚠` and doesn't count
-- a finding that stands raises its unit: high `▲`, medium `◆`
+- a finding that stands raises its unit: high to close look, medium to worth a look
 
 the tile also lists what holds (controls checked and found in place) and what was checked and what wasn't. denial of service, rate limits, resource exhaustion, input validation without impact and open redirects without a chain are left out unless `security.toml`'s `include` names them. until the agent answers, the tile is only as tall as teer's facts; without an agent it shows them alone.
 
@@ -243,7 +245,7 @@ when something important has to change in a unit, the agent proposes the code, a
 
 what it drops is counted and logged to `teer.log`. a hunk whose file has a new syntax error with it says "doesn't parse", for the languages teer splits. a second model then says whether the change fixes what it should and changes nothing else.
 
-**in the unit's text.** under the code change, **proposed change**: what it answers and who wrote it, the summary, the check.s word, then each hunk in a box like the code change: its file and lines, its state (proposed, put in, suggested), why, and the lines it removes and adds. `]c` `[c` stop at each after the code change's hunks. the one you jumped to, else the one nearest the top, has the accent border and `p put · P put all` on its edge. the queue's preview says `✎ a change is proposed: 2 hunks · ␣e shows it`, and has what the agent wrote in a box titled **review**, apart from the commits above it. in the unit view a lone tile takes two thirds of its column; under it **inspect further** lists the keys that look closer at the code change. more tiles share the room as tmux and kitty panes do: each one opened takes two fifths of the room the one before had, under it first, then beside it, in turn.
+**in the unit's text.** under the code change, **proposed change**: what it answers and who wrote it, the summary, the check.s word, then each hunk in a box like the code change: its file and lines, its state (proposed, put in, suggested), why, and the lines it removes and adds. `]c` `[c` stop at each after the code change's hunks. the one you jumped to, else the one nearest the top, has the accent border and `p put · P put all` on its edge. the queue says `✎ a change is proposed: 2 hunks · ␣e shows it` under the unit's name. in the unit view a lone tile takes two thirds of its column; under it **inspect further** lists the keys that look closer at the code change. more tiles share the room as tmux and kitty panes do: each one opened takes two fifths of the room the one before had, under it first, then beside it, in turn.
 
 **putting it in.** `p` puts the current hunk into your working tree, `P` every open one, after a y/n question. each hunk's text is found again on disk first; if a file changed since, nothing is written. files are written whole and atomically, keeping their permissions, and symlinks are never followed. then teer reviews again and says what the change did, e.g. "1 unit left the review by the proposed change: as at the base again".
 
@@ -347,14 +349,16 @@ keys follow neovim, and a key does the same on every screen. a prefix (`g`, `]`,
 | --- | --- | --- |
 | `j` `<down>` | `move.down` | move down |
 | `k` `<up>` | `move.up` | move up |
-| `gg` `<home>` | `move.first` | first unit |
-| `G` `<end>` | `move.last` | last unit |
+| `gg` `<home>` | `move.first` | first unit (in the queue: first row) |
+| `G` `<end>` | `move.last` | last unit (in the queue: last row) |
 | `n` | `move.next_pending` | next pending unit |
 | `N` | `move.prev_pending` | previous pending unit |
 | `]c` | `move.next_hunk` | next hunk |
 | `[c` | `move.prev_hunk` | previous hunk |
 | `]f` | `move.next_file` | next file |
 | `[f` | `move.prev_file` | previous file |
+| `]]` | `move.next_unit` | next unit of the file (unit view) |
+| `[[` | `move.prev_unit` | previous unit of the file (unit view) |
 | `<tab>` `gt` | `move.next_tile` | next tile |
 | `<s-tab>` `gT` | `move.prev_tile` | previous tile |
 | `<c-d>` | `scroll.half_down` | scroll half a page down |
@@ -362,8 +366,8 @@ keys follow neovim, and a key does the same on every screen. a prefix (`g`, `]`,
 | `<pagedown>` | `scroll.page_down` | scroll a page down |
 | `<pageup>` | `scroll.page_up` | scroll a page up |
 | `/` | `find.unit` | find a unit by file or name |
-| `a` | `decide.accept` | accept the unit |
-| `f` | `decide.flag` | flag the unit |
+| `a` | `decide.accept` | accept the unit (in the queue: the file's pending units) |
+| `f` | `decide.flag` | flag the unit (in the queue: the file's pending units) |
 | `i` | `note.edit` | edit the note |
 | `A` | `decide.accept_file` | accept the file's pending units |
 | `F` | `decide.flag_file` | flag the file's pending units |
@@ -371,16 +375,15 @@ keys follow neovim, and a key does the same on every screen. a prefix (`g`, `]`,
 | `u` | `history.undo` | undo the last decision |
 | `<c-r>` | `history.redo` | redo |
 | `.` | `history.repeat` | repeat the last decision |
-| `l` `<cr>` | `view.open` | open |
-| `h` `<esc>` | `view.back` | back |
+| `l` `<cr>` | `view.open` | open (in the queue: look closer at a file's unit, or open or fold a directory) |
+| `h` `<esc>` | `view.back` | back (in the queue: fold a directory, or go up to it) |
 | `K` | `ask.open` | ask about the unit |
 | `gd` | `goto.definition` | what this unit calls |
 | `gr` | `goto.callers` | what calls this unit |
 | `gf` | `goto.editor` | open in the editor |
 | `za` | `toggle.auto_accepted` | show units accepted for you |
-| `zf` | `toggle.by_file` | list by file or by level |
 | `zz` | `toggle.zoom` | zoom the tile in focus |
-| `zs` | `toggle.security` | list by level or by exposure |
+| `zs` | `toggle.security` | show the attack surface |
 | `<space>t` | `tool.tests` | tests that cover this unit |
 | `<space>x` | `tool.security` | security: how the change can be abused |
 | `<space>e` | `tool.fix` | propose a change: the agent writes it, teer checks it |
@@ -402,7 +405,7 @@ keys follow neovim, and a key does the same on every screen. a prefix (`g`, `]`,
 | `?` | `help.open` | keys |
 | `d` | `note.delete` | delete the note |
 
-most keys work in the queue and the unit view alike. `]c` `[c` work in the unit view and the flagged list; the tile keys and `zz` are the unit view's, `V` `za` `zf` the queue's; `y` works on the `:w` sheet and in the notes, `d` in the notes. `?` shows the keys of the screen you're on, as you bound them, and only the ones that do something right now: no undo with nothing to undo, no `p` without a proposed hunk, no tile keys with no tile open, nothing that needs an agent without one. the table above is the whole list.
+most keys work in the queue and the unit view alike. `]c` `[c` work in the unit view and the flagged list; `]]` `[[` are the unit view's; the tile keys and `zz` are the unit view's, `V` `za` `zs` the queue's; `y` works on the `:w` sheet and in the notes, `d` in the notes. `?` shows the keys of the screen you're on, as you bound them, and only the ones that do something right now: no undo with nothing to undo, no `p` without a proposed hunk, no tile keys with no tile open, nothing that needs an agent without one. the table above is the whole list.
 
 typing a note, a question or a message, `enter` saves, `esc` cancels and `<c-u>` clears the line. a yes/no question takes `y` or `enter` for yes, any other key for no. `<c-c>` quits from anywhere, saved.
 
@@ -440,7 +443,6 @@ second_opinion = false
 | `[api]` | | `format` (`anthropic` or `openai`), `base_url`, `key_env` (the variable holding the key) |
 | `editor` | `nvim +{line} {file}` | what `gf` runs, and `i` on the `:w` sheet; `{file}` and `{line}` are filled in |
 | `theme` | `dark` | `dark`, `light` or `mono` (`NO_COLOR` means mono) |
-| `order` | `story` | callers and callees together, or `line` |
 | `auto_accept` | `no_behavior_change` | accept units with no behavior change for you, or `none` |
 | `languages` | all six | which ones are split into functions |
 | `concurrency` | `4` | agent requests at once |

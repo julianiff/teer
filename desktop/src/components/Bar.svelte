@@ -1,21 +1,18 @@
 <script lang="ts">
-  // The bottom bar: the counts, what the keys wait for, the status. The
-  // flagged and the noted counts open their lists.
+  // The bottom bar: what is pending, what the keys wait for, the status.
+  // The flagged and the noted counts, when there are any, open their lists.
   import { api } from "../lib/api";
   import type { Bar } from "../lib/types";
   import Act from "./Act.svelte";
   let { bar }: { bar: Bar } = $props();
 </script>
 
-{#snippet counts(zero: boolean)}
+{#snippet counts()}
   {#if bar.flagged > 0}
     <span class="sep">·</span>
     <span class="flagged">
       <Act id="tool.flagged" label="{bar.flagged} flagged" kind="link" showKey={false} title="the flagged list" />
     </span>
-  {:else if zero}
-    <span class="sep">·</span>
-    <span>0 flagged</span>
   {/if}
   {#if bar.notes > 0}
     <span class="sep">·</span>
@@ -32,14 +29,12 @@
   {:else}
     {#if bar.pending > 0}
       <span><strong>{bar.pending} pending</strong></span>
-      {@render counts(true)}
-      <span class="sep">·</span>
-      <span class="muted">{bar.accepted} accepted</span>
+      {@render counts()}
     {:else}
       <strong>Nothing pending.</strong>
       <button class="key" onclick={() => api.action("finish.open")}>{bar.finish_key}</button>
       <strong>to finish</strong>
-      {@render counts(false)}
+      {@render counts()}
     {/if}
 
     {#if bar.command !== null}
@@ -63,7 +58,6 @@
           <span class="key">{h.keys}</span> {h.what}
         </button>
       {/each}
-      <span class="muted">{bar.visual} unit{bar.visual === 1 ? "" : "s"}</span>
     {/if}
 
     <span class="spacer"></span>

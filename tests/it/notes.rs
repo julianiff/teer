@@ -53,6 +53,7 @@ fn unit(symbol: &str, old: (u32, u32), new: (u32, u32), note: &str) -> Unit {
         dive_pending: Default::default(),
         checks: Default::default(),
         security: Vec::new(),
+        signature: None,
     }
 }
 
@@ -159,7 +160,8 @@ fn i_writes_a_note_in_the_queue_and_in_the_unit_view() {
     assert_eq!(u.dive.note_on.as_deref(), Some(u.fingerprint.as_str()));
     assert!(!u.note_is_stale());
 
-    keys(&mut a, "jl");
+    // The file's other unit: the unit view goes on to it.
+    keys(&mut a, "ln");
     assert_eq!(a.screen, Screen::Unit);
     let other = a.unit.id.clone();
     assert_ne!(other, id);
@@ -184,13 +186,15 @@ fn an_emptied_note_is_no_note() {
 }
 
 #[test]
-fn the_note_shows_under_the_code_and_marks_the_row() {
+fn the_note_shows_under_the_code() {
     let mut a = app(["zero hits the gateway", ""], None);
     let out = draw(&a, 120, 30);
     assert!(out.contains("✎ you"), "{out}");
     assert!(out.contains("zero hits the gateway"), "{out}");
-    let row = out.lines().find(|l| l.contains("▌")).unwrap();
-    assert!(row.contains('✎'), "{row}");
+    // The file's row says nothing of it: the notes view lists the notes.
+    let row = out.lines().find(|l| l.starts_with('▌')).unwrap();
+    let row = row.split('│').next().unwrap();
+    assert!(!row.contains('✎'), "{row}");
     // Written on other code: the card says so.
     a.review.units[0].dive.note_on = Some("older".into());
     let out = draw(&a, 120, 30);

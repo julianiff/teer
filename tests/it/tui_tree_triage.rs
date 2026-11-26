@@ -1,5 +1,7 @@
-//! Triage in place in the queue: decisions, jumps, undo.
+//! Triage in place in the queue's tree: decisions, jumps, undo.
 //! Driven through key events on a synthetic review (no repo, no agent).
+//! A key on a file's row is a key on its pending units: where a test is
+//! about one unit, each unit has a file of its own.
 
 use crate::common;
 
@@ -11,6 +13,13 @@ use teer::session::app::{Overlay, Screen};
 fn app(n: usize) -> Driver {
     let d = Driver::new(n);
     assert_eq!(d.app.order.len(), n, "every unit is listed");
+    d
+}
+
+/// `n` pending units, a file each: the tree's row `i` is unit `i`.
+fn singles(n: usize) -> Driver {
+    let d = Driver::singles(n);
+    assert_eq!(d.app.rows().len(), n, "a row per unit");
     d
 }
 
@@ -37,13 +46,14 @@ fn unbound_keys_do_nothing_in_the_list() {
 }
 
 #[test]
-fn a_and_f_decide_the_selected_unit_and_advance_to_next_pending() {
-    let mut a = app(6);
+fn a_and_f_decide_the_file_under_the_cursor_and_advance_to_the_next_pending() {
+    let mut a = singles(6);
     a.keys("a");
     assert_eq!(a.decision(0), Decision::Accepted);
     assert_eq!(a.sel(), 1);
-    // `f` opens the note line on the flagged unit; esc keeps the flag.
-    a.keys("f<esc>");
+    // `f` is only a mark: it asks for no note.
+    a.keys("f");
+    assert_eq!(*a.overlay(), Overlay::None);
     assert_eq!(a.decision(1), Decision::Investigate);
     assert_eq!(a.sel(), 2);
     a.keys("f<esc>");
@@ -65,7 +75,7 @@ fn a_and_f_decide_the_selected_unit_and_advance_to_next_pending() {
 
 #[test]
 fn deciding_never_opens_a_confirmation() {
-    let mut a = app(9);
+    let mut a = singles(9);
     for keys in ["a", "f<esc>", "f<esc>", "a", "a", "a", "a", "a"] {
         a.keys(keys);
         assert_eq!(*a.overlay(), Overlay::None, "{keys}");
@@ -75,7 +85,7 @@ fn deciding_never_opens_a_confirmation() {
 
 #[test]
 fn u_undoes_one_decision_at_a_time() {
-    let mut a = app(6);
+    let mut a = singles(6);
     a.keys("a"); // u0
     a.keys("f<esc>"); // u1
     a.keys("f<esc>"); // u2
@@ -96,11 +106,11 @@ fn u_undoes_one_decision_at_a_time() {
 
 #[test]
 fn undo_restores_the_previous_decision_not_pending() {
-    let mut a = app(3);
+    let mut a = singles(3);
     a.select(1);
     a.keys("a");
-    a.select(1);
-    a.keys("f<esc>");
+    // A decided unit is decided again in its view.
+    a.unit_keys("u1", "f");
     assert_eq!(a.decision(1), Decision::Investigate);
     a.keys("u");
     assert_eq!(a.decision(1), Decision::Accepted);
@@ -108,7 +118,7 @@ fn undo_restores_the_previous_decision_not_pending() {
 
 #[test]
 fn n_and_shift_n_skip_decided_units() {
-    let mut a = app(7);
+    let mut a = singles(7);
     for i in [1, 2, 4] {
         let u = a.app.order[i];
         a.app.review.units[u].decision = Decision::Accepted;
@@ -173,7 +183,7 @@ fn esc_is_back_from_the_list() {
 
 #[test]
 fn k_still_moves_up_and_j_down_in_the_list() {
-    let mut a = app(4);
+    let mut a = singles(4);
     a.keys("jj");
     assert_eq!(a.sel(), 2);
     a.keys("k");
@@ -208,7 +218,7 @@ fn units_that_leave_the_list_are_not_decided_after_a_rebuild() {
 
 #[test]
 fn undo_history_is_shared_between_the_queue_and_the_unit_view() {
-    let mut a = app(6);
+    let mut a = singles(6);
     a.keys("a"); // queue: u0 accepted
     assert_eq!(a.undo_steps(), 1);
 
@@ -234,7 +244,7 @@ fn undo_history_is_shared_between_the_queue_and_the_unit_view() {
 
 #[test]
 fn queue_decisions_are_undone_one_step_at_a_time_from_the_unit_view_too() {
-    let mut a = app(6);
+    let mut a = singles(6);
     a.keys("aaa");
     assert_eq!(a.undo_steps(), 3);
     a.keys("l");

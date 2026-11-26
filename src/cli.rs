@@ -147,20 +147,10 @@ pub enum Command {
     /// teer keeps under its data dir; your working tree and branches are never touched. The
     /// code under review is untrusted: teer runs none of it.
     #[command(
-        args_conflicts_with_subcommands = true,
         override_usage = "teer pr [--no-agent] [--json]",
         after_help = "Examples:\n  teer pr\n  teer pr --no-agent\n  teer pr --json"
     )]
-    Pr {
-        /// `teer pr list`, v1's picker. Hidden.
-        #[command(subcommand)]
-        action: Option<PrAction>,
-
-        /// The pull request, as v1 took it (`teer pr <url>`); `teer <url>` now.
-        /// Hidden, and kept for one release with a hint ([`old_form_hint`]).
-        #[arg(value_name = "URL", hide = true)]
-        url: Option<String>,
-    },
+    Pr,
     /// Print the notes of this repository's last review as Markdown.
     ///
     /// Each note comes with the file, the lines, and the change it is about as a diff,
@@ -210,14 +200,6 @@ pub enum Command {
     },
 }
 
-#[derive(Debug, Clone, Subcommand)]
-pub enum PrAction {
-    /// v1's picker, now `teer pr`. Hidden, and kept for one release with a
-    /// hint ([`old_form_hint`]).
-    #[command(hide = true, alias = "ls")]
-    List,
-}
-
 /// A mode command (`teer security 482 --base main`) as the plain form it
 /// stands for: its mode in `args.mode`, its pull request, base and SARIF
 /// files where plain `teer` has them. Other commands are left alone.
@@ -233,25 +215,6 @@ pub fn take_mode(args: &mut Args) {
     args.target = m.target;
     args.base = m.base.or(args.base.take());
     args.sarif.extend(m.sarif);
-}
-
-/// The one-line hint for a form v1 had and v2 replaced, which still works
-/// for one release: `teer pr list` (now `teer pr`), `teer pr <url>` (now
-/// `teer <url>`). `None` for every other form.
-pub fn old_form_hint(args: &Args) -> Option<String> {
-    let (old, new) = match &args.command {
-        Some(Command::Pr {
-            action: Some(PrAction::List),
-            ..
-        }) => ("teer pr list", "teer pr".to_string()),
-        Some(Command::Pr { url: Some(u), .. }) => {
-            ("teer pr <url>", format!("teer {}", sanitize(u)))
-        }
-        _ => return None,
-    };
-    Some(format!(
-        "`{old}` is now `{new}`; the old form goes in the next release."
-    ))
 }
 
 /// `teer help [COMMAND]`: the help `--help` prints, of teer or of one of
@@ -323,7 +286,7 @@ enum Start {
     Repo(Target),
     /// The pull request at this URL.
     Pr(String),
-    /// A pull request the user picks (`teer pr`, `teer pr list`).
+    /// A pull request the user picks (`teer pr`).
     Pick,
 }
 
@@ -348,9 +311,6 @@ pub async fn run_on(mut args: Args, path: &Path, screens: &dyn Screens) -> Resul
     }
     if let Some(Command::Help { command }) = &args.command {
         return print_help(command.as_deref());
-    }
-    if let Some(hint) = old_form_hint(&args) {
-        eprintln!("teer: {hint}");
     }
     let cwd = match &args.dir {
         Some(d) => d.clone(),
@@ -408,22 +368,10 @@ pub async fn run_on(mut args: Args, path: &Path, screens: &dyn Screens) -> Resul
             ),
             None,
         ) => unreachable!("handled above"),
-        // `teer pr`, `teer pr list` (clap takes no URL with `list`).
-        (Some(Command::Pr { url: None, .. }), None) => Start::Pick,
-        (Some(Command::Pr { url: Some(u), .. }), None) | (None, Some(u)) => {
-            Start::Pr(pr_url(&cwd, &u)?)
-        }
+        (Some(Command::Pr), None) => Start::Pick,
+        (None, Some(u)) => Start::Pr(pr_url(&cwd, &u)?),
         (None, None) => {
             let repo = git::repo_root(&cwd)?;
-            if let Some(b) = args.base.as_deref()
-                && let Some((r, name)) = git::default_base(&repo)
-                && (b == r || b == name)
-            {
-                // v1's way to review a branch: plain `teer` finds this base now.
-                eprintln!(
-                    "teer: plain `teer` finds the base ({name}) on its own; --base picks another"
-                );
-            }
             Start::Repo(git::detect(&repo, args.base.as_deref(), || {
                 pr_base_ref(&repo)
             })?)
@@ -509,7 +457,7 @@ fn sarif_files(cwd: &Path, given: &[PathBuf]) -> Result<Vec<PathBuf>> {
         .collect()
 }
 
-/// `teer pr list` for the repository at `cwd`. On a terminal the pull
+/// `teer pr` for the repository at `cwd`. On a terminal the pull
 /// requests open in a picker and the one picked is returned, to be reviewed;
 /// piped or with `json`, they are printed.
 async fn pr_list(
@@ -818,19 +766,12 @@ mod tests {
         assert!(a.command.is_none() && a.json);
         assert!(matches!(parse(&["setup"]).command, Some(Command::Setup)));
         assert!(matches!(
-            parse(&["pr"]).command,
-            Some(Command::Pr {
-                action: None,
-                url: None
-            })
+            parse(&["--no-agent", "pr"]).command,
+            Some(Command::Pr)
         ));
-        assert!(matches!(
-            parse(&["--no-agent", "pr", "list"]).command,
-            Some(Command::Pr {
-                action: Some(PrAction::List),
-                url: None
-            })
-        ));
+        // v1's forms are gone.
+        assert!(Args::try_parse_from(["teer", "pr", "list"]).is_err());
+        assert!(Args::try_parse_from(["teer", "pr", "https://github.com/a/b/pull/7"]).is_err());
         assert!(matches!(
             parse(&["-C", "/x", "notes"]).command,
             Some(Command::Notes { .. })
@@ -912,29 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn old_forms_still_parse_and_get_a_hint() {
-        let hint = |args: &[&str]| old_form_hint(&parse(args));
-        assert_eq!(
-            hint(&["pr", "list"]).as_deref(),
-            Some("`teer pr list` is now `teer pr`; the old form goes in the next release.")
-        );
-        assert_eq!(hint(&["pr", "ls"]), hint(&["pr", "list"]));
-        assert_eq!(
-            hint(&["pr", "https://github.com/a/b/pull/7"]).as_deref(),
-            Some(
-                "`teer pr <url>` is now `teer https://github.com/a/b/pull/7`; the old form goes in the next release."
-            )
-        );
-        for v2 in [
-            &[][..],
-            &["pr"],
-            &["482"],
-            &["notes"],
-            &["--base", "main"],
-            &["setup"],
-        ] {
-            assert_eq!(hint(v2), None, "{v2:?}");
-        }
+    fn help_takes_a_command() {
         assert!(matches!(
             parse(&["help", "pr"]).command,
             Some(Command::Help { command: Some(ref c) }) if c == "pr"

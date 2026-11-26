@@ -747,10 +747,14 @@ fn the_queue_preview_says_a_change_is_proposed() {
 fn the_window_gets_the_proposal_with_its_hunks_and_the_current_one() {
     let mut d = driver();
     let view = snapshot(&d.app, None);
-    assert!(view.preview.as_ref().unwrap().proposed.is_none());
+    let card = |v: &teer::session::view::View| v.preview.as_ref().unwrap().cards[0].clone();
+    assert_eq!(
+        (card(&view).id.as_str(), card(&view).proposed),
+        ("u0", None)
+    );
     propose(&mut d, "u0", three());
     let view = snapshot(&d.app, None);
-    assert_eq!(view.preview.as_ref().unwrap().proposed, Some(3));
+    assert_eq!(card(&view).proposed, Some(3));
     d.keys("l");
     let view = snapshot(&d.app, None);
     let p = view.unit.unwrap().proposal.unwrap();
@@ -878,10 +882,10 @@ fn not_for_medium_findings_alone() {
 fn a_lone_tile_shares_its_column_with_the_keys_that_look_further() {
     let mut d = driver();
     d.app.review.unit_mut("u0").unwrap().summary = Some("Casts the id.".into());
-    // The queue's preview: what the agent wrote is in a box of its own.
+    // The queue's pane: what the agent says the unit does, under its name.
     let text = d.render(150, 40);
-    assert!(text.contains("╭ review ─"), "{text}");
-    assert!(text.contains("│ Casts the id."), "{text}");
+    assert!(text.contains("┃ s0"), "{text}");
+    assert!(text.contains("│   Casts the id."), "{text}");
 
     // The unit view: the ask tile, and under it the keys that look further.
     d.keys("l");

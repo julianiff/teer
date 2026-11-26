@@ -5,7 +5,7 @@ use std::path::Path;
 
 use super::app::App;
 use crate::config::Role;
-use crate::review::model::{Decision, LineRef, Side, Unit, UnitKind};
+use crate::review::model::{LineRef, Side, Unit, UnitKind};
 use crate::units::extract::MODULE_SYMBOL;
 use crate::util::sanitize;
 
@@ -102,30 +102,3 @@ pub fn place(u: &Unit) -> String {
 
 /// What [`place`] says for a whole file.
 const WHOLE_FILE: &str = "whole file";
-
-/// Most characters of a flagged unit's note its row shows.
-pub const NOTE_SHOWN: usize = 40;
-
-/// The word for where `u` stands.
-pub fn state_word(u: &Unit) -> &'static str {
-    match u.decision {
-        Decision::Pending => "pending",
-        Decision::Accepted => "accepted",
-        Decision::Investigate => "flagged",
-    }
-}
-
-/// The first [`NOTE_SHOWN`] characters of the note on `u`, on one line,
-/// `…` after them when there is more; `None` without a note.
-pub fn note_start(u: &Unit) -> Option<String> {
-    let note = sanitize(&u.dive.note);
-    let note = note.split_whitespace().collect::<Vec<_>>().join(" ");
-    if note.is_empty() {
-        return None;
-    }
-    let mut start: String = note.chars().take(NOTE_SHOWN).collect();
-    if note.chars().count() > NOTE_SHOWN {
-        start.push('…');
-    }
-    Some(start)
-}

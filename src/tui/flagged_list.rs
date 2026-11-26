@@ -93,14 +93,6 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     {
         offset = r.start;
     }
-    let starts: Vec<usize> = blocks
-        .iter()
-        .scan(0, |n, b| {
-            let s = *n;
-            *n += b.len();
-            Some(s)
-        })
-        .collect();
     let s = preview::scroll_rows(app, blocks, w, h, 1, false, offset);
     app.flagged.offset.set(s.offset);
     app.flagged.max.set(s.max);
@@ -108,9 +100,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     app.detail_max_scroll.set(s.max);
     app.detail_rows.set(h);
     // A click on a unit selects it: the rows each one shows.
-    let above = starts.iter().copied().find(|&n| n >= s.offset).unwrap_or(0);
-    let top = usize::from(above > 0 && h >= 3);
-    let shown = s.lines.len().saturating_sub(top + usize::from(s.below > 0));
+    let (above, top, shown) = (s.above, s.shown.start, s.shown.len());
     let view = above..above + shown;
     let mut targets = app.targets.borrow_mut();
     for (k, (_, r)) in boxes.iter().enumerate() {
@@ -160,7 +150,7 @@ fn title_line(app: &App, n: usize, at: usize, w: usize) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Unit `u` as the queue's preview shows it, `w` cells wide, as blocks a
+/// Unit `u` as the flagged list shows it, `w` cells wide, as blocks a
 /// scroll keeps whole: its level, name and place; why it has its level,
 /// its commits and what the agent said; then its code change in a box,
 /// the statements written under the lines they cite, and the note under
@@ -191,7 +181,7 @@ fn entry(
         out.push(vec![line]);
     }
     // The code change in its box, when there is one; else its statements
-    // and the note are said in the text, as the preview does.
+    // and the note are said in the text.
     let code = diff::code_change_of(app, u, w.saturating_sub(5), diff::Notes::Inline);
     let boxed = !code.blocks.is_empty();
     let groups = preview::unit_groups(app, u, w, !boxed).into_iter();
@@ -326,6 +316,7 @@ mod tests {
             dive_pending: Default::default(),
             checks: Default::default(),
             security: Vec::new(),
+            signature: None,
         };
         u.dive.note = note.into();
         u

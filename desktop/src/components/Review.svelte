@@ -23,7 +23,7 @@
     {:else if view.screen === "Flagged" && view.flagged}
       <Flagged flagged={view.flagged} />
     {:else}
-      <Queue queue={view.queue} preview={view.preview} />
+      <Queue queue={view.queue} preview={view.preview} auto={view.bar.auto_accepted} />
     {/if}
   </div>
   <Bar bar={view.bar} />

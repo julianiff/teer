@@ -185,7 +185,8 @@ fn flagged_work(repo: &FixtureRepo) -> Driver {
     let mut d = work(repo, false);
     by_symbol(&mut d, "total");
     d.keys("icharges the fee twice<cr>");
-    d.keys("f");
+    let total = d.selected().unwrap();
+    d.unit_keys(&total, "f");
     by_symbol(&mut d, "fee");
     d.keys("a");
     assert_eq!(counts(&d), (0, 1, 1));
@@ -302,7 +303,7 @@ fn flagged_pr() -> Driver {
     let mut d = pr_driver(pr_info(7, PathBuf::from("/r"), SHA));
     d.select_id("a.py::f");
     d.keys("icheck the limit<cr>");
-    d.keys("f");
+    d.unit_keys("a.py::f", "f");
     d.select_id("a.py::g");
     d.keys("a");
     assert_eq!(counts(&d), (0, 1, 1));
@@ -613,9 +614,8 @@ fn default_and_alternatives_pr_all_accepted() {
 fn half_done() -> Driver {
     let mut d = Driver::open(review(common::v2::units(6)), Config::default());
     d.keys("ifirst note<cr>");
-    d.keys("f");
-    d.select_id("u1");
-    d.keys("a");
+    d.unit_keys("u0", "f");
+    d.unit_keys("u1", "a");
     assert_eq!(counts(&d), (4, 1, 1));
     d.select_id("u5");
     d
@@ -904,7 +904,7 @@ async fn pr_request_changes() {
     let fk = fakes("ok");
     let mut d = pr_driver(o.info());
     d.keys("icheck the limit<cr>");
-    d.keys("f");
+    d.select_id("a.py::g");
     d.keys("iand this one<cr>");
     d.keys("f");
     assert_eq!(counts(&d), (0, 2, 0));

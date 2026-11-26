@@ -1,5 +1,5 @@
-//! Stress and edge tests for the queue. None of these may panic,
-//! and the selected row must stay visible when it fits.
+//! Stress and edge tests for the queue's tree. None of these may panic,
+//! and the cursor's row must stay visible when it fits.
 
 use crate::common;
 
@@ -13,7 +13,7 @@ use teer::keymap::{Action, Keymap, Trigger};
 use teer::review::model::{
     Change, Decision, Marker, Prep, Range, Review, Risk, Unit, UnitKind, UnitStatus,
 };
-use teer::session::app::{Grouping, Overlay, Screen};
+use teer::session::app::{Overlay, Screen};
 use teer::tui::app::App;
 use teer::tui::{slim, ui};
 
@@ -42,6 +42,7 @@ fn unit(i: usize) -> Unit {
         dive_pending: Default::default(),
         checks: Default::default(),
         security: Vec::new(),
+        signature: None,
     }
 }
 
@@ -79,9 +80,8 @@ fn app_of(units: Vec<Unit>) -> App {
         cursor: None,
         mode: None,
     };
-    // The queue listed by file (`zf`): file names as labels too.
     let mut app = App::new(review, Config::default(), Keymap::default());
-    app.grouping = Grouping::File;
+
     app.rebuild_order();
     app
 }
@@ -130,8 +130,8 @@ fn render_all_sizes(app: &App) {
     for &(w, h) in SIZES {
         render(app, w, h);
         // The list builder itself, at every width including degenerate ones.
-        let rows = slim::build_queue(app, w, true);
-        assert_eq!(rows.spans.len(), app.order.len());
+        let rows = slim::build_queue(app, w);
+        assert_eq!(rows.spans.len(), app.rows().len());
         assert_eq!(rows.lines.len(), rows.owner.len());
     }
 }
@@ -311,7 +311,7 @@ fn very_long_and_wide_unicode_names() {
         render_all_sizes(&a);
         for w in [40u16, 41, 45, 60, 71, 80] {
             // Every line, file rows and blank lines included, is exactly the width.
-            let rows = slim::build_queue(&a, w, true);
+            let rows = slim::build_queue(&a, w);
             for l in &rows.lines {
                 assert_eq!(l.width(), w as usize, "width {w}");
             }
@@ -359,7 +359,7 @@ fn every_unit_is_one_line_at_any_width() {
     let mut a = app(5);
     a.sel = 2;
     for w in [39u16, 40, 80, 500] {
-        let rows = slim::build_queue(&a, w, true);
+        let rows = slim::build_queue(&a, w);
         for &(s, e) in &rows.spans {
             assert_eq!(e - s, 1, "width {w}");
         }
@@ -374,7 +374,7 @@ fn selection_at_first_and_last_row_is_visible() {
         for h in [6u16, 8, 12, 24] {
             let t = render(&a, 60, h);
             let s = text(&t);
-            let needle = format!("▌  ● sym{sel} ");
+            let needle = format!("▌  ┃ file{sel:04}.rs ");
             assert_eq!(
                 s.lines().filter(|l| l.contains(&needle)).count(),
                 1,
@@ -385,8 +385,8 @@ fn selection_at_first_and_last_row_is_visible() {
     }
 }
 
-/// Scroll down and up by single steps over the units; after every move, the
-/// selected row must be on screen.
+/// Scroll down and up by single steps over the files; after every move, the
+/// cursor's row must be on screen.
 #[test]
 fn scrolling_keeps_the_selected_row_visible() {
     for (w, h) in [(60u16, 8u16), (60, 12), (80, 24), (45, 6), (60, 5), (60, 4)] {
@@ -394,12 +394,13 @@ fn scrolling_keeps_the_selected_row_visible() {
         let check = |a: &App, dir: &str| {
             let t = render(a, w, h);
             let s = text(&t);
-            let name = format!("● {}", a.selected().unwrap().symbol);
+            // A file's row, or at the top the directory's.
+            let name = format!(" {} ", a.rows()[a.cursor_row().unwrap()].name);
             let rows = s
                 .lines()
                 .filter(|l| l.contains('▌') && l.contains(&name))
                 .count();
-            assert_eq!(rows, 1, "{dir} {} at {w}x{h}: row missing\n{s}", a.sel);
+            assert_eq!(rows, 1, "{dir} {name} at {w}x{h}: row missing\n{s}");
         };
         check(&a, "initial");
         let steps = a.order.len() - 1;
@@ -424,7 +425,7 @@ fn jumping_far_keeps_the_selection_visible() {
     for sel in [0usize, 250, 499, 3, 400, 0, 499] {
         a.sel = sel;
         let s = text(&render(&a, 60, 15));
-        let row = format!("▌  ● sym{sel} ");
+        let row = format!("▌  ┃ file{sel:04}.rs ");
         assert_eq!(
             s.lines().filter(|l| l.contains(&row)).count(),
             1,
@@ -481,7 +482,9 @@ fn the_selected_row_is_visible_after_a_resize() {
         t.draw(|f| ui::draw(f, &a)).unwrap();
         let s = text(&t);
         assert_eq!(
-            s.lines().filter(|l| l.contains("▌  ● sym45 ")).count(),
+            s.lines()
+                .filter(|l| l.contains("▌  ┃ file0045.rs "))
+                .count(),
             1,
             "{w}x{h}\n{s}"
         );
@@ -506,6 +509,7 @@ fn p_does_nothing_and_the_reset_confirm_still_works() {
     key(&mut a, 'p');
     assert_eq!(a.overlay, Overlay::None);
     assert_eq!(a.review.units[0].decision, Decision::Accepted, "not reset");
+    a.on_action(Action::MoveDown);
     a.on_action(Action::DecideFlag);
     render(&a, 120, 40);
     assert_eq!(
@@ -609,7 +613,7 @@ fn control_characters_and_newlines_keep_rows_on_one_line() {
     for sel in 0..a.order.len() {
         a.sel = sel;
         for w in [40u16, 60, 80, 120] {
-            let rows = slim::build_queue(&a, w, true);
+            let rows = slim::build_queue(&a, w);
             for &(s, e) in &rows.spans {
                 for l in &rows.lines[s..e] {
                     let joined: String = l.spans.iter().map(|x| x.content.to_string()).collect();
@@ -635,14 +639,14 @@ fn help_shows_f_and_k_is_up() {
 }
 
 #[test]
-fn the_last_unit_shows_its_boxs_bottom_edge_and_a_blank_row() {
+fn the_last_row_sits_on_the_lists_last_line_with_no_edge_under_it() {
     let mut a = app_of((0..40).map(|i| with_change(unit(i), "Changes")).collect());
     a.on_action(Action::MoveLast);
     let s = text(&render(&a, 140, 24));
     let rows: Vec<&str> = s.lines().collect();
     let n = rows.len();
-    // The selected row, the box's bottom edge, a blank row, the footer.
-    assert!(rows[n - 4].contains("▌  ● sym39 "), "{s}");
-    assert!(rows[n - 3].contains('╰'), "{s}");
-    assert!(!rows[n - 2].contains(['│', '╰']), "{s}");
+    // The cursor's row, then the bar.
+    assert!(rows[n - 2].starts_with("\"▌  ┃ file0039.rs "), "{s}");
+    assert!(rows[n - 1].contains("40 pending"), "{s}");
+    assert!(!s.contains('╰') && !s.contains('╭'), "{s}");
 }

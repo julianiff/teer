@@ -4,7 +4,8 @@
   // the same way, under its own `title`; the `current` one (that
   // `fix.apply` puts in) has the accent border.
   // `tools`: what can be done with it, on its head; `caption`: a line
-  // under the head (why a proposed hunk is there).
+  // under the head (why a proposed hunk is there). `bare`: the rows alone,
+  // under a head of the caller's.
   import type { Snippet } from "svelte";
   import type { Code, CodeNote } from "../lib/types";
   let {
@@ -13,12 +14,14 @@
     caption,
     title = "code change",
     current = false,
+    bare = false,
   }: {
     code: Code;
     tools?: Snippet;
     caption?: Snippet;
     title?: string;
     current?: boolean;
+    bare?: boolean;
   } = $props();
 
   const width = $derived(
@@ -40,11 +43,13 @@
 {/snippet}
 
 <div class="code" class:current>
-  <div class="head">
-    <span>{title}</span>
-    {#if tools}<span class="tools">{@render tools()}</span>{/if}
-    <span class="counts"><span class="add">+{code.added}</span> <span class="del">−{code.removed}</span></span>
-  </div>
+  {#if !bare}
+    <div class="head">
+      <span>{title}</span>
+      {#if tools}<span class="tools">{@render tools()}</span>{/if}
+      <span class="counts"><span class="add">+{code.added}</span> <span class="del">−{code.removed}</span></span>
+    </div>
+  {/if}
   {#if caption}<div class="caption">{@render caption()}</div>{/if}
   <div class="rows" style="--digits: {width}ch">
     {#each code.rows as row, k (k)}

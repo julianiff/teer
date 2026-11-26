@@ -101,7 +101,7 @@ fn folded(out: &str, place: &str) {
     ] {
         assert!(out.contains(shown), "{place}: {shown}\n{out}");
     }
-    let dots = out.lines().filter(|l| l.contains("│ ... ")).count();
+    let dots = out.lines().filter(|l| l.contains("│   ... ")).count();
     assert_eq!(dots, 1, "{place}\n{out}");
     for hidden in ["step_24(order)", "audit(order)", "step_29(order)"] {
         assert!(!out.contains(hidden), "{place}: {hidden}\n{out}");

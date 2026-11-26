@@ -267,7 +267,7 @@ pub async fn gh_tool(gh: &OsStr) -> Tool {
         found,
         about: about.into(),
     };
-    let what_for = "pull request titles, `teer pr list`, posting reviews";
+    let what_for = "pull request titles, `teer pr`, posting reviews";
     let login = "run `gh auth login`";
     let cwd = std::env::temp_dir();
     let run = crate::gh::run(gh, &cwd, &["auth", "status"], None);

@@ -24,7 +24,12 @@ use crate::session::{self, AppEvent, Effect, Overlay, Screen};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Target {
     Action(Action),
+    /// A unit, by its position in the queue's order: a click puts the
+    /// cursor on its file.
     Unit(usize),
+    /// A row of the queue's tree, by its index: a click puts the cursor
+    /// on it, and folds or opens a directory.
+    Row(usize),
     /// An insert's row on improve mode's list, by its place there: a
     /// click puts the cursor on it.
     Insert(usize),
@@ -69,6 +74,9 @@ pub struct App {
     pub last_click: Option<(Instant, u16, u16)>,
     /// The queue's first row shown, as last drawn.
     pub slim_scroll: Cell<usize>,
+    /// The selected unit the queue's pane was last drawn for, by id: a
+    /// jump to another one scrolls the pane to it.
+    pub pane_unit: RefCell<String>,
     /// Syntax colours of the files drawn so far (see [`crate::syntax`]).
     pub syntax: crate::syntax::Cache,
 }
@@ -105,6 +113,7 @@ impl App {
             selection: None,
             last_click: None,
             slim_scroll: Cell::new(0),
+            pane_unit: RefCell::default(),
             syntax: Default::default(),
         }
     }
@@ -282,6 +291,10 @@ impl App {
                     Some(Target::Note(_)) => Vec::new(),
                     Some(Target::Action(a)) => self.run_action(a, None),
                     Some(Target::Unit(pos)) => self.move_sel(pos),
+                    Some(Target::Row(i)) => match self.rows().get(i).map(|r| r.id()) {
+                        Some(id) => self.click_row(&id),
+                        None => Vec::new(),
+                    },
                     Some(Target::Insert(pos)) => self.select_insert(pos),
                     Some(Target::AskLink(i)) => self.follow_ask_link(i),
                     Some(Target::Flagged(i)) => {

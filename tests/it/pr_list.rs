@@ -1,4 +1,4 @@
-//! `teer pr list`: which remote names the repository, the exact gh calls,
+//! `teer pr`: which remote names the repository, the exact gh calls,
 //! and how their answers are merged. gh is a fake script; git is real.
 
 use crate::common;
@@ -6,7 +6,7 @@ use crate::common;
 use std::path::{Path, PathBuf};
 
 use common::*;
-use teer::cli::{Args, Command, PrAction};
+use teer::cli::{Args, Command};
 use teer::pr_list::{self, Section};
 
 fn script(dir: &Path, body: &str) -> PathBuf {
@@ -31,40 +31,17 @@ fn repo_with(remotes: &[(&str, &str)]) -> FixtureRepo {
 }
 
 #[test]
-fn the_cli_parses_pr_list_and_still_takes_a_url() {
+fn the_cli_parses_pr_and_no_longer_its_v1_forms() {
     use clap::Parser;
-    let a = Args::try_parse_from(["teer", "pr", "list", "--json"]).unwrap();
-    assert!(matches!(
-        a.command,
-        Some(Command::Pr {
-            action: Some(PrAction::List),
-            url: None
-        })
-    ));
+    let a = Args::try_parse_from(["teer", "pr", "--json"]).unwrap();
+    assert!(matches!(a.command, Some(Command::Pr)));
     assert!(a.json);
-    let a = Args::try_parse_from(["teer", "pr", "ls"]).unwrap();
-    assert!(matches!(
-        a.command,
-        Some(Command::Pr {
-            action: Some(PrAction::List),
-            ..
-        })
-    ));
-    let a = Args::try_parse_from(["teer", "pr", "https://github.com/a/b/pull/1"]).unwrap();
-    assert!(matches!(
-        a.command,
-        Some(Command::Pr { action: None, url: Some(ref u) }) if u == "https://github.com/a/b/pull/1"
-    ));
-    // `teer pr` alone opens the picker.
-    let a = Args::try_parse_from(["teer", "pr"]).unwrap();
-    assert!(matches!(
-        a.command,
-        Some(Command::Pr {
-            action: None,
-            url: None
-        })
-    ));
-    assert!(Args::try_parse_from(["teer", "pr", "list", "https://github.com/a/b/pull/1"]).is_err());
+    for gone in ["list", "ls", "https://github.com/a/b/pull/1"] {
+        assert!(
+            Args::try_parse_from(["teer", "pr", gone]).is_err(),
+            "{gone}"
+        );
+    }
 }
 
 #[test]

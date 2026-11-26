@@ -435,7 +435,7 @@ fn links_open_the_unit_in_the_unit_view_and_code_in_the_editor() {
     assert!(!a.unit.typing);
     let text = panel(&a, 120, 120);
     assert!(
-        text.contains("▌ ◆ charge_order  checkout.py:8-12"),
+        text.contains("▌ ┃ charge_order  checkout.py:8-12"),
         "{text}"
     );
     code(&mut a, KeyCode::Char('j'));
@@ -483,9 +483,17 @@ fn an_answer_is_noted_on_its_unit_where_it_is_seen() {
     assert!(text.contains("╭ ? how is an order charged?"), "{text}");
     assert!(text.contains("charge_order checks the currency"), "{text}");
     assert!(text.contains("2 pieces of code · K shows them"), "{text}");
-    // Not on other units.
-    a.sel = (a.sel + 1) % a.order.len();
-    assert!(!screen(&a, 140, 50).contains("? how is an order charged?"));
+    // Under its unit, once: after its code and before the next unit.
+    assert_eq!(text.matches("? how is an order charged?").count(), 1);
+    let at = |what: &str| text.find(what).unwrap_or_else(|| panic!("{what}:\n{text}"));
+    assert!(
+        at("charge_order") < at("╭ ? how is an order charged?"),
+        "{text}"
+    );
+    assert!(
+        at("╭ ? how is an order charged?") < at("old_helper"),
+        "{text}"
+    );
 }
 
 #[test]

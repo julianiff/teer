@@ -29,7 +29,6 @@ use teer::review::model::{
 use teer::review::prepare::prepare;
 use teer::review::prompts::SECOND_RULES;
 use teer::review::{BuildOptions, build_review};
-use teer::session::app::Grouping;
 use teer::tui::app::App;
 
 // ---- The Phase 3 API these tests expect: adapt here after merging -----------
@@ -54,9 +53,8 @@ fn auto_accept(mode: &str) -> Config {
     toml::from_str(&format!("auto_accept = \"{mode}\"\n")).expect("a valid config")
 }
 
-/// List by level, the plan's queue order (`zf` switches to the file boxes).
+/// List the units again, as a description coming in does.
 fn by_level(d: &mut Driver) {
-    d.app.grouping = Grouping::Unit;
     d.app.rebuild_order();
 }
 
@@ -70,8 +68,7 @@ fn open(review: Review, cfg: Config) -> Driver {
         Vec::new(),
         None,
     );
-    // The queue listed by file (`zf`); by level is tests/it/v2_queue.rs's.
-    app.grouping = Grouping::File;
+
     app.rebuild_order();
     Driver { app, effects }
 }
@@ -83,7 +80,7 @@ fn level(d: &Driver, id: &str) -> Level {
 
 // ---- Units -----------------------------------------------------------------
 
-/// `file::name`: a changed function, pending, ● (no agent asked).
+/// `file::name`: a changed function, pending, ┃ (no agent asked).
 fn changed(file: &str, name: &str) -> Unit {
     let mut u = unit(0, file);
     u.id = format!("{file}::{name}");
@@ -100,7 +97,7 @@ fn same(file: &str, name: &str) -> Unit {
     u
 }
 
-/// ▲: removed while something still calls it.
+/// ┃: removed while something still calls it.
 fn removed_but_called(file: &str, name: &str) -> Unit {
     let mut u = changed(file, name);
     u.status = UnitStatus::Removed;
@@ -108,7 +105,7 @@ fn removed_but_called(file: &str, name: &str) -> Unit {
     u
 }
 
-/// ◆: expensive to undo.
+/// ┃: expensive to undo.
 fn expensive(file: &str, name: &str) -> Unit {
     let mut u = changed(file, name);
     u.checks.cost = Some(Cost {
@@ -133,8 +130,8 @@ fn disputed(mut u: Unit, why: &str) -> Unit {
     u
 }
 
-/// Two ○ units among two others: `f0.rs` keep_total ●, format_me ○;
-/// `f1.rs` rename_vat ○, charge_more ●.
+/// Two ○ units among two others: `f0.rs` keep_total ┃, format_me ○;
+/// `f1.rs` rename_vat ○, charge_more ┃.
 fn mixed() -> Review {
     review(vec![
         changed("f0.rs", "keep_total"),
@@ -173,7 +170,7 @@ fn no_behavior_change_is_accepted_for_you() {
     assert_eq!(listed(&d), ["f0.rs::keep_total", "f1.rs::charge_more"]);
     let za = d.app.keys.label(Action::ToggleAutoAccepted);
     assert_eq!(za, "za");
-    let line = format!("2 units accepted for you, {za} shows them");
+    let line = format!("{za} shows 2 accepted for you");
     let screen = d.render(120, 30);
     assert!(screen.contains(&line), "{screen}");
 
@@ -218,7 +215,7 @@ fn disputed_no_change_is_not_auto_accepted() {
     // The undisputed one still is accepted for you.
     assert!(accepted_for_you(get(&d, "f1.rs::rename_vat")));
     let screen = d.render(120, 30);
-    assert!(screen.contains("1 unit accepted for you"), "{screen}");
+    assert!(screen.contains("za shows 1 accepted for you"), "{screen}");
 }
 
 // ---- P3: auto_accept = "none" ----------------------------------------------
@@ -447,11 +444,11 @@ async fn marks_become_reasons() {
     none(&add, "expensive");
     none(&add, "dispute");
 
-    // The unit's reasons show with it.
+    // The queue's pane says each in the unit's code.
     for (id, text) in [
-        (&charge, "expensive to undo"),
+        (&charge, "╭ expensive to undo ─"),
         (&helper, "it calls charge_order twice"),
-        (&add, "not mentioned in the commits or pr description"),
+        (&add, "╭ not mentioned ─"),
     ] {
         d.select_id(id);
         let screen = d.render(160, 50);
@@ -480,13 +477,13 @@ async fn queue_rows_show_only_dispute_glyph() {
     assert!(!row("charge_order").contains('⚠'), "{screen}");
 }
 
-// ---- P7: queue order and the first unit ------------------------------------
+// ---- P7: the tree's order and the first unit ---------------------------------
 
 #[test]
 fn queue_order_and_first_unit() {
-    // a.rs: a_callee ● (line 1), a_caller ● (line 50, calls a_callee),
-    // a_look ◆ (line 100); b.rs: b_top ▲ (accepted already), b_low ●;
-    // c.rs: c_top ▲.
+    // a.rs: a_callee ┃ (line 1), a_caller ┃ (line 50, calls a_callee),
+    // a_look ┃ (line 100); b.rs: b_top ┃ (accepted already), b_low ┃;
+    // c.rs: c_top ┃.
     let mut callee = changed("a.rs", "a_callee");
     callee.new_range = Some(Range::new(1, 5));
     callee.callers = vec!["a.rs::a_caller".into()];
@@ -507,47 +504,53 @@ fn queue_order_and_first_unit() {
     ];
     let mut d = open(review(units), Config::default());
 
-    // The first unit shown is the first pending ▲.
+    // The first unit shown is the first pending ┃.
     assert_eq!(d.selected().as_deref(), Some("c.rs::c_top"));
 
-    // Level, then file, callers before callees, then path.
-    let by_levels = [
-        "b.rs::b_top",
-        "c.rs::c_top",
-        "a.rs::a_look",
-        "a.rs::a_caller",
-        "a.rs::a_callee",
-        "b.rs::b_low",
-    ];
+    // The tree's order: file by file by path, in a file by line,
+    // whatever the levels are.
     by_level(&mut d);
-    assert_eq!(listed(&d), by_levels);
+    assert_eq!(
+        listed(&d),
+        [
+            "a.rs::a_callee",
+            "a.rs::a_caller",
+            "a.rs::a_look",
+            "b.rs::b_top",
+            "b.rs::b_low",
+            "c.rs::c_top",
+        ]
+    );
     let levels: Vec<Level> = listed(&d).iter().map(|id| level(&d, id)).collect();
     use Level::*;
     assert_eq!(
         levels,
-        [Attention, Attention, Look, Routine, Routine, Routine]
+        [Routine, Routine, Look, Attention, Routine, Attention]
     );
     assert_eq!(
         d.selected().as_deref(),
         Some("c.rs::c_top"),
         "the selection stays"
     );
-
-    // `zf`: each file in the box of its most critical unit, and back.
-    d.keys("zf");
+    // Each file's row has the level of its most critical unit; coming to
+    // a file over the rows selects its lead unit.
+    let file_level = |d: &Driver, f: &str| d.app.file_facts(std::path::Path::new(f)).unwrap().level;
     assert_eq!(
-        listed(&d),
         [
-            "b.rs::b_top",
-            "b.rs::b_low",
-            "c.rs::c_top",
-            "a.rs::a_look",
-            "a.rs::a_caller",
-            "a.rs::a_callee",
-        ]
+            file_level(&d, "a.rs"),
+            file_level(&d, "b.rs"),
+            file_level(&d, "c.rs")
+        ],
+        [Look, Attention, Attention]
     );
-    d.keys("zf");
-    assert_eq!(listed(&d), by_levels);
+    d.keys("gg");
+    assert_eq!(d.selected().as_deref(), Some("a.rs::a_look"));
+    d.keys("j");
+    assert_eq!(
+        d.selected().as_deref(),
+        Some("b.rs::b_low"),
+        "b_top is decided"
+    );
 }
 
 // ---- P8: --json ------------------------------------------------------------

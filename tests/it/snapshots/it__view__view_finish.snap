@@ -36,398 +36,722 @@ expression: json(&app)
     "waiting": null
   },
   "queue": {
-    "grouping": "Unit",
-    "boxes": [
+    "rows": [
       {
+        "id": "checkout.py",
+        "kind": "File",
+        "depth": 0,
+        "name": "checkout.py",
+        "path": "checkout.py",
+        "folded": false,
         "level": "Attention",
-        "title": "Needs a close look · 1 unit",
-        "files": [
-          {
-            "path": "checkout.py",
-            "done": 1,
-            "total": 1,
-            "busy": false,
-            "flagged": true,
-            "rows": [
-              {
-                "pos": 0,
-                "id": "checkout.py::charge_order",
-                "level": "Attention",
-                "icon": "▲",
-                "path": "checkout.py",
-                "name": "charge_order",
-                "whole_file": false,
-                "depth": 0,
-                "decision": "Investigate",
-                "state": "flagged",
-                "note": null,
-                "disputed": false,
-                "noted": false,
-                "removed": false,
-                "preparing": false,
-                "selected": true,
-                "in_visual": false,
-                "changed": false
-              }
-            ]
-          }
-        ]
-      },
-      {
-        "level": "Look",
-        "title": "Worth a look · 1 unit",
-        "files": [
-          {
-            "path": "checkout.py",
-            "done": 0,
-            "total": 1,
-            "busy": false,
-            "flagged": false,
-            "rows": [
-              {
-                "pos": 1,
-                "id": "checkout.py::old_helper",
-                "level": "Look",
-                "icon": "◆",
-                "path": "checkout.py",
-                "name": "old_helper",
-                "whole_file": false,
-                "depth": 0,
-                "decision": "Pending",
-                "state": "pending",
-                "note": null,
-                "disputed": false,
-                "noted": false,
-                "removed": true,
-                "preparing": false,
-                "selected": false,
-                "in_visual": false,
-                "changed": false
-              }
-            ]
-          }
-        ]
-      },
-      {
-        "level": "Routine",
-        "title": "Routine · 2 units",
-        "files": [
-          {
-            "path": "checkout.py",
-            "done": 0,
-            "total": 2,
-            "busy": false,
-            "flagged": false,
-            "rows": [
-              {
-                "pos": 2,
-                "id": "checkout.py::new_helper",
-                "level": "Routine",
-                "icon": "●",
-                "path": "checkout.py",
-                "name": "new_helper",
-                "whole_file": false,
-                "depth": 0,
-                "decision": "Pending",
-                "state": "pending",
-                "note": null,
-                "disputed": false,
-                "noted": false,
-                "removed": false,
-                "preparing": false,
-                "selected": false,
-                "in_visual": false,
-                "changed": false
-              },
-              {
-                "pos": 3,
-                "id": "checkout.py::Cart::add",
-                "level": "Routine",
-                "icon": "●",
-                "path": "checkout.py",
-                "name": "Cart::add",
-                "whole_file": false,
-                "depth": 0,
-                "decision": "Pending",
-                "state": "pending",
-                "note": null,
-                "disputed": false,
-                "noted": false,
-                "removed": false,
-                "preparing": false,
-                "selected": false,
-                "in_visual": false,
-                "changed": false
-              }
-            ]
-          }
-        ]
+        "file": {
+          "done": false,
+          "flagged": true,
+          "preparing": false,
+          "disputed": false,
+          "changed": false
+        },
+        "selected": true,
+        "in_visual": false
       }
-    ],
-    "skipped": [],
-    "auto_line": "3 units accepted for you, za shows them",
-    "sel": 0,
-    "show_auto": false
+    ]
   },
   "preview": {
-    "id": "checkout.py::charge_order",
-    "name": "charge_order",
-    "place": "checkout.py:8-12",
-    "file": "checkout.py",
-    "line": 9,
-    "kind": "Function",
-    "status": "Changed",
-    "level": "Attention",
-    "icon": "▲",
-    "level_title": "Needs a close look",
-    "decision": "Investigate",
-    "accepted_for_you": false,
-    "state": "⚑ flagged",
-    "why": [
-      "high risk"
-    ],
-    "reasons": [],
-    "commits": [],
-    "agent_label": "agent (haiku)",
-    "summary": "Changes how orders are charged.",
-    "nbc_reason": null,
-    "prep": "Ready",
-    "prep_note": null,
-    "statements": [
+    "path": "checkout.py",
+    "selected": "checkout.py::charge_order",
+    "cards": [
       {
-        "marker": "added",
-        "symbol": "+",
-        "text": "Rejects unsupported currencies. 2 callers don't handle it.",
-        "risk": "high",
-        "cites": "L9",
-        "evidence": [
+        "id": "checkout.py::charge_order",
+        "name": "charge_order",
+        "place": "checkout.py:8-12",
+        "file": "checkout.py",
+        "line": 9,
+        "kind": "Function",
+        "status": "Changed",
+        "level": "Attention",
+        "icon": "┃",
+        "level_title": "Needs a close look",
+        "decision": "Investigate",
+        "accepted_for_you": false,
+        "state": "⚑ flagged",
+        "why": [
+          "high risk"
+        ],
+        "reasons": [],
+        "commits": [],
+        "agent_label": "agent (haiku)",
+        "summary": "Changes how orders are charged.",
+        "nbc_reason": null,
+        "prep": "Ready",
+        "prep_note": null,
+        "statements": [
           {
-            "side": "new",
-            "line": 9
+            "marker": "added",
+            "symbol": "+",
+            "text": "Rejects unsupported currencies. 2 callers don't handle it.",
+            "risk": "high",
+            "cites": "L9",
+            "evidence": [
+              {
+                "side": "new",
+                "line": 9
+              }
+            ]
+          },
+          {
+            "marker": "changed",
+            "symbol": "~",
+            "text": "Saves the payment on the order before returning it, so a failed save now fails the whole charge.",
+            "risk": "medium",
+            "cites": "L9",
+            "evidence": [
+              {
+                "side": "new",
+                "line": 9
+              }
+            ]
+          },
+          {
+            "marker": "removed",
+            "symbol": "−",
+            "text": "No longer sends the receipt email.",
+            "risk": "low",
+            "cites": "old L8",
+            "evidence": [
+              {
+                "side": "old",
+                "line": 8
+              }
+            ]
           }
-        ]
+        ],
+        "code": {
+          "added": 3,
+          "removed": 2,
+          "rows": [
+            {
+              "kind": "Context",
+              "line": 8,
+              "old": 8,
+              "pieces": [
+                {
+                  "text": "def",
+                  "class": "Keyword"
+                },
+                {
+                  "text": " ",
+                  "class": null
+                },
+                {
+                  "text": "charge_order",
+                  "class": "Function"
+                },
+                {
+                  "text": "(",
+                  "class": null
+                },
+                {
+                  "text": "order",
+                  "class": "Variable"
+                },
+                {
+                  "text": "):",
+                  "class": null
+                }
+              ]
+            },
+            {
+              "kind": "Added",
+              "line": 9,
+              "old": null,
+              "pieces": [
+                {
+                  "text": "    ",
+                  "class": null
+                },
+                {
+                  "text": "if",
+                  "class": "Keyword"
+                },
+                {
+                  "text": " ",
+                  "class": null
+                },
+                {
+                  "text": "order",
+                  "class": "Variable"
+                },
+                {
+                  "text": ".",
+                  "class": null
+                },
+                {
+                  "text": "currency",
+                  "class": "Variable"
+                },
+                {
+                  "text": " not in ",
+                  "class": null
+                },
+                {
+                  "text": "SUPPORTED",
+                  "class": "Constant"
+                },
+                {
+                  "text": ":",
+                  "class": null
+                }
+              ]
+            },
+            {
+              "kind": "Added",
+              "line": 10,
+              "old": null,
+              "pieces": [
+                {
+                  "text": "        ",
+                  "class": null
+                },
+                {
+                  "text": "raise",
+                  "class": "Keyword"
+                },
+                {
+                  "text": " ",
+                  "class": null
+                },
+                {
+                  "text": "ValueError",
+                  "class": "Function"
+                },
+                {
+                  "text": "(",
+                  "class": null
+                },
+                {
+                  "text": "\"unsupported currency\"",
+                  "class": "String"
+                },
+                {
+                  "text": ")",
+                  "class": null
+                }
+              ]
+            },
+            {
+              "kind": "Context",
+              "line": 11,
+              "old": 9,
+              "pieces": [
+                {
+                  "text": "    ",
+                  "class": null
+                },
+                {
+                  "text": "result",
+                  "class": "Variable"
+                },
+                {
+                  "text": " = ",
+                  "class": null
+                },
+                {
+                  "text": "pay",
+                  "class": "Function"
+                },
+                {
+                  "text": "(",
+                  "class": null
+                },
+                {
+                  "text": "order",
+                  "class": "Variable"
+                },
+                {
+                  "text": ")",
+                  "class": null
+                }
+              ]
+            },
+            {
+              "kind": "Gap",
+              "line": null,
+              "old": null,
+              "pieces": []
+            }
+          ],
+          "notes": [
+            {
+              "after": 0,
+              "title": "low",
+              "risk": "low",
+              "symbol": "−",
+              "text": [
+                "No longer sends the receipt email."
+              ],
+              "cites": "old L8"
+            },
+            {
+              "after": 1,
+              "title": "high",
+              "risk": "high",
+              "symbol": "+",
+              "text": [
+                "Rejects unsupported currencies. 2 callers don't handle it."
+              ],
+              "cites": "L9"
+            },
+            {
+              "after": 1,
+              "title": "medium",
+              "risk": "medium",
+              "symbol": "~",
+              "text": [
+                "Saves the payment on the order before returning it, so a failed save now fails the whole charge."
+              ],
+              "cites": "L9"
+            }
+          ],
+          "hunks": [
+            1
+          ]
+        },
+        "note": null,
+        "answers": [],
+        "disputed": false
       },
       {
-        "marker": "changed",
-        "symbol": "~",
-        "text": "Saves the payment on the order before returning it, so a failed save now fails the whole charge.",
-        "risk": "medium",
-        "cites": "L9",
-        "evidence": [
+        "id": "checkout.py::old_helper",
+        "name": "old_helper",
+        "place": "checkout.py:14-15",
+        "file": "checkout.py",
+        "line": 14,
+        "kind": "Function",
+        "status": "Removed",
+        "level": "Look",
+        "icon": "┃",
+        "level_title": "Worth a look",
+        "decision": "Pending",
+        "accepted_for_you": false,
+        "state": "pending",
+        "why": [
+          "removed, no callers found",
+          "medium risk"
+        ],
+        "reasons": [],
+        "commits": [],
+        "agent_label": "agent (haiku)",
+        "summary": "Changes how orders are charged.",
+        "nbc_reason": null,
+        "prep": "Ready",
+        "prep_note": null,
+        "statements": [
           {
-            "side": "new",
-            "line": 9
+            "marker": "removed",
+            "symbol": "−",
+            "text": "The doubling helper is gone.",
+            "risk": "medium",
+            "cites": "old L14",
+            "evidence": [
+              {
+                "side": "old",
+                "line": 14
+              }
+            ]
           }
-        ]
+        ],
+        "code": {
+          "added": 0,
+          "removed": 2,
+          "rows": [
+            {
+              "kind": "Removed",
+              "line": null,
+              "old": 14,
+              "pieces": [
+                {
+                  "text": "def",
+                  "class": "Keyword"
+                },
+                {
+                  "text": " ",
+                  "class": null
+                },
+                {
+                  "text": "old_helper",
+                  "class": "Function"
+                },
+                {
+                  "text": "(",
+                  "class": null
+                },
+                {
+                  "text": "x",
+                  "class": "Variable"
+                },
+                {
+                  "text": "):",
+                  "class": null
+                }
+              ]
+            },
+            {
+              "kind": "Removed",
+              "line": null,
+              "old": 15,
+              "pieces": [
+                {
+                  "text": "    ",
+                  "class": null
+                },
+                {
+                  "text": "return",
+                  "class": "Keyword"
+                },
+                {
+                  "text": " ",
+                  "class": null
+                },
+                {
+                  "text": "x",
+                  "class": "Variable"
+                },
+                {
+                  "text": " * ",
+                  "class": null
+                },
+                {
+                  "text": "2",
+                  "class": "Constant"
+                }
+              ]
+            }
+          ],
+          "notes": [
+            {
+              "after": 0,
+              "title": "medium",
+              "risk": "medium",
+              "symbol": "−",
+              "text": [
+                "The doubling helper is gone."
+              ],
+              "cites": "old L14"
+            }
+          ],
+          "hunks": [
+            0
+          ]
+        },
+        "note": null,
+        "answers": [],
+        "disputed": false
       },
       {
-        "marker": "removed",
-        "symbol": "−",
-        "text": "No longer sends the receipt email.",
-        "risk": "low",
-        "cites": "old L8",
-        "evidence": [
+        "id": "checkout.py::new_helper",
+        "name": "new_helper",
+        "place": "checkout.py:34-35",
+        "file": "checkout.py",
+        "line": 34,
+        "kind": "Function",
+        "status": "Added",
+        "level": "Routine",
+        "icon": "┃",
+        "level_title": "Routine",
+        "decision": "Pending",
+        "accepted_for_you": false,
+        "state": "pending",
+        "why": [],
+        "reasons": [],
+        "commits": [],
+        "agent_label": "agent (haiku)",
+        "summary": "Adds a helper that charges an order.",
+        "nbc_reason": null,
+        "prep": "Ready",
+        "prep_note": null,
+        "statements": [
           {
-            "side": "old",
-            "line": 8
+            "marker": "added",
+            "symbol": "+",
+            "text": "Charges an order through charge_order.",
+            "risk": "low",
+            "cites": "L35",
+            "evidence": [
+              {
+                "side": "new",
+                "line": 35
+              }
+            ]
           }
-        ]
+        ],
+        "code": {
+          "added": 2,
+          "removed": 0,
+          "rows": [
+            {
+              "kind": "Added",
+              "line": 34,
+              "old": null,
+              "pieces": [
+                {
+                  "text": "def",
+                  "class": "Keyword"
+                },
+                {
+                  "text": " ",
+                  "class": null
+                },
+                {
+                  "text": "new_helper",
+                  "class": "Function"
+                },
+                {
+                  "text": "(",
+                  "class": null
+                },
+                {
+                  "text": "order",
+                  "class": "Variable"
+                },
+                {
+                  "text": "):",
+                  "class": null
+                }
+              ]
+            },
+            {
+              "kind": "Added",
+              "line": 35,
+              "old": null,
+              "pieces": [
+                {
+                  "text": "    ",
+                  "class": null
+                },
+                {
+                  "text": "return",
+                  "class": "Keyword"
+                },
+                {
+                  "text": " ",
+                  "class": null
+                },
+                {
+                  "text": "charge_order",
+                  "class": "Function"
+                },
+                {
+                  "text": "(",
+                  "class": null
+                },
+                {
+                  "text": "order",
+                  "class": "Variable"
+                },
+                {
+                  "text": ")",
+                  "class": null
+                }
+              ]
+            }
+          ],
+          "notes": [
+            {
+              "after": 1,
+              "title": "low",
+              "risk": "low",
+              "symbol": "+",
+              "text": [
+                "Charges an order through charge_order."
+              ],
+              "cites": "L35"
+            }
+          ],
+          "hunks": [
+            0
+          ]
+        },
+        "note": null,
+        "answers": [],
+        "disputed": false
+      },
+      {
+        "id": "checkout.py::Cart::add",
+        "name": "Cart::add",
+        "place": "checkout.py:41-43",
+        "file": "checkout.py",
+        "line": 43,
+        "kind": "Method",
+        "status": "Changed",
+        "level": "Routine",
+        "icon": "┃",
+        "level_title": "Routine",
+        "decision": "Pending",
+        "accepted_for_you": false,
+        "state": "pending",
+        "why": [],
+        "reasons": [],
+        "commits": [],
+        "agent_label": "agent (haiku)",
+        "summary": "Counts items as they are added to the cart.",
+        "nbc_reason": null,
+        "prep": "Ready",
+        "prep_note": null,
+        "statements": [
+          {
+            "marker": "changed",
+            "symbol": "~",
+            "text": "Counts items as they are added.",
+            "risk": "low",
+            "cites": "L42",
+            "evidence": [
+              {
+                "side": "new",
+                "line": 42
+              }
+            ]
+          }
+        ],
+        "code": {
+          "added": 1,
+          "removed": 0,
+          "rows": [
+            {
+              "kind": "Context",
+              "line": 41,
+              "old": 36,
+              "pieces": [
+                {
+                  "text": "def",
+                  "class": "Keyword"
+                },
+                {
+                  "text": " ",
+                  "class": null
+                },
+                {
+                  "text": "add",
+                  "class": "Function"
+                },
+                {
+                  "text": "(",
+                  "class": null
+                },
+                {
+                  "text": "self",
+                  "class": "Variable"
+                },
+                {
+                  "text": ", ",
+                  "class": null
+                },
+                {
+                  "text": "item",
+                  "class": "Variable"
+                },
+                {
+                  "text": "):",
+                  "class": null
+                }
+              ]
+            },
+            {
+              "kind": "Context",
+              "line": 42,
+              "old": 37,
+              "pieces": [
+                {
+                  "text": "    ",
+                  "class": null
+                },
+                {
+                  "text": "self",
+                  "class": "Variable"
+                },
+                {
+                  "text": ".",
+                  "class": null
+                },
+                {
+                  "text": "items",
+                  "class": "Variable"
+                },
+                {
+                  "text": ".",
+                  "class": null
+                },
+                {
+                  "text": "append",
+                  "class": "Variable"
+                },
+                {
+                  "text": "(",
+                  "class": null
+                },
+                {
+                  "text": "item",
+                  "class": "Variable"
+                },
+                {
+                  "text": ")",
+                  "class": null
+                }
+              ]
+            },
+            {
+              "kind": "Added",
+              "line": 43,
+              "old": null,
+              "pieces": [
+                {
+                  "text": "    ",
+                  "class": null
+                },
+                {
+                  "text": "self",
+                  "class": "Variable"
+                },
+                {
+                  "text": ".",
+                  "class": null
+                },
+                {
+                  "text": "size",
+                  "class": "Variable"
+                },
+                {
+                  "text": " += ",
+                  "class": null
+                },
+                {
+                  "text": "1",
+                  "class": "Constant"
+                }
+              ]
+            }
+          ],
+          "notes": [
+            {
+              "after": 1,
+              "title": "low",
+              "risk": "low",
+              "symbol": "~",
+              "text": [
+                "Counts items as they are added."
+              ],
+              "cites": "L42"
+            }
+          ],
+          "hunks": [
+            2
+          ]
+        },
+        "note": null,
+        "answers": [],
+        "disputed": false
       }
-    ],
-    "code": {
-      "added": 3,
-      "removed": 2,
-      "rows": [
-        {
-          "kind": "Context",
-          "line": 8,
-          "old": 8,
-          "pieces": [
-            {
-              "text": "def",
-              "class": "Keyword"
-            },
-            {
-              "text": " ",
-              "class": null
-            },
-            {
-              "text": "charge_order",
-              "class": "Function"
-            },
-            {
-              "text": "(",
-              "class": null
-            },
-            {
-              "text": "order",
-              "class": "Variable"
-            },
-            {
-              "text": "):",
-              "class": null
-            }
-          ]
-        },
-        {
-          "kind": "Added",
-          "line": 9,
-          "old": null,
-          "pieces": [
-            {
-              "text": "    ",
-              "class": null
-            },
-            {
-              "text": "if",
-              "class": "Keyword"
-            },
-            {
-              "text": " ",
-              "class": null
-            },
-            {
-              "text": "order",
-              "class": "Variable"
-            },
-            {
-              "text": ".",
-              "class": null
-            },
-            {
-              "text": "currency",
-              "class": "Variable"
-            },
-            {
-              "text": " not in ",
-              "class": null
-            },
-            {
-              "text": "SUPPORTED",
-              "class": "Constant"
-            },
-            {
-              "text": ":",
-              "class": null
-            }
-          ]
-        },
-        {
-          "kind": "Added",
-          "line": 10,
-          "old": null,
-          "pieces": [
-            {
-              "text": "        ",
-              "class": null
-            },
-            {
-              "text": "raise",
-              "class": "Keyword"
-            },
-            {
-              "text": " ",
-              "class": null
-            },
-            {
-              "text": "ValueError",
-              "class": "Function"
-            },
-            {
-              "text": "(",
-              "class": null
-            },
-            {
-              "text": "\"unsupported currency\"",
-              "class": "String"
-            },
-            {
-              "text": ")",
-              "class": null
-            }
-          ]
-        },
-        {
-          "kind": "Context",
-          "line": 11,
-          "old": 9,
-          "pieces": [
-            {
-              "text": "    ",
-              "class": null
-            },
-            {
-              "text": "result",
-              "class": "Variable"
-            },
-            {
-              "text": " = ",
-              "class": null
-            },
-            {
-              "text": "pay",
-              "class": "Function"
-            },
-            {
-              "text": "(",
-              "class": null
-            },
-            {
-              "text": "order",
-              "class": "Variable"
-            },
-            {
-              "text": ")",
-              "class": null
-            }
-          ]
-        },
-        {
-          "kind": "Gap",
-          "line": null,
-          "old": null,
-          "pieces": []
-        }
-      ],
-      "notes": [
-        {
-          "after": 0,
-          "title": "low",
-          "risk": "low",
-          "symbol": "−",
-          "text": [
-            "No longer sends the receipt email."
-          ],
-          "cites": "old L8"
-        },
-        {
-          "after": 1,
-          "title": "high",
-          "risk": "high",
-          "symbol": "+",
-          "text": [
-            "Rejects unsupported currencies. 2 callers don't handle it."
-          ],
-          "cites": "L9"
-        },
-        {
-          "after": 1,
-          "title": "medium",
-          "risk": "medium",
-          "symbol": "~",
-          "text": [
-            "Saves the payment on the order before returning it, so a failed save now fails the whole charge."
-          ],
-          "cites": "L9"
-        }
-      ],
-      "hunks": [
-        1
-      ]
-    },
-    "note": null,
-    "answers": [],
-    "disputed": false
+    ]
   },
   "unit": null,
   "flagged": null,
@@ -486,7 +810,7 @@ expression: json(&app)
     },
     "decide.accept": {
       "keys": "a",
-      "what": "accept the unit",
+      "what": "accept the file's pending units",
       "off": false,
       "on": null
     },
@@ -498,7 +822,7 @@ expression: json(&app)
     },
     "decide.flag": {
       "keys": "f",
-      "what": "flag the unit",
+      "what": "flag the file's pending units",
       "off": false,
       "on": null
     },
@@ -564,7 +888,7 @@ expression: json(&app)
     },
     "move.next_pending": {
       "keys": "n",
-      "what": "next pending unit",
+      "what": "next pending file",
       "off": false,
       "on": null
     },
@@ -576,7 +900,7 @@ expression: json(&app)
     },
     "move.prev_pending": {
       "keys": "N",
-      "what": "previous pending unit",
+      "what": "previous pending file",
       "off": false,
       "on": null
     },
@@ -598,15 +922,9 @@ expression: json(&app)
       "off": false,
       "on": false
     },
-    "toggle.by_file": {
-      "keys": "zf",
-      "what": "list by file or by level",
-      "off": false,
-      "on": false
-    },
     "toggle.security": {
       "keys": "zs",
-      "what": "list by level or by exposure",
+      "what": "show the attack surface",
       "off": false,
       "on": false
     },
@@ -666,13 +984,13 @@ expression: json(&app)
     },
     "view.back": {
       "keys": "h",
-      "what": "back",
+      "what": "fold or go up",
       "off": false,
       "on": null
     },
     "view.open": {
       "keys": "l",
-      "what": "open",
+      "what": "look closer or open",
       "off": false,
       "on": null
     }

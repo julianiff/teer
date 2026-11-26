@@ -8,7 +8,7 @@ use std::ops::Range as ByteRange;
 use tree_sitter::{Node, Parser, Tree};
 
 use super::lang::Lang;
-use crate::review::model::{Range, UnitKind};
+use crate::review::model::{Range, Signature, UnitKind};
 
 pub const MODULE_SYMBOL: &str = "<module>";
 
@@ -37,6 +37,8 @@ pub struct Symbol {
     /// formatting or comments changed.
     pub norm_plain: Vec<String>,
     pub calls: Vec<Call>,
+    /// Its parameter list measured, for a function or method.
+    pub signature: Option<Signature>,
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +129,7 @@ pub fn parse_source(lang: Lang, src: &str) -> Option<ParsedFile> {
             norm_plain: norm.clone(),
             norm,
             calls,
+            signature: None,
         });
     }
 
@@ -186,6 +189,9 @@ pub fn parse_source(lang: Lang, src: &str) -> Option<ParsedFile> {
             norm_anon,
             norm_plain,
             calls,
+            signature: matches!(d.kind, UnitKind::Function | UnitKind::Method)
+                .then(|| super::signature::of(lang, d.outer, bytes))
+                .flatten(),
         });
     }
     Some(ParsedFile { symbols })

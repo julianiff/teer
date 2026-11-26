@@ -60,6 +60,7 @@ fn unit(symbol: &str, old: (u32, u32), new: (u32, u32), note: &str) -> Unit {
         dive_pending: Default::default(),
         checks: Default::default(),
         security: Vec::new(),
+        signature: None,
     }
 }
 

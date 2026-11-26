@@ -8,7 +8,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 const invoke = vi.hoisted(() => vi.fn(async (..._: unknown[]) => null));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
-import type { HunkState, HunkView, SendTarget, View } from "../lib/types";
+import type { HunkState, HunkView, SendTarget, TreeRow, View } from "../lib/types";
 import { ui } from "../lib/ui.svelte";
 import Review from "./Review.svelte";
 
@@ -62,21 +62,24 @@ afterEach(() => {
 });
 
 describe("the review's buttons", () => {
-  it("put the unit's decision on its preview, the listing over the list", async () => {
+  it("put the file's decision on its head, open and note on the selected unit", async () => {
     const root = draw(view("queue"));
-    const preview = root.querySelector(".preview")!;
-    for (const name of ["Accept", "Flag", "Note", "Open", "Undo"]) {
-      expect(button(preview as HTMLElement, name), name).toBeDefined();
-    }
-    const list = root.querySelector(".list") as HTMLElement;
-    expect(button(list, "Units")?.getAttribute("aria-pressed")).toBe("true");
-    expect(button(list, "Find a unit")).toBeDefined();
+    const head = root.querySelector(".preview .filehead") as HTMLElement;
+    for (const name of ["Accept", "Flag", "Undo"]) expect(button(head, name), name).toBeDefined();
+    const units = [...root.querySelectorAll<HTMLElement>(".preview .unit")];
+    expect(button(units[0], "Open")).toBeDefined();
+    expect(button(units[0], "Note")).toBeDefined();
+    // One set: the other units have none.
+    expect(units[1].querySelector(".act")).toBeNull();
+    const side = root.querySelector(".side") as HTMLElement;
+    expect(button(side, "3 accepted for you")?.getAttribute("aria-pressed")).toBe("false");
+    expect(button(side, "find a unit by file or name")).toBeDefined();
     expect(button(root.querySelector("header")!, "Finish")).toBeDefined();
     // A row's accept selects the row, then presses `a`.
-    const quick = list.querySelector(".rowwrap .quick button") as HTMLButtonElement;
+    const quick = side.querySelector(".rowwrap .quick button") as HTMLButtonElement;
     quick.click();
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
-    expect(invoke.mock.calls[0]).toEqual(["click", { click: { kind: "Row", pos: expect.any(Number) } }]);
+    expect(invoke.mock.calls[0]).toEqual(["click", { click: { kind: "Row", id: "checkout.py" } }]);
     expect(invoke.mock.calls[1]).toEqual(["action", { id: "decide.accept", count: null }]);
   });
 
@@ -97,12 +100,14 @@ describe("the review's buttons", () => {
 
   it("go, hidden, and leave the counts as words; shown again, come back", () => {
     ui.buttons = false;
-    const root = draw(view("unit"));
+    const v = view("unit");
+    v.bar.flagged = 2;
+    const root = draw(v);
     expect(root.querySelector(".act")).toBeNull();
     expect(root.querySelector(".unitnav")).toBeNull();
     expect(root.querySelector(".unit-actions")).toBeNull();
     expect(root.querySelector("header .find")).toBeNull();
-    expect(root.querySelector("footer")!.textContent).toMatch(/\d+ flagged/);
+    expect(root.querySelector("footer")!.textContent).toContain("2 flagged");
     // View › Show Buttons tells the window.
     ui.buttons = true;
     flushSync();
@@ -258,5 +263,105 @@ describe("the review's buttons", () => {
     expect(modal.textContent).toContain("Install teer's pi extension?");
     button(modal, "Install")!.click();
     expect(invoke).toHaveBeenLastCalledWith("keys", { keys: "y" });
+  });
+});
+
+describe("the queue", () => {
+  const row = (r: Partial<TreeRow> & Pick<TreeRow, "id" | "kind" | "name">): TreeRow => ({
+    depth: 0,
+    path: r.id.replace(/\/$/, ""),
+    folded: false,
+    level: null,
+    selected: false,
+    in_visual: false,
+    ...r,
+  });
+  const file = { done: false, flagged: false, preparing: false, disputed: false, changed: false };
+  const rows = (root: HTMLElement) => [...root.querySelectorAll<HTMLButtonElement>(".tree .row")];
+
+  it("draws the tree's rows: a file with its level in front, a click selects it", () => {
+    const v = view("queue");
+    const root = draw(v);
+    const drawn = rows(root);
+    expect(drawn.map((r) => r.querySelector(".name")!.textContent)).toEqual(v.queue.rows.map((r) => r.name));
+    expect(drawn[0].classList.contains("selected")).toBe(true);
+    expect(drawn[0].querySelector(".gutter .mark")!.classList.contains("lvl-Attention")).toBe(true);
+    // Nothing after the name while there is nothing to act on.
+    expect(drawn[0].textContent!.replace(/\s+/g, " ").trim()).toBe("┃ checkout.py");
+    drawn[0].click();
+    expect(invoke).toHaveBeenLastCalledWith("click", { click: { kind: "Row", id: "checkout.py" } });
+  });
+
+  it("shows a directory open or folded, a folded one with the level under it", () => {
+    const v = view("queue");
+    v.queue.rows = [
+      row({ id: "src/tui/", kind: "Dir", name: "src/tui", level: "Attention" }),
+      row({ id: "src/tui/app.rs", kind: "File", name: "app.rs", depth: 1, level: "Attention", file }),
+      row({ id: "docs/", kind: "Dir", name: "docs", level: "Look", folded: true }),
+      row({ id: "old/", kind: "Dir", name: "old", level: "Attention", folded: true, settled: true }),
+      row({
+        id: "done.rs",
+        kind: "File",
+        name: "done.rs",
+        level: "Look",
+        file: { ...file, done: true, flagged: true, disputed: true, changed: true, preparing: true },
+      }),
+      row({ id: "logo.png", kind: "Skipped", name: "logo.png", why: "binary file" }),
+    ];
+    const root = draw(v);
+    const [open, inside, folded, settled, done, skipped] = rows(root);
+    expect(open.getAttribute("aria-expanded")).toBe("true");
+    expect(open.querySelector(".mark")).toBeNull();
+    expect(inside.getAttribute("aria-expanded")).toBeNull();
+    expect((inside.querySelector(".indent") as HTMLElement).style.width).toBe("14px");
+    expect(folded.getAttribute("aria-expanded")).toBe("false");
+    expect(folded.querySelector(".mark")!.classList.contains("lvl-Look")).toBe(true);
+    // Everything under it accepted: its mark is calm, as a done file's.
+    expect(settled.querySelector(".mark")!.classList.contains("calm")).toBe(true);
+    expect(done.classList.contains("done")).toBe(true);
+    expect(done.querySelector(".mark")!.classList.contains("calm")).toBe(true);
+    expect([...done.querySelectorAll("[title]")].map((m) => m.getAttribute("title"))).toEqual([
+      "Worth a look",
+      "Flagged",
+      "A second model disputes the description",
+      "Changed since your last look",
+      "Being described",
+    ]);
+    // Why a file isn't shown is the row's tooltip, not its text.
+    expect(skipped.textContent!.trim()).toBe("logo.png");
+    expect(skipped.getAttribute("title")).toBe("binary file");
+    // Accept and flag are on files only.
+    expect(root.querySelectorAll(".tree .quick").length).toBe(2);
+    open.click();
+    expect(invoke).toHaveBeenLastCalledWith("click", { click: { kind: "Row", id: "src/tui/" } });
+  });
+
+  it("shows the selected file's units in line order, each with its code; a head opens its unit", () => {
+    const v = view("queue");
+    const cards = v.preview!.cards;
+    v.preview!.selected = cards[1].id;
+    const root = draw(v);
+    const pane = root.querySelector(".preview") as HTMLElement;
+    expect(pane.querySelector(".filehead h2")!.textContent!.trim()).toBe(v.preview!.path);
+    const units = [...pane.querySelectorAll<HTMLElement>(".unit")];
+    expect(units.map((u) => u.querySelector(".name")!.textContent)).toEqual(cards.map((c) => c.name));
+    expect(units.map((u) => u.querySelectorAll(".code").length)).toEqual(cards.map(() => 1));
+    // The statements are written into the code; one line says what the unit does.
+    expect(units[0].querySelectorAll(".said").length).toBe(cards[0].code!.notes.length);
+    expect(units[0].querySelector(".line")!.textContent).toBe(cards[0].summary);
+    // What belongs to the unit view stays there.
+    expect(pane.textContent).not.toContain("Why this level");
+    expect(pane.textContent).not.toContain("agent (");
+    expect(units.map((u) => u.classList.contains("marked"))).toEqual([false, true, false, false]);
+    (units[2].querySelector(".open") as HTMLButtonElement).click();
+    expect(invoke).toHaveBeenLastCalledWith("click", { click: { kind: "Open", id: cards[2].id } });
+  });
+
+  it("is quiet on a directory", () => {
+    const v = view("queue");
+    v.preview = null;
+    v.queue.rows = [row({ id: "src/", kind: "Dir", name: "src", selected: true })];
+    const root = draw(v);
+    expect(root.querySelector(".preview")!.textContent!.trim()).toBe("");
   });
 });

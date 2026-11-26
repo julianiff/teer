@@ -187,7 +187,7 @@ pub fn parse_target(input: &str) -> Result<Target> {
 }
 
 /// The URL of pull request `number` of the GitHub repository behind this
-/// clone's remotes, picked as `teer pr list` picks it
+/// clone's remotes, picked as `teer pr` picks it
 /// ([`crate::pr_list::target_repo`]).
 pub fn url_of_number(repo: &Path, number: u32) -> Result<String> {
     let target = crate::pr_list::target_repo(repo)

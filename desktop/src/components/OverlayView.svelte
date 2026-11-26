@@ -103,7 +103,7 @@
         {#each overlay.notes as n, i (n.id)}
           <li>
             <button class:selected={i === overlay.sel} onclick={() => pick(i)} ondblclick={() => go(i)}>
-              <span class="lvl-{n.level}">●</span>
+              <span class="lvl-{n.level}">┃</span>
               <strong class="mono">{n.name}</strong>
               <span class="muted small">{n.place} · {stateWord(n.decision)}</span>
               <span class="text">{n.text}</span>
@@ -124,7 +124,7 @@
         {#each overlay.items as it, i (it.id)}
           <li>
             <button class:selected={i === overlay.sel} onclick={() => pick(i)} ondblclick={() => go(i)}>
-              <span class="lvl-{it.level}">●</span>
+              <span class="lvl-{it.level}">┃</span>
               <strong class="mono">{it.name}</strong>
               <span class="muted small">{it.place}</span>
               <span class="muted small right">{stateWord(it.decision)}</span>
@@ -163,7 +163,7 @@
           {#each overlay.units as u, i (u.id)}
             <li>
               <button class:selected={overlay.unit === i} onclick={() => api.click({ kind: "Open", id: u.id })}>
-                <span class="lvl-{u.level}">●</span> <span class="mono">{u.name}</span>
+                <span class="lvl-{u.level}">┃</span> <span class="mono">{u.name}</span>
                 <span class="muted small">{u.place}</span>
               </button>
             </li>
@@ -219,7 +219,7 @@
         <h3>Notes · {overlay.notes.length}</h3>
         <ul class="list">
           {#each overlay.notes as n (n.id)}
-            <li class="note"><span class="lvl-{n.level}">●</span> <strong class="mono">{n.name}</strong> <span class="muted small">{n.place}</span> {n.text}</li>
+            <li class="note"><span class="lvl-{n.level}">┃</span> <strong class="mono">{n.name}</strong> <span class="muted small">{n.place}</span> {n.text}</li>
           {/each}
         </ul>
       {/if}

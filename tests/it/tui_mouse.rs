@@ -15,15 +15,15 @@ use teer::config::Config;
 use teer::keymap::Keymap;
 use teer::review::model::Decision;
 use teer::review::{BuildOptions, build_review};
-use teer::session::app::{Effect, Grouping, Overlay};
+use teer::session::app::{Effect, Overlay};
 use teer::tui::app::App;
 use teer::tui::ui;
 
 const W: u16 = 100;
 const H: u16 = 24;
 
-/// `total` and `fee` changed, no agent, the queue listed by file (`zf`);
-/// the cursor on `total`, whose code change shows in the preview.
+/// `total` and `fee` changed in `calc.py` and `tax` in `lib/tax.py`, no
+/// agent; the cursor on `calc.py`, whose code changes show in the pane.
 fn app() -> (App, FixtureRepo) {
     let _env = isolate_env();
     let repo = FixtureRepo::new();
@@ -31,7 +31,9 @@ fn app() -> (App, FixtureRepo) {
         "calc.py",
         "def total(price, qty):\n    return price * qty\n\n\ndef fee(x):\n    return x + 1\n",
     )
+    .write("lib/tax.py", "def tax(x):\n    return x\n")
     .commit("init");
+    repo.write("lib/tax.py", "def tax(x):\n    return x * 2\n");
     repo.write(
         "calc.py",
         "def total(price, qty):\n    subtotal = price * qty\n    return subtotal + fee(subtotal)\n\n\ndef fee(x):\n    return x + 2\n",
@@ -39,8 +41,10 @@ fn app() -> (App, FixtureRepo) {
     let review = build_review(&repo.path(), &BuildOptions::default()).unwrap();
     let mut app = App::new(review, Config::default(), Keymap::default());
     app.start(false, None, Vec::new(), None);
-    app.grouping = Grouping::File;
+
     app.rebuild_order();
+    let calc = app.rows().iter().position(|r| r.name == "calc.py").unwrap();
+    app.select_row(calc);
     assert_eq!(app.selected().unwrap().symbol, "total");
     (app, repo)
 }
@@ -129,19 +133,21 @@ fn a_drag_over_the_code_change_copies_the_code_without_numbers_or_signs() {
 fn a_drag_stays_in_the_pane_it_started_in() {
     let (mut a, _repo) = app();
     let (rows, _) = draw(&a);
-    let from = at(&rows, "calc.py");
-    // Down into the preview and the bottom bar: the queue's rows only.
+    let from = at(&rows, "lib");
+    // Down into the pane and the bottom bar: the tree's rows only.
     let e = drag(&mut a, from, (60, H - 1));
     let (text, _) = copied(&e).expect("copied");
-    assert!(text.starts_with("calc.py"), "{text}");
-    assert!(text.contains("total") && text.contains("fee"), "{text}");
-    assert!(!text.contains("code change"), "{text}");
-    assert!(!text.contains("2 pending"), "{text}");
-    // Without the boxes' left and right edges.
-    assert!(
-        !text.lines().any(|l| l.starts_with('│') || l.ends_with('│')),
-        "{text}"
-    );
+    assert_eq!(text, "lib\n  ┃ tax.py\n┃ calc.py");
+    // From a unit's head line up into the tree: the pane's text only.
+    let from = at(&rows, "┃ fee");
+    let e = drag(&mut a, from, (60, 0));
+    let (text, _) = copied(&e).expect("copied");
+    assert!(text.contains("subtotal"), "{text}");
+    assert!(!text.contains("calc.py"), "{text}");
+    // From inside a unit's code: that code only, without its numbers.
+    let from = at(&rows, "def fee");
+    let e = drag(&mut a, from, (60, 0));
+    assert_eq!(copied(&e).expect("copied").0, "def fee(x):");
 }
 
 #[test]
@@ -181,9 +187,21 @@ fn a_double_click_copies_the_word_under_the_pointer() {
 fn a_click_without_a_drag_still_selects_a_row() {
     let (mut a, _repo) = app();
     let (rows, _) = draw(&a);
-    let e = click(&mut a, at(&rows, "fee"));
+    let e = click(&mut a, at(&rows, "tax.py"));
     assert_eq!(copied(&e), None);
-    assert_eq!(a.selected().unwrap().symbol, "fee");
+    assert_eq!(a.selected().unwrap().symbol, "tax");
+    // On a directory it folds it too, and again opens it.
+    let lib = at(&rows, "lib");
+    click(&mut a, lib);
+    assert_eq!(a.on_dir(), Some(std::path::Path::new("lib")));
+    assert!(a.selected().is_none());
+    let (rows, _) = draw(&a);
+    assert!(!rows.iter().any(|r| r.contains("tax.py")), "{rows:?}");
+    // Not a double click: the two are apart in time.
+    a.last_click = None;
+    click(&mut a, lib);
+    let (rows, _) = draw(&a);
+    assert!(rows.iter().any(|r| r.contains("tax.py")), "{rows:?}");
 }
 
 #[test]
@@ -228,7 +246,7 @@ fn notes_can_be_picked_and_closed_with_the_mouse() {
     assert_eq!(a.overlay, Overlay::Notes { sel: 1 });
     let (rows, _) = draw(&a);
     let e = click(&mut a, at(&rows, "y copy all"));
-    assert_eq!(copied(&e).unwrap().1, "2 notes as Markdown");
+    assert_eq!(copied(&e).unwrap().1, "3 notes as Markdown");
     let (rows, _) = draw(&a);
     click(&mut a, at(&rows, "q close"));
     assert_eq!(a.overlay, Overlay::None);

@@ -10,10 +10,10 @@ use crate::common;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use common::v2::{Driver, review, unit, units};
+use common::v2::{Driver, review, singles, unit, units};
 use teer::keymap::{Action, KeySpec, Keymap, Trigger};
 use teer::review::model::{Change, Decision, DiveKind, DiveResult, Marker, Range, Risk};
-use teer::session::app::{Effect, Grouping, JumpKind, Overlay, Screen};
+use teer::session::app::{Effect, JumpKind, Overlay, Screen};
 use teer::session::unit::Panel;
 
 use Decision::{Accepted as A, Investigate as F, Pending as P};
@@ -55,7 +55,7 @@ fn has_dive(effects: &[Effect], id: &str, want: DiveKind) -> bool {
 
 #[test]
 fn j_and_down_move_down_and_a_count_moves_that_many_rows() {
-    let mut d = Driver::new(9);
+    let mut d = Driver::singles(9);
     d.keys("j");
     assert_eq!(d.sel(), 1);
     d.keys("<down>");
@@ -72,7 +72,7 @@ fn j_and_down_move_down_and_a_count_moves_that_many_rows() {
 
 #[test]
 fn k_and_up_move_up_with_a_count() {
-    let mut d = Driver::new(9);
+    let mut d = Driver::singles(9);
     d.select(8);
     d.keys("k");
     assert_eq!(d.sel(), 7);
@@ -86,7 +86,7 @@ fn k_and_up_move_up_with_a_count() {
 
 #[test]
 fn gg_and_home_go_to_the_first_row_and_shift_g_and_end_to_the_last() {
-    let mut d = Driver::new(9);
+    let mut d = Driver::singles(9);
     d.keys("G");
     assert_eq!(d.sel(), 8);
     d.keys("gg");
@@ -99,7 +99,7 @@ fn gg_and_home_go_to_the_first_row_and_shift_g_and_end_to_the_last() {
 
 #[test]
 fn n_and_shift_n_jump_between_pending_units_with_a_count() {
-    let mut d = Driver::new(9);
+    let mut d = Driver::singles(9);
     accept(&mut d, &[1, 2, 4]);
     d.keys("n");
     assert_eq!(d.sel(), 3);
@@ -138,6 +138,32 @@ fn bracket_f_jumps_between_files_with_a_count() {
         0,
         "from inside a file, the previous file's first unit"
     );
+}
+
+#[test]
+fn double_brackets_step_through_the_units_of_the_file_in_the_unit_view() {
+    let mut d = Driver::new(6);
+    // In the queue they do nothing.
+    for keys in ["]]", "[["] {
+        assert!(d.keys(keys).is_empty(), "{keys}");
+        assert_eq!((d.screen(), d.sel()), (Screen::Queue, 0), "{keys}");
+    }
+    // In the unit view: the next and the previous unit of the file,
+    // decided or not, and no further than the file.
+    d.keys("l");
+    assert_eq!(d.app.unit.id, "u0");
+    d.app.review.unit_mut("u1").unwrap().decision = A;
+    d.keys("]]");
+    assert_eq!(d.app.unit.id, "u1");
+    d.keys("5]]");
+    assert_eq!(d.app.unit.id, "u2");
+    d.keys("]]");
+    assert_eq!(d.app.unit.id, "u2");
+    assert_eq!(d.status(), "No more units below in this file.");
+    d.keys("2[[");
+    assert_eq!(d.app.unit.id, "u0");
+    d.keys("[[");
+    assert_eq!(d.status(), "No more units above in this file.");
 }
 
 #[test]
@@ -205,7 +231,7 @@ fn slash_opens_the_find_list() {
 
 #[test]
 fn a_accepts_and_advances_to_the_next_pending_unit() {
-    let mut d = Driver::new(6);
+    let mut d = Driver::singles(6);
     accept(&mut d, &[2]);
     let effects = d.keys("a");
     assert!(effects.contains(&Effect::Save), "{effects:?}");
@@ -219,7 +245,7 @@ fn a_accepts_and_advances_to_the_next_pending_unit() {
 
 #[test]
 fn a_count_accepts_this_unit_and_the_next_pending_ones_in_one_step() {
-    let mut d = Driver::new(9);
+    let mut d = Driver::singles(9);
     accept(&mut d, &[2]);
     d.keys("3a");
     assert_eq!(d.positions(A), vec![0, 1, 2, 3]);
@@ -231,7 +257,7 @@ fn a_count_accepts_this_unit_and_the_next_pending_ones_in_one_step() {
 
 #[test]
 fn f_flags_and_advances_asking_for_no_note() {
-    let mut d = Driver::new(6);
+    let mut d = Driver::singles(6);
     d.keys("f");
     assert_eq!(d.decision(0), F);
     assert_eq!(d.sel(), 1);
@@ -243,8 +269,23 @@ fn f_flags_and_advances_asking_for_no_note() {
 }
 
 #[test]
+fn f_again_on_a_flagged_unit_removes_the_flag_and_stays() {
+    let mut d = Driver::singles(6);
+    d.keys("f");
+    assert_eq!(d.decision(0), F);
+    d.keys("gg");
+    let effects = d.keys("f");
+    assert!(effects.contains(&Effect::Save), "{effects:?}");
+    assert_eq!(d.positions(F), Vec::<usize>::new());
+    assert_eq!(d.sel(), 0, "the cursor stays on it");
+    assert_eq!(d.undo_steps(), 2);
+    d.keys("u");
+    assert_eq!(d.decision(0), F, "u brings the flag back");
+}
+
+#[test]
 fn a_count_on_f_flags_several() {
-    let mut d = Driver::new(6);
+    let mut d = Driver::singles(6);
     d.keys("2f");
     assert_eq!(d.positions(F), vec![0, 1]);
     assert_eq!(*d.overlay(), Overlay::None);
@@ -294,7 +335,7 @@ fn shift_f_flags_the_files_pending_units_in_one_step() {
 
 #[test]
 fn visual_mode_applies_to_selection() {
-    let mut d = Driver::new(9);
+    let mut d = Driver::singles(9);
     d.select(1);
     d.keys("V");
     assert_eq!(d.app.visual_rows(), Some(1..=1));
@@ -313,7 +354,7 @@ fn visual_mode_applies_to_selection() {
 
 #[test]
 fn visual_f_flags_the_selection() {
-    let mut d = Driver::new(6);
+    let mut d = Driver::singles(6);
     d.keys("Vjf");
     assert_eq!(d.positions(F), vec![0, 1]);
     assert_eq!(*d.overlay(), Overlay::None);
@@ -344,7 +385,7 @@ fn another_action_leaves_visual_mode_then_runs() {
 
 #[test]
 fn u_undoes_and_ctrl_r_redoes_through_the_reviews_history() {
-    let mut d = Driver::new(6);
+    let mut d = Driver::singles(6);
     d.keys("aa");
     assert_eq!(d.sel(), 2);
     let effects = d.keys("u");
@@ -367,7 +408,7 @@ fn u_undoes_and_ctrl_r_redoes_through_the_reviews_history() {
 
 #[test]
 fn undo_redo_survives_restart() {
-    let mut r = review(units(6));
+    let mut r = review(singles(6));
     r.repo_root = PathBuf::from("/v2/undo-redo-survives-restart");
     let mut d = Driver::with(r, Keymap::default());
     d.keys("aau");
@@ -390,7 +431,7 @@ fn undo_redo_survives_restart() {
 
 #[test]
 fn dot_repeats_the_last_decision_with_its_count() {
-    let mut d = Driver::new(12);
+    let mut d = Driver::singles(12);
     d.keys("2a");
     assert_eq!(d.positions(A), vec![0, 1]);
     d.keys(".");
@@ -403,7 +444,7 @@ fn dot_repeats_the_last_decision_with_its_count() {
 
 #[test]
 fn dot_repeats_decisions_not_notes() {
-    let mut d = Driver::new(6);
+    let mut d = Driver::singles(6);
     d.keys("a");
     d.keys("ix<cr>");
     assert_eq!(d.note("u1"), "x");
@@ -415,7 +456,7 @@ fn dot_repeats_decisions_not_notes() {
 
 #[test]
 fn dot_after_visual_repeats_on_as_many_units() {
-    let mut d = Driver::new(9);
+    let mut d = Driver::singles(9);
     d.keys("Vja");
     assert_eq!(d.positions(A), vec![0, 1]);
     // The count recorded is the units decided: two.
@@ -596,42 +637,18 @@ fn the_v1_tile_keys_are_gone_from_the_queue_and_the_unit_view() {
 }
 
 #[test]
-fn zs_switches_the_queue_to_the_security_order() {
-    use teer::security::{Class, Fact, Weight};
-    // u4 has a fact that leaves its level as it is: by level it stays in
-    // its file, by exposure it leads the queue.
-    let mut units = units(6);
-    units[4].security = vec![Fact {
-        class: Class::EntryPoint,
-        weight: Weight::Note,
-        text: "a new route".into(),
-        side: teer::review::model::Side::New,
-        lines: None,
-        subject: "POST /refunds".into(),
-        origin: Default::default(),
-    }];
-    let mut d = Driver::of(units);
-    let by_level = d.app.order.clone();
-    assert_eq!(d.app.review.units[by_level[4]].id, "u4");
-    d.app.sel = 2;
+fn zs_shows_the_attack_surface_over_the_tree_and_hides_it() {
+    let mut d = Driver::new(6);
+    let listed = d.app.order.clone();
+    d.app.sel = 4;
     d.keys("zs");
-    assert!(d.app.security.by_exposure);
-    assert_eq!(d.app.security.exposed, 1);
-    assert_eq!(d.app.review.units[d.app.order[0]].id, "u4");
-    // The rest keep their order, and the cursor its unit.
-    let rest: Vec<usize> = by_level.iter().copied().filter(|&i| i != 4).collect();
-    assert_eq!(d.app.order[1..], rest[..]);
-    assert_eq!(d.app.selected_id().as_deref(), Some("u2"));
-    assert!(
-        d.app.status.starts_with("By exposure: 1 unit"),
-        "{}",
-        d.app.status
-    );
+    assert!(d.app.security.surface);
+    // The tree keeps its order, and the cursor its file.
+    assert_eq!(d.app.order, listed);
+    assert_eq!(d.app.selected_id().as_deref(), Some("u4"));
+    assert!(d.app.status.is_empty(), "{}", d.app.status);
     d.keys("zs");
-    assert!(!d.app.security.by_exposure);
-    assert_eq!(d.app.order, by_level);
-    assert_eq!(d.app.security.exposed, 0);
-    assert_eq!(d.app.status, "Listed by level.");
+    assert!(!d.app.security.surface);
 }
 
 #[test]
@@ -955,7 +972,7 @@ fn command_line_accepts_four_commands() {
     // `:w`, `:e`, `:e!` and `:q` are above; anything else is an error that
     // changes nothing.
     for cmd in [":x<cr>", ":wq<cr>", ":E<cr>"] {
-        let mut d = Driver::new(3);
+        let mut d = Driver::singles(3);
         accept(&mut d, &[1]);
         d.select(2);
         assert!(d.keys(cmd).is_empty(), "{cmd}");
@@ -1023,7 +1040,7 @@ fn tile_keys_move_the_focus_and_zoom_in_the_unit_view_only() {
 
 #[test]
 fn space_a_asks_for_advice_from_the_queue_and_the_unit_view_only_when_pressed() {
-    let mut d = Driver::of(units(3).into_iter().map(described).collect());
+    let mut d = Driver::of(singles(3).into_iter().map(described).collect());
     d.app.has_agent = true;
     d.app.review.agent_session = Some(teer::review::model::SessionRef::default());
     let asks = |effects: &[Effect]| {
@@ -1103,16 +1120,6 @@ fn the_v1_screens_keys_do_nothing_in_the_queue_or_the_unit_view() {
 }
 
 #[test]
-fn zf_switches_between_by_unit_and_by_file() {
-    // The queue starts by level (Grouping::Unit, Q3).
-    let mut d = Driver::new(3);
-    d.keys("zf");
-    assert_eq!(d.app.grouping, Grouping::File);
-    d.keys("zf");
-    assert_eq!(d.app.grouping, Grouping::Unit);
-}
-
-#[test]
 fn space_m_opens_the_mode_picker_and_enter_takes_the_mode() {
     let mut d = Driver::new(3);
     assert!(d.keys("<space>m").is_empty());
@@ -1171,7 +1178,7 @@ fn screens_receive_actions_not_keys() {
 
 #[test]
 fn prefix_waits_shows_hint_and_times_out() {
-    let mut d = Driver::new(6);
+    let mut d = Driver::singles(6);
     d.select(3);
     assert!(d.keys("g").is_empty());
     assert_eq!(d.app.keys.pending().as_deref(), Some("g"));
@@ -1196,7 +1203,7 @@ fn prefix_waits_shows_hint_and_times_out() {
     assert_eq!(d.sel(), 0);
 
     // `<space>`, then the timeout, then `n`: n alone (next pending).
-    let mut d = Driver::new(6);
+    let mut d = Driver::singles(6);
     accept(&mut d, &[1]);
     d.keys("<space>");
     d.timeout();
@@ -1218,7 +1225,7 @@ fn the_prefix_timeout_is_configurable() {
 
 #[test]
 fn counts_apply_and_esc_drops_them() {
-    let mut d = Driver::new(9);
+    let mut d = Driver::singles(9);
     d.keys("3j");
     assert_eq!(d.sel(), 3);
     d.keys("5");
@@ -1241,24 +1248,26 @@ fn rebinding_changes_dispatch_and_help() {
         ("decide.accept".to_string(), KeySpec::One("e".into())),
         (
             "move.next_file".to_string(),
-            KeySpec::Many(vec!["<c-n>".into(), "]]".into()]),
+            KeySpec::Many(vec!["<c-n>".into(), "]n".into()]),
         ),
     ]);
     let (keys, warnings) = Keymap::new(&over, 1000).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
-    let mut d = Driver::with(review(units(9)), keys);
+    // Four files: `e` accepts the first and goes on to the second.
+    let mut d = Driver::with(review(units(12)), keys);
     d.keys("a");
     assert_eq!(d.decision(0), P);
     d.keys("e");
     assert_eq!(d.decision(0), A);
-    d.keys("<c-n>");
     assert_eq!(d.sel(), 3);
-    d.keys("]]");
+    d.keys("<c-n>");
     assert_eq!(d.sel(), 6);
+    d.keys("]n");
+    assert_eq!(d.sel(), 9);
     d.keys("[f");
-    assert_eq!(d.sel(), 3, "the keys not rebound keep working");
+    assert_eq!(d.sel(), 6, "the keys not rebound keep working");
     d.keys("]f");
-    assert_eq!(d.sel(), 3, "]f is no longer bound");
+    assert_eq!(d.sel(), 6, "]f is no longer bound");
 
     // The queue's help.
     d.keys("?");

@@ -4,7 +4,6 @@
 export type Screen = "Queue" | "Unit" | "Flagged";
 export type Level = "Same" | "Routine" | "Look" | "Attention";
 export type Decision = "Pending" | "Accepted" | "Investigate";
-export type Grouping = "File" | "Unit";
 export type Prep = "NotRequested" | "Pending" | "Ready" | "Unavailable" | "Skipped";
 export type Risk = "low" | "medium" | "high";
 export type Marker = "added" | "changed" | "removed";
@@ -37,7 +36,8 @@ export interface View {
   header: Header;
   bar: Bar;
   queue: Queue;
-  preview: Card | null;
+  /** The file under the queue's cursor; null on a directory. */
+  preview: FilePreview | null;
   unit: UnitScreen | null;
   flagged: FlaggedScreen | null;
   overlay: Overlay;
@@ -55,7 +55,7 @@ export interface ActionView {
   what: string;
   /** Needs an agent, and there is none. */
   off: boolean;
-  /** A toggle's state (listed by file, zoomed); null for the rest. */
+  /** A toggle's state (zoomed, the units accepted for you listed); null for the rest. */
   on: boolean | null;
 }
 
@@ -108,24 +108,59 @@ export interface Bar {
   waiting: string | null;
 }
 
+/** The queue: the tree of the changed files. */
 export interface Queue {
-  grouping: Grouping;
-  boxes: LevelBox[];
-  skipped: { path: string; why: string }[];
-  auto_line: string | null;
-  sel: number;
-  show_auto: boolean;
+  /** The tree's rows as they are listed now, top to bottom. */
+  rows: TreeRow[];
   /** The attack-surface card; absent while the security lens is off. */
   surface?: Surface;
 }
 
-export interface LevelBox {
-  level: Level;
-  title: string;
-  files: FileGroup[];
-  /** The security box (`zs`, by exposure): its units have security facts
-   *  or findings; `level` is the highest of theirs. */
-  security?: boolean;
+export type TreeKind = "Dir" | "File" | "Skipped";
+
+/** A row of the tree: a directory, a file, or a file teer can't show. */
+export interface TreeRow {
+  /** What a click on the row sends back; a directory's ends with `/`. */
+  id: string;
+  kind: TreeKind;
+  /** How many directory rows it is under. */
+  depth: number;
+  /** A file's name; a directory's, joined with those it alone holds. */
+  name: string;
+  path: string;
+  /** A directory whose rows are hidden. */
+  folded: boolean;
+  /** A file's level; a directory's, the most critical under it. */
+  level: Level | null;
+  /** On a file's row. */
+  file?: FileState;
+  /** On a row teer can't show: why. */
+  why?: string;
+  /** On a directory with every unit under it accepted. */
+  settled?: boolean;
+  selected: boolean;
+  in_visual: boolean;
+}
+
+/** What a file's row says about its units. */
+export interface FileState {
+  /** Every one of its units is accepted: nothing is left to do on it. */
+  done: boolean;
+  flagged: boolean;
+  /** One is being described. */
+  preparing: boolean;
+  /** A second model disputes one. */
+  disputed: boolean;
+  /** The last re-run found one changed or new. */
+  changed: boolean;
+}
+
+/** The file under the queue's cursor: its units in line order. */
+export interface FilePreview {
+  path: string;
+  /** The unit open, a note and the tools act on, by id. */
+  selected: string;
+  cards: Card[];
 }
 
 /** The attack-surface card: a row per class the change touches. No rows:
@@ -168,36 +203,6 @@ export interface SurfaceItem {
   gone: boolean;
   /** How many units it is on. */
   units: number;
-}
-
-export interface FileGroup {
-  path: string;
-  done: number;
-  total: number;
-  busy: boolean;
-  flagged: boolean;
-  rows: QueueRow[];
-}
-
-export interface QueueRow {
-  pos: number;
-  id: string;
-  level: Level;
-  icon: string;
-  path: string;
-  name: string;
-  whole_file: boolean;
-  depth: number;
-  decision: Decision;
-  state: string;
-  note: string | null;
-  disputed: boolean;
-  noted: boolean;
-  removed: boolean;
-  preparing: boolean;
-  selected: boolean;
-  in_visual: boolean;
-  changed: boolean;
 }
 
 export interface LineRef {
@@ -652,7 +657,7 @@ export interface ModeItem {
 }
 
 export type Click =
-  | { kind: "Row"; pos: number }
+  | { kind: "Row"; id: string }
   | { kind: "Open"; id: string }
   | { kind: "Tile"; id: TileId | null }
   | { kind: "CloseTile"; id: TileId }

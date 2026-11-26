@@ -36,138 +36,26 @@ expression: json(&app)
     "waiting": null
   },
   "queue": {
-    "grouping": "Unit",
-    "boxes": [
+    "rows": [
       {
+        "id": "checkout.py",
+        "kind": "File",
+        "depth": 0,
+        "name": "checkout.py",
+        "path": "checkout.py",
+        "folded": false,
         "level": "Attention",
-        "title": "Needs a close look · 1 unit",
-        "files": [
-          {
-            "path": "checkout.py",
-            "done": 0,
-            "total": 1,
-            "busy": false,
-            "flagged": false,
-            "rows": [
-              {
-                "pos": 0,
-                "id": "checkout.py::charge_order",
-                "level": "Attention",
-                "icon": "▲",
-                "path": "checkout.py",
-                "name": "charge_order",
-                "whole_file": false,
-                "depth": 0,
-                "decision": "Pending",
-                "state": "pending",
-                "note": null,
-                "disputed": false,
-                "noted": false,
-                "removed": false,
-                "preparing": false,
-                "selected": true,
-                "in_visual": false,
-                "changed": false
-              }
-            ]
-          }
-        ]
-      },
-      {
-        "level": "Look",
-        "title": "Worth a look · 1 unit",
-        "files": [
-          {
-            "path": "checkout.py",
-            "done": 0,
-            "total": 1,
-            "busy": false,
-            "flagged": false,
-            "rows": [
-              {
-                "pos": 1,
-                "id": "checkout.py::old_helper",
-                "level": "Look",
-                "icon": "◆",
-                "path": "checkout.py",
-                "name": "old_helper",
-                "whole_file": false,
-                "depth": 0,
-                "decision": "Pending",
-                "state": "pending",
-                "note": null,
-                "disputed": false,
-                "noted": false,
-                "removed": true,
-                "preparing": false,
-                "selected": false,
-                "in_visual": false,
-                "changed": false
-              }
-            ]
-          }
-        ]
-      },
-      {
-        "level": "Routine",
-        "title": "Routine · 2 units",
-        "files": [
-          {
-            "path": "checkout.py",
-            "done": 0,
-            "total": 2,
-            "busy": false,
-            "flagged": false,
-            "rows": [
-              {
-                "pos": 2,
-                "id": "checkout.py::new_helper",
-                "level": "Routine",
-                "icon": "●",
-                "path": "checkout.py",
-                "name": "new_helper",
-                "whole_file": false,
-                "depth": 0,
-                "decision": "Pending",
-                "state": "pending",
-                "note": null,
-                "disputed": false,
-                "noted": false,
-                "removed": false,
-                "preparing": false,
-                "selected": false,
-                "in_visual": false,
-                "changed": false
-              },
-              {
-                "pos": 3,
-                "id": "checkout.py::Cart::add",
-                "level": "Routine",
-                "icon": "●",
-                "path": "checkout.py",
-                "name": "Cart::add",
-                "whole_file": false,
-                "depth": 0,
-                "decision": "Pending",
-                "state": "pending",
-                "note": null,
-                "disputed": false,
-                "noted": false,
-                "removed": false,
-                "preparing": false,
-                "selected": false,
-                "in_visual": false,
-                "changed": false
-              }
-            ]
-          }
-        ]
+        "file": {
+          "done": false,
+          "flagged": false,
+          "preparing": false,
+          "disputed": false,
+          "changed": false
+        },
+        "selected": true,
+        "in_visual": false
       }
-    ],
-    "skipped": [],
-    "auto_line": "3 units accepted for you, za shows them",
-    "sel": 0,
-    "show_auto": false
+    ]
   },
   "preview": null,
   "unit": {
@@ -180,7 +68,7 @@ expression: json(&app)
       "kind": "Function",
       "status": "Changed",
       "level": "Attention",
-      "icon": "▲",
+      "icon": "┃",
       "level_title": "Needs a close look",
       "decision": "Pending",
       "accepted_for_you": false,
@@ -715,15 +603,9 @@ expression: json(&app)
       "off": false,
       "on": false
     },
-    "toggle.by_file": {
-      "keys": "zf",
-      "what": "list by file or by level",
-      "off": false,
-      "on": false
-    },
     "toggle.security": {
       "keys": "zs",
-      "what": "list by level or by exposure",
+      "what": "show the attack surface",
       "off": false,
       "on": false
     },

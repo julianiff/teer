@@ -181,10 +181,11 @@ fn turning_the_mode_on_asks_every_unit_once_and_never_in_another_mode() {
     assert_eq!(ids, ["u0", "u1", "u2"]);
     assert!(dives(&d.app.choose_mode(Mode::Improve)).is_empty());
     assert_eq!(d.app.improve_progress(), (0, 3));
-    // The header counts the units the agent has looked at.
+    // The bar counts the units the agent has looked at, at its right.
     let s = d.render(100, 20);
     assert!(s.starts_with(" ✨ "), "{s}");
-    assert!(s.contains("looking for what to add 0/3"), "{s}");
+    let bar = s.lines().last().unwrap_or_default();
+    assert!(bar.contains("finding inserts 0/3"), "{s}");
     assert!(
         s.contains("the agent looks for what to add · 0 of 3 units"),
         "{s}"
@@ -544,7 +545,9 @@ fn another_mode_hides_the_list_and_keeps_the_inserts() {
     d.app.set_mode(Mode::Review);
     let s = d.render(100, 30);
     assert!(!s.contains("Fills a gap"), "{s}");
-    assert!(s.contains("· 3 units"), "{s}");
+    for file in ["┃ a.rs", "┃ b.rs", "┃ c.rs"] {
+        assert!(s.contains(file), "{s}");
+    }
     assert_eq!(states(&d, "u0").len(), 2);
     // The preview says the inserts are there, in improve mode only.
     assert!(!s.contains("insert"), "{s}");

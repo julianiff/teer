@@ -390,9 +390,6 @@ fn url_and_number_open_the_pr() {
         assert_eq!(pr.repo.git(&["branch", "--show-current"]).trim(), "main");
         assert_eq!(pr.repo.file("scratch.txt"), "mine\n");
     }
-    // `teer pr <url>` still works.
-    let v = sb.json(&dir, &["pr", &url, "--json", "--no-agent"]);
-    assert_eq!(v["pr"]["number"], pr.n);
 }
 
 #[test]
@@ -444,11 +441,8 @@ fn pr_alone_opens_the_picker() {
 
     let picked = sb.run(&repo.path(), &["pr", "--json"]);
     assert!(picked.status.success(), "{}", stderr(&picked));
-    let listed = sb.run(&repo.path(), &["pr", "list", "--json"]);
-    assert!(listed.status.success(), "{}", stderr(&listed));
     let v: Value = serde_json::from_slice(&picked.stdout).unwrap();
     assert!(v.to_string().contains("Charge in one place"), "{v}");
-    assert_eq!(stdout(&picked), stdout(&listed), "teer pr is teer pr list");
     assert_eq!(repo.git(&["status", "--porcelain"]), status, "untouched");
 }
 

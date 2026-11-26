@@ -78,6 +78,12 @@ pub struct UnitView {
     /// Where each proposed hunk's box starts, in lines of the text, by
     /// hunk, as last drawn: `]c` `[c` stop there after the code change's.
     pub fixes: RefCell<Vec<usize>>,
+    /// Each unit in the text and the line it starts at, as last drawn: the
+    /// units of the file on show, in line order (see [`App::unit_mates`]).
+    pub starts: RefCell<Vec<(String, usize)>>,
+    /// Scroll the text to the unit on show when it is next drawn: where
+    /// it starts in its file's text wasn't known yet.
+    pub reveal_unit: Cell<bool>,
     /// The proposed hunk a jump (or a click) made current; `None` goes by
     /// the scroll (see [`App::fix_at`]).
     pub fix: Option<usize>,
@@ -119,6 +125,7 @@ impl App {
             }
             self.unit.from = Some(self.screen);
             self.screen = Screen::Unit;
+            self.unit.reveal_unit.set(true);
         }
         let home = std::mem::take(&mut self.unit.home);
         self.close_tiles();
@@ -159,6 +166,7 @@ impl App {
             self.close_tiles();
             self.unit.outside.clear();
             self.unit.fixes.borrow_mut().clear();
+            self.unit.reveal_unit.set(true);
         }
         if let Some(tile) = self.first_tile()
             && !self.unit.tiles.contains(&tile)
@@ -170,11 +178,78 @@ impl App {
         let mut effects = Vec::new();
         let pos = self.position_of(&id);
         if let Some(p) = pos
-            && p != self.sel
+            && (p != self.sel || self.dir.is_some())
         {
             effects.extend(self.move_sel(p));
         }
         effects
+    }
+
+    /// The positions of the units the view's text shows: every listed
+    /// unit of the file of the unit on show, in line order. That unit is
+    /// the current one: the title, the tiles and the decisions are its.
+    /// Only its own position when it is the file's one unit; nothing when
+    /// it isn't listed (accepted for you and hidden, or gone to to look),
+    /// and in improve mode, whose view is at an insert: then the text is
+    /// that unit's alone.
+    pub fn unit_mates(&self) -> Vec<usize> {
+        if self.mode.improves() {
+            return Vec::new();
+        }
+        match self.position_of(&self.unit.id) {
+            Some(p) => self.file_range(p).collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// `]]` (`[[`): the `times`-th unit of the file below (above) the
+    /// current one is the current one, pending or not, as far as there
+    /// are; the text scrolls to it.
+    fn step_unit(&mut self, forward: bool, times: usize) -> Vec<Effect> {
+        let mates = self.unit_mates();
+        let at = self
+            .position_of(&self.unit.id)
+            .and_then(|p| mates.iter().position(|&m| m == p));
+        let (Some(at), true) = (at, mates.len() > 1) else {
+            self.status = "This file has no other unit.".into();
+            return Vec::new();
+        };
+        let to = if forward {
+            (at + times.max(1)).min(mates.len() - 1)
+        } else {
+            at.saturating_sub(times.max(1))
+        };
+        if to == at {
+            self.status = if forward {
+                "No more units below in this file."
+            } else {
+                "No more units above in this file."
+            }
+            .into();
+            return Vec::new();
+        }
+        let id = self.review.units[self.order[mates[to]]].id.clone();
+        self.show_unit(id)
+    }
+
+    /// The text scrolled from line `before`: when another unit of the
+    /// file is at its top now, that one is the current one. The text stays
+    /// where it is.
+    fn follow_top(&mut self, before: usize) -> Vec<Effect> {
+        let top = |line: usize| {
+            let starts = self.unit.starts.borrow();
+            let at = starts.iter().rev().find(|(_, start)| *start <= line);
+            at.map(|(id, _)| id.clone())
+        };
+        let now = top(self.detail_offset());
+        match now {
+            Some(id) if Some(&id) != top(before).as_ref() && id != self.unit.id => {
+                let effects = self.show_unit(id);
+                self.unit.reveal_unit.set(false);
+                effects
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// The tile open from the start: the ask tile, in every mode, with
@@ -185,7 +260,7 @@ impl App {
         if self.can_ask() {
             return Some(Panel::Ask);
         }
-        (self.mode.security_order() && self.security.enabled)
+        (self.mode.shows_surface() && self.security.enabled)
             .then_some(Panel::Tool(DiveKind::Security))
     }
 
@@ -440,7 +515,7 @@ impl App {
             Action::MoveNextPending | Action::MovePrevPending => {
                 let id = self.unit.id.clone();
                 if let Some(p) = self.position_of(&id) {
-                    self.sel = p;
+                    self.cursor_to(p);
                 }
                 let mut effects = self.jump_pending(a == Action::MoveNextPending, times);
                 effects.extend(self.follow_sel());
@@ -449,14 +524,16 @@ impl App {
             Action::MoveNextFile | Action::MovePrevFile => {
                 let id = self.unit.id.clone();
                 if let Some(p) = self.position_of(&id) {
-                    self.sel = p;
+                    self.cursor_to(p);
                 }
                 let mut effects = self.jump_file(a == Action::MoveNextFile, times);
                 effects.extend(self.follow_sel());
                 return effects;
             }
-            Action::MoveNextHunk => self.jump_hunk(true, times),
-            Action::MovePrevHunk => self.jump_hunk(false, times),
+            Action::MoveNextUnit => return self.step_unit(true, times),
+            Action::MovePrevUnit => return self.step_unit(false, times),
+            Action::MoveNextHunk => return self.jump_hunk(true, times),
+            Action::MovePrevHunk => return self.jump_hunk(false, times),
             Action::MoveDown => return self.unit_scroll(times as isize),
             Action::MoveUp => return self.unit_scroll(-(times as isize)),
             Action::MoveFirst => return self.unit_scroll(isize::MIN / 2),
@@ -496,14 +573,14 @@ impl App {
     fn unit_back(&mut self) {
         self.close_tiles();
         if let Some(p) = self.position_of(&self.unit.home.clone()) {
-            self.sel = p;
+            self.cursor_to(p);
         }
         self.screen = self.unit.from.take().unwrap_or(Screen::Queue);
     }
 
-    /// The queue's cursor moved (`n`, `N`, `]f`, `[f`): show its unit.
+    /// The cursor moved (`n`, `N`, `]f`, `[f`): show the unit it is at.
     fn follow_sel(&mut self) -> Vec<Effect> {
-        match self.selected_id() {
+        match self.cursor_id() {
             Some(id) if id != self.unit.id => self.show_unit(id),
             _ => Vec::new(),
         }
@@ -516,11 +593,18 @@ impl App {
         let id = self.unit.id.clone();
         let mut effects = match self.position_of(&id) {
             Some(p) => {
-                self.sel = p;
-                self.queue_action(a, count)
+                self.cursor_to(p);
+                self.decide_at_cursor(a, count)
             }
             None => {
                 let flag = matches!(a, Action::DecideFlag | Action::DecideFlagFile);
+                let flagged = self
+                    .review
+                    .unit(&id)
+                    .is_some_and(|u| u.decision == Decision::Investigate);
+                if a == Action::DecideFlag && count.is_none() && flagged {
+                    return self.unflag(&[id]);
+                }
                 let d = if flag {
                     Decision::Investigate
                 } else {
@@ -538,7 +622,7 @@ impl App {
     /// stayed on a decided unit, the next pending one after it, else
     /// before it. With nothing pending the view stays.
     fn unit_follow(&mut self, was: &str) -> Vec<Effect> {
-        if let Some(id) = self.selected_id()
+        if let Some(id) = self.cursor_id()
             && id != was
             && self.position_of(was).is_some()
         {
@@ -584,7 +668,7 @@ impl App {
         match over.filter(|p| self.unit.tiles.contains(p)) {
             Some(Panel::Ask) => return self.chat_scroll(by),
             Some(p) => self.scroll_tile(p, by),
-            None => self.scroll_text(by),
+            None => return self.scroll_text(by),
         }
         Vec::new()
     }
@@ -624,7 +708,7 @@ impl App {
         self.unit.zoom = !self.unit.zoom;
     }
 
-    fn scroll_text(&mut self, by: isize) {
+    fn scroll_text(&mut self, by: isize) -> Vec<Effect> {
         let at = self.detail_offset();
         let to = at.saturating_add_signed(by).min(self.unit.text_max.get());
         // Scrolled: the proposed hunk at the top is the current one.
@@ -632,6 +716,7 @@ impl App {
             self.unit.fix = None;
         }
         self.detail_scroll.borrow_mut().1 = to;
+        self.follow_top(at)
     }
 
     fn scroll_tile(&mut self, p: Panel, by: isize) {
@@ -645,12 +730,12 @@ impl App {
     /// one. A proposed hunk jumped to is the current one (`p` puts it in),
     /// even where the text can't scroll it to the top; a hunk of the code
     /// change the text can't scroll to is passed over.
-    fn jump_hunk(&mut self, forward: bool, times: usize) {
+    fn jump_hunk(&mut self, forward: bool, times: usize) -> Vec<Effect> {
         let code = self.unit.hunks.borrow().clone();
         let fixes = self.unit.fixes.borrow().clone();
         if code.is_empty() && fixes.is_empty() {
             self.status = "No code change to jump in.".into();
-            return;
+            return Vec::new();
         }
         // Each stop: its row, and which proposed hunk it is.
         let mut stops: Vec<(usize, Option<usize>)> = code.iter().map(|&r| (r, None)).collect();
@@ -688,10 +773,16 @@ impl App {
                 "No more hunks above."
             }
             .into();
-            return;
+            return Vec::new();
         }
+        let before = self.detail_offset();
         self.unit.fix = fix;
         self.detail_scroll.borrow_mut().1 = view;
+        // A hunk of another unit of the file: that unit is the current one.
+        if fix.is_none() {
+            return self.follow_top(before);
+        }
+        Vec::new()
     }
 
     /// Show proposed hunk `i` of the unit on show: the text gets the focus

@@ -219,7 +219,7 @@ impl App {
         if to == Screen::Queue
             && let Some(p) = self.position_of(&self.flagged.at.clone())
         {
-            self.sel = p;
+            self.cursor_to(p);
         }
         self.screen = to;
     }
@@ -275,12 +275,15 @@ impl App {
             Action::MoveLast => self.flagged_focus(&ids, ids.len() - 1),
             Action::ViewOpen => return self.open_unit(id),
             Action::ViewBack | Action::ViewClose => self.flagged_back(),
-            Action::DecideAccept => {
+            // `a` accepts it, `f` takes its flag back: either way it
+            // leaves the list.
+            Action::DecideAccept | Action::DecideFlag => {
                 let mut effects = match self.position_of(&id) {
                     Some(p) => {
-                        self.sel = p;
-                        self.queue_action(a, None)
+                        self.cursor_to(p);
+                        self.decide_at_cursor(a, None)
                     }
+                    None if a == Action::DecideFlag => self.unflag(std::slice::from_ref(&id)),
                     None => {
                         self.decide_ids(std::slice::from_ref(&id), Decision::Accepted);
                         vec![Effect::Save]

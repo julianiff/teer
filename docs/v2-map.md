@@ -183,7 +183,7 @@ Overlays, text inputs, the setup screen and the PR picker match `KeyCode` litera
 - `≠`: `checks.unmentioned` through `validate_unmentioned` (`validate.rs:231-251`), asked only when there are commits or a PR to compare against.
 - All three are drawn by `preview::check_lines` (`preview.rs:243-294`) in the list preview, the swipe card and the Flagged head. **List rows show none of them today**; a row has the level icon and `✎`.
 
-**Order** (`App::rebuild_order` `app.rs:555-617`): the file's box (the highest level among its units, or the unit's own level when listed by unit), then path, then the unit's level, then story rank (`story::place` `story.rs:33-124`: callers just before their callees; `order = "line"` uses the line instead). Swipe uses the list order, sorted again by level. Flagged goes by file, then line.
+**Order** (`App::rebuild_order` `app.rs:555-617`): the file's box (the highest level among its units, or the unit's own level when listed by unit), then path, then the unit's level, then story rank (`story::place` `story.rs:33-124`: callers just before their callees; `order = "line"` uses the line instead). Swipe uses the list order, sorted again by level. Flagged goes by file, then line. (Since 2026-11-23 the order is the file tree's: by path, directories first, and by line in a file. `story.rs` and `order` are gone.)
 
 ## 6. Agent integration
 
@@ -251,7 +251,7 @@ Overlays, text inputs, the setup screen and the PR picker match `KeyCode` litera
 | `c` `p` (notes view) | `v1.notes_to_agent` `v1.notes_post` | `c` `p` |
 | `d` (notes view) | `note.delete` | `d` |
 
-Also added: `zf` (`toggle.by_file`, permanent: the queue by level or by file, see Q3), `]f` `[f` (`move.next_file`/`prev_file`, Q4), `gx` (`goto.browser`, Q17), `<pagedown>` `<pageup>` (`scroll.page_*`, Q19), `timeoutlen` in `config.toml` (Neovim's name for the prefix wait). `[keys]` takes action ids and Neovim notation, a string or a list. Unknown ids warn and are skipped, and an override takes its key away from the default that had it. Saved reviews get `version` and `history` (undo and redo).
+Also added: `zf` (`toggle.by_file`: the queue by level or by file, see Q3; removed 2026-11-23, when the queue became a tree of the changed files), `]f` `[f` (`move.next_file`/`prev_file`, Q4), `gx` (`goto.browser`, Q17), `<pagedown>` `<pageup>` (`scroll.page_*`, Q19), `timeoutlen` in `config.toml` (Neovim's name for the prefix wait). `[keys]` takes action ids and Neovim notation, a string or a list. Unknown ids warn and are skipped, and an override takes its key away from the default that had it. Saved reviews get `version` and `history` (undo and redo).
 
 **Phase 2, one start command.**
 - Touches: `cli.rs` (a positional URL or number next to the subcommands, `pr` with no URL opening the picker, hidden `setup`, `--session` and `--swipe`), `git/mod.rs::resolve` (detection, the base chain), `pr.rs::parse_url` (bare numbers), `agent/sessions.rs` (the "touched the changed files" filter), `ui.rs::draw_header`.
@@ -307,7 +307,7 @@ Also added: `zf` (`toggle.by_file`, permanent: the queue by level or by file, se
 
 ## 10. Open questions
 
-**Answers (2026-11-02):** Q1 (a). Q2 (a): every ○ unit is accepted for you, no model check. Q3: the plan's layout (each unit under its own level, then file) is the default, and a switch to the file boxes stays, on `zf` (`toggle.by_file`, next to `za`). Q10 (a): done, exit. Q11 (a): copy, then watch the tree. Q13 (a): keep the interactive hand-off. Q4–Q9, Q12, Q14–Q19: the defaults below. Commit each phase on its own branch, stacked; don't push. Run the phases through without the review stops.
+**Answers (2026-11-02):** Q1 (a). Q2 (a): every ○ unit is accepted for you, no model check. Q3: the plan's layout (each unit under its own level, then file) is the default, and a switch to the file boxes stays, on `zf` (`toggle.by_file`, next to `za`). (Superseded 2026-11-23: no level boxes and no `zf`; the queue is a tree of the changed files with the level's icon in front of each file, and the file's changes beside it.) Q10 (a): done, exit. Q11 (a): copy, then watch the tree. Q13 (a): keep the interactive hand-off. Q4–Q9, Q12, Q14–Q19: the defaults below. Commit each phase on its own branch, stacked; don't push. Run the phases through without the review stops.
 
 The plan says to stop and ask when it conflicts with the code. Each question has two options; **bold** is what I'd do.
 
@@ -432,11 +432,11 @@ Added at your request: once Phase 8 is done, every requirement below gets an int
 | L6 | On a changed note: `a` archives it, `f` edits with the flag kept, `i` edits without a decision | `v2_loop::notes_on_changed_code` |
 | L7 | `:e` re-runs now; `:e!` asks "Reset all N decisions? y/n", then re-evaluates everything | `v2_loop::rerun_and_reset_commands` |
 | M1 | v1 screens, needs fix, `--swipe`, `$`, `≠` are gone | `v2_migrate::v1_surface_removed` |
-| M2 | `--base main` and `pr list` still work for one release and print a hint | `v2_migrate::old_forms_hint` |
-| M3 | A v1 saved review loads: needs fix → flagged with its note, flagged stays flagged | `v2_migrate::v1_review_fixture_loads` |
-| M4 | v1 `[keys]` map over; removed ones warn once each; nothing is written back | `v2_migrate::v1_keys_config` |
+| M2 | `pr list`, `pr ls` and `pr <url>` are gone (removed 2026-11-25) | `v2_migrate::v1_forms_removed` |
+| M3 | Removed 2026-11-25: teer reads no v1 reviews or v1 `[keys]` | none |
+| M4 | Removed 2026-11-25: teer reads no v1 reviews or v1 `[keys]` | none |
 | M5 | `?` groups keys (Move, Decide, Look closer, More, Finish) from the keymap, with rebinding | `v2_migrate::help_is_generated_from_keymap` |
 | M6 | `teer --help` lists only the four forms and three flags | `v2_migrate::help_lists_v2_surface` |
-| A1–A12 | The plan's acceptance checklist, each scenario end to end | `v2_acceptance::{agent_changes_nothing_wrong, agent_changes_one_fix, branch_before_pr, pr_approve, pr_request_changes, look_closer, bulk_and_undo, pending_warning, resume, keymap_rules, v1_user, no_agent}` |
+| A1–A12 | The plan's acceptance checklist, each scenario end to end (A11, the v1 user, removed 2026-11-25) | `v2_acceptance::{agent_changes_nothing_wrong, agent_changes_one_fix, branch_before_pr, pr_approve, pr_request_changes, look_closer, bulk_and_undo, pending_warning, resume, keymap_rules, no_agent}` |
 
 M7 (README, "Coming from v1") is docs and gets no test. The by-hand run on a real repo stays a manual step after Phase 9.

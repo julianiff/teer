@@ -8,9 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use common::*;
-use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use serde_json::{Value, json};
@@ -19,7 +17,7 @@ use teer::config::Config;
 use teer::keymap::Keymap;
 use teer::review::model::{Decision, Review, SessionRef};
 use teer::review::{BuildOptions, build_review};
-use teer::session::app::{AppEvent, Effect, Grouping, Overlay, Screen};
+use teer::session::app::{AppEvent, Effect, Overlay, Screen};
 use teer::tui::app::App;
 use teer::tui::ui;
 
@@ -115,12 +113,6 @@ pub(crate) fn app_for(review: Review, cfg: Config) -> App {
     app
 }
 
-/// The queue listed by file (`zf`): each file's name above its units.
-fn by_file(app: &mut App) {
-    app.grouping = Grouping::File;
-    app.rebuild_order();
-}
-
 fn render(app: &App, w: u16, h: u16) -> Terminal<TestBackend> {
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
     t.draw(|f| ui::draw(f, app)).unwrap();
@@ -168,45 +160,19 @@ async fn queue_snapshot() {
 async fn queue_navigation() {
     let (review, _repo) = fixture_review().await;
     let mut app = app_for(review, Config::default());
-    let n = app.order.len();
-    key(&mut app, 'j');
-    assert_eq!(app.sel, 1);
-    key(&mut app, 'G');
-    assert_eq!(app.sel, n - 1);
-    // The box's title is no stop: the first row is its first unit.
-    v2::press(&mut app, "gg");
-    assert_eq!(app.sel, 0);
-    key(&mut app, 'k');
-    assert_eq!(app.sel, 0);
+    // One changed file: one row, and every move stays on it, on the unit
+    // of it that needs the most attention.
+    assert_eq!(app.rows().len(), 1);
+    for keys in ["j", "G", "gg", "k"] {
+        v2::press(&mut app, keys);
+        assert_eq!(app.cursor_row(), Some(0), "{keys}");
+        assert_eq!(app.selected().unwrap().symbol, "charge_order", "{keys}");
+    }
 
+    // A jump to another unit of the file: the pane starts at it.
     select(&mut app, "old_helper");
     insta::assert_snapshot!("queue_worth_a_look", render(&app, 90, 30).backend());
     assert_eq!(key(&mut app, 'q'), vec![Effect::Save, Effect::Quit]);
-}
-
-#[tokio::test]
-async fn clicking_a_unit_selects_it() {
-    let (review, _repo) = fixture_review().await;
-    let mut app = app_for(review, Config::default());
-    render(&app, 90, 30);
-    // Row 6 belongs to a unit further down the stream.
-    let target = app
-        .targets
-        .borrow()
-        .iter()
-        .filter_map(|(r, t)| match t {
-            teer::tui::app::Target::Unit(p) if *p == 2 => Some(*r),
-            _ => None,
-        })
-        .next()
-        .unwrap();
-    app.on_event(Event::Mouse(MouseEvent {
-        kind: MouseEventKind::Up(MouseButton::Left),
-        column: 5,
-        row: target.y,
-        modifiers: KeyModifiers::NONE,
-    }));
-    assert_eq!(app.sel, 2);
 }
 
 #[tokio::test]
@@ -288,7 +254,9 @@ async fn statements_sit_in_the_code_under_the_rows_they_cite() {
     app.on_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
     app.on_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
     assert!(app.unit.zoom);
-    let card = format!("{}", render(&app, 80, 24).backend());
+    // A row more than the rest: the file's text starts with the unit's
+    // head line.
+    let card = format!("{}", render(&app, 80, 25).backend());
     insta::assert_snapshot!("unit_view_cites", card);
     // What the agent wrote sits behind a bar, under a label naming who.
     assert!(card.contains("\" ┃ agent (haiku, sonnet) "), "{card}");
@@ -533,46 +501,37 @@ async fn facts_raise_the_level_even_when_the_agent_says_low_risk() {
 }
 
 #[tokio::test]
-async fn the_queue_has_one_line_per_unit_and_code_in_every_preview() {
+async fn the_tree_has_one_row_per_file_and_the_pane_the_code_of_every_unit() {
     let (review, _repo) = fixture_review().await;
     let mut app = app_for(review, Config::default());
-    by_file(&mut app);
     for symbol in ["new_helper", "old_helper", "charge_order"] {
         select(&mut app, symbol);
-        let list = format!("{}", render(&app, 100, 30).backend());
-        // Every change shows its code in the preview, never in the list rows.
-        assert!(list.contains("╭ code change "), "{symbol}:\n{list}");
+        let list = format!("{}", render(&app, 100, 80).backend());
+        // The file is one row of the tree, which never shows code.
+        let file: Vec<&str> = list.lines().filter(|l| l.contains("checkout.py")).collect();
+        assert_eq!(file, [format!("\"▌┃ checkout.py{}\"", " ".repeat(86))]);
+        // Under it, each of its units with its code.
+        for head in [
+            "┃ charge_order",
+            "┃ old_helper",
+            "┃ new_helper",
+            "┃ Cart::add",
+        ] {
+            assert_eq!(list.matches(head).count(), 1, "{head}:\n{list}");
+        }
         let code_rows: Vec<&str> = list
             .lines()
             .filter(|l| l.contains("if order.currency not in SUPPORTED"))
             .collect();
-        if symbol == "charge_order" {
-            assert_eq!(code_rows.len(), 1, "{list}");
-            assert!(code_rows[0].contains("  9 + "), "{list}");
-            assert!(code_rows[0].starts_with("\" │"), "{list}");
-        } else {
-            assert!(code_rows.is_empty(), "{symbol}:\n{list}");
-        }
-        // Each listed unit has exactly one row (inside its box, its level's
-        // icon under the file's name), its name and state; listed by file,
-        // the preview pane below says where it is.
-        let rows: Vec<&str> = list
-            .lines()
-            .filter(|l| l.starts_with("\"│"))
-            .filter(|l| l.chars().nth(5).is_some_and(|c| "▲◆●".contains(c)))
-            .filter(|l| {
-                ["charge_order", "old_helper", "new_helper", "Cart::add"]
-                    .iter()
-                    .any(|s| l.contains(s))
-            })
-            .collect();
-        assert_eq!(rows.len(), 4, "4 unit rows for {symbol}:\n{list}");
-        assert!(rows.iter().all(|l| !l.contains("checkout.py")), "{list}");
-        // The selected unit's row is the only one with the selection marker.
-        let marked = list.lines().filter(|l| l.contains('▌')).count();
-        assert_eq!(marked, 1, "{list}");
-        let row = list.lines().find(|l| l.contains('▌')).unwrap();
-        assert!(row.contains(symbol), "{symbol}: {row}");
+        assert_eq!(code_rows.len(), 1, "{list}");
+        assert!(code_rows[0].starts_with("\"     9 + "), "{list}");
+        // The bar is on the file's row and on the unit the keys act on.
+        let marked: Vec<&str> = list.lines().filter(|l| l.contains('▌')).collect();
+        assert_eq!(marked.len(), 2, "{list}");
+        assert!(
+            marked[1].contains(&format!(" {symbol}")),
+            "{symbol}: {list}"
+        );
     }
 }
 
@@ -661,86 +620,64 @@ fn symbols(app: &App) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn the_file_sits_in_its_most_critical_box_with_its_units_most_critical_first() {
+async fn the_file_has_the_mark_of_its_most_critical_unit_and_lists_its_units_by_line() {
     let (review, _repo) = fixture_review().await;
     let mut app = app_for(review, Config::default());
-    by_file(&mut app);
-    let backend = render(&app, 90, 30);
-    let text = format!("{}", backend.backend());
+    let text = format!("{}", render(&app, 90, 80).backend());
     let at = |needle: &str| {
         text.find(needle)
             .unwrap_or_else(|| panic!("{needle}\n{text}"))
     };
-    // One file, in the box of its close look; no other level's box.
-    assert!(at("╭─ Needs a close look · 1 file") < at("│ checkout.py"));
-    assert!(!text.contains("Worth a look ·") && !text.contains("Routine ·"));
-    assert!(at("│ checkout.py") < at("▲ charge_order"));
-    assert!(at("▲ charge_order") < at("◆ old_helper"));
-    assert!(at("◆ old_helper") < at("● new_helper"));
-    assert!(at("● new_helper") < at("● Cart::add"));
+    // One file, behind the icon of its close look; no box, no title.
+    assert!(text.contains("\"▌┃ checkout.py "), "{text}");
+    for gone in ["Needs a close look", "Worth a look", "Routine", "╭─"] {
+        assert!(!text.contains(gone), "{gone}:\n{text}");
+    }
+    // Its units as they are in the file.
+    assert!(at("┃ checkout.py") < at("┃ charge_order"));
+    assert!(at("┃ charge_order") < at("┃ old_helper"));
+    assert!(at("┃ old_helper") < at("┃ new_helper"));
+    assert!(at("┃ new_helper") < at("┃ Cart::add"));
     // The units with no behavior change are accepted for you, not listed.
     assert!(!text.contains("compute_total"), "{text}");
-    assert!(at("● Cart::add") < at("3 units accepted for you, za shows them"));
+    assert!(at("┃ checkout.py") < at("za shows 3 accepted for you"));
     assert_eq!(
         symbols(&app),
         vec!["charge_order", "old_helper", "new_helper", "Cart::add"]
     );
-    // Start on the file's first unit: its close look.
+    // Start on the file's close look.
     assert_eq!(app.selected().unwrap().symbol, "charge_order");
-    // `za` lists them last in the file, behind their icon.
+    // `za` lists them with the others, behind their icon.
     v2::press(&mut app, "za");
-    let text = format!("{}", render(&app, 90, 30).backend());
-    assert!(
-        text.find("● Cart::add") < text.find("○ compute_total"),
-        "{text}"
-    );
-    assert!(text.contains("za hides them"), "{text}");
+    let text = format!("{}", render(&app, 90, 120).backend());
+    assert!(text.contains("○ compute_total ✓"), "{text}");
+    assert!(text.contains("za hides 3 accepted for you"), "{text}");
     assert_eq!(app.selected().unwrap().symbol, "charge_order");
 }
 
 #[tokio::test]
-async fn deciding_does_not_move_units_and_pending_jumps_skip_decided() {
+async fn accepting_a_file_takes_its_pending_units_and_moves_no_row() {
     use teer::tui::app::Target;
     let (review, _repo) = fixture_review().await;
     let mut app = app_for(review, Config::default());
     let before = symbols(&app);
-    // Accept the first (charge_order); selection moves to the next pending one.
     key(&mut app, 'a');
     assert_eq!(symbols(&app), before);
-    assert_eq!(app.selected().unwrap().symbol, "old_helper");
-    assert_eq!(app.review.units[app.order[0]].decision, Decision::Accepted);
+    for &i in &app.order {
+        assert_eq!(app.review.units[i].decision, Decision::Accepted);
+    }
+    assert_eq!(app.status, "Accepted 4 units.");
     app.rebuild_order();
     assert_eq!(symbols(&app), before, "rebuilding keeps the order too");
-    assert_eq!(app.selected().unwrap().symbol, "old_helper");
+    // Nothing left to decide in it.
+    key(&mut app, 'a');
+    assert_eq!(app.status, "Nothing pending in this file.");
 
-    // Flag old_helper (esc leaves its note line); decided units are skipped
-    // by n and N.
-    v2::press(&mut app, "f<esc>");
-    assert_eq!(app.selected().unwrap().symbol, "new_helper");
-    v2::press(&mut app, "gg");
-    assert_eq!(app.sel, 0);
-    key(&mut app, 'n');
-    assert_eq!(app.selected().unwrap().symbol, "new_helper");
-    key(&mut app, 'N');
-    assert_eq!(app.sel, 2, "no pending unit before new_helper");
-    app.sel = 3;
-    key(&mut app, 'N');
-    assert_eq!(app.selected().unwrap().symbol, "new_helper");
-
-    // Rows are unchanged in count and mouse targets still map to positions.
+    // The row is still there, and still a click target.
+    assert_eq!(app.cursor_row(), Some(0));
     render(&app, 90, 30);
-    let units: Vec<usize> = app
-        .targets
-        .borrow()
-        .iter()
-        .filter_map(|(_, t)| match t {
-            Target::Unit(p) => Some(*p),
-            _ => None,
-        })
-        .collect();
-    for p in 0..4 {
-        assert!(units.contains(&p), "{p} in {units:?}");
-    }
+    let rows = app.targets.borrow();
+    assert!(rows.iter().any(|(_, t)| *t == Target::Row(0)));
 }
 
 fn decision_of(app: &App, symbol: &str) -> Decision {
@@ -779,37 +716,42 @@ async fn re_deciding_a_unit_overrides_it() {
     let (review, _repo) = fixture_review().await;
     let mut app = app_for(review, Config::default());
     assert_eq!(app.selected().unwrap().symbol, "charge_order");
+    let charge = app.selected().unwrap().id.clone();
     key(&mut app, 'a');
-    key(&mut app, 'k');
-    v2::press(&mut app, "f<esc>");
+    // In the queue `a` and `f` take what is pending; a decided unit is
+    // decided again in its view.
+    key(&mut app, 'f');
+    assert_eq!(decision_of(&app, "charge_order"), Decision::Accepted);
+    v2::in_unit_view(&mut app, &charge, "f");
     assert_eq!(decision_of(&app, "charge_order"), Decision::Investigate);
     assert_eq!(
         app.decision_counts(),
-        (3, 1, 3),
+        (6, 1, 0),
         "the 3 accepted for you count"
     );
-    v2::press(&mut app, "gga");
+    v2::in_unit_view(&mut app, &charge, "a");
     assert_eq!(decision_of(&app, "charge_order"), Decision::Accepted);
-    assert_eq!(app.decision_counts(), (4, 0, 3));
+    assert_eq!(app.decision_counts(), (7, 0, 0));
 }
 
 #[tokio::test]
 async fn undo_restores_the_previous_decision_and_the_cursor() {
     let (review, _repo) = fixture_review().await;
     let mut app = app_for(review, Config::default());
-    key(&mut app, 'a'); // charge_order accepted
-    key(&mut app, 'a'); // old_helper accepted
-    v2::press(&mut app, "gg");
-    v2::press(&mut app, "f<esc>"); // charge_order accepted -> flagged
+    let charge = app.selected().unwrap().id.clone();
+    key(&mut app, 'a'); // the file's four units accepted
+    v2::in_unit_view(&mut app, &charge, "f"); // charge_order accepted -> flagged
     assert_eq!(decision_of(&app, "charge_order"), Decision::Investigate);
-    assert_eq!(app.selected().unwrap().symbol, "new_helper");
     key(&mut app, 'u');
     // The earlier decision comes back (not "pending") and so does the cursor.
     assert_eq!(decision_of(&app, "charge_order"), Decision::Accepted);
     assert_eq!(app.selected().unwrap().symbol, "charge_order");
+    // The file's units were accepted in one step.
     key(&mut app, 'u');
-    assert_eq!(decision_of(&app, "old_helper"), Decision::Pending);
-    assert_eq!(app.selected().unwrap().symbol, "old_helper");
+    for symbol in ["charge_order", "old_helper", "new_helper", "Cart::add"] {
+        assert_eq!(decision_of(&app, symbol), Decision::Pending, "{symbol}");
+    }
+    assert_eq!(app.cursor_row(), Some(0));
 }
 
 #[tokio::test]
@@ -817,24 +759,24 @@ async fn long_code_lines_wrap_instead_of_being_cut() {
     let (review, _repo) = fixture_review().await;
     let mut app = app_for(review, Config::default());
     select(&mut app, "charge_order");
-    // 48 columns: the code's box takes 4 of them; tall enough for all of it.
-    let list = format!("{}", render(&app, 48, 60).backend());
+    // 48 columns; tall enough for all of it.
+    let list = format!("{}", render(&app, 48, 80).backend());
     let lines: Vec<&str> = list.lines().collect();
     let line_of = |text: &str| lines.iter().position(|l| l.contains(text)).expect(&list);
     // The rest goes on the next line, under the statement, with no number
     // or sign, and words stay whole.
-    let at = line_of("│   9 +     if order.currency not in");
+    let at = line_of("    9 +     if order.currency not in");
     assert!(
-        lines[at + 1].starts_with("\" │           SUPPORTED:"),
+        lines[at + 1].starts_with("\"             SUPPORTED:"),
         "{list}"
     );
-    let at = line_of("│  10 +         raise ValueError(");
+    let at = line_of("   10 +         raise ValueError(");
     assert!(
-        lines[at + 1].starts_with("\" │               \"unsupported currency\")"),
+        lines[at + 1].starts_with("\"                 currency\")"),
         "{list}"
     );
     // No code is cut: the only ellipsis is the "more lines" hint.
-    let code = &lines[line_of("code change")..];
+    let code = &lines[line_of("┃ charge_order")..];
     assert!(
         code.iter()
             .filter(|l| l.contains('…'))

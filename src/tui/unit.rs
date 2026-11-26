@@ -158,6 +158,12 @@ fn inspect_items(app: &App) -> Vec<(String, &'static str)> {
         format!("{} {}", k(Action::MoveNextHunk), k(Action::MovePrevHunk)),
         "go to the next or the last hunk",
     ));
+    if app.unit_mates().len() > 1 {
+        items.push((
+            format!("{} {}", k(Action::MoveNextUnit), k(Action::MovePrevUnit)),
+            "go to the next or the last unit of the file",
+        ));
+    }
     items
 }
 
@@ -334,10 +340,13 @@ fn disputed(app: &App, u: &Unit) -> bool {
     app.assessment(&u.id).is_some_and(|a| !a.doubts.is_empty())
 }
 
-/// The unit's text as blocks, and where its parts start, in lines.
+/// The view's text as blocks, and where its parts start, in lines.
+#[derive(Default)]
 struct Text {
     /// Blocks a scroll keeps whole.
     blocks: Vec<Vec<Line<'static>>>,
+    /// Each unit in it and the line it starts at.
+    starts: Vec<(String, usize)>,
     /// The line each hunk of the diff starts at.
     hunks: Vec<usize>,
     /// The line each proposed hunk's box starts at.
@@ -346,8 +355,46 @@ struct Text {
     proposed: Option<usize>,
 }
 
-/// The unit's text `w` cells wide.
-fn text_blocks(app: &App, u: &Unit, w: usize) -> Text {
+/// The view's text `w` cells wide: the text of every unit of the file on
+/// show ([`App::unit_mates`]), in line order, a blank line between them.
+/// Each one starts with its head line as in the queue's pane, the bar on
+/// the current one (`u`: the title, the tiles and the decisions are its).
+/// A file's one unit, and a unit that isn't listed, has no head line: the
+/// title names it.
+fn view_text(app: &App, u: &Unit, w: usize) -> Text {
+    let mates = app.unit_mates();
+    if mates.len() < 2 {
+        let mut text = text_blocks(app, u, w, 0, true);
+        text.starts = vec![(u.id.clone(), 0)];
+        return text;
+    }
+    let mut all = Text::default();
+    for pos in mates {
+        let m = &app.review.units[app.order[pos]];
+        let current = m.id == u.id;
+        if !all.blocks.is_empty() {
+            all.blocks.push(vec![Line::default()]);
+        }
+        let start: usize = all.blocks.iter().map(Vec::len).sum();
+        all.starts.push((m.id.clone(), start));
+        all.blocks
+            .push(vec![preview::head_line(app, pos, m, current, w)]);
+        let text = text_blocks(app, m, w, start + 1, current);
+        all.blocks.extend(text.blocks);
+        all.hunks.extend(text.hunks);
+        if current {
+            all.fixes = text.fixes;
+            all.proposed = text.proposed;
+        }
+    }
+    all
+}
+
+/// The text of unit `u` `w` cells wide, its first line at row `base` of
+/// the view's text. Only the `current` unit has its proposed change in
+/// full (the others say that one is proposed) and leaves the second model
+/// to the ask tile while that is open.
+fn text_blocks(app: &App, u: &Unit, w: usize, base: usize, current: bool) -> Text {
     let t = &app.theme;
     let mut blocks: Vec<Vec<Line<'static>>> = Vec::new();
     // Text scrolls a line at a time.
@@ -392,7 +439,7 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> Text {
     if !code.blocks.is_empty() {
         let top = code_edge(app, w, Some(diff::counts(app, code.added, code.removed)));
         add(&mut blocks, vec![Line::default(), top]);
-        let mut at: usize = blocks.iter().map(Vec::len).sum();
+        let mut at: usize = base + blocks.iter().map(Vec::len).sum::<usize>();
         let mut starts = Vec::with_capacity(code.blocks.len());
         for b in &code.blocks {
             starts.push(at);
@@ -416,19 +463,32 @@ fn text_blocks(app: &App, u: &Unit, w: usize) -> Text {
         add(&mut blocks, card.into_iter().map(indented).collect());
     }
 
-    // The second model goes in the ask tile; with it closed, here.
-    if !app.unit.tiles.contains(&Panel::Ask) {
+    // The current unit's second model goes in the ask tile; with it
+    // closed, here.
+    if !current || !app.unit.tiles.contains(&Panel::Ask) {
         add(&mut blocks, second_model_lines(app, u, w));
     }
 
+    // Another unit of the file only says that a change is proposed.
+    if !current {
+        if let Some(l) = preview::proposed_line(app, u, w, 1) {
+            add(&mut blocks, vec![Line::default(), l]);
+        }
+        return Text {
+            blocks,
+            hunks,
+            ..Text::default()
+        };
+    }
     // The change the agent proposes, its hunks boxed like the code change.
-    let at: usize = blocks.iter().map(Vec::len).sum();
+    let at: usize = base + blocks.iter().map(Vec::len).sum::<usize>();
     let (section, fixes) = proposed_blocks(app, u, w, at);
     // After its blank row.
     let proposed = (!section.is_empty()).then_some(at + 1);
     blocks.extend(section);
     Text {
         blocks,
+        starts: Vec::new(),
         hunks,
         fixes,
         proposed,
@@ -859,11 +919,20 @@ fn draw_text(f: &mut Frame, app: &App, u: &Unit, area: Rect, focus: bool) {
     let h = area.height as usize;
     let Text {
         blocks,
+        starts,
         hunks,
         fixes,
         proposed,
-    } = text_blocks(app, u, w);
+    } = view_text(app, u, w);
     *app.unit.hunks.borrow_mut() = hunks;
+    // The unit just opened, or gone to, starts the text.
+    if app.unit.reveal_unit.take()
+        && let Some(&(_, row)) = starts.iter().find(|(id, _)| *id == u.id)
+    {
+        app.detail_offset();
+        app.detail_scroll.borrow_mut().1 = row;
+    }
+    *app.unit.starts.borrow_mut() = starts;
     // `<space>e` (or `p` from the queue) asked to see a proposed hunk
     // before its box was drawn, or the section: scroll to it now.
     if app.unit.reveal.take()
@@ -1264,6 +1333,7 @@ mod tests {
             dive_pending: Default::default(),
             checks: Default::default(),
             security: Vec::new(),
+            signature: None,
         }
     }
 
@@ -1385,8 +1455,9 @@ mod tests {
         assert!(!text.contains("Check  agent"), "{text}");
         // Short: the text scrolls.
         let text = render(&a, 100, 16);
+        // Both units of the file are in the text, two hunks each.
         let hunks = a.unit.hunks.borrow().clone();
-        assert_eq!(hunks.len(), 2, "{text}");
+        assert_eq!(hunks.len(), 4, "{text}");
         assert_eq!(a.detail_offset(), 0);
         // The first hunk at the top, under the line that says what is above.
         press(&mut a, "]c");
@@ -1405,6 +1476,51 @@ mod tests {
         press(&mut a, "[c");
         assert_eq!(a.detail_offset(), hunks[0]);
         assert_eq!(a.status, "No more hunks above.");
+    }
+
+    #[test]
+    fn the_text_shows_every_unit_of_the_file_and_the_current_one_follows() {
+        let mut a = app();
+        let first = a.selected_id().unwrap();
+        a.open_unit(first.clone());
+        // Tall enough for both units of a.rs: each has its head line, the
+        // bar on the current one, and its own code change.
+        let text = render(&a, 100, 80);
+        assert_eq!(text.matches("╭ code change").count(), 2, "{text}");
+        assert!(text.contains("▌┃ s0"), "{text}");
+        assert!(text.contains(" ┃ s1"), "{text}");
+        assert!(!text.contains("s2"), "the next file's units:\n{text}");
+        let starts = a.unit.starts.borrow().clone();
+        assert_eq!(starts.len(), 2);
+        assert_eq!(starts[0], (first.clone(), 0));
+        let second = starts[1].0.clone();
+        // `]]`: the next unit of the file is the current one, pending or
+        // not, and the text scrolls to it.
+        a.review.unit_mut(&second).unwrap().decision = Decision::Accepted;
+        render(&a, 100, 16);
+        press(&mut a, "]]");
+        assert_eq!(a.unit.id, second);
+        let text = render(&a, 100, 16);
+        assert_eq!(a.detail_offset(), starts[1].1.min(a.unit.text_max.get()));
+        assert!(text.contains("▌┃ s1"), "{text}");
+        press(&mut a, "]]");
+        assert_eq!(a.status, "No more units below in this file.");
+        press(&mut a, "[[");
+        assert_eq!(a.unit.id, first);
+        render(&a, 100, 16);
+        assert_eq!(a.detail_offset(), 0);
+        // Scrolled until the second unit is at the top: it is the current
+        // one, and the text stays where it is.
+        press(&mut a, &format!("{}j", starts[1].1));
+        assert_eq!(a.unit.id, second);
+        render(&a, 100, 16);
+        assert_eq!(a.detail_offset(), starts[1].1);
+        press(&mut a, "k");
+        assert_eq!(a.unit.id, first);
+        // `h` goes back to the file's row.
+        press(&mut a, "h");
+        press(&mut a, "h");
+        assert_eq!(a.screen, Screen::Queue);
     }
 
     #[test]

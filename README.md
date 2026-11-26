@@ -21,9 +21,9 @@ https://github.com/user-attachments/assets/e1bdbb5d-a7ab-415f-9aba-e80b056169f1
 
 **review a code change by what it does, not line by line.**
 
-teer splits a git change into units: the functions, methods and classes that changed. it puts the risky units on top. an agent explains each unit, and each sentence points to the lines that prove it. you accept a unit, or you flag it and write a note. then `:w` sends your notes to your agent, commits the change, or posts your review on the pull request.
+teer splits a git change into units: the functions, methods and classes that changed. it shows the changed files as a tree, with a mark in front of each file that has important changes, and the changes of the file beside it. an agent explains each unit, and each sentence points to the lines that prove it. you accept a file, or you flag it and write a note. then `:w` sends your notes to your agent, commits the change, or posts your review on the pull request.
 
-- **risky units first.** each unit gets a level: `▲` close look, `◆` worth a look, or `●` routine. facts from the code set the level. the agent can raise the level, but it cannot lower it. a unit that does not change behavior is accepted for you.
+- **risky files stand out.** each unit gets a level, shown as a vertical line `┃`: red for close look, yellow for worth a look, grey for routine. a file shows the level of its most critical unit, in colour. facts from the code set the level. the agent can raise the level, but it cannot lower it. a unit that does not change behavior is accepted for you.
 - **no claim without its lines.** a fast model explains each unit in its code. a second model checks each explanation. a sentence that does not point to its lines is removed.
 - **answers before you ask.** open a unit, and it shows why it got its level and what changed. one tile holds the agent: `K` asks a question, and the tile offers what to do about the unit first. `␣t` shows its tests.
 - **a fix loop.** `f` flags a unit, `i` writes a note, and `:w` sends the notes to claude code or codex. when the agent is done, teer reviews the change again, with only the changed units in the queue.
@@ -61,17 +61,17 @@ at the first start, teer asks which agent and models to use. `teer setup` change
 **check what your agent wrote**
 
 1. run `teer`.
-2. press `a` or `f` on each unit in the queue.
-3. press `l` on a `▲` unit, then `K` to ask.
+2. press `a` or `f` on each file in the tree. its changes are beside it.
+3. press `l` on a file with a red `┃`, then `K` to ask.
 4. press `f` and `i` to write a note.
 5. press `:w` `enter` to send the notes to your agent. teer reviews the change again when the agent is done.
-6. press `a` on the changed units.
+6. press `a` on the changed files.
 7. press `:w` `enter` to commit.
 
 **review a pull request of a teammate**
 
 1. run `teer pr`.
-2. press `a` or `f` on each unit in the queue.
+2. press `a` or `f` on each file in the tree. its changes are beside it.
 3. press `l`, then `K` to ask.
 4. press `f` and `i` to write a note about the problem.
 5. press `:w` `enter`. teer requests changes, or approves when no unit is flagged.
@@ -130,12 +130,12 @@ editor = "code --wait --goto {file}:{line}"    # default: nvim +{line} {file}
 
 ## from v1
 
-v2 has one queue in place of the list, the swipe and the flagged screen. `:w` is in place of the finish screens. the keys follow neovim. your config and your saved reviews stay valid. old `[keys]` names still work. teer warns one time about each name that does not exist now, and writes nothing back. units that you flagged or resolved on the flagged screen are flagged, with their notes.
+v2 has one queue in place of the list, the swipe and the flagged screen. `:w` is in place of the finish screens. the keys follow neovim. teer reads no v1 data now. `[keys]` takes action ids and neovim notation only: a v1 name gets a warning and is ignored. a review that v1 saved starts again.
 
 | v1 | v2 |
 | --- | --- |
 | `l` · `i` accept · flag | `a` · `f`; `i` writes a note |
-| `s` swipe | the queue: `a` and `f` go to the next pending unit |
+| `s` swipe | the queue: `a` and `f` go to the next pending file |
 | `d` the flagged screen | `l` opens any unit |
 | `n` recommend · `x` disagreement | `K`, then `enter`: the advice, the first question the ask tile offers · the disagreement shown there |
 | `c` tests · `a` the agent reads them | `<space>t`, then `enter` lets the agent read them |
@@ -150,10 +150,10 @@ v2 has one queue in place of the list, the swipe and the flagged screen. `:w` is
 | `J` `K` scroll | `<c-d>` `<c-u>` |
 | `g` · `]` `[` top · pending | `gg` · `n` `N` |
 | `ctrl+d` `ctrl+u` next file | `]f` `[f` |
-| `f` by file | `zf` |
+| `f` by file | gone: the queue is a tree of the files |
 | `C` commits | `<space>c` |
 | `teer --base main` | `teer` finds the base; `--base` still selects one |
-| `teer pr list` · `teer pr <url>` | `teer pr` · `teer <url>` |
+| `teer pr list` · `teer pr <url>` | `teer pr` · `teer <url>`; the old forms are gone |
 
 ## docs
 

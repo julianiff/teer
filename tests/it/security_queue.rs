@@ -16,7 +16,7 @@ use teer::review::model::{
 };
 use teer::security::surface::{Surface, surface};
 use teer::security::{Audit, Class, Fact, Finding, Hop, SecondCheck, Weight};
-use teer::session::app::{Grouping, Screen};
+use teer::session::app::Screen;
 use teer::session::view::snapshot;
 use teer::tui::app::Target;
 
@@ -189,7 +189,7 @@ fn listed_by_level_there_is_no_card() {
 }
 
 #[test]
-fn the_card_sits_over_the_boxes_with_its_rows_and_what_was_checked() {
+fn the_card_sits_over_the_tree_with_its_rows_and_what_was_checked() {
     let mut d = Driver::of(exposed());
     // The card is on the security order's screen.
     d.keys("zs");
@@ -220,11 +220,10 @@ fn the_card_sits_over_the_boxes_with_its_rows_and_what_was_checked() {
     // Narrower, the second check gives way to how many more there are.
     let c = card(&d.render(120, 40));
     assert!(c[3].contains(&format!("{IDOR} · +1 more  ")), "{}", c[3]);
-    // The boxes start under it.
+    // The tree starts under it.
     let ls = lines(&s);
     let card_end = ls.iter().position(|l| l.starts_with('╰')).unwrap();
-    let first_box = ls.iter().position(|l| l.contains("Security ·")).unwrap();
-    assert!(first_box > card_end, "{s}");
+    assert!(ls[card_end + 1].starts_with(" ┃ f0.rs "), "{s}");
     assert!(!s.to_lowercase().contains("safe"), "{s}");
 }
 
@@ -241,7 +240,7 @@ fn with_nothing_found_the_card_is_one_muted_line_that_says_only_that() {
         ls[1].split_whitespace().collect::<Vec<_>>().join(" "),
         "🔒 nothing found"
     );
-    assert!(ls[2].starts_with("╭─ Routine"), "{s}");
+    assert!(ls[2].starts_with("▌┃ f0.rs"), "{s}");
     assert!(!s.contains("attack surface"));
     assert!(!s.to_lowercase().contains("safe"), "{s}");
 }
@@ -333,7 +332,7 @@ fn with_the_lens_off_there_is_no_card() {
     );
     assert!(snapshot(&d.app, None).queue.surface.is_none());
     d.keys("zs");
-    assert!(!d.app.security.by_exposure);
+    assert!(!d.app.security.surface);
     assert!(d.app.status.contains("lens is off"), "{}", d.app.status);
 }
 
@@ -400,97 +399,25 @@ fn the_desktop_gets_the_card_compact_and_whole() {
     assert_eq!(json["rows"][2]["items"][0]["finding"], true);
 }
 
-// ---- zs: the security order ------------------------------------------------------
+// ---- zs: the card over the tree ---------------------------------------------------
 
 #[test]
-fn zs_lists_the_exposed_units_first_in_a_security_box_and_back() {
+fn zs_shows_the_card_over_the_tree_and_the_tree_keeps_its_order() {
     let mut d = Driver::of(exposed());
-    d.app.grouping = Grouping::Unit;
-    d.app.rebuild_order();
-    let by_level = d.app.order.clone();
+    let listed = d.app.order.clone();
+    assert!(snapshot(&d.app, None).queue.surface.is_none());
     d.keys("zs");
-    // Most exposed first: the standing finding, the fact worth a look,
-    // then the note.
-    let ids: Vec<String> = (0..3).map(|p| d.id_at(p)).collect();
-    assert_eq!(ids, ["u4", "u3", "u1"]);
-    assert_eq!(d.app.security.exposed, 3);
-    let s = d.render(120, 40);
-    let ls = lines(&s);
-    let security = ls
-        .iter()
-        .position(|l| l.starts_with("╭─ Security · 3 units"))
-        .unwrap_or_else(|| panic!("{s}"));
-    let next = ls
-        .iter()
-        .position(|l| l.starts_with("╭─ Routine · 3 units"))
-        .unwrap_or_else(|| panic!("{s}"));
-    assert!(security < next, "{s}");
-    // Each row keeps its level's glyph and its file.
-    assert!(ls[security + 1].contains("▲ f1.rs  s4"), "{s}");
-    assert!(ls[security + 2].contains("◆ f1.rs  s3"), "{s}");
-    assert!(ls[security + 3].contains("● f0.rs  s1"), "{s}");
-    // The desktop says the toggle is on, and has the box.
+    assert_eq!(d.app.order, listed);
+    // The desktop says the toggle is on, and has the card.
     let v = snapshot(&d.app, None);
     assert_eq!(v.actions["toggle.security"].on, Some(true));
-    assert!(v.queue.boxes[0].security);
-    assert_eq!(v.queue.boxes[0].title, "Security · 3 units");
-    assert!(v.queue.boxes[1..].iter().all(|b| !b.security));
+    assert_eq!(v.actions["toggle.security"].what, "show the attack surface");
+    assert!(v.queue.surface.is_some());
+    assert_eq!(v.queue.rows.len(), 2);
     d.keys("zs");
-    assert_eq!(d.app.order, by_level);
-    let s = d.render(120, 40);
-    assert!(!s.contains("Security ·"), "{s}");
-    assert_eq!(
-        snapshot(&d.app, None).actions["toggle.security"].on,
-        Some(false)
-    );
-}
-
-#[test]
-fn zs_by_file_keeps_each_files_exposed_units_together() {
-    let mut us = units(9);
-    // f2.rs's u6 is the most exposed; f0.rs has two exposed units.
-    us[6] = audited(
-        us[6].clone(),
-        vec![finding(
-            Class::Injection,
-            Risk::High,
-            "the sort reaches SQL",
-        )],
-    );
-    us[0].security = vec![fact(Class::Ci, Weight::Note, "", "a workflow changed")];
-    us[2].security = vec![fact(Class::SupplyChain, Weight::Look, "", "a new package")];
-    let mut d = Driver::of(us);
-    d.app.grouping = Grouping::File;
-    d.app.rebuild_order();
-    d.keys("zs");
-    let ids: Vec<String> = (0..3).map(|p| d.id_at(p)).collect();
-    assert_eq!(ids, ["u6", "u2", "u0"]);
-    let s = d.render(120, 50);
-    let ls = lines(&s);
-    let at = |text: &str| {
-        ls.iter()
-            .position(|l| l.contains(text))
-            .unwrap_or_else(|| panic!("{text}:\n{s}"))
-    };
-    let security = at("╭─ Security · 2 files");
-    assert!(security < at("f2.rs"), "{s}");
-    assert!(at("f2.rs") < at("f0.rs"), "{s}");
-    // Each file starts again below the security box.
-    assert!(d.app.starts_file(3));
-}
-
-#[test]
-fn zs_with_nothing_exposed_says_so() {
-    let mut d = Driver::new(3);
-    let before = d.app.order.clone();
-    d.keys("zs");
-    assert!(d.app.security.by_exposure);
-    assert_eq!(d.app.order, before);
-    assert!(
-        d.app.status.contains("no unit has security facts"),
-        "{}",
-        d.app.status
-    );
+    let v = snapshot(&d.app, None);
+    assert_eq!(v.actions["toggle.security"].on, Some(false));
+    assert!(v.queue.surface.is_none());
 }
 
 // ---- The flagged list --------------------------------------------------------------
@@ -508,12 +435,12 @@ fn the_flagged_list_shows_each_units_security_with_its_severity() {
     let s = d.render(140, 80);
     assert!(
         s.contains(&format!(
-            "▲ security: high · authorization: {IDOR} (+1 more)"
+            "┃ security: high · authorization: {IDOR} (+1 more)"
         )),
         "{s}"
     );
     assert!(
-        s.contains("◆ security: medium · injection: the request's sort reaches a raw query"),
+        s.contains("┃ security: medium · injection: the request's sort reaches a raw query"),
         "{s}"
     );
     // u0 has neither: no line (the reasons under "Why this level" have no severity).

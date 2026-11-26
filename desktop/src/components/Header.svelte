@@ -26,8 +26,8 @@
     <span class="spacer"></span>
     {#if header.no_agent}<span class="muted">no agent</span>{/if}
     {#if header.preparing}
-      <span class="muted">
-        <span class="dot"></span> preparing {header.preparing.done}/{header.preparing.total}
+      <span class="muted" title="Units described so far">
+        <span class="dot"></span> {header.preparing.done}/{header.preparing.total}
       </span>
     {/if}
     {#if ui.buttons}

@@ -83,6 +83,7 @@ fn unit(id: &str, file: &str, symbol: &str) -> Unit {
         dive_pending: Default::default(),
         checks: Default::default(),
         security: Vec::new(),
+        signature: None,
     }
 }
 

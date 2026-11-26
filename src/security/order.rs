@@ -1,30 +1,10 @@
-//! The queue's security order (`zs`): units by how exposed each is, the
-//! most exposed first. Also what the finish takes of a unit's security:
-//! its standing findings and its facts that need a close look.
+//! What ranks a unit's security: its standing findings, most severe
+//! first, and its facts, heaviest first. The attack surface, the flagged
+//! list and the finish take them in this order.
 
 use super::model::{Audit, Class, Fact, Finding, Weight};
 use crate::review::model::{Cite, DiveKind, Risk, Side, Unit};
 use crate::util::sanitize;
-
-/// How exposed a unit is. Compared field by field, more is more exposed:
-/// the most severe of its standing findings, then the heaviest of its
-/// facts, then the most pressing class among both (see [`class_rank`]),
-/// then how many there are.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Exposure {
-    pub severity: Option<Risk>,
-    pub weight: Option<Weight>,
-    pub class: u8,
-    pub count: usize,
-}
-
-impl Exposure {
-    /// It has a fact or a standing finding: the security order lists it
-    /// before the units that have neither.
-    pub fn is_exposed(&self) -> bool {
-        self.count > 0
-    }
-}
 
 /// How much a class presses, higher first: authorization, injection and
 /// secrets most; crypto, which only the agent raises, least.
@@ -72,21 +52,6 @@ pub fn facts_from(u: &Unit, least: Weight) -> Vec<&Fact> {
     let mut facts: Vec<&Fact> = u.security.iter().filter(|f| f.weight >= least).collect();
     facts.sort_by_key(|f| std::cmp::Reverse((f.weight, class_rank(f.class))));
     facts
-}
-
-/// How exposed `u` is: higher comes first in the security order.
-pub fn exposure(u: &Unit) -> Exposure {
-    let findings = standing(u);
-    let classes = findings
-        .iter()
-        .map(|f| f.class)
-        .chain(u.security.iter().map(|f| f.class));
-    Exposure {
-        severity: findings.iter().map(|f| f.severity).max(),
-        weight: u.security.iter().map(|f| f.weight).max(),
-        class: classes.map(class_rank).max().unwrap_or(0),
-        count: findings.len() + u.security.len(),
-    }
 }
 
 /// The severity a fact's weight stands for, beside findings': a fact that
@@ -218,31 +183,6 @@ mod tests {
     }
 
     #[test]
-    fn findings_outrank_facts_then_weight_then_class_then_count() {
-        let bare = exposure(&unit());
-        assert!(!bare.is_exposed());
-        let mut note = unit();
-        note.security = vec![fact(Class::SupplyChain, Weight::Note)];
-        let mut look = unit();
-        look.security = vec![fact(Class::Ci, Weight::Look)];
-        let mut look_auth = unit();
-        look_auth.security = vec![fact(Class::Authorization, Weight::Look)];
-        let mut two = look_auth.clone();
-        two.security.push(fact(Class::Ci, Weight::Note));
-        let low_finding = with_findings(unit(), vec![finding(Risk::Low, true)]);
-        let order = [
-            bare,
-            exposure(&note),
-            exposure(&look),
-            exposure(&look_auth),
-            exposure(&two),
-            exposure(&low_finding),
-        ];
-        assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:#?}");
-        assert!(order[1..].iter().all(Exposure::is_exposed));
-    }
-
-    #[test]
     fn only_standing_findings_count() {
         let mut disputed = finding(Risk::High, true);
         disputed.second = Some(SecondCheck {
@@ -261,7 +201,6 @@ mod tests {
         let s = standing(&u);
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].severity, Risk::Medium);
-        assert_eq!(exposure(&u).severity, Some(Risk::Medium));
         assert_eq!(
             path_text(s[0]),
             "src/a.php:41 → Repo::byId (src/a.php:88) → src/a.php:90"

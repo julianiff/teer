@@ -7,7 +7,6 @@ use crate::common;
 use std::sync::Arc;
 
 use common::*;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use serde_json::{Value, json};
@@ -124,13 +123,6 @@ fn screen(app: &App, w: u16, h: u16) -> String {
         .collect()
 }
 
-fn press(app: &mut App, c: char) -> Vec<Effect> {
-    app.on_event(Event::Key(KeyEvent::new(
-        KeyCode::Char(c),
-        KeyModifiers::NONE,
-    )))
-}
-
 /// Type `keys` in Neovim notation (`gg`, `<space>t`).
 fn keys(app: &mut App, keys: &str) -> Vec<Effect> {
     common::v2::press(app, keys)
@@ -178,21 +170,26 @@ async fn a_disputed_statement_and_an_expensive_change_are_warnings() {
     assert_eq!(a.cost.as_deref(), Some("Charges the card again on retry."));
     assert_eq!(a.doubts.len(), 2);
 
-    // The queue's preview says why, a reason per line in the review box;
-    // the row keeps only the dispute's ⚠.
+    // The queue's pane says it in the code; the file's row and the unit's
+    // head keep only the dispute's ⚠. The reasons are in the unit view.
     let mut app = App::new(review, Config::default(), Keymap::default());
     assert_eq!(app.screen, Screen::Queue);
-    while app.selected().is_some_and(|u| u.symbol != "charge_order") {
-        press(&mut app, 'j');
-    }
+    let at = |app: &App, symbol: &str| {
+        let units = &app.review.units;
+        (app.order.iter().position(|&i| units[i].symbol == symbol)).unwrap()
+    };
+    let charge = at(&app, "charge_order");
+    app.move_sel(charge);
     let text = screen(&app, 120, 40);
-    assert!(text.contains("╭ review "), "{text}");
+    assert!(text.contains("┃ checkout.py ⚠"), "{text}");
+    assert!(text.contains("┃ charge_order ⚠"), "{text}");
+    assert!(text.contains("╭ low · disputed ─"), "{text}");
     assert!(
-        text.contains("· Expensive to undo: Charges the card"),
+        text.contains("│ Disputed: It also stops sending the receipt."),
         "{text}"
     );
-    assert!(text.contains("· Disputed: "), "{text}");
-    assert!(text.contains("· Rated high risk, not low."), "{text}");
+    assert!(text.contains("╭ expensive to undo ─"), "{text}");
+    assert!(!text.contains("Rated high risk, not low."), "{text}");
     assert!(text.contains('⚠') && !text.contains('$'), "{text}");
 }
 
@@ -203,10 +200,9 @@ async fn the_unit_view_shows_the_second_model_where_it_disputes() {
     app.has_agent = true;
     // The unit view on `symbol`, drawn, then back to the queue.
     let open = |app: &mut App, symbol: &str| {
-        keys(app, "gg");
-        while app.selected().is_some_and(|u| u.symbol != symbol) {
-            press(app, 'j');
-        }
+        let units = &app.review.units;
+        let at = (app.order.iter().position(|&i| units[i].symbol == symbol)).unwrap();
+        app.move_sel(at);
         keys(app, "l");
         assert_eq!(app.screen, Screen::Unit);
         let text = screen(app, 120, 80);
@@ -223,9 +219,12 @@ async fn the_unit_view_shows_the_second_model_where_it_disputes() {
         text.contains("It also stops sending the receipt. (L8)"),
         "{text}"
     );
-    // Where it agrees, there is nothing to say.
+    // Where it agrees, there is nothing to say: the one check in the
+    // file's text is `charge_order`'s.
     let text = open(&mut app, "new_helper");
-    assert!(!text.contains("Check  agent"), "{text}");
+    assert_eq!(text.matches("Check  agent").count(), 1, "{text}");
+    let own = text.split("▌").nth(1).unwrap_or_default();
+    assert!(!own.contains("Check  agent"), "{text}");
     // Nothing asks it again: it ran while preparing.
     assert!(app.review.units.iter().all(|u| !u.checks.second_pending));
 }

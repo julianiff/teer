@@ -253,7 +253,7 @@ impl App {
         if let Some(i) = self.insert_at()
             && let Some(pos) = self.position_of(&self.review.units[i.unit].id.clone())
         {
-            self.sel = pos;
+            self.cursor_to(pos);
         }
     }
 

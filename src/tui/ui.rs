@@ -22,8 +22,12 @@ pub fn draw(f: &mut Frame, app: &App) {
     app.text_areas.borrow_mut().clear();
     // Nothing to scroll unless a detail area says so.
     app.detail_max_scroll.set(0);
+    // Back on the queue, its pane shows the selected unit again.
+    if app.screen != Screen::Queue {
+        app.pane_unit.take();
+    }
     let [header, body, footer] = Layout::vertical([
-        Constraint::Length(header_rows(app)),
+        Constraint::Length(header_rows(app, f.area().width as usize)),
         Constraint::Min(1),
         Constraint::Length(1),
     ])
@@ -212,10 +216,31 @@ fn summary_line(app: &App) -> Option<String> {
     (app.screen == Screen::Queue && !s.is_empty()).then_some(s)
 }
 
-/// Rows of the header: what is reviewed, and on the queue the change's
-/// summary under it when there is one.
-fn header_rows(app: &App) -> u16 {
-    1 + u16::from(summary_line(app).is_some())
+/// The most rows the change's summary takes in the header.
+const SUMMARY_ROWS: usize = 2;
+
+/// The change's summary wrapped to `w` cells, one cell in: at most
+/// [`SUMMARY_ROWS`] rows, the last one ending in `…` when cut.
+fn summary_rows(app: &App, w: usize) -> Vec<String> {
+    let Some(s) = summary_line(app) else {
+        return Vec::new();
+    };
+    let room = w.saturating_sub(1);
+    let mut rows = crate::util::wrap(&s, room);
+    if rows.len() > SUMMARY_ROWS {
+        rows.truncate(SUMMARY_ROWS);
+        if let Some(last) = rows.last_mut() {
+            // `truncate` adds the `…` itself when this does not fit.
+            *last = truncate(&format!("{last} …"), room);
+        }
+    }
+    rows
+}
+
+/// Rows of the header in `w` cells: what is reviewed, and on the queue the
+/// change's summary under it when there is one.
+fn header_rows(app: &App, w: usize) -> u16 {
+    1 + summary_rows(app, w).len() as u16
 }
 
 /// The header: the mode's icon and what the change is called (the pull
@@ -223,12 +248,17 @@ fn header_rows(app: &App) -> u16 {
 /// doing on the right; on the queue, the summary of the change under it.
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
-    if let Some(summary) = summary_line(app)
-        && area.height > 1
-    {
-        let row = Rect::new(area.x, area.y + 1, area.width, 1);
-        let text = truncate(&format!(" {summary}"), area.width as usize);
-        f.render_widget(Paragraph::new(Line::styled(text, t.muted())), row);
+    let summary = summary_rows(app, area.width as usize);
+    for (i, text) in summary.iter().enumerate() {
+        let y = area.y + 1 + i as u16;
+        if y >= area.bottom() {
+            break;
+        }
+        let row = Rect::new(area.x, y, area.width, 1);
+        f.render_widget(
+            Paragraph::new(Line::styled(format!(" {text}"), t.muted())),
+            row,
+        );
     }
     let area = Rect::new(area.x, area.y, area.width, area.height.min(1));
     let r = &app.review;
@@ -249,16 +279,6 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             format!("{} preparing {done}/{total}  ", app.spinner()),
             t.muted(),
         ));
-    }
-    // Improve mode: how many units the agent has looked at for inserts.
-    if app.mode.improves() {
-        let (done, total) = app.improve_progress();
-        if done < total {
-            right.push(Span::styled(
-                format!("{} looking for what to add {done}/{total}  ", app.spinner()),
-                t.muted(),
-            ));
-        }
     }
     // The status on the right is never cut and keeps a gap before it.
     let rw: usize = right.iter().map(|s| s.content.width()).sum();
@@ -363,9 +383,10 @@ fn spans_width(spans: &[Span]) -> usize {
 }
 
 /// What the bar says first: `4 pending · 1 flagged · 37 accepted`
-/// (units accepted for you are accepted), or once nothing is pending
-/// `Nothing pending. :w to finish` and what is flagged and accepted, if
-/// anything. With it, which span names the finish key, to click.
+/// (units accepted for you are accepted; a count of none is left out), or
+/// once nothing is pending `Nothing pending. :w to finish` and what is
+/// flagged and accepted. With it, which span names the finish key, to
+/// click.
 fn count_spans(app: &App) -> (Vec<Span<'static>>, Option<usize>) {
     if app.mode.improves() && app.screen == Screen::Queue {
         return super::improve::count_spans(app);
@@ -373,22 +394,19 @@ fn count_spans(app: &App) -> (Vec<Span<'static>>, Option<usize>) {
     let t = &app.theme;
     let (accepted, flagged, pending) = app.decision_counts();
     let sep = || Span::styled(" · ", t.muted());
-    let flagged_style = if flagged > 0 { t.bad() } else { t.muted() };
-    if pending > 0 {
+    let (mut spans, finish) = if pending > 0 {
+        (
+            vec![Span::styled(format!("{pending} pending"), t.bold())],
+            None,
+        )
+    } else {
         let spans = vec![
-            Span::styled(format!("{pending} pending"), t.bold()),
-            sep(),
-            Span::styled(format!("{flagged} flagged"), flagged_style),
-            sep(),
-            Span::styled(format!("{accepted} accepted"), t.muted()),
+            Span::styled("Nothing pending. ", t.bold()),
+            Span::styled(app.keys.label(Action::FinishOpen), t.accent()),
+            Span::styled(" to finish", t.bold()),
         ];
-        return (spans, None);
-    }
-    let mut spans = vec![
-        Span::styled("Nothing pending. ", t.bold()),
-        Span::styled(app.keys.label(Action::FinishOpen), t.accent()),
-        Span::styled(" to finish", t.bold()),
-    ];
+        (spans, Some(1))
+    };
     if flagged > 0 {
         spans.extend([sep(), Span::styled(format!("{flagged} flagged"), t.bad())]);
     }
@@ -398,7 +416,7 @@ fn count_spans(app: &App) -> (Vec<Span<'static>>, Option<usize>) {
             Span::styled(format!("{accepted} accepted"), t.muted()),
         ]);
     }
-    (spans, Some(1))
+    (spans, finish)
 }
 
 /// The note being typed in the bar: the unit's id and the text so far.
@@ -433,16 +451,16 @@ fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
     // A command, a waiting sequence or count, or visual mode; with how many
     // cells of it stay in view: the counts give way first.
     let (mode, essential, visual) = if let Some(text) = app.keys.command_line() {
-        (command_spans(app, text), text.width() + 2, None)
+        (command_spans(app, text), text.width() + 2, false)
     } else if let Some(typed) = app.keys.pending() {
-        (pending_spans(app, &typed), typed.width(), None)
-    } else if let Some(rows) = app.visual_rows() {
+        (pending_spans(app, &typed), typed.width(), false)
+    } else if app.visual_rows().is_some() {
         let lead = "-- VISUAL --";
-        (vec![Span::styled(lead, t.bold())], lead.width(), Some(rows))
+        (vec![Span::styled(lead, t.bold())], lead.width(), true)
     } else {
-        (Vec::new(), 0, None)
+        (Vec::new(), 0, false)
     };
-    let waiting = !mode.is_empty() && visual.is_none();
+    let waiting = !mode.is_empty() && !visual;
     let with_counts = mode.is_empty() || 1 + counts_w + 2 + essential <= w;
     let mut left = vec![Span::raw(" ")];
     let finish = if with_counts {
@@ -456,15 +474,9 @@ fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
         None
     };
     left.extend(mode);
-    if let Some(rows) = visual {
-        // What applies to the selection, as buttons, and how many units it
-        // holds, unless the status says something.
-        let n = rows.count();
-        let status = if app.status.is_empty() {
-            format!("{n} unit{} ", if n == 1 { "" } else { "s" })
-        } else {
-            app.status.clone()
-        };
+    if visual {
+        // What applies to the selection, as buttons; the rows are marked.
+        let status = app.status.clone();
         // Each button starts with a blank of its own.
         left.push(Span::raw(" "));
         let left = fit(left, w);
@@ -484,9 +496,10 @@ fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
     // On the right the status, which is never cut for the rest; with none,
-    // in normal mode, the key that lists the keys.
+    // in normal mode, the key that lists the keys. Before it, in improve
+    // mode, that the agent looks for inserts.
     let mut help = false;
-    let right: Vec<Span> = if waiting {
+    let tail: Vec<Span> = if waiting {
         Vec::new()
     } else if !app.status.is_empty() {
         vec![Span::styled(app.status.clone(), t.muted())]
@@ -497,24 +510,49 @@ fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(" keys ", t.muted()),
         ]
     };
-    let right_w = spans_width(&right).min(w.saturating_sub(2));
-    // The key hint gives way to the counts.
-    let (right, right_w) = if help && 1 + counts_w + 2 + right_w > w {
+    let busy: Vec<Span> = match finding_inserts(app) {
+        Some(text) if !waiting => vec![Span::styled(format!("{text}  "), t.muted())],
+        _ => Vec::new(),
+    };
+    let fits = |right: usize| 1 + counts_w + 2 + right <= w;
+    let tail_w = spans_width(&tail).min(w.saturating_sub(2));
+    let busy_w = spans_width(&busy);
+    // The key hint gives way to the counts, then what the agent does.
+    let (tail, tail_w) = if help && !fits(busy_w + tail_w) {
         (Vec::new(), 0)
     } else {
-        (fit(right, right_w), right_w)
+        (fit(tail, tail_w), tail_w)
     };
+    let (busy, busy_w) = if fits(busy_w + tail_w) {
+        (busy, busy_w)
+    } else {
+        (Vec::new(), 0)
+    };
+    let help_w = if help { tail_w } else { 0 };
+    let right_w = busy_w + tail_w;
+    let mut right = busy;
+    right.extend(tail);
     let left = fit(left, w.saturating_sub(right_w + usize::from(right_w > 0)));
     let left_w = spans_width(&left);
     finish_target(app, area, &left, finish);
-    if help && right_w > 0 {
-        let r = Rect::new(area.x + (w - right_w) as u16, area.y, right_w as u16, 1);
+    if help_w > 0 {
+        let r = Rect::new(area.x + (w - help_w) as u16, area.y, help_w as u16, 1);
         target(app, r, Target::Action(Action::HelpOpen));
     }
     let mut spans = left;
     spans.push(Span::raw(" ".repeat(w.saturating_sub(left_w + right_w))));
     spans.extend(right);
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Improve mode, while the agent looks for inserts: a spinner and how many
+/// units it has answered about, for the right of the bar.
+fn finding_inserts(app: &App) -> Option<String> {
+    if !app.mode.improves() {
+        return None;
+    }
+    let (done, total) = app.improve_progress();
+    (done < total).then(|| format!("{} finding inserts {done}/{total}", app.spinner()))
 }
 
 /// Make the finish key that `left[i]` names, drawn from the left of
@@ -681,7 +719,7 @@ pub(super) fn banner(f: &mut Frame, app: &App, area: Rect) -> Rect {
 /// is nothing to review.
 pub(super) fn draw_empty(f: &mut Frame, app: &App, area: Rect) {
     text_area(app, area, 0);
-    let rows = slim::build_queue(app, area.width, true);
+    let rows = slim::build_queue(app, area.width);
     if !rows.lines.is_empty() {
         f.render_widget(Paragraph::new(rows.lines), area);
         return;
@@ -693,8 +731,8 @@ pub(super) fn draw_empty(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// `rows` in `list`, scrolled so the unit under the cursor is in view, each
-/// unit's row a click target that selects it.
+/// `rows` in `list`, scrolled so the item under the cursor is in view,
+/// each item's row a click target that selects it.
 pub(super) fn draw_rows(
     f: &mut Frame,
     app: &App,
@@ -740,7 +778,7 @@ pub(super) fn draw_rows(
         }
     }
     f.render_widget(Paragraph::new(visible), list);
-    // Inside the boxes' borders.
+    // Without the cursor's bar, and inside a box's borders.
     text_area(app, pad(list, 1, 0), 0);
 }
 
@@ -1002,18 +1040,17 @@ fn help_legend(app: &App) -> Vec<Line<'static>> {
                 .chain(level(Level::Same, "accepted for you"))
                 .collect::<Vec<_>>(),
         ),
+        // What a row of the tree and a unit's head line can end with.
         Line::from(vec![
             Span::raw(" ".repeat(8)),
-            Span::styled("pending", t.muted()),
-            Span::raw("  "),
-            Span::styled("accepted", t.accepted_state()),
-            Span::raw("  "),
-            Span::styled("flagged", t.flagged_row()),
-            Span::styled(" · “note”  ", t.muted()),
+            Span::styled("⚑", t.badge_investigate()),
+            Span::raw(" flagged  "),
             Span::styled("⚠", t.risk(crate::review::model::Risk::Medium)),
             Span::raw(" disputed  "),
-            Span::styled("✎", t.accent()),
-            Span::raw(" has a note"),
+            Span::styled("↻", t.accent()),
+            Span::raw(" changed  "),
+            Span::styled("✓", t.muted()),
+            Span::raw(" accepted"),
         ]),
     ]
 }

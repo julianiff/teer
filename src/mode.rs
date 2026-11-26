@@ -27,9 +27,6 @@ use crate::review::model::Review;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
-    /// Also what a review saved as `check` (a mode since joined with this
-    /// one) opens in.
-    #[serde(alias = "check")]
     Review,
     Security,
     Improve,
@@ -108,26 +105,19 @@ impl Mode {
         use Action::*;
         match self {
             Mode::All => true,
-            Mode::Review => !matches!(
-                a,
-                ToolSecurity | ToolProve | ToggleSecurityOrder | InsertLeave
-            ),
-            // The security order is the mode's own: nothing to toggle.
-            Mode::Security => !matches!(
-                a,
-                ToolTests | ToggleSecurityOrder | ToggleByFile | ToolHistory | InsertLeave
-            ),
-            // The list is the inserts: nothing to list by file, by exposure
-            // or with the units accepted for you; a decision is on one
+            Mode::Review => !matches!(a, ToolSecurity | ToolProve | ToggleSurface | InsertLeave),
+            // The attack surface is the mode's own: nothing to toggle.
+            Mode::Security => !matches!(a, ToolTests | ToggleSurface | ToolHistory | InsertLeave),
+            // The list is the inserts: no attack surface over it, no
+            // units accepted for you in it; a decision is on one
             // insert, so nothing decides a file or a selection.
             Mode::Improve => !matches!(
                 a,
                 ToolSecurity
                     | ToolProve
-                    | ToggleSecurityOrder
+                    | ToggleSurface
                     | ToolTests
                     | ToolHistory
-                    | ToggleByFile
                     | ToggleAutoAccepted
                     | ToolFix
                     | DecideAcceptFile
@@ -149,9 +139,8 @@ impl Mode {
         matches!(self, Mode::Security | Mode::All)
     }
 
-    /// Is the queue in the security order (the security box and the
-    /// attack-surface card on top) whatever `zs` says?
-    pub fn security_order(self) -> bool {
+    /// Is the attack-surface card over the queue whatever `zs` says?
+    pub fn shows_surface(self) -> bool {
         self == Mode::Security
     }
 
@@ -214,17 +203,12 @@ mod tests {
         assert!(Mode::Improve.allows(FixApply) && Mode::Improve.allows(InsertLeave));
         assert!(Mode::Improve.allows(SendSession) && Mode::Improve.allows(AskOpen));
         assert!(!Mode::Improve.allows(ToolFix) && !Mode::Improve.allows(ToolSecurity));
-        assert!(!Mode::Improve.allows(ToggleByFile) && !Mode::Improve.allows(VisualStart));
+        assert!(!Mode::Improve.allows(ToggleSurface) && !Mode::Improve.allows(VisualStart));
         assert!(!Mode::Review.allows(InsertLeave) && !Mode::Security.allows(InsertLeave));
         assert!(Mode::Review.reviews() && !Mode::Review.secures());
         assert!(Mode::Security.secures() && !Mode::Security.reviews());
         assert!(Mode::Improve.reviews() && !Mode::Improve.secures());
         assert!(Mode::Improve.improves() && !Mode::All.improves());
         assert!(Mode::All.reviews() && Mode::All.secures());
-        // A review saved in the mode that is now part of review.
-        assert_eq!(
-            serde_json::from_str::<Mode>("\"check\"").unwrap(),
-            Mode::Review
-        );
     }
 }

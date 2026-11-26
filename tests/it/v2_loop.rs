@@ -141,14 +141,12 @@ fn decided(repo: &common::FixtureRepo, cfg: Config, fakes: &Fakes) -> Session {
     let mut s = Session::start(review, cfg, None, None, fakes.tools());
     s.go_to("total");
     s.keys("icharges the fee twice<cr>");
-    s.keys("f");
+    s.on_unit("total", "f");
     s.go_to("tax");
     s.keys("irate is wrong<cr>");
-    s.keys("f");
-    s.go_to("fee");
-    s.keys("a");
-    s.go_to("ship");
-    s.keys("a");
+    s.on_unit("tax", "f");
+    s.on_unit("fee", "a");
+    s.on_unit("ship", "a");
     assert_eq!(s.counts(), (2, 2, 0));
     s
 }
@@ -209,9 +207,8 @@ async fn hand_off_uses_found_session() {
     s.settle().await;
     s.go_to("total");
     s.keys("icharges the fee twice<cr>");
-    s.keys("f");
-    s.go_to("fee");
-    s.keys("a");
+    s.on_unit("total", "f");
+    s.on_unit("fee", "a");
     let prompt = teer::notes::agent_prompt(&s.app.review);
     let effects = send(&mut s);
     // Claude Code, resuming (a fork of) the session that wrote the change,
@@ -237,9 +234,10 @@ async fn hand_off_uses_found_session() {
     s.settle().await;
     s.go_to("total");
     s.keys("icharges the fee twice<cr>");
-    s.keys("f");
-    s.go_to("fee");
-    s.keys("a");
+    // `total` is still flagged from the review above: `f` again would
+    // take the flag back.
+    assert_eq!(s.decision("total"), Decision::Investigate);
+    s.on_unit("fee", "a");
     let effects = send(&mut s);
     let (cli, resume, cwd) = hand_off(&effects).expect("handed to the agent");
     assert_eq!((cli, resume), (Provider::Codex, None));
@@ -291,8 +289,7 @@ async fn waiting_and_q() {
     assert!(s.until(Duration::from_secs(20), |s| s.reruns() == 1).await);
     assert_eq!(s.decision("tax"), P);
     // And keys decide again.
-    s.go_to("tax");
-    s.keys("a");
+    s.on_unit("tax", "a");
     assert_eq!(s.decision("tax"), A);
 }
 
@@ -396,21 +393,11 @@ async fn rerun_changed_vs_unchanged() {
     assert!(!marked_changed(unit(&s, "total")));
     assert_eq!(s.decision("fee"), A);
     assert_eq!(s.decision("ship"), A);
-    // On top of its level.
-    let tax_at = s
-        .app
-        .order
-        .iter()
-        .position(|&i| s.app.review.units[i].symbol == "tax")
-        .unwrap();
-    let level = s.app.shown_level(s.app.order[tax_at]);
-    let first_of_level = s
-        .app
-        .order
-        .iter()
-        .position(|&i| s.app.shown_level(i) == level)
-        .unwrap();
-    assert_eq!(tax_at, first_of_level, "{:?}", s.listed());
+    // The tree keeps its order; the row of its file says it changed.
+    let file = unit(&s, "tax").file.clone();
+    assert!(s.app.file_facts(&file).unwrap().changed);
+    let file = unit(&s, "total").file.clone();
+    assert!(!s.app.file_facts(&file).unwrap().changed);
     // The mark shows with the note.
     s.go_to("tax");
     s.keys("l");
@@ -464,8 +451,7 @@ async fn notes_on_changed_code() {
 
     // `f`: flagged, the note left as it was, on the code it was written on.
     let (_repo, _fakes, mut s) = after_fix().await;
-    s.go_to("tax");
-    s.keys("f");
+    s.on_unit("tax", "f");
     assert_eq!(s.app.overlay, Overlay::None);
     assert_eq!(s.decision("tax"), F);
     assert_eq!(s.note("tax"), "rate is wrong");
@@ -473,8 +459,7 @@ async fn notes_on_changed_code() {
 
     // `a`: accepted, and the note archived.
     let (_repo, _fakes, mut s) = after_fix().await;
-    s.go_to("tax");
-    s.keys("a");
+    s.on_unit("tax", "a");
     assert_eq!(s.decision("tax"), A);
     let tax = unit(&s, "tax");
     assert!(tax.dive.note.is_empty(), "{:?}", tax.dive);
@@ -507,8 +492,7 @@ async fn rerun_and_reset_commands() {
     assert!(s.until(Duration::from_secs(20), |s| s.reruns() == 2).await);
     assert_eq!(s.decision("ship"), P);
     assert_eq!(s.counts(), (1, 2, 1));
-    s.go_to("ship");
-    s.keys("a");
+    s.on_unit("ship", "a");
 
     // `:e!` asks first; anything but yes changes nothing.
     let effects = s.keys(":e!<cr>");

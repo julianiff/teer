@@ -1,6 +1,7 @@
-//! Scrolling the detail areas (the queue's preview, the unit view's text
-//! and the panel under it) with the keys and the wheel, and the layout that
-//! gives the code change the room the queue doesn't need.
+//! Scrolling the detail areas (the queue's pane with the file's changes,
+//! the unit view's text and the panel under it) with the keys and the
+//! wheel, and the layout that gives the code the room the tree doesn't
+//! need.
 
 use crate::common;
 
@@ -15,7 +16,7 @@ use teer::config::Config;
 use teer::keymap::{Action, KeySpec, Keymap};
 use teer::review::model::{Cite, Coverage, CoveringTest, DiveKind, DiveResult, Review, SessionRef};
 use teer::review::{BuildOptions, build_review};
-use teer::session::app::{Grouping, Overlay, Screen};
+use teer::session::app::{Overlay, Screen};
 use teer::session::unit::Panel;
 use teer::tui::app::{App, Target};
 use teer::tui::{preview, ui};
@@ -36,28 +37,33 @@ fn sources() -> (String, String) {
 }
 
 fn review_of(old: &str, new: &str) -> (Review, FixtureRepo) {
+    review_at("calc.py", old, new)
+}
+
+/// A review of `path` changed from `old` to `new`.
+fn review_at(path: &str, old: &str, new: &str) -> (Review, FixtureRepo) {
     let _env = isolate_env();
     let repo = FixtureRepo::new();
-    repo.write("calc.py", old).commit("init");
-    repo.write("calc.py", new);
+    repo.write(path, old).commit("init");
+    repo.write(path, new);
     let review = build_review(&repo.path(), &BuildOptions::default()).unwrap();
     (review, repo)
 }
 
-/// The queue on `review`, listed by file (`zf`): the file's name above its
-/// units.
+/// The queue on `review`.
 fn app_with(review: Review, keys: Keymap) -> App {
     let mut app = App::new(review, Config::default(), keys);
     app.start(false, None, Vec::new(), None);
-    app.grouping = Grouping::File;
+
     app.rebuild_order();
-    // The list's geometry alone: the attack-surface card over it is
+    // The queue's geometry alone: the attack-surface card over it is
     // security_queue.rs's.
     app.security.enabled = false;
     app
 }
 
-/// The long and the short function, no agent; the cursor on `long_one`.
+/// The long and the short function in `calc.py`, no agent; the cursor on
+/// the file, whose first unit is `long_one`.
 fn app() -> (App, FixtureRepo) {
     let (old, new) = sources();
     let (review, repo) = review_of(&old, &new);
@@ -136,39 +142,57 @@ fn has(lines: &[String], text: &str) -> bool {
 }
 
 const ABOVE: &str = "lines above · ^u scroll up";
-const MORE: &str = "more lines · ^d scroll · gf editor";
+const MORE: &str = "more lines · ^d scroll";
+
+/// `calc.py` as [`app`] has it and `other.py` with one change: two rows of
+/// the tree; the cursor on `calc.py`.
+fn two_files() -> (App, FixtureRepo) {
+    let (old, new) = sources();
+    let _env = isolate_env();
+    let repo = FixtureRepo::new();
+    repo.write("calc.py", &old)
+        .write("other.py", "def other(z):\n    return z\n")
+        .commit("init");
+    repo.write("calc.py", &new)
+        .write("other.py", "def other(z):\n    return z + 1\n");
+    let review = build_review(&repo.path(), &BuildOptions::default()).unwrap();
+    let mut app = app_with(review, Keymap::default());
+    app.select_row(0);
+    assert_eq!(app.selected().unwrap().symbol, "long_one");
+    (app, repo)
+}
 
 #[test]
-fn the_preview_scrolls_down_to_the_cut_rows_and_back_up() {
+fn the_pane_scrolls_through_every_unit_of_the_file_and_back_up() {
     let (mut app, _repo) = app();
     let (w, h) = (100, 30);
     let first = pane(&app, w, h);
     let text = first.join("\n");
-    // Cut: the code's box has no bottom edge; its last row says how much is
-    // left and how to see it. Nothing above.
+    // Cut: the last row says how much is left and how to see it. Nothing
+    // above. The second unit is further down.
     assert!(first[first.len() - 1].contains(MORE), "{text}");
-    let closed = first.iter().filter(|l| l.contains('╰')).count();
-    assert_eq!(closed, 1, "only the review box closes: {text}");
+    assert!(!first[first.len() - 1].contains("editor"), "{text}");
     assert!(!has(&first, "above"), "{text}");
-    assert!(has(&first, " long_one "), "{text}");
-    assert!(!has(&first, "a15 = x + 15"), "{text}");
+    assert!(has(&first, "┃ long_one"), "{text}");
+    assert!(!has(&first, "a25 = x + 25"), "{text}");
+    assert!(!has(&first, "short_one"), "{text}");
 
     let step = half(&app);
     keys(&mut app, "<c-d>");
     assert_eq!(app.detail_offset(), step, "half the rows");
     let after = pane(&app, w, h);
     let text = after.join("\n");
-    // Only the code scrolls: the head stays and the box's first row says
-    // what is above.
+    // The whole text scrolls, the unit's head line with it; the first row
+    // says what is above.
     assert!(
-        has(&after, &format!("│ … {step} lines above · ^u scroll up")),
+        has(&after, &format!(" … {step} lines above · ^u scroll up")),
         "{text}"
     );
-    assert!(has(&after, " long_one "), "{text}");
+    assert!(!has(&after, "┃ long_one"), "{text}");
     assert!(after[after.len() - 1].contains(MORE), "{text}");
-    assert!(has(&after, "a15 = x + 15"), "{text}");
+    assert!(has(&after, "a25 = x + 25"), "{text}");
 
-    // At the end the last row of the change shows and nothing is left below.
+    // At the end the file's last unit shows whole and nothing is left below.
     for _ in 0..40 {
         keys(&mut app, "<c-d>");
     }
@@ -177,10 +201,10 @@ fn the_preview_scrolls_down_to_the_cut_rows_and_back_up() {
     assert!(has(&end, "return a29"), "{text}");
     assert!(!has(&end, "more lines"), "{text}");
     assert!(has(&end, ABOVE), "{text}");
-    // Only whole rows: the box's bottom row is code, not blank or cut, and
-    // the box closes under it.
-    assert!(end[end.len() - 2].contains("return a29"), "{text}");
-    assert!(end[end.len() - 1].contains("╰──"), "{text}");
+    let head = end.iter().position(|l| l.contains("short_one")).unwrap();
+    assert!(end[head].trim_end().ends_with("┃ short_one"), "{text}");
+    // Only whole rows: the pane's last row is the change's last line.
+    assert!(end[end.len() - 1].contains("+     return y + 2"), "{text}");
     let max = app.detail_max_scroll.get();
     assert!(max > 0);
     keys(&mut app, "<c-d>");
@@ -200,69 +224,66 @@ fn page_down_and_page_up_scroll_a_page() {
     let (w, h) = (100, 30);
     let before = pane(&app, w, h);
     press(&mut app, KeyCode::PageDown);
-    // The box's rows, less the two hint rows.
+    // The pane's rows, less the two hint rows.
     assert_eq!(app.detail_offset(), app.detail_rows.get() - 2);
     let after = pane(&app, w, h);
-    // The last code row shown before is near the top of the box now.
+    // The last code row shown before is near the top of the pane now.
     let last = before[before.len() - 2].clone();
     let at = after
         .iter()
         .position(|l| *l == last)
         .unwrap_or_else(|| panic!("{}", after.join("\n")));
-    let top = after
-        .iter()
-        .position(|l| l.contains("╭ code change"))
-        .unwrap();
-    assert!(at <= top + 3, "{}", after.join("\n"));
+    assert!(at <= 3, "{}", after.join("\n"));
     press(&mut app, KeyCode::PageUp);
     assert_eq!(app.detail_offset(), 0);
-    // The list's selection never moved.
+    // The cursor never moved.
+    assert_eq!(app.cursor_row(), Some(0));
     assert_eq!(app.selected().unwrap().symbol, "long_one");
 }
 
 #[test]
-fn the_scroll_starts_over_when_the_selection_moves() {
-    let (mut app, _repo) = app();
+fn the_scroll_starts_over_when_the_cursor_moves_to_another_file() {
+    let (mut app, _repo) = two_files();
     let (w, h) = (100, 30);
     pane(&app, w, h);
     keys(&mut app, "<c-d>");
     keys(&mut app, "<c-d>");
     assert!(has(&pane(&app, w, h), ABOVE));
     key(&mut app, 'j');
-    assert_eq!(app.selected().unwrap().symbol, "short_one");
+    assert_eq!(app.selected().unwrap().symbol, "other");
     let other = pane(&app, w, h);
-    assert!(has(&other, " short_one "), "{}", other.join("\n"));
+    assert!(has(&other, " other"), "{}", other.join("\n"));
     assert!(!has(&other, "above"), "{}", other.join("\n"));
-    // Back on the first unit it starts at the top again.
+    // Back on the first file it starts at the top again.
     key(&mut app, 'k');
     let back = pane(&app, w, h);
-    assert!(has(&back, " long_one ") && !has(&back, "above"));
+    assert!(has(&back, "┃ long_one") && !has(&back, "above"));
     assert_eq!(app.detail_offset(), 0);
 }
 
 #[test]
-fn the_wheel_scrolls_the_pane_under_it_and_moves_the_selection_over_the_list() {
+fn the_wheel_scrolls_the_pane_under_it_and_moves_the_cursor_over_the_tree() {
     for (w, h) in [(100u16, 30u16), (120, 40)] {
-        let (mut app, _repo) = app();
+        let (mut app, _repo) = two_files();
         pane(&app, w, h);
         let (list, p) = layout(&app, w, h);
         wheel(&mut app, true, p.x + p.width / 2, p.y + p.height / 2);
         let rows = pane(&app, w, h);
         assert!(has(&rows, ABOVE), "{w}x{h}\n{}", rows.join("\n"));
-        assert_eq!(app.selected().unwrap().symbol, "long_one", "{w}x{h}");
+        assert_eq!(app.cursor_row(), Some(0), "{w}x{h}");
         wheel(&mut app, false, p.x + 2, p.y + 2);
         assert_eq!(app.detail_offset(), 0, "{w}x{h}");
-        // Over a row of the list the wheel moves the selection.
+        // Over a row of the tree the wheel moves the cursor.
         let row = app
             .targets
             .borrow()
             .iter()
-            .find(|(_, t)| *t == Target::Unit(0))
+            .find(|(_, t)| *t == Target::Row(0))
             .map(|(r, _)| *r)
             .unwrap();
         assert!(list.y <= row.y && row.y < list.y + list.height);
         wheel(&mut app, true, row.x + 3, row.y);
-        assert_eq!(app.selected().unwrap().symbol, "short_one", "{w}x{h}");
+        assert_eq!(app.selected().unwrap().symbol, "other", "{w}x{h}");
         wheel(&mut app, false, row.x + 3, row.y);
         assert_eq!(app.selected().unwrap().symbol, "long_one", "{w}x{h}");
     }
@@ -295,11 +316,7 @@ fn the_scroll_keys_can_be_rebound() {
     let mut app = app_with(review, keymap);
     let (w, h) = (100, 30);
     let first = pane(&app, w, h);
-    assert!(
-        has(&first, "more lines · w scroll · gf editor"),
-        "{}",
-        first.join("\n")
-    );
+    assert!(has(&first, "more lines · w scroll"), "{}", first.join("\n"));
     // ^d is nothing now; w scrolls and b goes back.
     keys(&mut app, "<c-d>");
     assert_eq!(app.detail_offset(), 0);
@@ -328,28 +345,25 @@ fn one_unit() -> (App, FixtureRepo) {
 }
 
 #[test]
-fn beside_a_one_unit_list_the_code_change_gets_the_width() {
+fn beside_a_one_file_tree_the_code_gets_the_width() {
     let (app, _repo) = one_unit();
     let (w, h) = (120, 40);
     let lines = screen(&app, w, h);
     let (list, p) = layout(&app, w, h);
-    // The list is as narrow as its box's title allows, the pane takes the rest.
-    assert_eq!(list.width, 28, "{}", lines.join("\n"));
-    assert_eq!((p.x, p.width), (28, 92));
-    // Only the unit's row is a target: the file's name is a label.
-    let units: Vec<(Rect, Target)> = app
+    // The tree is as narrow as it gets, the pane takes the rest.
+    assert_eq!(list.width, 24, "{}", lines.join("\n"));
+    assert_eq!((p.x, p.width), (24, 96));
+    // The file's row is the only target of the tree, right under the header.
+    let rows: Vec<(Rect, Target)> = app
         .targets
         .borrow()
         .iter()
-        .filter(|(_, t)| matches!(t, Target::Unit(_)))
+        .filter(|(_, t)| matches!(t, Target::Row(_)))
         .cloned()
         .collect();
-    assert_eq!(units, [(Rect::new(0, 3, 28, 1), Target::Unit(0))]);
-    // The unit's row is its name, under its file's name.
-    let file: String = lines[2].chars().take(28).collect();
-    assert!(file.starts_with("│ calc.py"), "{file}");
-    let row: String = lines[3].chars().take(28).collect();
-    assert!(row.contains("◆ only") && !row.contains("calc.py"), "{row}");
+    assert_eq!(rows, [(Rect::new(0, 1, 24, 1), Target::Row(0))]);
+    let row: String = lines[1].chars().take(24).collect();
+    assert_eq!(row.trim_end(), "▌┃ calc.py");
     // The long line fits on one row instead of wrapping.
     let pane_rows = pane(&app, w, h);
     assert!(
@@ -362,56 +376,45 @@ fn beside_a_one_unit_list_the_code_change_gets_the_width() {
 }
 
 #[test]
-fn a_wide_list_is_capped_at_45_percent() {
+fn a_wide_tree_is_capped_at_45_percent() {
     let (old, new) = sources();
-    let long = "a_function_name_long_enough_to_want_most_of_a_wide_terminal_for_itself";
-    let (review, _repo) = review_of(
-        &old.replace("long_one", long),
-        &new.replace("long_one", long),
-    );
+    let long = "a_file_name_long_enough_to_want_most_of_a_wide_terminal_for_itself.py";
+    let (review, _repo) = review_at(long, &old, &new);
     let app = app_with(review, Keymap::default());
     let (list, p) = layout(&app, 120, 40);
     assert_eq!((list.width, p.x, p.width), (54, 54, 66));
-    // Up to the cap, the list is just as wide as its rows need.
+    // Cut there, with what says so.
+    let lines = screen(&app, 120, 40);
+    let row: String = lines[1].chars().take(54).collect();
+    assert!(
+        row.starts_with("▌┃ a_file_name_long") && row.ends_with('…'),
+        "{row}"
+    );
+    // Up to the cap, the tree is just as wide as its rows need.
     let (list, _) = layout(&app, 240, 40);
     let lines = screen(&app, 240, 40);
-    assert!(list.width < 110, "{}", list.width);
+    assert_eq!(list.width as usize, 3 + long.len() + 1);
     assert!(
-        lines[3].contains(long)
-            && !lines[3]
-                .chars()
-                .take(list.width as usize)
-                .collect::<String>()
-                .contains("calc.py"),
+        lines[1].starts_with(&format!("▌┃ {long} │")),
         "{}",
-        lines[3]
+        lines[1]
     );
 }
 
 #[test]
-fn below_a_short_list_the_pane_takes_the_free_rows() {
+fn below_a_short_tree_the_pane_takes_the_free_rows() {
     let (app, _repo) = app();
     let (w, h) = (100, 30);
     let lines = screen(&app, w, h);
     let (list, p) = layout(&app, w, h);
-    // The box: its title, the file's name and its two units, its bottom
-    // edge; then the pane down to the footer.
-    assert_eq!((list.y, list.height), (1, 5), "{}", lines.join("\n"));
-    assert_eq!((p.y, p.height), (6, 23));
-    assert!(
-        lines[1].starts_with("╭─ Worth a look · 1 file"),
-        "{}",
-        lines.join("\n")
-    );
-    assert!(lines[2].starts_with("│ calc.py"), "{}", lines.join("\n"));
-    assert!(lines[4].contains("◆ short_one"), "{}", lines.join("\n"));
-    assert_eq!(lines[6], "─".repeat(w as usize));
-    // A one-unit list: its box takes four rows, the rest is the change.
-    let (app, _repo) = one_unit();
-    let (list, p) = layout(&app, w, h);
-    assert_eq!((list.height, p.y, p.height), (4, 5, 24));
-    // Small terminals keep their rules: 80x24 still shows the list and a pane.
-    let (app, _repo) = self::app();
+    // The tree keeps three rows for its one file; then the pane down to
+    // the footer.
+    assert_eq!((list.y, list.height), (1, 3), "{}", lines.join("\n"));
+    assert_eq!((p.y, p.height), (4, 25));
+    assert_eq!(lines[1].trim_end(), "▌┃ calc.py", "{}", lines.join("\n"));
+    assert_eq!(lines[4], "─".repeat(w as usize));
+    assert!(lines[5].starts_with("▌┃ long_one"), "{}", lines.join("\n"));
+    // Small terminals keep their rules: 80x24 still shows the tree and a pane.
     let (list, p) = layout(&app, 80, 24);
     assert!(list.height >= 3 && p.height >= 5, "{list:?} {p:?}");
 }
@@ -537,12 +540,15 @@ fn the_text_and_the_tile_beside_it_scroll_apart() {
     screen(&app, w, h);
     keys(&mut app, "<c-u>");
     assert_eq!(app.detail_offset(), 0);
-    // Another unit starts at the top.
+    // Another unit of the file: the text scrolls to where it starts.
     keys(&mut app, "<c-d>");
     keys(&mut app, "n");
     assert_eq!(app.unit.id, "calc.py::short_one");
     screen(&app, w, h);
-    assert_eq!(app.detail_offset(), 0);
+    let starts = app.unit.starts.borrow().clone();
+    let start = starts.iter().find(|(id, _)| *id == app.unit.id).unwrap().1;
+    assert!(start > 0, "{starts:?}");
+    assert_eq!(app.detail_offset(), start.min(app.unit.text_max.get()));
 }
 
 #[test]

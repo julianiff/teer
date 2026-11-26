@@ -3,6 +3,7 @@
 
 pub mod extract;
 pub mod lang;
+pub mod signature;
 pub mod whole;
 
 use std::collections::{HashMap, HashSet};
@@ -152,6 +153,10 @@ fn make_unit(
         dive_pending: Default::default(),
         checks: Default::default(),
         security: Vec::new(),
+        signature: new.and_then(|n| n.signature.clone()).map(|mut s| {
+            s.before = old.and_then(|o| o.signature.as_ref()).map(|o| o.params);
+            s
+        }),
     }
 }
 
@@ -319,6 +324,32 @@ mod tests {
             .map(|n| (n.symbol.as_str(), n.old, n.new))
             .collect();
         assert_eq!(got, vec![("A::gone", Some(Range::new(6, 8)), None)]);
+    }
+
+    #[test]
+    fn a_unit_knows_its_signature_and_how_long_it_was() {
+        let old = "<?php\nfunction make(string $a, string $b, string $c, string $d, string $e, string $f): void\n{\n}\n";
+        let new = "<?php\nfunction make(string $a, string $b, string $c, string $d, string $e, string $f, ?string $g = null, ?string $h = null): void\n{\n}\n\nfunction fresh(int $a): void\n{\n}\n";
+        let o = parse_source(Lang::Php, old);
+        let n = parse_source(Lang::Php, new);
+        let units = diff_symbols(&PathBuf::from("f.php"), o.as_ref(), n.as_ref());
+        let sig = |symbol: &str| {
+            let u = units.iter().find(|u| u.symbol == symbol).expect(symbol);
+            u.signature.clone().expect("a signature")
+        };
+        let make = sig("make");
+        assert_eq!((make.params, make.before, make.added()), (8, Some(6), 2));
+        assert!(make.grew_long());
+        assert_eq!(
+            make.words(),
+            "8 parameters, 2 new, 2 optional, 8 of type string"
+        );
+        let fresh = sig("fresh");
+        assert_eq!((fresh.params, fresh.before), (1, None));
+        assert!(!fresh.grew_long());
+        // A removed function has none: there is nothing to call.
+        let gone = diff_symbols(&PathBuf::from("f.php"), o.as_ref(), None);
+        assert!(gone.iter().all(|u| u.signature.is_none()));
     }
 
     #[test]

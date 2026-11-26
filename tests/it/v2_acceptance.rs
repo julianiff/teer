@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use common::run::{
     ANSWER, ConfigFile, DRAFT_BODY, DRAFT_SUBJECT, Fakes, GithubPr, RECOMMEND, Session, launch,
-    model, repo, save_v1_review, v1_fixture, v1_repo,
+    model, repo, v1_repo,
 };
 use teer::config::Config;
 use teer::keymap::{Keymap, parse_keys};
@@ -37,11 +37,6 @@ fn marked_changed(u: &Unit) -> bool {
 /// What the sheet says first while units are pending (Phase 6).
 fn units_pending(n: usize) -> String {
     format!("{n} units pending")
-}
-
-/// The warning for a v1 `[keys]` entry whose action is gone (Phase 8).
-fn removed_warning(name: &str) -> String {
-    format!("`[keys].{name}` is no longer used")
 }
 
 /// The unit view's sections that need an agent, and the ones that don't.
@@ -71,7 +66,7 @@ fn config() -> ConfigFile {
     ConfigFile::new("provider = \"claude\"\nsecond_opinion = false\ndive_web = false\n")
 }
 
-/// `teer <args>` in `dir`, the model describing the units in `high` as ▲,
+/// `teer <args>` in `dir`, the model describing the units in `high` as ┃,
 /// once everything it started has come back.
 async fn teer(
     dir: &Path,
@@ -184,11 +179,12 @@ async fn agent_changes_one_fix() {
     fakes.agent(&format!("cat > calc.py <<'EOF'\n{CALC_FIXED}EOF"));
     let cfg = config();
     let mut s = teer(&r.path(), &[], &cfg, &fakes, &["total"]).await;
-    // The ▲ comes first.
+    // The ┃ comes first.
     assert_eq!(s.selected().as_deref(), Some("total"));
     s.keys("icharges the fee twice<cr>");
-    s.keys("f");
-    s.keys("2a");
+    s.on_unit("total", "f");
+    // The queue's `a` accepts what is left pending in the file.
+    s.keys("a");
     assert_eq!(s.counts(), (2, 1, 0));
     finish(&mut s).await;
     s.keys("<cr>");
@@ -308,8 +304,11 @@ async fn pr_request_changes() {
 
     let mut s = teer(&pr.repo.path(), &[&picked.url], &config(), &fakes, &[]).await;
     s.keys("iwhy 12?<cr>");
-    s.keys("f");
+    let first = s.selected();
+    let other = s.listed().into_iter().find(|u| Some(u) != first.as_ref());
+    s.go_to(&other.unwrap());
     s.keys("ithe rate is wrong<cr>");
+    // The queue's `f` flags the file: both units.
     s.keys("f");
     assert_eq!(s.counts(), (0, 2, 0));
     finish(&mut s).await;
@@ -342,7 +341,7 @@ async fn look_closer() {
     let mut s = teer(&r.path(), &[], &config(), &fakes, &["total"]).await;
     assert_eq!(s.selected().as_deref(), Some("total"));
     let row = s.app.sel;
-    // `l` on the ▲, then `<space>a`: the advice.
+    // `l` on the ┃, then `<space>a`: the advice.
     s.keys("lK<cr>");
     assert_eq!(s.app.screen, Screen::Unit);
     assert!(
@@ -394,28 +393,22 @@ async fn bulk_and_undo() {
     let fakes = Fakes::new();
     let mut s = teer(&r.path(), &["--no-agent"], &config(), &fakes, &[]).await;
     assert_eq!(s.counts(), (0, 0, 5));
+    // The five units are in one file: one key flags them, as one step.
     s.keys("gg");
     let listed = s.listed();
-    let three = &listed[..3];
-    s.keys("Vjjf");
-    for u in three {
+    s.keys("f");
+    for u in &listed {
         assert_eq!(s.decision(u), F, "{u}");
     }
-    assert_eq!(s.counts(), (0, 3, 2));
+    assert_eq!(s.counts(), (0, 5, 0));
     s.keys("u");
-    assert_eq!(s.counts(), (0, 0, 5), "all three undone");
+    assert_eq!(s.counts(), (0, 0, 5), "all five undone");
     s.keys("<c-r>");
-    for u in three {
-        assert_eq!(s.decision(u), F, "{u}");
-    }
-    // `.` on the next unit (as in Vim, it may take as many units as the
-    // selection had: only the next one is checked).
-    s.go_to(&listed[3]);
+    assert_eq!(s.counts(), (0, 5, 0));
+    // `.` repeats the decision on the file under the cursor.
+    s.keys("u");
     s.keys(".");
-    assert_eq!(s.decision(&listed[3]), F);
-    for u in three {
-        assert_eq!(s.decision(u), F, "{u}");
-    }
+    assert_eq!(s.counts(), (0, 5, 0));
 }
 
 // ---- A8 --------------------------------------------------------------------------------
@@ -426,7 +419,8 @@ async fn pending_warning() {
     let fakes = Fakes::new();
     let mut s = teer(&r.path(), &["--no-agent"], &config(), &fakes, &[]).await;
     s.keys("gg");
-    s.keys("a");
+    let first = s.selected().unwrap();
+    s.on_unit(&first, "a");
     finish(&mut s).await;
     let screen = s.render(120, 40);
     assert!(screen.contains(&units_pending(2)), "{screen}");
@@ -444,11 +438,10 @@ async fn resume() {
     let fakes = Fakes::new();
     let mut s = teer(&r.path(), &["--no-agent"], &config(), &fakes, &[]).await;
     let listed = s.listed();
-    s.go_to(&listed[0]);
-    s.keys("a");
+    s.on_unit(&listed[0], "a");
     s.go_to(&listed[1]);
     s.keys("ilook again<cr>");
-    s.keys("f");
+    s.on_unit(&listed[1], "f");
     s.go_to(&listed[3]);
     let decisions: Vec<Decision> = listed.iter().map(|u| s.decision(u)).collect();
     s.keys("q");
@@ -501,45 +494,6 @@ fn keymap_rules() {
         })
         .collect();
     assert!(found.is_empty(), "{found:#?}");
-}
-
-// ---- A11 -------------------------------------------------------------------------------
-
-#[tokio::test]
-async fn v1_user() {
-    let r = v1_repo();
-    save_v1_review(&r);
-    let cfg = ConfigFile::new(&std::fs::read_to_string(v1_fixture("config.toml")).unwrap());
-    // Warnings for the removed actions only.
-    let (_, warnings) = cfg.load().keymap().expect("the v1 keys load");
-    let mut want = vec![removed_warning("prev_card"), removed_warning("swipe")];
-    want.sort();
-    let mut got: Vec<String> = warnings
-        .iter()
-        .map(|w| {
-            want.iter()
-                .find(|x| w.contains(x.as_str()))
-                .cloned()
-                .unwrap_or_else(|| w.clone())
-        })
-        .collect();
-    got.sort();
-    assert_eq!(got, want, "{warnings:?}");
-
-    // The saved review goes on in the queue, with the v1 keys.
-    let fakes = Fakes::new();
-    let mut s = teer(&r.path(), &["--no-agent"], &cfg, &fakes, &[]).await;
-    assert_eq!(s.app.screen, Screen::Queue);
-    assert_eq!(
-        ["total", "fee", "tax", "discount", "rounding"].map(|u| s.decision(u)),
-        [F, F, F, A, P]
-    );
-    assert_eq!(s.note("total"), "charges the fee twice");
-    s.go_to("rounding");
-    s.keys("e");
-    assert_eq!(s.decision("rounding"), A, "v1's `accept = \"e\"`");
-    finish(&mut s).await;
-    assert!(s.render(140, 40).contains("charges the fee twice"));
 }
 
 // ---- A12 -------------------------------------------------------------------------------

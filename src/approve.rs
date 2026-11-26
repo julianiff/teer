@@ -1152,6 +1152,7 @@ mod tests {
             dive_pending: Default::default(),
             checks: Default::default(),
             security: Vec::new(),
+            signature: None,
         }
     }
 

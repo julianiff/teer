@@ -1,6 +1,6 @@
-//! The code change of a unit that changes behavior, as a compact diff in
-//! a box of its own: in the queue's preview, the unit view and its
-//! panels. The rows come from [`crate::review::diff`], so drawing never
+//! The code change of a unit, as a compact diff: in the queue's pane
+//! under the unit's name, and in a box of its own in the unit view, its
+//! panels and the flagged list. The rows come from [`crate::review::diff`], so drawing never
 //! runs git. Line numbers are those of the new file, where `gf` opens the
 //! unit; removed lines show their number in the old file, styled apart.
 //! Each statement can be written into the code under the rows it cites,
@@ -8,14 +8,10 @@
 //! and the rest folds into a quiet `...` under the numbers. Code keeps its
 //! syntax colours (see [`crate::syntax`]); removed lines are tinted.
 
-use ratatui::Frame;
-use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use super::app::App;
-use super::preview;
 use crate::fix::ProposedHunk;
 use crate::review::comments::{Comment, comments};
 use crate::review::diff::{DIFF_LEVEL, Kind, Row, anchor, expand_tabs, rows_around};
@@ -177,23 +173,11 @@ pub enum Notes {
     Full,
 }
 
-/// The code change of `u` as blocks, each row as the lines it wraps into,
-/// so whoever cuts it can keep rows whole (see
-/// [`super::preview::scrolled`]), each line at most `w` cells; how many
-/// lines were added and removed; and the columns the line numbers and signs
-/// take. Nothing when the unit doesn't show its code change.
-pub fn code_change(
-    app: &App,
-    u: &Unit,
-    w: usize,
-    notes: Notes,
-) -> (Vec<Vec<Line<'static>>>, usize, usize, u16) {
-    let c = code_change_of(app, u, w, notes);
-    (c.blocks, c.added, c.removed, c.gutter)
-}
-
-/// The code change of a unit as [`code_change`] draws it, and where its
-/// hunks start.
+/// The code change of a unit: its rows as blocks, each row as the lines it
+/// wraps into, so whoever cuts it can keep rows whole (see
+/// [`super::preview::scrolled`]), each line at most the width asked for;
+/// and where its hunks start. Empty when the unit doesn't show its code
+/// change.
 #[derive(Debug, Default)]
 pub struct CodeChange {
     pub blocks: Vec<Vec<Line<'static>>>,
@@ -206,7 +190,8 @@ pub struct CodeChange {
     pub hunks: Vec<usize>,
 }
 
-/// [`code_change`] with the hunks.
+/// The code change of `u`, each line at most `w` cells, with what `notes`
+/// says of the agent's statements.
 pub fn code_change_of(app: &App, u: &Unit, w: usize, notes: Notes) -> CodeChange {
     if app.assessment(&u.id).is_none_or(|a| a.level < DIFF_LEVEL) {
         return CodeChange::default();
@@ -412,16 +397,6 @@ fn note_lines(app: &App, c: &Comment, at: usize, w: usize) -> Vec<Line<'static>>
     lines
 }
 
-/// Rows the code change of `u` takes in a box `width` wide, borders
-/// included; 0 when it shows none.
-pub fn box_rows(app: &App, u: &Unit, width: u16, notes: Notes) -> usize {
-    let w = width.saturating_sub(4) as usize;
-    match code_change(app, u, w, notes).0 {
-        b if b.is_empty() => 0,
-        b => b.iter().map(Vec::len).sum::<usize>() + 2,
-    }
-}
-
 /// The code box's title, on its top border.
 pub const TITLE: &str = " code change ";
 
@@ -442,61 +417,6 @@ pub fn counts(app: &App, added: usize, removed: usize) -> Vec<Span<'static>> {
     counts
 }
 
-/// The code change of `u` in a box of its own filling `area`: a rounded
-/// border titled `code change`, with how many lines were added and removed
-/// on the right, and the rows inside, scrolling with the detail keys.
-/// False, and nothing drawn, when there is no code change or no room.
-pub fn draw_box(f: &mut Frame, app: &App, area: Rect, u: &Unit, notes: Notes) -> bool {
-    if area.width < 12 || area.height < 3 {
-        return false;
-    }
-    let w = (area.width - 4) as usize;
-    let (blocks, added, removed, gutter) = code_change(app, u, w, notes);
-    if blocks.is_empty() {
-        return false;
-    }
-    // No taller than what it holds.
-    let rows = blocks.iter().map(Vec::len).sum::<usize>() + 2;
-    let area = Rect {
-        height: area.height.min(rows.min(u16::MAX as usize) as u16),
-        ..area
-    };
-    // While code is left below, the box has no bottom edge: it reads as
-    // going on past the pane, and that row says how much is left. Scrolled
-    // to the end, it closes.
-    let h = area.height as usize;
-    let s = preview::scroll_open(app, blocks, w, h - 1, true, app.detail_offset());
-    let open = s.below > 0;
-    preview::keep_scroll(app, &s, h - 2 + usize::from(open));
-    let mut lines = s.lines;
-    let borders = if open {
-        let hint = lines.pop().unwrap_or_default();
-        lines.resize(h - 2, Line::default());
-        lines.push(hint);
-        Borders::TOP | Borders::LEFT | Borders::RIGHT
-    } else {
-        Borders::ALL
-    };
-    let t = &app.theme;
-    let block = Block::new()
-        .borders(borders)
-        .border_type(BorderType::Rounded)
-        .border_style(t.text())
-        .title(Span::styled(TITLE, t.bold()))
-        .title(Line::from(counts(app, added, removed)).right_aligned());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let inner = Rect::new(
-        inner.x + 1,
-        inner.y,
-        inner.width.saturating_sub(2),
-        inner.height,
-    );
-    f.render_widget(Paragraph::new(lines), inner);
-    super::ui::text_area(app, inner, gutter);
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,6 +426,18 @@ mod tests {
         Change, Decision, Nested, Prep, Range, Review, Side, UnitKind, UnitStatus,
     };
     use std::path::PathBuf;
+
+    /// [`code_change_of`]'s blocks, the lines added and removed, and the
+    /// columns of the numbers and signs.
+    fn code_change(
+        app: &App,
+        u: &Unit,
+        w: usize,
+        notes: Notes,
+    ) -> (Vec<Vec<Line<'static>>>, usize, usize, u16) {
+        let c = code_change_of(app, u, w, notes);
+        (c.blocks, c.added, c.removed, c.gutter)
+    }
 
     /// [`wrap_ranges`] as strings.
     fn wrap_code(text: &str, w: usize) -> Vec<String> {
@@ -578,6 +510,7 @@ mod tests {
             dive_pending: Default::default(),
             checks: Default::default(),
             security: Vec::new(),
+            signature: None,
         }
     }
 

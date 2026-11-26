@@ -6,14 +6,15 @@
 //! mouse's targets, colours) stays with it.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
 
+use super::tree::{RowKind, path_order};
 use crate::agent::SessionInfo;
 use crate::approve::{Inline, Verdict};
 use crate::commit;
-use crate::config::{Config, Order, Provider};
+use crate::config::{Config, Provider};
 use crate::keymap::{Action, Edit, Key, Keymap, Outcome};
 use crate::review::ask::Progress;
 use crate::review::attention::{Assessment, Level, accepted_for_you, assess_all, settle};
@@ -24,7 +25,6 @@ use crate::review::model::{
     UnitKind,
 };
 use crate::review::prepare::PrepareEvent;
-use crate::review::story;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Screen {
@@ -35,18 +35,6 @@ pub enum Screen {
     /// The flagged units one after another (`<space>f`, see
     /// [`super::flagged_list`]).
     Flagged,
-}
-
-/// What the queue's level boxes hold (`toggle.by_file` switches).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
-pub enum Grouping {
-    /// Files, each in the box of the most attention one of its units
-    /// needs, its units under its name.
-    File,
-    /// Units, each in the box of its own level, its file named on its row:
-    /// the queue's order (level, then file, callers before callees).
-    #[default]
-    Unit,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -251,8 +239,7 @@ fn waiting_allows(a: Action) -> bool {
                 | Action::ReviewRerun
                 | Action::ReviewReset
                 | Action::ToggleAutoAccepted
-                | Action::ToggleByFile
-                | Action::ToggleSecurityOrder
+                | Action::ToggleSurface
         )
 }
 
@@ -492,7 +479,7 @@ pub struct Waiting {
 }
 
 /// One review as the reviewer goes through it: the review itself, the
-/// screen and overlay on show, the queue's order and cursor, each view's
+/// screen and overlay on show, the queue's tree and cursor, each view's
 /// state, and what is on its way back from the agent.
 pub struct App {
     pub review: Review,
@@ -511,27 +498,28 @@ pub struct App {
     pub agent_note: Option<String>,
     pub sessions: Vec<SessionInfo>,
 
-    /// Unit indexes in display order, file by file: files by the most
-    /// attention one of their units needs (then by path), inside a file most
-    /// attention first, then by story (see `review::story`) or, with
-    /// `order = "line"`, by line. Listed by unit, units by their own level
-    /// first, then the same. Units accepted for you are left out unless
-    /// `show_auto`.
+    /// The listed units, by index into `review.units`: file by file in the
+    /// tree's order (see [`super::tree`]), inside a file by line. Units
+    /// accepted for you are left out unless `show_auto`.
     pub order: Vec<usize>,
-    pub grouping: Grouping,
+    /// The directories of the tree that are folded, by path.
+    pub folded: BTreeSet<PathBuf>,
+    /// The directory the queue's cursor is on; `None` on a file.
+    pub dir: Option<PathBuf>,
     /// The units accepted for you are listed (`za`).
     pub show_auto: bool,
-    /// Visual mode (`V`): the unit the selection started on, by id; it
-    /// runs from where that unit is listed now to `sel` (see
-    /// [`App::visual_rows`]), however a re-listing moved it.
+    /// Visual mode (`V`): the row the selection started on, by its id
+    /// ([`super::tree::TreeRow::id`]); it runs from there to the cursor
+    /// (see [`App::visual_rows`]).
     pub visual: Option<String>,
     /// The last decision action and its count, for `.`.
     pub last_decision: Option<(Action, Option<u32>)>,
-    /// How far each unit is indented under the units it is read beneath in
-    /// its file and level, by index into `review.units` (0 in line order).
-    pub depth: Vec<usize>,
     /// Attention level per unit, by index into `review.units`.
     pub levels: Vec<Assessment>,
+    /// The selected unit, by position in `order`. In the queue the cursor
+    /// is on that unit's file (while `dir` is `None`): a move over the
+    /// tree's rows selects a file's lead unit ([`App::lead_pos`]), a jump
+    /// to a unit that unit. The unit view moves it unit by unit.
     pub sel: usize,
     pub large: bool,
 
@@ -567,8 +555,8 @@ pub struct App {
     /// Who the notes that went out last are with, until the re-run that
     /// brings their changes says so.
     pub fix_by: Option<ChangedBy>,
-    /// The units the last re-run found changed or new, by id: listed at the
-    /// top of their level until the next one.
+    /// The units the last re-run found changed or new, by id, until the
+    /// next one.
     pub changed: HashSet<String>,
     /// The last action a key, a click or a menu ran, and its count, until a
     /// front end takes it: one that scrolls natively scrolls for the
@@ -577,9 +565,9 @@ pub struct App {
     /// The action a click pressed ([`App::press`]), for the open panel to
     /// take instead of a key's.
     pressed: Option<Action>,
-    /// The security lens on the queue: on or off, and its order (`zs`, see
-    /// [`super::exposure`]).
-    pub security: super::exposure::SecurityLens,
+    /// The security lens on the queue: on or off, and its attack-surface
+    /// card (`zs`, see [`super::lens`]).
+    pub security: super::lens::SecurityLens,
     /// `s`: the session a result went to last, and the picker's pi row
     /// (see [`super::send`]).
     pub send: super::send::SendState,
@@ -604,11 +592,11 @@ impl App {
             agent_note: None,
             sessions: Vec::new(),
             order: Vec::new(),
-            grouping: Grouping::default(),
+            folded: BTreeSet::new(),
+            dir: None,
             show_auto: false,
             visual: None,
             last_decision: None,
-            depth: Vec::new(),
             levels: Vec::new(),
             sel: 0,
             // Set by `rebuild_order`, as the rest of the order.
@@ -632,7 +620,7 @@ impl App {
             changed: HashSet::new(),
             ran: None,
             pressed: None,
-            security: super::exposure::SecurityLens::load(),
+            security: super::lens::SecurityLens::load(),
             send: Default::default(),
             isel: 0,
             improve_failed: HashSet::new(),
@@ -646,7 +634,7 @@ impl App {
 
     /// Where the review starts: on the unit it was left on
     /// (`Review.cursor`) while it is listed, else on the first pending unit
-    /// that needs a close look, else the top.
+    /// that needs a close look, else on the first file's lead unit.
     fn resume_at(&self) -> usize {
         let left_on = self.review.cursor.as_deref();
         left_on
@@ -656,19 +644,25 @@ impl App {
                     self.pending_at(p) && self.levels[self.order[p]].level == Level::Attention
                 })
             })
+            .or_else(|| self.lead_pos(self.order.first().map(|_| self.file_at(0))?))
             .unwrap_or(0)
     }
 
     /// Assess every unit again, then [`App::reorder`]. The selection stays
-    /// on the same unit as levels change.
+    /// on the same unit as levels change; on its file's lead unit, it goes
+    /// with the lead.
     pub fn rebuild_order(&mut self) {
+        let on_lead = self.levels.len() == self.review.units.len() && self.on_lead();
         self.levels = assess_all(&self.review);
         self.large = self.review.units.len() > self.cfg.large_review;
         self.reorder();
+        if on_lead && let Some(pos) = self.order.get(self.sel).map(|_| self.file_at(self.sel)) {
+            self.sel = self.lead_pos(&pos.clone()).unwrap_or(self.sel);
+        }
     }
 
-    /// The level unit `i` (index into `review.units`) is listed under (see
-    /// [`Level::shown`]): units accepted for you in the box of their own.
+    /// The level unit `i` (index into `review.units`) is shown at (see
+    /// [`Level::shown`]): units accepted for you at a level of their own.
     pub fn shown_level(&self, i: usize) -> Level {
         self.levels[i]
             .level
@@ -676,143 +670,58 @@ impl App {
     }
 
     /// Settle what the levels decide (reasons, units accepted for you: see
-    /// [`settle`]) and list the units file by file: files by the most
-    /// attention one of their units needs, then by path; inside a file most
-    /// attention first, then by story (callers right before what they call)
-    /// or line. Listed by unit, each unit goes by its own level instead of
-    /// its file's: level, then path, then story. Units accepted for you are
-    /// listed last, and only with `show_auto`. Units the last re-run changed
-    /// ([`App::changed`]) lead their box (listed by file, their files do,
-    /// and they lead their file). The selection stays on the same unit.
+    /// [`settle`]) and list the units file by file in the tree's order,
+    /// inside a file by line. Units accepted for you are listed only with
+    /// `show_auto`. The cursor stays on its unit, or on its directory
+    /// while that is listed.
     fn reorder(&mut self) {
-        let keep = self.selected().map(|u| u.id.clone());
+        let keep = self.cursor_id();
+        let file = self
+            .order
+            .get(self.sel)
+            .map(|_| self.file_at(self.sel).clone());
         settle(&mut self.review, &self.levels, self.cfg.auto_accept);
         let units = &self.review.units;
-        let level = |i: usize| self.shown_level(i);
-        let listed: Vec<usize> = (0..units.len())
+        let mut order: Vec<usize> = (0..units.len())
             .filter(|&i| self.show_auto || !units[i].auto_accepted())
             .collect();
-        let mut most: HashMap<&PathBuf, Level> = HashMap::new();
-        for &i in &listed {
-            let m = most.entry(&units[i].file).or_insert(Level::Same);
-            *m = (*m).max(level(i));
-        }
-        let placed = if self.cfg.order == Order::Story {
-            story::place(units, &listed)
-        } else {
-            Default::default()
-        };
-        // The level of the box a unit is listed in.
-        let by_file = self.grouping == Grouping::File;
-        let boxed = |i: usize| {
-            if by_file {
-                most[&units[i].file]
-            } else {
-                level(i)
-            }
-        };
-        let fresh = |i: usize| self.changed.contains(&units[i].id);
-        let fresh_files: HashSet<&PathBuf> = listed
-            .iter()
-            .filter(|&&i| fresh(i))
-            .map(|&i| &units[i].file)
-            .collect();
-        // What goes to the top of a box: a changed unit, or its file.
-        let leads = |i: usize| {
-            if by_file {
-                fresh_files.contains(&units[i].file)
-            } else {
-                fresh(i)
-            }
-        };
-        let mut order = listed;
         order.sort_by(|&a, &b| {
-            let (fa, fb) = (&units[a].file, &units[b].file);
-            (boxed(b) as u8)
-                .cmp(&(boxed(a) as u8))
-                .then_with(|| leads(b).cmp(&leads(a)))
-                .then_with(|| fa.cmp(fb))
-                .then_with(|| (level(b) as u8).cmp(&(level(a) as u8)))
-                .then_with(|| fresh(b).cmp(&fresh(a)))
-                .then_with(|| match (placed.get(&a), placed.get(&b)) {
-                    (Some(x), Some(y)) => x.rank.cmp(&y.rank),
-                    _ => units[a].display_line().cmp(&units[b].display_line()),
-                })
+            path_order(&units[a].file, &units[b].file)
+                .then_with(|| units[a].display_line().cmp(&units[b].display_line()))
         });
-        self.depth = (0..units.len())
-            .map(|i| {
-                story::depth(&placed, i, |p| {
-                    units[p].file == units[i].file && level(p) == level(i)
-                })
-            })
-            .collect();
         self.order = order;
-        self.order_by_exposure();
-        if let Some(id) = keep
-            && let Some(pos) = self
-                .order
-                .iter()
-                .position(|&i| self.review.units[i].id == id)
-        {
-            self.sel = pos;
-        }
         self.sel = self.sel.min(self.order.len().saturating_sub(1));
-        // The selection runs from its unit: no longer listed, it ends.
+        if let Some(pos) = keep.and_then(|id| self.position_of(&id)) {
+            self.sel = pos;
+        } else if self.screen == Screen::Queue
+            && let Some(now) = self.order.get(self.sel).map(|_| self.file_at(self.sel))
+            && file.is_some_and(|f| &f != now)
+        {
+            // Its file is listed no more: the one now there, as a move over
+            // the rows comes to it.
+            self.sel = self.lead_pos(&now.clone()).unwrap_or(self.sel);
+        }
+        let rows = self.rows();
+        if let Some(dir) = &self.dir
+            && !rows
+                .iter()
+                .any(|r| r.kind == RowKind::Dir && &r.path == dir)
+        {
+            self.dir = None;
+        }
+        // A file that is under a folded directory: the cursor is on that.
+        if self.dir.is_none()
+            && let Some(row) = self.cursor_row().map(|i| &rows[i])
+            && row.kind == RowKind::Dir
+        {
+            self.dir = Some(row.path.clone());
+        }
+        // The selection runs from its row: no longer listed, it ends.
         if let Some(id) = &self.visual
-            && self.position_of(id).is_none()
+            && !rows.iter().any(|r| &r.id() == id)
         {
             self.visual = None;
         }
-    }
-
-    // ---- Files -------------------------------------------------------------
-
-    pub fn file_at(&self, pos: usize) -> &PathBuf {
-        &self.review.units[self.order[pos]].file
-    }
-
-    /// Does a new file start at `pos`? Listed by unit, a file starts again
-    /// in each level's box it has units in; by exposure, also below the
-    /// security box.
-    pub fn starts_file(&self, pos: usize) -> bool {
-        let level = |p: usize| self.shown_level(self.order[p]);
-        pos == 0
-            || pos == self.security.exposed
-            || self.file_at(pos - 1) != self.file_at(pos)
-            || (self.grouping == Grouping::Unit && level(pos - 1) != level(pos))
-    }
-
-    /// Position of the first unit of the file `pos` is in.
-    pub fn file_start(&self, pos: usize) -> usize {
-        (0..=pos).rev().find(|&p| self.starts_file(p)).unwrap_or(0)
-    }
-
-    /// The positions of the file `pos` is in.
-    pub fn file_range(&self, pos: usize) -> std::ops::Range<usize> {
-        let end = (pos + 1..self.order.len())
-            .find(|&p| self.starts_file(p))
-            .unwrap_or(self.order.len());
-        self.file_start(pos)..end
-    }
-
-    /// The most attention a unit of the file `pos` is in needs: the box the
-    /// file is listed in (listed by unit, the level of the box's units).
-    pub fn file_level(&self, pos: usize) -> Level {
-        self.file_range(pos)
-            .map(|p| self.shown_level(self.order[p]))
-            .max()
-            .unwrap_or(Level::Routine)
-    }
-
-    /// List by unit, or by file again; the cursor stays on its unit.
-    fn switch_grouping(&mut self) {
-        let (to, word) = match self.grouping {
-            Grouping::File => (Grouping::Unit, "unit"),
-            Grouping::Unit => (Grouping::File, "file"),
-        };
-        self.grouping = to;
-        self.rebuild_order();
-        self.status = format!("listed by {word}");
     }
 
     /// `za`: list the units accepted for you, or hide them again; the
@@ -830,17 +739,6 @@ impl App {
         } else {
             format!("Hiding {} accepted for you.", units(n))
         };
-    }
-
-    /// Move `step` units up or down the list.
-    fn move_row(&mut self, step: isize) -> Vec<Effect> {
-        let Some(last) = self.order.len().checked_sub(1) else {
-            return Vec::new();
-        };
-        let to = (self.sel as isize)
-            .saturating_add(step)
-            .clamp(0, last as isize);
-        self.move_sel(to as usize)
     }
 
     pub fn level_of(&self, unit_index: usize) -> &Assessment {
@@ -955,16 +853,27 @@ impl App {
 
     // ---- Queries ---------------------------------------------------------
 
-    /// The selected unit; `None` when nothing is listed. In improve mode
-    /// the cursor is on an insert: its unit, or with no insert yet the
-    /// unit the cursor was on.
+    /// The selected unit, in the file the queue's cursor is on: what `l`
+    /// opens and a note, a question or a tool is about. Come to over the
+    /// tree's rows, the file's lead unit (see [`App::lead_pos`]); after a
+    /// jump to a unit, that unit. `None` on a directory, or when nothing
+    /// is listed. In improve mode the cursor is on an insert: its unit.
     pub fn selected(&self) -> Option<&Unit> {
         if self.mode.improves()
             && let Some(u) = self.insert_unit()
         {
             return Some(u);
         }
+        if self.dir.is_some() {
+            return None;
+        }
         self.order.get(self.sel).map(|&i| &self.review.units[i])
+    }
+
+    /// The unit the cursor is at ([`App::sel`]), by id.
+    pub(crate) fn cursor_id(&self) -> Option<String> {
+        let i = *self.order.get(self.sel)?;
+        Some(self.review.units[i].id.clone())
     }
 
     pub fn selected_id(&self) -> Option<String> {
@@ -1010,13 +919,19 @@ impl App {
         accepted > 0 && flagged == 0 && pending == 0
     }
 
-    /// What the detail area shows: the screen and the unit.
+    /// What the detail area shows: the screen and the file or the unit.
     fn detail_key(&self) -> String {
         match self.screen {
-            Screen::Queue => {
-                format!("list {}", self.selected().map_or("", |u| u.id.as_str()))
-            }
-            Screen::Unit => format!("unit {}", self.unit.id),
+            Screen::Queue => match self.selected() {
+                Some(u) => format!("list {}", u.file.display()),
+                None => "list".into(),
+            },
+            // The unit view's text is its file's: it stays where it is
+            // scrolled to while the current unit changes inside the file.
+            Screen::Unit => match self.review.unit(&self.unit.id) {
+                Some(u) => format!("unit {}", u.file.display()),
+                None => format!("unit {}", self.unit.id),
+            },
             Screen::Flagged => "flagged".into(),
         }
     }
@@ -1069,9 +984,9 @@ impl App {
         self.save_cursor(effects)
     }
 
-    /// Keep the unit under the cursor in the review (`Review.cursor`) and
-    /// save it when it moved, so `q` and a crash both resume on it. A full
-    /// save writes it too.
+    /// Keep the queue's selected unit in the review (`Review.cursor`) and
+    /// save it when it changed, so `q` and a crash both resume on it. A
+    /// full save writes it too.
     pub fn save_cursor(&mut self, mut effects: Vec<Effect>) -> Vec<Effect> {
         let at = self.selected_id();
         if self.review.cursor != at {
@@ -1368,7 +1283,7 @@ impl App {
             Action::NoteEdit => {
                 match self.current_unit().map(|u| u.id.clone()) {
                     Some(id) => self.edit_note(id, None),
-                    None => self.status = "Select a unit to write a note on it.".into(),
+                    None => self.status = "Select a file to write a note on it.".into(),
                 }
                 return Vec::new();
             }
@@ -1646,7 +1561,7 @@ impl App {
 
     /// Go to unit `id`, closing any overlay: in the unit view or the
     /// flagged list, it opens in the unit view; in the queue, the cursor
-    /// goes to it. `None` when the queue doesn't list it.
+    /// goes to its file. `None` when the queue doesn't list it.
     pub(crate) fn go_to_unit(&mut self, id: &str) -> Option<Vec<Effect>> {
         if self.screen != Screen::Queue && self.review.unit(id).is_some() {
             self.overlay = Overlay::None;
@@ -1657,9 +1572,15 @@ impl App {
         Some(self.move_sel(pos))
     }
 
-    /// Select the unit at `to`.
+    /// Put the queue's cursor on the unit at `to`: on its file's row, its
+    /// folded directories opened, that unit selected.
     pub fn move_sel(&mut self, to: usize) -> Vec<Effect> {
-        self.sel = to.min(self.order.len().saturating_sub(1));
+        self.cursor_to(to);
+        self.landed()
+    }
+
+    /// The cursor is on another row: what follows it.
+    pub(crate) fn landed(&mut self) -> Vec<Effect> {
         // In improve mode a jump to a unit is to its first insert.
         if self.mode.improves() {
             self.insert_follow_unit();
@@ -1667,10 +1588,11 @@ impl App {
         self.ensure_prepared()
     }
 
-    /// The queue's actions: moves, `a`/`f` (then on to the next pending
-    /// unit), `A`/`F` on the file's pending units at once, `V`, `l` into
-    /// the unit view on any unit, `zf`, and `q` to quit (the review is
-    /// saved, cursor and all).
+    /// The queue's actions: moves over the tree's rows, `a`/`f` on the
+    /// file's pending units (then on to the next file with one), `V`, `l`
+    /// into the unit view on the file's lead unit or to fold a directory,
+    /// `h` to fold one or go to it, and `q` to quit (the review is saved,
+    /// cursor and all).
     pub(crate) fn queue_action(&mut self, a: Action, count: Option<u32>) -> Vec<Effect> {
         // Improve mode's list: the cursor is on an insert.
         if self.mode.improves()
@@ -1682,32 +1604,53 @@ impl App {
         match a {
             Action::MoveDown => return self.move_row(times as isize),
             Action::MoveUp => return self.move_row(-(times as isize)),
-            // `3gg`, `3G`: the third row, as Neovim's line numbers.
             Action::MoveFirst | Action::MoveLast if count.is_some() => {
-                return self.move_sel(times.saturating_sub(1));
+                return self.go_to_row(times);
             }
             Action::MoveFirst => return self.move_row(isize::MIN / 2),
             Action::MoveLast => return self.move_row(isize::MAX / 2),
-            Action::DecideAccept => return self.decide_n(Decision::Accepted, count),
-            Action::DecideFlag => return self.decide_n(Decision::Investigate, count),
-            Action::DecideAcceptFile => return self.decide_file_now(Decision::Accepted),
-            Action::DecideFlagFile => return self.decide_file_now(Decision::Investigate),
-            Action::VisualStart => self.visual = self.selected_id(),
+            Action::DecideAccept | Action::DecideAcceptFile => {
+                return self.decide_file(Decision::Accepted, count);
+            }
+            Action::DecideFlag | Action::DecideFlagFile => {
+                return self.decide_file(Decision::Investigate, count);
+            }
+            Action::VisualStart => {
+                let rows = self.rows();
+                self.visual = self.cursor_row().map(|i| rows[i].id());
+            }
             Action::ViewOpen => {
+                if self.toggle_dir_at_cursor() {
+                    return Vec::new();
+                }
                 if let Some(id) = self.selected_id() {
                     return self.open_unit(id);
                 }
             }
-            Action::MoveNextPending => return self.jump_pending(true, times),
-            Action::MovePrevPending => return self.jump_pending(false, times),
+            // Improve mode lists inserts: no tree to fold.
+            Action::ViewBack if !self.mode.improves() => return self.fold_or_parent(),
+            Action::MoveNextPending => return self.jump_pending_file(true, times),
+            Action::MovePrevPending => return self.jump_pending_file(false, times),
             Action::MoveNextFile => return self.jump_file(true, times),
             Action::MovePrevFile => return self.jump_file(false, times),
-            Action::ToggleByFile => self.switch_grouping(),
-            Action::ToggleSecurityOrder => self.toggle_security_order(),
+            Action::ToggleSurface => self.toggle_surface(),
             Action::ViewClose => return vec![Effect::Save, Effect::Quit],
             _ => {}
         }
         Vec::new()
+    }
+
+    /// A decision in the unit view or the flagged list, on the unit the
+    /// cursor is at: `a`/`f` on it (with a count, on the next pending ones
+    /// too), `A`/`F` on its file's pending units.
+    pub(crate) fn decide_at_cursor(&mut self, a: Action, count: Option<u32>) -> Vec<Effect> {
+        match a {
+            Action::DecideAccept => self.decide_n(Decision::Accepted, count),
+            Action::DecideFlag => self.decide_n(Decision::Investigate, count),
+            Action::DecideAcceptFile => self.decide_file(Decision::Accepted, None),
+            Action::DecideFlagFile => self.decide_file(Decision::Investigate, None),
+            _ => Vec::new(),
+        }
     }
 
     // ---- Commits ------------------------------------------------------------
@@ -1963,7 +1906,7 @@ impl App {
             .find(|&p| self.pending_at(p))
     }
 
-    fn pending_at(&self, pos: usize) -> bool {
+    pub(crate) fn pending_at(&self, pos: usize) -> bool {
         self.review.units[self.order[pos]].decision == Decision::Pending
     }
 
@@ -1975,7 +1918,7 @@ impl App {
             .next_pending_pos(from)
             .or_else(|| (0..from.min(self.order.len())).find(|&p| self.pending_at(p)));
         if let Some(p) = next {
-            self.sel = p;
+            self.row_to(p);
         }
         self.ensure_prepared()
     }
@@ -2005,28 +1948,73 @@ impl App {
         }
     }
 
-    /// Go to the first unit of the `times`-th file below, or (not
-    /// `forward`) above, or as far as there are. No wrapping: from the last
-    /// (first) file the cursor stays.
-    pub(crate) fn jump_file(&mut self, forward: bool, times: usize) -> Vec<Effect> {
-        if self.sel >= self.order.len() {
-            return Vec::new();
+    /// The positions the cursor's row stands for: its file's units; on a
+    /// directory, none, at the position of its first file.
+    fn row_range(&self) -> std::ops::Range<usize> {
+        match (&self.dir, self.order.is_empty()) {
+            (_, true) => 0..0,
+            (Some(_), _) => self.sel..self.sel,
+            (None, _) => self.file_range(self.sel),
         }
-        let mut at = None;
+    }
+
+    /// `n`, `N` in the queue: go to the `times`-th file with a pending
+    /// unit below (or, not `forward`, above) the cursor's row, or as far
+    /// as there are.
+    fn jump_pending_file(&mut self, forward: bool, times: usize) -> Vec<Effect> {
+        let mut at = self.row_range();
+        let mut found = None;
         for _ in 0..times.max(1) {
-            let range = self.file_range(at.unwrap_or(self.sel));
             let next = if forward {
-                Some(range.end).filter(|&p| p < self.order.len())
+                (at.end..self.order.len()).find(|&p| self.pending_at(p))
             } else {
-                range.start.checked_sub(1).map(|p| self.file_start(p))
+                self.prev_pending_pos(at.start)
             };
             match next {
-                Some(p) => at = Some(p),
+                Some(p) => {
+                    at = self.file_range(p);
+                    found = Some(p);
+                }
                 None => break,
             }
         }
-        match at {
-            Some(p) => self.move_sel(p),
+        match found {
+            Some(p) => {
+                self.row_to(p);
+                self.landed()
+            }
+            None => {
+                self.status = "No more pending files that way.".into();
+                Vec::new()
+            }
+        }
+    }
+
+    /// Go to the `times`-th file below the cursor's row, or (not
+    /// `forward`) above, or as far as there are. No wrapping: from the
+    /// last (first) file the cursor stays.
+    pub(crate) fn jump_file(&mut self, forward: bool, times: usize) -> Vec<Effect> {
+        let mut at = self.row_range();
+        let mut found = None;
+        for _ in 0..times.max(1) {
+            let next = if forward {
+                Some(at.end).filter(|&p| p < self.order.len())
+            } else {
+                at.start.checked_sub(1)
+            };
+            match next {
+                Some(p) => {
+                    at = self.file_range(p);
+                    found = Some(at.start);
+                }
+                None => break,
+            }
+        }
+        match found {
+            Some(p) => {
+                self.row_to(p);
+                self.landed()
+            }
             None => {
                 self.status = if forward { "last file" } else { "first file" }.into();
                 Vec::new()
@@ -2034,21 +2022,47 @@ impl App {
         }
     }
 
-    /// `A`, `F` in the queue: decide the pending units of the file under the
-    /// cursor at once, as one undo step, and move on to the next pending
-    /// unit. Decided units are left alone. Listed by level, the file is its
-    /// units in the cursor's box.
-    fn decide_file_now(&mut self, d: Decision) -> Vec<Effect> {
-        if self.sel >= self.order.len() {
+    /// `a`, `f` in the queue and `A`, `F` in the unit view: decide the
+    /// pending units of the cursor's file at once (with a count, of the
+    /// next files with a pending unit too), as one undo step, and move on
+    /// to the next pending unit. Decided units are left alone. On a
+    /// directory nothing is decided.
+    fn decide_file(&mut self, d: Decision, count: Option<u32>) -> Vec<Effect> {
+        if self.order.is_empty() {
             return Vec::new();
         }
-        let range = self.file_range(self.sel);
-        let ids: Vec<String> = (range.clone())
-            .map(|p| &self.review.units[self.order[p]])
-            .filter(|u| u.decision == Decision::Pending)
-            .map(|u| u.id.clone())
-            .collect();
+        if self.dir.is_some() && self.screen == Screen::Queue {
+            self.status = "Select a file to decide on it.".into();
+            return Vec::new();
+        }
+        let pending = |app: &App, range: std::ops::Range<usize>| -> Vec<String> {
+            range
+                .map(|p| &app.review.units[app.order[p]])
+                .filter(|u| u.decision == Decision::Pending)
+                .map(|u| u.id.clone())
+                .collect()
+        };
+        let mut range = self.file_range(self.sel);
+        let mut ids = pending(self, range.clone());
+        for _ in 1..count.unwrap_or(1) {
+            let Some(p) = self.next_pending_pos(range.end - 1) else {
+                break;
+            };
+            range = self.file_range(p);
+            ids.extend(pending(self, range.clone()));
+        }
         if ids.is_empty() {
+            // `f` again on a file with nothing left to flag takes its
+            // flags back.
+            let flagged: Vec<String> = self
+                .file_range(self.sel)
+                .map(|p| &self.review.units[self.order[p]])
+                .filter(|u| u.decision == Decision::Investigate)
+                .map(|u| u.id.clone())
+                .collect();
+            if d == Decision::Investigate && count.is_none() && !flagged.is_empty() {
+                return self.unflag(&flagged);
+            }
             self.status = "Nothing pending in this file.".into();
             return Vec::new();
         }
@@ -2060,21 +2074,28 @@ impl App {
         effects
     }
 
-    /// Apply `d` to the selected unit and move on to the next pending one,
-    /// as one undo step.
+    /// Apply `d` to the unit the cursor is at and move on to the next
+    /// pending one, as one undo step.
     pub fn decide(&mut self, d: Decision) -> Vec<Effect> {
         self.decide_n(d, None)
     }
 
-    /// Apply `d` to the selected unit and, with a count, the next
+    /// Apply `d` to the unit the cursor is at and, with a count, the next
     /// `count - 1` pending ones, as one undo step; then move on to the next
     /// pending unit (see [`App::advance`]). A flag is only a mark: `i`
-    /// writes a note.
+    /// writes a note, and `f` again (with no count) takes the flag back.
     fn decide_n(&mut self, d: Decision, count: Option<u32>) -> Vec<Effect> {
-        let Some(id) = self.selected_id() else {
+        let Some(id) = self.cursor_id() else {
             return Vec::new();
         };
-        let mut ids = vec![id.clone()];
+        let flagged = self
+            .review
+            .unit(&id)
+            .is_some_and(|u| u.decision == Decision::Investigate);
+        if d == Decision::Investigate && count.is_none() && flagged {
+            return self.unflag(&[id]);
+        }
+        let mut ids = vec![id];
         let mut at = self.sel;
         for _ in 1..count.unwrap_or(1) {
             let Some(p) = self.next_pending_pos(at) else {
@@ -2092,42 +2113,53 @@ impl App {
         effects
     }
 
-    /// `a` or `f` in visual mode: decide every unit of the selection as one
+    /// `f` again on flagged units: they are pending again, as one undo
+    /// step, and the cursor stays on them.
+    pub(crate) fn unflag(&mut self, ids: &[String]) -> Vec<Effect> {
+        let n = self.decide_ids(ids, Decision::Pending);
+        self.status = if n == 1 {
+            "Flag removed.".into()
+        } else {
+            format!("Flag removed from {}.", units(n))
+        };
+        if let Some(p) = ids.first().and_then(|id| self.position_of(id)) {
+            self.cursor_to(p);
+        }
+        vec![Effect::Save]
+    }
+
+    /// `a` or `f` in visual mode: decide the pending units of every file
+    /// of the selection (a folded directory stands for its files) as one
     /// undo step, leave visual mode and move on to the next pending unit
-    /// after it.
-    /// `.` repeats it on as many units.
+    /// after it. `.` repeats it on as many files.
     fn decide_visual(&mut self, a: Action) -> Vec<Effect> {
         let rows = self.visual_rows();
         self.visual = None;
         let Some(rows) = rows else {
             return Vec::new();
         };
-        let hi = *rows.end();
-        let ids: Vec<String> = rows
-            .map(|p| self.review.units[self.order[p]].id.clone())
+        let at = self.units_of_rows(rows);
+        let files = at.iter().filter(|&&p| self.starts_file(p)).count();
+        let ids: Vec<String> = at
+            .iter()
+            .filter(|&&p| self.pending_at(p))
+            .map(|&p| self.review.units[self.order[p]].id.clone())
             .collect();
+        let Some(&hi) = at.last().filter(|_| !ids.is_empty()) else {
+            self.status = "Nothing pending in the selection.".into();
+            return Vec::new();
+        };
         let d = if a == Action::DecideFlag {
             Decision::Investigate
         } else {
             Decision::Accepted
         };
-        self.last_decision = Some((a, Some(ids.len() as u32)));
+        self.last_decision = Some((a, Some(files as u32)));
         let n = self.decide_ids(&ids, d);
         self.status = decided_status(d, n);
-        // A unit that was accepted for you may have moved: go by its id.
-        let hi = ids.last().and_then(|id| self.position_of(id)).unwrap_or(hi);
-        self.sel = hi;
         let mut effects = vec![Effect::Save];
         effects.extend(self.advance(hi));
         effects
-    }
-
-    /// The rows of the visual selection: from where the unit it started on
-    /// is listed now to the cursor. `None` outside visual mode.
-    pub fn visual_rows(&self) -> Option<std::ops::RangeInclusive<usize>> {
-        let anchor = self.position_of(self.visual.as_deref()?)?;
-        let sel = self.sel.min(self.order.len().checked_sub(1)?);
-        Some(anchor.min(sel)..=anchor.max(sel))
     }
 
     /// Where unit `id` is listed, if it is.
@@ -2183,23 +2215,24 @@ impl App {
     }
 
     /// `u`: put back what the last step changed (the decisions and the
-    /// notes its note line wrote), and go to its first unit. On a unit
-    /// accepted for you (listed with `za`), take that back instead: it is
-    /// pending again, as a step of its own.
+    /// notes its note line wrote), and go to its first unit. On a file
+    /// whose units are all accepted for you (listed with `za`), take that
+    /// back instead: they are pending again, as a step of its own.
     pub fn undo(&mut self) -> Vec<Effect> {
         if self.screen == Screen::Queue
-            && let Some(id) = self
+            && let Some(file) = self
                 .selected()
                 .filter(|u| u.auto_accepted())
-                .map(|u| u.id.clone())
+                .map(|u| u.file.clone())
         {
-            self.decide_ids(std::slice::from_ref(&id), Decision::Pending);
-            let name = self
-                .review
-                .unit(&id)
-                .map(super::names::row_name)
-                .unwrap_or_default();
-            self.status = format!("{name} is pending again, no longer accepted for you.");
+            let ids: Vec<String> = self
+                .file_units(&file)
+                .map(|p| &self.review.units[self.order[p]])
+                .filter(|u| u.auto_accepted())
+                .map(|u| u.id.clone())
+                .collect();
+            let n = self.decide_ids(&ids, Decision::Pending);
+            self.status = format!("{} pending again, no longer accepted for you.", units(n));
             return vec![Effect::Save];
         }
         let Some(step) = self.review.history.undo() else {
@@ -2451,9 +2484,8 @@ impl App {
     }
 
     /// A re-run's review is in. Decisions carry over by unit and code
-    /// (`store::merge_previous`); the units it changed or added lead their
-    /// level, the cursor goes to the first of them, and the status says how
-    /// many changed and by whom.
+    /// (`store::merge_previous`); the cursor goes to the first unit it
+    /// changed or added, and the status says how many changed and by whom.
     fn reran(&mut self, mut new: Review) -> Vec<Effect> {
         crate::review::store::merge_previous(&mut new, &self.review);
         new.agent_session = self.review.agent_session.clone();
@@ -2467,7 +2499,7 @@ impl App {
             .count();
         // Positions in the old order mean nothing in the new review:
         // remember ids, drop the positions, restore by id.
-        let keep = self.selected().map(|u| u.id.clone());
+        let keep = self.cursor_id();
         self.review = new;
         self.committed = None;
         self.finish = Default::default();
@@ -2483,7 +2515,9 @@ impl App {
             .retain(|id| self.review.unit(id).is_some_and(|u| !u.auto_accepted()));
         let first_changed = (0..self.order.len())
             .find(|&p| self.changed.contains(&self.review.units[self.order[p]].id));
-        if let Some(pos) = first_changed.or_else(|| keep.and_then(|id| self.position_of(&id))) {
+        if let Some(pos) = first_changed {
+            self.cursor_to(pos);
+        } else if let Some(pos) = keep.and_then(|id| self.position_of(&id)) {
             self.sel = pos;
         }
         self.screen = Screen::Queue;
@@ -2654,6 +2688,7 @@ pub(crate) mod tests {
                 dive_pending: Default::default(),
                 checks: Default::default(),
                 security: Vec::new(),
+                signature: None,
             })
             .collect();
         let review = Review {
@@ -2725,6 +2760,378 @@ pub(crate) mod tests {
         assert_eq!(a.sel, 3);
     }
 
+    /// The row the cursor is on.
+    fn row(a: &App) -> usize {
+        a.cursor_row().expect("a row under the cursor")
+    }
+
+    /// `ids[k]` in file `files[k]`, each at line `k + 1`.
+    fn tree_app(files: &[&str]) -> App {
+        let mut a = app(files.len());
+        for (k, (u, file)) in a.review.units.iter_mut().zip(files).enumerate() {
+            u.file = PathBuf::from(file);
+            u.new_range = Some(crate::review::model::Range::new(k as u32 + 1, k as u32 + 1));
+        }
+        a.rebuild_order();
+        a.sel = 0;
+        a
+    }
+
+    fn skipped(path: &str) -> crate::git::SkippedFile {
+        crate::git::SkippedFile {
+            path: PathBuf::from(path),
+            status: crate::git::FileStatus::Modified,
+            why: "binary".into(),
+        }
+    }
+
+    /// The tree as text: a row's indent, `+` on a folded directory, `!` on
+    /// a file teer can't show, and `<` on the cursor's row.
+    fn tree(a: &App) -> Vec<String> {
+        let at = a.cursor_row();
+        a.rows()
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let mark = match r.kind {
+                    RowKind::Dir if r.folded => "+",
+                    RowKind::Skipped => "!",
+                    _ => "",
+                };
+                let cursor = if at == Some(i) { " <" } else { "" };
+                format!("{}{mark}{}{cursor}", "  ".repeat(r.depth), r.name)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_units_are_listed_by_file_in_tree_order_then_by_line() {
+        // In the review's order: a file at the root, a deep one, two units
+        // of one file out of line order.
+        let mut a = tree_app(&["z.rs", "src/tui/x.rs", "src/a.rs", "src/a.rs", "docs/d.md"]);
+        a.review.units[2].new_range = Some(crate::review::model::Range::new(40, 41));
+        a.review.units[3].new_range = Some(crate::review::model::Range::new(7, 8));
+        a.rebuild_order();
+        assert_eq!(listed_ids(&a), ["u4", "u1", "u3", "u2", "u0"]);
+        assert_eq!(
+            tree(&a),
+            [
+                "docs", "  d.md <", "src", "  tui", "    x.rs", "  a.rs", "z.rs"
+            ]
+        );
+        assert_eq!(a.file_units(std::path::Path::new("src/a.rs")), 2..4);
+    }
+
+    #[test]
+    fn the_cursor_moves_over_files_and_directories_and_skips_what_teer_cannot_show() {
+        let mut a = tree_app(&["src/a.rs", "src/tui/x.rs", "z.rs"]);
+        a.review.skipped = vec![skipped("src/logo.png"), skipped("y.bin")];
+        assert_eq!(
+            tree(&a),
+            [
+                "src",
+                "  tui",
+                "    x.rs <",
+                "  a.rs",
+                "  !logo.png",
+                "!y.bin",
+                "z.rs"
+            ]
+        );
+        // A file: its lead unit is selected. A directory: none.
+        assert_eq!(a.selected_id().as_deref(), Some("u1"));
+        press(&mut a, "gg");
+        assert_eq!(
+            (row(&a), a.on_dir()),
+            (0, Some(std::path::Path::new("src")))
+        );
+        assert_eq!(a.selected_id(), None);
+        press(&mut a, "jjj");
+        assert_eq!((row(&a), a.selected_id().as_deref()), (3, Some("u0")));
+        // Down from `a.rs`: over the two rows nobody selects.
+        press(&mut a, "j");
+        assert_eq!(tree(&a)[6], "z.rs <");
+        press(&mut a, "j");
+        assert_eq!(row(&a), 6, "the last row");
+        press(&mut a, "k");
+        assert_eq!(tree(&a)[3], "  a.rs <");
+        // `5gg` is the fifth row: one the cursor skips, so the next.
+        press(&mut a, "5gg");
+        assert_eq!(row(&a), 6);
+        // Unit actions do nothing on a directory.
+        press(&mut a, "ggi");
+        assert_eq!(a.overlay, Overlay::None);
+        assert_eq!(a.status, "Select a file to write a note on it.");
+        press(&mut a, "a");
+        assert_eq!(decisions(&a), vec![Pend; 3]);
+        assert_eq!(a.status, "Select a file to decide on it.");
+        press(&mut a, "K");
+        assert_eq!(a.screen, Screen::Queue);
+    }
+
+    #[test]
+    fn l_folds_a_directory_and_h_folds_it_or_goes_to_it() {
+        let mut a = tree_app(&["src/a.rs", "src/tui/x.rs", "z.rs"]);
+        assert_eq!(tree(&a), ["src", "  tui", "    x.rs <", "  a.rs", "z.rs"]);
+        // From a file, `h` goes to its directory; there it folds it.
+        press(&mut a, "h");
+        assert_eq!(tree(&a), ["src", "  tui <", "    x.rs", "  a.rs", "z.rs"]);
+        press(&mut a, "h");
+        assert_eq!(tree(&a), ["src", "  +tui <", "  a.rs", "z.rs"]);
+        assert!(a.folded.contains(std::path::Path::new("src/tui")));
+        // From a folded directory `h` goes to the one it is in.
+        press(&mut a, "h");
+        assert_eq!(tree(&a), ["src <", "  +tui", "  a.rs", "z.rs"]);
+        press(&mut a, "h");
+        assert_eq!(tree(&a), ["+src <", "z.rs"]);
+        assert_eq!(a.screen, Screen::Queue);
+        // Folded and at the top: `h` has nowhere to go.
+        press(&mut a, "h");
+        assert_eq!(tree(&a), ["+src <", "z.rs"]);
+        // Over a folded directory the cursor goes on to the next row.
+        press(&mut a, "j");
+        assert_eq!(tree(&a), ["+src", "z.rs <"]);
+        press(&mut a, "h");
+        assert_eq!(tree(&a), ["+src", "z.rs <"], "a file at the root stays");
+        // `l` and `enter` open it again, and fold it.
+        press(&mut a, "kl");
+        assert_eq!(tree(&a), ["src <", "  +tui", "  a.rs", "z.rs"]);
+        press(&mut a, "j<cr>");
+        assert_eq!(tree(&a), ["src", "  tui <", "    x.rs", "  a.rs", "z.rs"]);
+        press(&mut a, "l");
+        assert_eq!(tree(&a), ["src", "  +tui <", "  a.rs", "z.rs"]);
+        // A click selects a row; on a directory it folds or opens it too.
+        a.click_row("src/tui/");
+        assert_eq!(tree(&a), ["src", "  tui <", "    x.rs", "  a.rs", "z.rs"]);
+        a.click_row("z.rs");
+        assert_eq!(tree(&a)[4], "z.rs <");
+        a.click_row("nothing/");
+        assert_eq!(tree(&a)[4], "z.rs <");
+    }
+
+    #[test]
+    fn a_fold_is_kept_when_the_units_are_listed_again_and_after_a_rerun() {
+        let mut a = tree_app(&["src/a.rs", "src/tui/x.rs", "z.rs"]);
+        press(&mut a, "hh");
+        let folded = ["src", "  +tui <", "  a.rs", "z.rs"];
+        assert_eq!(tree(&a), folded);
+        a.rebuild_order();
+        assert_eq!(tree(&a), folded);
+        let new = Box::new(a.review.clone());
+        a.on_app_event(AppEvent::Rerun(Ok(new)));
+        assert_eq!(tree(&a), folded);
+        // A directory that is listed no more leaves the cursor on a file.
+        let mut new = a.review.clone();
+        new.units.retain(|u| u.id == "u2");
+        a.on_app_event(AppEvent::Rerun(Ok(Box::new(new))));
+        assert_eq!(tree(&a), ["z.rs <"]);
+        assert_eq!(a.on_dir(), None);
+    }
+
+    #[test]
+    fn a_jump_to_a_unit_selects_its_file_and_opens_the_folds_over_it() {
+        let mut a = tree_app(&["src/a.rs", "src/tui/x.rs", "src/tui/x.rs", "z.rs"]);
+        a.toggle_dir(std::path::Path::new("src/tui"));
+        a.toggle_dir(std::path::Path::new("src"));
+        press(&mut a, "G");
+        assert_eq!(tree(&a), ["+src", "z.rs <"]);
+        assert!(a.go_to_unit("u2").is_some());
+        assert_eq!(tree(&a), ["src", "  tui", "    x.rs <", "  a.rs", "z.rs"]);
+        assert!(a.folded.is_empty());
+        assert_eq!(a.selected_id().as_deref(), Some("u2"));
+        // The find list does the same.
+        a.toggle_dir(std::path::Path::new("src"));
+        press(&mut a, "G/s0<cr>");
+        assert_eq!(tree(&a)[3], "  a.rs <");
+        // The next pending file too.
+        a.toggle_dir(std::path::Path::new("src"));
+        press(&mut a, "Gk");
+        assert_eq!(tree(&a), ["+src <", "z.rs"]);
+        press(&mut a, "n");
+        assert_eq!(tree(&a)[2], "    x.rs <");
+    }
+
+    #[test]
+    fn the_lead_unit_is_the_most_critical_pending_one_then_the_most_critical() {
+        // u0..u2 in f0.rs, by line.
+        let mut a = app(6);
+        let f0 = std::path::Path::new("f0.rs");
+        assert_eq!(a.lead_pos(f0), Some(0), "the first by line among equals");
+        a.levels[2].level = Level::Attention;
+        a.levels[1].level = Level::Look;
+        // Come to over the rows, the file's lead unit is selected.
+        press(&mut a, "jk");
+        assert_eq!(a.selected_id().as_deref(), Some("u2"));
+        // `l` opens the unit view on it.
+        press(&mut a, "l");
+        assert_eq!((a.screen, a.unit.id.as_str()), (Screen::Unit, "u2"));
+        press(&mut a, "h");
+        // Decided, it gives way to the pending one that needs the most.
+        a.review.units[2].decision = Acc;
+        press(&mut a, "jk");
+        assert_eq!(a.selected_id().as_deref(), Some("u1"));
+        // Nothing pending: the most critical of them all.
+        a.review.units[0].decision = Acc;
+        a.review.units[1].decision = Flag;
+        press(&mut a, "jk");
+        assert_eq!(a.selected_id().as_deref(), Some("u2"));
+        assert_eq!(a.lead_pos(std::path::Path::new("nope.rs")), None);
+        // The note, the tools and the editor act on it.
+        press(&mut a, "i");
+        assert!(matches!(&a.overlay, Overlay::Note { id, .. } if id == "u2"));
+        // A jump to a unit selects that unit, on its file's row.
+        press(&mut a, "<esc>");
+        assert!(a.go_to_unit("u0").is_some());
+        assert_eq!((row(&a), a.selected_id().as_deref()), (0, Some("u0")));
+        press(&mut a, "l");
+        assert_eq!(a.unit.id, "u0");
+        // Back from the unit view, the unit it was on stays selected.
+        press(&mut a, "h");
+        assert_eq!(a.selected_id().as_deref(), Some("u0"));
+        // After a decision the cursor is on the next file's lead unit.
+        a.levels[4].level = Level::Look;
+        a.review.units[0].decision = Pend;
+        press(&mut a, "a");
+        assert_eq!((row(&a), a.selected_id().as_deref()), (1, Some("u4")));
+    }
+
+    #[test]
+    fn on_its_files_lead_unit_the_selection_goes_with_the_lead_as_levels_change() {
+        let needs_a_close_look = |a: &mut App, i: usize| {
+            a.review.units[i].status = UnitStatus::Removed;
+            a.review.units[i].callers = vec!["caller".into()];
+            a.rebuild_order();
+        };
+        let mut a = app(3);
+        press(&mut a, "gg");
+        assert_eq!(a.selected_id().as_deref(), Some("u0"));
+        needs_a_close_look(&mut a, 1);
+        assert_eq!(a.selected_id().as_deref(), Some("u1"));
+        // A unit a jump went to stays selected.
+        assert!(a.go_to_unit("u0").is_some());
+        needs_a_close_look(&mut a, 2);
+        assert_eq!(a.selected_id().as_deref(), Some("u0"));
+    }
+
+    #[test]
+    fn a_file_says_its_level_and_what_its_units_stand_at() {
+        let mut a = tree_app(&["src/a.rs", "src/a.rs", "src/tui/x.rs", "z.rs"]);
+        let facts = |a: &App, f: &str| a.file_facts(std::path::Path::new(f)).unwrap();
+        let f = facts(&a, "src/a.rs");
+        assert_eq!(f.level, Level::Routine);
+        assert!(!f.done && !f.flagged && !f.preparing && !f.disputed && !f.changed);
+        a.levels[1].level = Level::Look;
+        a.levels[1].doubts = vec!["the retry moved".into()];
+        a.levels[2].level = Level::Attention;
+        a.review.units[0].prep = Prep::Pending;
+        a.review.units[0].decision = Flag;
+        a.changed.insert("u1".into());
+        let f = facts(&a, "src/a.rs");
+        assert_eq!(f.level, Level::Look);
+        assert!(!f.done && f.flagged && f.preparing && f.disputed && f.changed);
+        a.review.units[1].decision = Acc;
+        assert!(!facts(&a, "src/a.rs").done, "a flag is not the end of it");
+        a.review.units[0].decision = Acc;
+        assert!(facts(&a, "src/a.rs").done);
+        assert!(!facts(&a, "z.rs").done);
+        assert!(!a.dir_done(std::path::Path::new("src")), "x.rs is pending");
+        // A directory: the most attention under it.
+        assert_eq!(
+            a.dir_level(std::path::Path::new("src")),
+            Some(Level::Attention)
+        );
+        assert_eq!(
+            a.dir_level(std::path::Path::new("src/tui")),
+            Some(Level::Attention)
+        );
+        assert_eq!(a.dir_level(std::path::Path::new("docs")), None);
+        assert!(a.file_facts(std::path::Path::new("docs/x.md")).is_none());
+    }
+
+    #[test]
+    fn a_file_accepted_for_you_is_listed_only_with_za_and_u_takes_it_back() {
+        let mut a = tree_app(&["a.rs", "b.rs", "b.rs"]);
+        for i in [1, 2] {
+            a.review.units[i].status = UnitStatus::NoBehaviorChange;
+        }
+        a.rebuild_order();
+        assert_eq!(tree(&a), ["a.rs <"]);
+        press(&mut a, "za");
+        assert_eq!(tree(&a), ["a.rs <", "b.rs"]);
+        let b = a.file_facts(std::path::Path::new("b.rs")).unwrap();
+        assert_eq!((b.level, b.done), (Level::Same, true));
+        press(&mut a, "ju");
+        assert_eq!(decisions(&a), vec![Pend; 3]);
+        assert_eq!(
+            a.status,
+            "2 units pending again, no longer accepted for you."
+        );
+        press(&mut a, "za");
+        assert_eq!(tree(&a), ["a.rs", "b.rs <"], "pending, they stay listed");
+    }
+
+    #[test]
+    fn with_only_files_teer_cannot_show_the_cursor_starts_on_the_first_directory() {
+        let mut a = tree_app(&[]);
+        a.review.skipped = vec![skipped("assets/logo.png"), skipped("img/a.png")];
+        a.rebuild_order();
+        assert_eq!(tree(&a), ["assets", "  !logo.png", "img", "  !a.png"]);
+        press(&mut a, "j");
+        assert_eq!(tree(&a)[0], "assets <");
+        press(&mut a, "j");
+        assert_eq!(tree(&a)[2], "img <");
+        // From no row, up is from the bottom.
+        a.dir = None;
+        press(&mut a, "k");
+        assert_eq!(tree(&a)[2], "img <");
+    }
+
+    #[test]
+    fn a_click_that_folds_the_selections_first_row_away_ends_the_selection() {
+        let mut a = tree_app(&["src/a.rs", "src/b.rs", "z.rs"]);
+        press(&mut a, "V");
+        assert_eq!(a.visual.as_deref(), Some("src/a.rs"));
+        // A click on another row moves the selection's end.
+        a.click_row("z.rs");
+        assert_eq!(a.visual_rows(), Some(1..=3));
+        a.click_row("src/");
+        assert_eq!(tree(&a), ["+src <", "z.rs"]);
+        assert_eq!(a.visual, None);
+    }
+
+    #[test]
+    fn hidden_with_za_the_cursors_file_gives_way_to_the_lead_unit_of_the_next() {
+        let mut a = tree_app(&["a.rs", "b.rs", "c.rs", "c.rs"]);
+        a.review.units[1].status = UnitStatus::NoBehaviorChange;
+        a.rebuild_order();
+        press(&mut a, "za");
+        a.levels[3].level = Level::Attention;
+        a.click_row("b.rs");
+        assert_eq!(tree(&a), ["a.rs", "b.rs <", "c.rs"]);
+        press(&mut a, "za");
+        assert_eq!(tree(&a), ["a.rs", "c.rs <"]);
+        assert_eq!(a.selected_id().as_deref(), Some("u3"));
+    }
+
+    #[test]
+    fn a_file_and_a_directory_of_one_name_are_two_rows() {
+        // `src/a` was a file and is a directory now.
+        let mut a = tree_app(&["src/a", "src/a/b.rs", "z.rs"]);
+        a.levels[1].level = Level::Attention;
+        let dir = std::path::Path::new("src/a");
+        a.click_row("src/a");
+        assert_eq!(tree(&a), ["src", "  a", "    b.rs", "  a <", "z.rs"]);
+        a.toggle_dir(dir);
+        assert_eq!(tree(&a), ["src", "  +a", "  a <", "z.rs"]);
+        // A jump to the file leaves the directory folded.
+        assert!(a.go_to_unit("u0").is_some());
+        assert_eq!(tree(&a), ["src", "  +a", "  a <", "z.rs"]);
+        // The directory's level is its files', not its namesake's.
+        a.levels[1].level = Level::Routine;
+        a.levels[0].level = Level::Attention;
+        assert_eq!(a.dir_level(dir), Some(Level::Routine));
+    }
+
     fn review_of(app: &App, n: usize) -> Review {
         let mut r = app.review.clone();
         r.units.truncate(n);
@@ -2748,15 +3155,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_queue_opens_by_level_and_l_opens_any_unit() {
-        let mut a = app(3);
-        assert_eq!((a.screen, a.grouping), (Screen::Queue, Grouping::Unit));
+    fn the_queue_opens_on_the_tree_and_l_opens_a_files_lead_unit() {
+        let mut a = app(6);
+        assert_eq!(a.screen, Screen::Queue);
         // `s` was the v1 list's way into swipe.
         press(&mut a, "s");
         assert_eq!(a.screen, Screen::Queue);
         press(&mut a, "j<cr>");
         assert_eq!(a.screen, Screen::Unit, "a pending unit opens too");
-        assert_eq!(a.sel, 1);
+        assert_eq!(a.unit.id, "u3");
         let mut a = app(3);
         a.start(false, None, Vec::new(), None);
         assert_eq!(a.screen, Screen::Queue);
@@ -2799,11 +3206,9 @@ pub(crate) mod tests {
     #[test]
     fn deciding_prepares_the_row_it_advances_to() {
         let mut a = large(40);
-        // Decide the first file's three units; the last one moves on to the
-        // next file, which is prepared.
-        a.decide(Decision::Accepted);
-        a.decide(Decision::Accepted);
-        let effects = a.decide(Decision::Accepted);
+        // Decide the first file; the cursor moves on to the next file,
+        // which is prepared.
+        let effects = press(&mut a, "a");
         assert!(effects.iter().any(|e| matches!(e, Effect::Prepare(_))));
         assert_eq!(a.sel, 3);
     }
@@ -2826,89 +3231,117 @@ pub(crate) mod tests {
 
     #[test]
     fn counts_move_that_many_rows() {
-        let mut a = app(7);
+        // Seven files, a row each.
+        let mut a = app(21);
         press(&mut a, "5j");
-        assert_eq!(a.sel, 5);
+        assert_eq!(row(&a), 5);
         press(&mut a, "2k");
-        assert_eq!(a.sel, 3);
+        assert_eq!(row(&a), 3);
         press(&mut a, "20j");
-        assert_eq!(a.sel, 6, "as far as the list goes");
+        assert_eq!(row(&a), 6, "as far as the tree goes");
         // `3gg` and `3G` go to the third row, as in Neovim.
         press(&mut a, "3gg");
-        assert_eq!(a.sel, 2);
+        assert_eq!(row(&a), 2);
+        assert_eq!(a.selected_id().as_deref(), Some("u6"));
         press(&mut a, "G");
-        assert_eq!(a.sel, 6);
+        assert_eq!(row(&a), 6);
         press(&mut a, "1G");
-        assert_eq!(a.sel, 0);
-        assert_eq!(decisions(&a), vec![Pend; 7], "moves decide nothing");
+        assert_eq!(row(&a), 0);
+        assert_eq!(decisions(&a), vec![Pend; 21], "moves decide nothing");
     }
 
     #[test]
-    fn a_count_jumps_that_many_pending_units_or_files() {
-        let mut a = app(9);
-        a.review.units[1].decision = Acc;
-        a.review.units[3].decision = Flag;
-        // Pending after u0: u2, u4, u5.
-        press(&mut a, "2n");
-        assert_eq!(a.sel, 4);
+    fn a_count_jumps_that_many_pending_files_or_files() {
+        // Four files; `f1.rs` is decided, `f2.rs` in part.
+        let mut a = app(12);
+        for i in 3..7 {
+            a.review.units[i].decision = Acc;
+        }
+        press(&mut a, "n");
+        assert_eq!(row(&a), 2, "over the file with nothing pending");
         press(&mut a, "N");
-        assert_eq!(a.sel, 2);
+        assert_eq!(row(&a), 0);
+        press(&mut a, "N");
+        assert_eq!(a.status, "No more pending files that way.");
         press(&mut a, "9n");
-        assert_eq!(a.sel, 8, "as far as there are");
+        assert_eq!(row(&a), 3, "as far as there are");
         press(&mut a, "gg2]f");
-        assert_eq!(a.sel, 6, "two files on: f2.rs");
+        assert_eq!(row(&a), 2, "two files on: f2.rs");
         press(&mut a, "2[f");
-        assert_eq!(a.sel, 0);
+        assert_eq!(row(&a), 0);
     }
 
     #[test]
-    fn a_count_decides_that_many_pending_units_as_one_step() {
-        let mut a = app(6);
-        a.review.units[1].decision = Acc;
-        let effects = press(&mut a, "3a");
+    fn a_decides_the_files_pending_units_and_a_count_the_next_files_too() {
+        // Four files; one unit of `f0.rs` and all of `f1.rs` are decided.
+        let mut a = app(12);
+        a.review.units[1].decision = Flag;
+        for i in 3..6 {
+            a.review.units[i].decision = Flag;
+        }
+        let effects = press(&mut a, "2a");
         assert!(effects.contains(&Effect::Save));
-        // u0 and the next two pending ones: u2, u3 (u1 was decided).
-        assert_eq!(decisions(&a), vec![Acc, Acc, Acc, Acc, Pend, Pend]);
-        assert_eq!(a.sel, 4, "on to the next pending unit");
-        assert_eq!(a.status, "Accepted 3 units.");
+        // The pending units of `f0.rs` and of the next file with one.
+        let after = [
+            vec![Acc, Flag, Acc],
+            vec![Flag; 3],
+            vec![Acc; 3],
+            vec![Pend; 3],
+        ]
+        .concat();
+        assert_eq!(decisions(&a), after);
+        assert_eq!(row(&a), 3, "on to the next pending file");
+        assert_eq!(a.status, "Accepted 5 units.");
         assert_eq!(a.review.history.undo.len(), 1);
-        assert_eq!(a.review.history.undo[0].changes.len(), 3);
+        assert_eq!(a.review.history.undo[0].changes.len(), 5);
         press(&mut a, "u");
-        assert_eq!(decisions(&a), vec![Pend, Acc, Pend, Pend, Pend, Pend]);
-        assert_eq!(a.sel, 0, "undo goes to the step's first unit");
-        // A flag with a count opens no note line.
-        press(&mut a, "2f");
-        assert_eq!(decisions(&a), vec![Flag, Acc, Flag, Pend, Pend, Pend]);
-        assert_eq!(a.overlay, Overlay::None);
+        assert_eq!(decisions(&a).iter().filter(|d| **d == Pend).count(), 8);
+        assert_eq!(row(&a), 0, "undo goes to the step's first unit");
+        // Without a count: this file. `A` does the same here.
+        press(&mut a, "a");
+        assert_eq!(&decisions(&a)[..3], &[Acc, Flag, Acc]);
+        assert_eq!(a.status, "Accepted 2 units.");
+        assert_eq!(row(&a), 2);
+        press(&mut a, "A");
+        assert_eq!(&decisions(&a)[6..], &[Acc, Acc, Acc, Pend, Pend, Pend]);
+        // Nothing pending in the file: nothing to decide.
+        press(&mut a, "gga");
+        assert_eq!(a.status, "Nothing pending in this file.");
     }
 
     #[test]
-    fn f_flags_and_moves_on_asking_for_no_note() {
-        let mut a = app(3);
+    fn f_flags_the_file_and_moves_on_asking_for_no_note() {
+        let mut a = app(6);
         let effects = press(&mut a, "f");
         assert!(effects.contains(&Effect::Save));
-        assert_eq!(dec(&a, 0), Flag);
-        assert_eq!(a.sel, 1);
+        assert_eq!(decisions(&a), [vec![Flag; 3], vec![Pend; 3]].concat());
+        assert_eq!(a.status, "Flagged 3 units.");
+        assert_eq!(row(&a), 1);
         assert_eq!(a.overlay, Overlay::None);
         assert_eq!(a.review.history.undo.len(), 1);
     }
 
     #[test]
     fn visual_mode_decides_the_selection_as_one_step() {
-        let mut a = app(6);
+        // Six files.
+        let mut a = app(18);
         press(&mut a, "Vjj");
-        assert_eq!(a.visual.as_deref(), Some("u0"));
+        assert_eq!(a.visual.as_deref(), Some("f0.rs"));
         assert_eq!(a.visual_rows(), Some(0..=2));
-        assert_eq!(a.sel, 2);
-        assert_eq!(decisions(&a), vec![Pend; 6], "moving only selects");
+        assert_eq!(row(&a), 2);
+        assert_eq!(decisions(&a), vec![Pend; 18], "moving only selects");
         press(&mut a, "a");
         assert_eq!(a.visual, None, "deciding leaves visual mode");
-        assert_eq!(decisions(&a), vec![Acc, Acc, Acc, Pend, Pend, Pend]);
-        assert_eq!(a.sel, 3);
+        assert_eq!(decisions(&a), [vec![Acc; 9], vec![Pend; 9]].concat());
+        assert_eq!(a.status, "Accepted 9 units.");
+        assert_eq!(row(&a), 3);
         assert_eq!(a.review.history.undo.len(), 1);
         // Upwards works too.
         press(&mut a, "jjVkf");
-        assert_eq!(decisions(&a), vec![Acc, Acc, Acc, Pend, Flag, Flag]);
+        assert_eq!(
+            decisions(&a),
+            [vec![Acc; 9], vec![Pend; 3], vec![Flag; 6]].concat()
+        );
         assert_eq!(a.overlay, Overlay::None);
         assert_eq!(a.last_decision, Some((Action::DecideFlag, Some(2))));
         // esc leaves it, deciding nothing.
@@ -2922,26 +3355,47 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_folded_directory_in_the_selection_stands_for_its_files() {
+        let mut a = tree_app(&["src/a.rs", "src/tui/x.rs", "y.rs", "z.rs"]);
+        a.review.units[1].decision = Flag;
+        a.click_row("src/");
+        press(&mut a, "Vj");
+        assert_eq!(tree(&a), ["+src", "y.rs <", "z.rs"]);
+        assert_eq!(a.visual.as_deref(), Some("src/"));
+        press(&mut a, "a");
+        // The pending units under `src` and `y.rs`; the flagged one stays.
+        assert_eq!(decisions(&a), vec![Acc, Flag, Acc, Pend]);
+        assert_eq!(a.last_decision, Some((Action::DecideAccept, Some(3))));
+        assert_eq!(tree(&a), ["+src", "y.rs", "z.rs <"]);
+        // An open directory is only a row: its files are their own.
+        let mut a = tree_app(&["src/a.rs", "z.rs"]);
+        press(&mut a, "ggVa");
+        assert_eq!(decisions(&a), vec![Pend; 2]);
+        assert_eq!(a.status, "Nothing pending in the selection.");
+    }
+
+    #[test]
     fn dot_repeats_the_last_decision_with_its_count_or_a_new_one() {
-        let mut a = app(10);
+        // Ten files.
+        let mut a = app(30);
+        let accepted = |a: &App| decisions(a).iter().filter(|d| **d == Acc).count() / 3;
         press(&mut a, ".");
         assert_eq!(a.status, "Nothing to repeat yet.");
         press(&mut a, "a.");
-        assert_eq!(&decisions(&a)[..3], &[Acc, Acc, Pend]);
-        assert_eq!(a.sel, 2);
+        assert_eq!((accepted(&a), row(&a)), (2, 2));
         // The count goes with it...
         press(&mut a, "2a.");
-        assert_eq!(&decisions(&a)[..7], &[Acc, Acc, Acc, Acc, Acc, Acc, Pend]);
+        assert_eq!(accepted(&a), 6);
         // ...unless a new one is typed, which it keeps.
         press(&mut a, "3.");
-        assert_eq!(&decisions(&a)[..9], &[Acc; 9]);
+        assert_eq!(accepted(&a), 9);
         assert_eq!(a.last_decision, Some((Action::DecideAccept, Some(3))));
         // Each one is a step of its own.
         assert_eq!(a.review.history.undo.len(), 5);
-        // After visual mode it decides as many units.
-        let mut a = app(6);
+        // After visual mode it decides as many files.
+        let mut a = app(18);
         press(&mut a, "Vja.");
-        assert_eq!(decisions(&a), vec![Acc, Acc, Acc, Acc, Pend, Pend]);
+        assert_eq!(accepted(&a), 4);
     }
 
     #[test]
@@ -2957,24 +3411,26 @@ pub(crate) mod tests {
 
     #[test]
     fn undo_and_redo_go_through_the_reviews_history() {
-        let mut a = app(4);
+        // Four files.
+        let mut a = app(12);
+        let files = |a: &App| -> Vec<Decision> { decisions(a).into_iter().step_by(3).collect() };
         press(&mut a, "a");
-        press(&mut a, "f<esc>");
-        assert_eq!(decisions(&a), vec![Acc, Flag, Pend, Pend]);
+        press(&mut a, "f");
+        assert_eq!(files(&a), vec![Acc, Flag, Pend, Pend]);
         assert_eq!(a.review.history.undo.len(), 2);
         let effects = press(&mut a, "u");
         assert!(effects.contains(&Effect::Save));
-        assert_eq!(decisions(&a), vec![Acc, Pend, Pend, Pend]);
-        assert_eq!(a.sel, 1);
+        assert_eq!(files(&a), vec![Acc, Pend, Pend, Pend]);
+        assert_eq!(row(&a), 1);
         press(&mut a, "u");
-        assert_eq!(decisions(&a), vec![Pend; 4]);
-        assert_eq!(a.sel, 0);
+        assert_eq!(decisions(&a), vec![Pend; 12]);
+        assert_eq!(row(&a), 0);
         press(&mut a, "u");
         assert_eq!(a.status, "Nothing to undo.");
         let effects = press(&mut a, "<c-r>");
         assert!(effects.contains(&Effect::Save));
-        assert_eq!(decisions(&a), vec![Acc, Pend, Pend, Pend]);
-        assert_eq!(a.sel, 0);
+        assert_eq!(files(&a), vec![Acc, Pend, Pend, Pend]);
+        assert_eq!(row(&a), 0);
         assert_eq!(
             (a.review.history.undo.len(), a.review.history.redo.len()),
             (1, 1)
@@ -2991,14 +3447,17 @@ pub(crate) mod tests {
 
     #[test]
     fn reset_is_one_step_that_undo_takes_back() {
-        let mut a = app(4);
-        press(&mut a, "aaf<esc>");
+        // Three files.
+        let mut a = app(9);
+        press(&mut a, "aaf");
+        let before = [vec![Acc; 6], vec![Flag; 3]].concat();
+        assert_eq!(decisions(&a), before);
         press(&mut a, ":e!<cr>");
         assert_eq!(a.overlay, Overlay::ConfirmReset);
         press(&mut a, "y");
-        assert_eq!(decisions(&a), vec![Pend; 4]);
+        assert_eq!(decisions(&a), vec![Pend; 9]);
         press(&mut a, "u");
-        assert_eq!(decisions(&a), vec![Acc, Acc, Flag, Pend]);
+        assert_eq!(decisions(&a), before);
     }
 
     #[test]
@@ -3114,9 +3573,9 @@ pub(crate) mod tests {
         press(&mut a, "gd");
         assert_eq!(a.overlay, Overlay::None);
         assert!(a.status.contains("calls nothing"), "{}", a.status);
-        press(&mut a, "jgr");
+        press(&mut a, "gr");
         assert_eq!(a.overlay, Overlay::None);
-        assert!(a.status.contains("calls s1"), "{}", a.status);
+        assert!(a.status.contains("calls s0"), "{}", a.status);
         assert_eq!(press(&mut a, "<space>s"), vec![Effect::Settings]);
     }
 
@@ -3159,7 +3618,7 @@ pub(crate) mod tests {
     #[test]
     fn back_from_the_agent_the_review_reruns_and_lands_on_what_changed() {
         let mut a = app(6);
-        press(&mut a, "aaaa");
+        press(&mut a, "a");
         a.review.units[1].dive.note = "rename it".into();
         a.review.units[1].dive.note_on = Some(String::new());
         assert_eq!(a.agent_returned(Provider::Claude), vec![Effect::Rerun]);
@@ -3168,11 +3627,15 @@ pub(crate) mod tests {
         let effects = a.on_app_event(AppEvent::Rerun(Ok(new)));
         assert!(effects.contains(&Effect::Save), "{effects:?}");
         assert_eq!(a.status, "2 units changed by Claude Code.");
-        // The changed units lead their level, the cursor on the first.
-        assert_eq!(&listed_ids(&a)[..2], ["u1", "u4"]);
-        assert_eq!(a.selected_id().as_deref(), Some("u1"));
+        // The tree keeps its order; the cursor is on the first changed
+        // unit's file, and both files say they changed.
+        assert_eq!(listed_ids(&a), ["u0", "u1", "u2", "u3", "u4", "u5"]);
+        assert_eq!((row(&a), a.selected_id().as_deref()), (0, Some("u1")));
+        for f in ["f0.rs", "f1.rs"] {
+            assert!(a.file_facts(std::path::Path::new(f)).unwrap().changed);
+        }
         // Changed: pending, the note kept and marked. The rest keep theirs.
-        assert_eq!(decisions(&a), vec![Acc, Pend, Acc, Acc, Pend, Pend]);
+        assert_eq!(decisions(&a), vec![Acc, Pend, Acc, Pend, Pend, Pend]);
         assert_eq!(a.review.units[1].dive.note, "rename it");
         assert!(a.review.units[1].note_is_stale());
         // The next re-run, with no notes out, changes nothing.
@@ -3186,9 +3649,9 @@ pub(crate) mod tests {
     fn copied_notes_wait_read_only_until_the_files_settle() {
         use crate::watch::Snapshot;
         use std::time::Duration;
-        let mut a = app(4);
+        let mut a = app(9);
         a.cfg.fix_loop.quiet_seconds = 2.0;
-        press(&mut a, "fx<cr>");
+        press(&mut a, "f");
         a.start_waiting(1);
         assert_eq!(
             a.status,
@@ -3199,9 +3662,9 @@ pub(crate) mod tests {
         press(&mut a, "afiAV");
         assert_eq!(decisions(&a), before);
         assert_eq!((a.overlay.clone(), a.visual.clone()), (Overlay::None, None));
-        let sel = a.sel;
+        let at = row(&a);
         press(&mut a, "j");
-        assert_eq!(a.sel, sel + 1);
+        assert_eq!(row(&a), at + 1);
         assert!(
             a.status.starts_with("Waiting for the changes"),
             "{}",
@@ -3268,13 +3731,13 @@ pub(crate) mod tests {
     #[test]
     fn a_puts_away_a_note_on_changed_code_and_u_brings_it_back() {
         use crate::review::model::ArchivedNote;
-        let mut a = app(4);
+        // A file each.
+        let mut a = tree_app(&["a.rs", "b.rs", "c.rs", "d.rs"]);
         let stale = |a: &mut App, i: usize, note: &str| {
             a.review.units[i].dive.note = note.into();
             a.review.units[i].dive.note_on = Some("old".into());
         };
         stale(&mut a, 0, "check the limit");
-        a.sel = 0;
         press(&mut a, "a");
         let archived = vec![ArchivedNote {
             text: "check the limit".into(),
@@ -3297,22 +3760,19 @@ pub(crate) mod tests {
         // A note on code that didn't change stays when its unit is accepted.
         a.review.units[1].dive.note = "fine".into();
         a.review.units[1].dive.note_on = Some(String::new());
-        a.sel = a.position_of("u1").unwrap();
-        press(&mut a, "a");
+        press(&mut a, "2gga");
         assert_eq!(a.review.units[1].dive.note, "fine");
 
         // `i` edits it without deciding; the edit is on the code as it is.
         stale(&mut a, 2, "old note");
-        a.sel = a.position_of("u2").unwrap();
-        press(&mut a, "i<c-u>new note<cr>");
+        press(&mut a, "3ggi<c-u>new note<cr>");
         let u = &a.review.units[2];
         assert_eq!((u.decision, u.dive.note.as_str()), (Pend, "new note"));
         assert!(!u.note_is_stale());
 
         // `f` flags it and leaves the note as it is, stale.
         stale(&mut a, 3, "still wrong");
-        a.sel = a.position_of("u3").unwrap();
-        press(&mut a, "f");
+        press(&mut a, "4ggf");
         assert_eq!(a.overlay, Overlay::None);
         let u = &a.review.units[3];
         assert_eq!((u.decision, u.dive.note.as_str()), (Flag, "still wrong"));

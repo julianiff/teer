@@ -15,7 +15,7 @@ use super::app::{App, Effect};
 use super::tools;
 use super::unit::Panel;
 use crate::keymap::Action;
-use crate::review::model::{DiveKind, Unit};
+use crate::review::model::{DiveKind, Signature, Unit};
 
 /// As many are offered at once.
 pub const MAX_OFFERED: usize = 6;
@@ -24,6 +24,22 @@ pub const MAX_OFFERED: usize = 6;
 pub const ADVICE: &str = "What should I do about this change, step by step?";
 /// What the full security check is asked with.
 pub const AUDIT: &str = "Check every path into this unit, from its entry points to its sinks";
+
+/// Asks if the long signature of `name` is a design weakness.
+pub fn signature_design(name: &str, sig: &Signature) -> String {
+    format!(
+        "Is the signature of {name} a design weakness? It has {}. Read its callers and say what to do in this change.",
+        sig.words()
+    )
+}
+
+/// Asks if a caller of `name` can mix up its arguments unnoticed.
+pub fn signature_order(name: &str, sig: &Signature) -> String {
+    format!(
+        "Do the callers of {name} pass its {} arguments by position, and can two change places with no error?",
+        sig.params
+    )
+}
 
 /// What taking a suggestion does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -92,6 +108,16 @@ impl App {
             .find_map(|&n| self.review.questions[n].answer.as_ref());
         for q in newest.iter().flat_map(|a| &a.next) {
             offer(&mut out, q, "the last answer".into());
+        }
+        // A parameter list the change made long: teer counted it, the
+        // agent reads the callers and judges it.
+        if let Some(sig) = u.signature.as_ref().filter(|s| s.grew_long())
+            && self.mode.reviews()
+        {
+            let name = u.symbol.rsplit("::").next().unwrap_or(&u.symbol);
+            let about = format!("signature · {} parameters", sig.params);
+            offer(&mut out, &signature_design(name, sig), about.clone());
+            offer(&mut out, &signature_order(name, sig), about);
         }
         let secures = self.mode.secures() && self.security.enabled;
         if secures {

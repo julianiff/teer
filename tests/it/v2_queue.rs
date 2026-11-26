@@ -35,45 +35,32 @@ fn note_line(d: &Driver) -> Option<(String, String)> {
     }
 }
 
-/// The word a queue row shows for a unit's state.
-fn state_word(d: Decision) -> &'static str {
-    match d {
-        P => "pending",
-        A => "accepted",
-        F => "flagged",
-    }
-}
-
-/// The bottom bar's counts (brief: `4 pending · 1 flagged · 37 accepted`).
+/// The bottom bar's counts (`4 pending · 1 flagged · 37 accepted`), a
+/// count of none left out.
 fn counts(pending: usize, flagged: usize, accepted: usize) -> String {
-    format!("{pending} pending · {flagged} flagged · {accepted} accepted")
-}
-
-/// The bottom bar while the `g` prefix waits: `g…` (brief), or Phase 1's
-/// hint line (` g  g first unit · …`).
-fn shows_g_prefix(bar: &str) -> bool {
-    bar.contains("g…") || bar.contains(" g  g ")
+    [
+        (pending, "pending"),
+        (flagged, "flagged"),
+        (accepted, "accepted"),
+    ]
+    .iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, word)| format!("{n} {word}"))
+    .collect::<Vec<_>>()
+    .join(" · ")
 }
 
 /// The line under the list when units were accepted for you.
 fn accepted_for_you_line(d: &Driver, n: usize) -> String {
     format!(
-        "{n} units accepted for you, {} shows them",
+        "{} shows {n} accepted for you",
         d.app.keys.label(Action::ToggleAutoAccepted)
-    )
-}
-
-/// The bottom bar with nothing left pending.
-fn nothing_pending(d: &Driver) -> String {
-    format!(
-        "Nothing pending. {} to finish",
-        d.app.keys.label(Action::FinishOpen)
     )
 }
 
 // ---- Fixtures ---------------------------------------------------------------------
 
-/// Unit `u{i}` named `name` in `file` at line `line`, pending, routine (●).
+/// Unit `u{i}` named `name` in `file` at line `line`, pending, routine (┃).
 fn named(i: usize, file: &str, name: &str, line: u32) -> Unit {
     let mut u = unit(i, file);
     u.symbol = name.into();
@@ -95,6 +82,12 @@ fn queue(n: usize) -> Driver {
     let names: Vec<String> = (0..n).map(|i| format!("s{i}")).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     Driver::open(review(units_named(&names)), Config::default())
+}
+
+/// `n` pending routine units, a file each (a row of the tree per unit),
+/// opened as `teer --no-agent`.
+fn queue_singles(n: usize) -> Driver {
+    Driver::open(review(common::v2::singles(n)), Config::default())
 }
 
 /// `units` opened as `teer --no-agent`.
@@ -232,24 +225,25 @@ fn row_contents() {
     units[2].decision = F;
     units[2].dive.note = note.into();
     let d = queue_of(units);
-    // Narrow: the preview goes below the list, so each unit's first row is
-    // its row in the list.
     let screen = d.render(100, 40);
-    for (name, state) in [("charge", P), ("refund", A), ("retry", F)] {
-        let row = row_with(&screen, name);
-        assert!(row.contains('●'), "the level glyph: {row}");
-        assert!(row.contains("src/pay.rs"), "the path: {row}");
-        assert!(row.contains(state_word(state)), "{state:?}: {row}");
-        assert!(!row.contains('⚠'), "not disputed: {row}");
+    // The file's row: the icon of the most attention in it, its name,
+    // then what there is to act on. No path, no count, no word for a state.
+    assert_eq!(row_with(&screen, "pay.rs").trim_end(), "▌  ┃ pay.rs ⚑ ⚠");
+    // Under the tree, a head line per unit: its icon, its name, and how it
+    // was decided; the bar on the one the keys act on.
+    for head in [" ┃ charge", " ┃ refund ✓", " ┃ retry ⚑", "▌┃ settle ⚠"] {
+        assert!(
+            screen.lines().any(|l| l.trim_end() == head),
+            "{head}:\n{screen}"
+        );
     }
-    let retry = row_with(&screen, "retry");
-    assert!(
-        retry.contains(&note[..40]),
-        "the note's first 40 characters: {retry}"
-    );
-    assert!(!retry.contains(&note[..41]), "and no more: {retry}");
-    let settle = row_with(&screen, "settle");
-    assert!(settle.contains('◆') && settle.contains('⚠'), "{settle}");
+    let body: Vec<&str> = screen.lines().collect();
+    let body = body[..body.len() - 1].join("\n");
+    for word in ["pending", "accepted", "flagged", "src/pay.rs"] {
+        assert!(!body.contains(word), "{word}:\n{screen}");
+    }
+    // The reviewer's note is whole, on its card.
+    assert!(screen.contains(note), "{screen}");
 }
 
 // ---- Q4 ---------------------------------------------------------------------------
@@ -276,7 +270,13 @@ fn za_shows_auto_accepted() {
     d.keys("za");
     assert_eq!(d.app.order.len(), 5);
     let screen = d.render(120, 30);
-    for name in ["fmt_one", "fmt_two", "fmt_three"] {
+    // In the tree and the pane, behind their own icon.
+    for shown in ["○ b.rs", "○ fmt_one ✓"] {
+        assert!(screen.contains(shown), "{shown}: {screen}");
+    }
+    d.keys("j");
+    let screen = d.render(120, 30);
+    for name in ["fmt_two", "fmt_three"] {
         assert!(screen.contains(name), "{name}: {screen}");
     }
     d.keys("za");
@@ -295,204 +295,29 @@ fn preview_side_or_below() {
     });
     let d = queue_of(units);
     assert_eq!(d.selected().as_deref(), Some("u0"));
-    // Today's content: the review box, with the reason in it.
-    let (heading, reason) = ("╭ review ", "Also stops sending");
+    // The pane: a head line per unit of the file under the cursor.
+    let head = "┃ bravo";
 
-    // Wide: beside the list.
+    // Wide: beside the tree.
     let wide = d.render(160, 30);
-    assert!(wide.contains(reason), "{wide}");
-    let (x, y) = find(&wide, heading).unwrap_or_else(|| panic!("{wide}"));
-    let (cx, last) = find(&wide, "charlie").unwrap();
-    assert!(x > cx + 7, "right of the list: column {x}\n{wide}");
-    assert!(y <= last + 8, "next to it, not under it: row {y}\n{wide}");
+    let (x, y) = find(&wide, head).unwrap_or_else(|| panic!("{wide}"));
+    let (fx, file) = find(&wide, "f0.rs").unwrap();
+    assert!(x > fx + 7, "right of the tree: column {x}\n{wide}");
+    assert!(y <= file + 2, "next to it, not under it: row {y}\n{wide}");
 
     // Narrow: below it.
     let narrow = d.render(80, 40);
-    assert!(narrow.contains(reason), "{narrow}");
-    let (x, y) = find(&narrow, heading).unwrap_or_else(|| panic!("{narrow}"));
-    let (_, last) = find(&narrow, "charlie").unwrap();
+    let (x, y) = find(&narrow, head).unwrap_or_else(|| panic!("{narrow}"));
+    let (_, file) = find(&narrow, "f0.rs").unwrap();
     assert!(x < 80 / 4, "at the left: column {x}\n{narrow}");
-    assert!(y > last, "under the list: row {y}\n{narrow}");
-}
-
-// ---- Q6 ---------------------------------------------------------------------------
-
-#[test]
-fn bottom_bar_counts_and_mode() {
-    let mut d = queue(6);
-    set(&mut d, "u0", F);
-    set(&mut d, "u1", A);
-    let want = counts(4, 1, 1);
-    let bar = d.bar(140, 30);
-    assert!(bar.contains(&want), "{bar}");
-
-    d.keys("V");
-    let bar = d.bar(140, 30);
-    assert!(bar.contains(&want) && bar.contains("-- VISUAL --"), "{bar}");
-    d.keys("<esc>");
-    assert!(!d.bar(140, 30).contains("VISUAL"));
-
-    d.keys("g");
-    let bar = d.bar(140, 30);
-    assert!(shows_g_prefix(&bar), "{bar}");
-    d.keys("<esc>");
-    assert!(!shows_g_prefix(&d.bar(140, 30)));
-
-    d.keys(":w");
-    let bar = d.bar(140, 30);
-    assert!(bar.contains(":w"), "the command line: {bar}");
-    d.keys("<esc>");
-    assert!(d.bar(140, 30).contains(&want));
-}
-
-// ---- Q7 ---------------------------------------------------------------------------
-
-#[test]
-fn auto_advance_through_mixed_states() {
-    let mut d = queue(6);
-    set(&mut d, "u1", A);
-    set(&mut d, "u2", F);
-    set(&mut d, "u4", A);
-    assert_eq!(d.selected().as_deref(), Some("u0"));
-    d.keys("a");
-    assert_eq!(
-        d.selected().as_deref(),
-        Some("u3"),
-        "decided units are skipped"
-    );
-    d.keys("f<esc>");
-    assert_eq!(d.decision_of("u3"), F);
-    assert_eq!(d.selected().as_deref(), Some("u5"));
-    d.keys("a");
-    assert_eq!(d.decisions(), vec![A, A, F, F, A, A]);
-    assert_eq!(
-        d.selected().as_deref(),
-        Some("u5"),
-        "nothing left: it stays"
-    );
-    let bar = d.bar(140, 30);
-    assert!(bar.contains(&nothing_pending(&d)), "{bar}");
-    // "Nothing pending" takes the place of "0 pending".
-    assert!(bar.contains("2 flagged · 4 accepted"), "{bar}");
-}
-
-// ---- Q8 ---------------------------------------------------------------------------
-
-#[test]
-fn flag_note_line() {
-    let mut d = queue(3);
-    d.app.review.unit_mut("u1").unwrap().dive.note = "old note".into();
-    d.app.review.unit_mut("u2").unwrap().dive.note = "keep me".into();
-
-    // `f` flags and moves on; it asks for no note.
-    let effects = d.keys("f");
-    assert!(effects.contains(&Effect::Save), "{effects:?}");
-    assert_eq!(note_line(&d), None);
-    assert_eq!(d.decision_of("u0"), F);
-    assert_eq!(d.note("u0"), "");
-
-    // `i` opens the line prefilled with the note there is; enter saves.
-    assert_eq!(d.selected().as_deref(), Some("u1"));
-    d.keys("i");
-    assert_eq!(note_line(&d), Some(("u1".into(), "old note".into())));
-    d.keys(" and more<cr>");
-    assert_eq!(d.note("u1"), "old note and more");
-    assert_eq!(d.decision_of("u1"), P, "a note decides nothing");
-
-    // Esc drops the edit.
-    d.select_id("u2");
-    d.keys("ichanged<esc>");
-    assert_eq!(note_line(&d), None);
-    assert_eq!(d.note("u2"), "keep me");
-}
-
-// ---- Q9 ---------------------------------------------------------------------------
-
-#[test]
-fn no_needs_fix_state() {
-    let mut d = queue(3);
-    d.keys("ifix the retry<cr>f");
-    let u = d.app.review.unit("u0").unwrap();
-    assert_eq!(u.decision, F);
-    assert_eq!(u.dive.note, "fix the retry");
-    // v1's "needs fix" key does nothing in the queue.
-    d.keys("k");
-    assert_eq!(d.selected().as_deref(), Some("u0"));
-    let before = serde_json::to_string(&d.app.review).unwrap();
-    d.keys("x");
-    let after = serde_json::to_string(&d.app.review).unwrap();
-    assert_eq!(after, before, "x changes nothing");
-    // A flag with a note is all there is: nothing saved says more.
-    assert!(!after.contains("\"resolution\""), "{after}");
-    assert_eq!(d.decision_of("u0"), F);
-    for (w, h) in [(140, 30), (80, 30)] {
-        let screen = d.render(w, h).to_lowercase();
-        assert!(!screen.contains("needs fix"), "{screen}");
-    }
-}
-
-// ---- Q10 --------------------------------------------------------------------------
-
-#[test]
-fn file_actions_skip_decided_units() {
-    let mut d = queue(9);
-    set(&mut d, "u1", F);
-    d.app.review.unit_mut("u1").unwrap().dive.note = "mine".into();
-    set(&mut d, "u2", A);
-    set(&mut d, "u4", A);
-
-    // `A`: at once, the file's pending units only.
-    let effects = d.keys("A");
-    assert!(effects.contains(&Effect::Save), "{effects:?}");
-    assert_eq!(*d.overlay(), Overlay::None, "no confirm");
-    assert_eq!(d.decisions(), vec![A, F, A, P, A, P, P, P, P]);
-    assert_eq!(d.note("u1"), "mine", "a decided unit keeps its note");
-    assert_eq!(d.undo_steps(), 1);
-
-    // `F`: at once too, asking for no note.
-    d.select_id("u3");
-    d.keys("F");
-    assert_eq!(note_line(&d), None);
-    assert_eq!(d.decisions(), vec![A, F, A, F, A, F, P, P, P]);
-    assert_eq!(d.note("u1"), "mine");
-    assert_eq!(d.undo_steps(), 2);
-
-    // Undo and redo take each file action back as one step.
-    d.keys("u");
-    assert_eq!(d.decisions(), vec![A, F, A, P, A, P, P, P, P]);
-    d.keys("u");
-    assert_eq!(d.decisions(), vec![P, F, A, P, A, P, P, P, P]);
-    d.keys("<c-r>");
-    assert_eq!(d.decisions(), vec![A, F, A, P, A, P, P, P, P]);
-    d.keys("<c-r>");
-    assert_eq!(d.decisions(), vec![A, F, A, F, A, F, P, P, P]);
-
-    // Nothing pending in the file: nothing happens.
-    d.select_id("u4");
-    let steps = d.undo_steps();
-    d.keys("A");
-    assert_eq!(d.undo_steps(), steps);
-    assert_eq!(d.decisions(), vec![A, F, A, F, A, F, P, P, P]);
-}
-
-// ---- Q11 --------------------------------------------------------------------------
-
-#[test]
-fn visual_flag_flags_every_unit() {
-    let mut d = queue(9);
-    d.select_id("u1");
-    d.keys("Vjjf");
-    assert_eq!(note_line(&d), None, "no note line: `i` writes notes");
-    assert_eq!(d.decisions(), vec![P, F, F, F, P, P, P, P, P]);
-    assert_eq!(d.undo_steps(), 1);
-    assert_eq!(d.app.visual, None);
+    assert!(y > file, "under the tree: row {y}\n{narrow}");
 }
 
 // ---- Q12 --------------------------------------------------------------------------
 
 #[test]
 fn count_accepts_pending_units() {
-    let mut d = queue(6);
+    let mut d = queue_singles(6);
     set(&mut d, "u1", A);
     d.keys("3a");
     assert_eq!(d.decisions(), vec![A, A, A, A, P, P]);
@@ -506,25 +331,25 @@ fn count_accepts_pending_units() {
 
 #[test]
 fn mouse_select_and_copy() {
-    let mut d = queue_of(units_named(&["alpha_fn", "bravo_fn", "charlie_fn"]));
+    let mut d = queue_singles(3);
     let screen = d.render(100, 30);
-    let at = find(&screen, "charlie_fn").unwrap();
+    let at = find(&screen, "f02.rs").unwrap();
     mouse(&mut d, MouseEventKind::Down(MouseButton::Left), at);
     mouse(&mut d, MouseEventKind::Up(MouseButton::Left), at);
     assert_eq!(d.selected().as_deref(), Some("u2"), "a click selects");
     assert_eq!(d.decisions(), vec![P, P, P], "and decides nothing");
 
     let screen = d.render(100, 30);
-    let (x, y) = find(&screen, "bravo_fn").unwrap();
+    let (x, y) = find(&screen, "f01.rs").unwrap();
     mouse(&mut d, MouseEventKind::Down(MouseButton::Left), (x, y));
-    mouse(&mut d, MouseEventKind::Drag(MouseButton::Left), (x + 7, y));
+    mouse(&mut d, MouseEventKind::Drag(MouseButton::Left), (x + 5, y));
     d.render(100, 30);
-    let effects = mouse(&mut d, MouseEventKind::Up(MouseButton::Left), (x + 7, y));
+    let effects = mouse(&mut d, MouseEventKind::Up(MouseButton::Left), (x + 5, y));
     let copied = effects.iter().find_map(|e| match e {
         Effect::Copy { text, .. } => Some(text.clone()),
         _ => None,
     });
-    assert_eq!(copied.as_deref(), Some("bravo_fn"), "{effects:?}");
+    assert_eq!(copied.as_deref(), Some("f01.rs"), "{effects:?}");
 }
 
 // ---- Q14 --------------------------------------------------------------------------
@@ -578,6 +403,8 @@ fn resume_after_quit_and_crash() {
     let mut d = reopen(&repo);
     assert_eq!(d.app.order.len(), 4);
     assert_eq!(symbol(&d), "one");
+    // The queue decides on files: unit by unit is the unit view's.
+    keys_saved(&mut d, "l");
     keys_saved(&mut d, "a");
     keys_saved(&mut d, "islow path<cr>");
     keys_saved(&mut d, "f");
@@ -602,8 +429,10 @@ fn resume_after_quit_and_crash() {
     assert_eq!(d.undo_steps(), 2, "the undo stack too");
 
     // `q`: saved where the cursor is.
-    keys_saved(&mut d, "j");
+    keys_saved(&mut d, "ln");
     assert_eq!(symbol(&d), "four");
+    keys_saved(&mut d, "q");
+    assert_eq!(d.screen(), Screen::Queue);
     let effects = keys_saved(&mut d, "q");
     assert!(effects.contains(&Effect::Quit), "{effects:?}");
     let mut d = reopen(&repo);
@@ -617,7 +446,7 @@ fn resume_after_quit_and_crash() {
 
 #[test]
 fn bulk_and_undo() {
-    let mut d = queue(9);
+    let mut d = queue_singles(9);
     d.keys("Vjjf");
     assert_eq!(d.decisions()[..4], [F, F, F, P]);
     d.keys("u");

@@ -90,8 +90,8 @@ fn at(line: u32) -> Vec<LineRef> {
     }]
 }
 
-/// Unit `u{i}` named `NAMES[i]` in `f{i/3}.rs`, its level set by `risk`: ▲
-/// high, ◆ medium (described by the agent), ● when `None` (needs no
+/// Unit `u{i}` named `NAMES[i]` in `f{i/3}.rs`, its level set by `risk`: ┃
+/// high, ┃ medium (described by the agent), ┃ when `None` (needs no
 /// description).
 fn leveled(i: usize, risk: Option<Risk>) -> Unit {
     let mut u = unit(i, &format!("f{}.rs", i / 3));
@@ -172,7 +172,7 @@ fn answer(d: &mut Driver, id: &str, kind: DiveKind, text: &str) -> Vec<Effect> {
     }))
 }
 
-/// Pending units at ▲ or ◆, in queue order, by id.
+/// Pending units at ┃ or ┃, in queue order, by id.
 fn closer_looks(d: &Driver) -> Vec<String> {
     d.app
         .order
@@ -259,7 +259,7 @@ fn sections_and_hunk_jumps() {
     assert!(title.contains("big.py"), "{title}");
     assert!(title.contains("pending"), "{title}");
     assert!(
-        ['▲', '◆', '●'].iter().any(|g| title.contains(*g)),
+        ['┃', '┃', '┃'].iter().any(|g| title.contains(*g)),
         "{title}"
     );
     // The text's sections in order; the second model only when it
@@ -342,8 +342,8 @@ fn l_and_enter_open_any_unit_and_h_goes_back_to_its_row() {
 
 // ---- U2 ---------------------------------------------------------------------------
 
-/// alpha ▲, bravo ◆, charlie ● (f0); delta ▲, echo ◆ (f1); foxtrot ◆,
-/// golf ● (f2).
+/// alpha ┃, bravo ┃, charlie ┃ (f0); delta ┃, echo ┃ (f1); foxtrot ┃,
+/// golf ┃ (f2).
 fn mixed() -> Vec<Unit> {
     use Risk::{High, Medium};
     [
@@ -729,7 +729,7 @@ fn look_closer() {
     assert_eq!(
         d.selected(),
         Some(first.clone()),
-        "the queue starts on the first ▲"
+        "the queue starts on the first ┃"
     );
     assert_eq!(first, "u0");
     let row = d.sel();

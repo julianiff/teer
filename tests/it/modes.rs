@@ -183,9 +183,60 @@ fn suspect(d: &mut Driver, i: usize, checks: &[&str]) {
 }
 
 #[test]
+fn a_signature_the_change_made_long_is_offered_as_two_questions() {
+    use teer::review::model::Signature;
+    let mut d = driver(Mode::Review);
+    let i = d.app.order[d.app.sel];
+    let name = {
+        let u = &mut d.app.review.units[i];
+        u.signature = Some(Signature {
+            params: 11,
+            optional: 9,
+            alike: 9,
+            alike_type: "string".into(),
+            before: Some(8),
+        });
+        u.symbol.rsplit("::").next().unwrap().to_string()
+    };
+    d.keys("l");
+    let offered = d.app.suggestions();
+    let design = offered
+        .iter()
+        .find(|s| s.text.starts_with("Is the signature of"))
+        .expect("the design question");
+    assert_eq!(
+        design.text,
+        format!(
+            "Is the signature of {name} a design weakness? It has 11 parameters, 3 new, 9 optional, \
+9 of type string. Read its callers and say what to do in this change."
+        )
+    );
+    assert_eq!(design.offer, Offer::Question);
+    assert_eq!(design.about, "signature · 11 parameters");
+    assert!(
+        offered.iter().any(|s| s.text
+            == format!(
+                "Do the callers of {name} pass its 11 arguments by position, and can two change \
+places with no error?"
+            )),
+        "{offered:?}"
+    );
+    // Not when the change left the list as long as it was.
+    d.app.review.units[i].signature.as_mut().unwrap().before = Some(11);
+    assert!(
+        !d.app
+            .suggestions()
+            .iter()
+            .any(|s| s.text.contains("signature")),
+        "{:?}",
+        d.app.suggestions()
+    );
+}
+
+#[test]
 fn security_mode_opens_units_on_the_ask_tile_and_offers_the_checks() {
     let mut d = driver(Mode::Security);
-    assert!(d.app.security.by_exposure);
+    assert!(d.app.security.surface);
     let i = d.app.order[d.app.sel];
     suspect(
         &mut d,
@@ -310,7 +361,11 @@ fn the_help_lists_only_what_does_something_right_now() {
     ] {
         assert!(!s.contains(gone), "{gone}:\n{s}");
     }
-    for there in ["accept / flag the unit", "edit the note", "finish"] {
+    for there in [
+        "accept / flag the file's pending units",
+        "edit the note",
+        "finish",
+    ] {
         assert!(s.contains(there), "{there}:\n{s}");
     }
     // A flag and a note later, they are there.

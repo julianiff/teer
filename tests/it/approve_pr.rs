@@ -59,6 +59,7 @@ fn unit(symbol: &str, file: &str, old: (u32, u32), new: (u32, u32), note: &str) 
         dive_pending: Default::default(),
         checks: Default::default(),
         security: Vec::new(),
+        signature: None,
     }
 }
 

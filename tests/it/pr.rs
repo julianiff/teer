@@ -909,7 +909,7 @@ fn teer(fx: &Fx, args: &[&str]) -> std::process::Output {
 fn cli_json_review_of_a_pr() {
     let fx = Fx::new(true);
     fx.dirty();
-    let out = teer(&fx, &["pr", &fx.url, "--json", "--no-agent"]);
+    let out = teer(&fx, &[fx.url.as_str(), "--json", "--no-agent"]);
     assert!(
         out.status.success(),
         "{}",
@@ -933,7 +933,7 @@ fn cli_json_review_of_a_pr() {
     assert_eq!(fx.repo.file("scratch.txt"), "mine\n");
 
     // The next run switches the kept checkout instead of writing a new one.
-    let out = teer(&fx, &["pr", &fx.url, "--json", "--no-agent"]);
+    let out = teer(&fx, &[fx.url.as_str(), "--json", "--no-agent"]);
     assert!(out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -948,7 +948,7 @@ fn cli_json_review_of_a_pr() {
 fn cli_json_has_the_commits_and_the_title_gh_gives() {
     let fx = Fx::new(true);
     // gh missing (tests point TEER_GH at nothing): the commits alone.
-    let out = teer(&fx, &["pr", &fx.url, "--json", "--no-agent"]);
+    let out = teer(&fx, &[fx.url.as_str(), "--json", "--no-agent"]);
     assert!(out.status.success());
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(v["intent"]["pr"].is_null(), "{}", v["intent"]);
@@ -965,7 +965,7 @@ fn cli_json_has_the_commits_and_the_title_gh_gives() {
     executable(&gh);
     let env = isolate_env();
     let out = Command::new(teer_bin())
-        .args(["pr", &fx.url, "--json", "--no-agent", "-C"])
+        .args([fx.url.as_str(), "--json", "--no-agent", "-C"])
         .arg(fx.path())
         .env("TEER_DATA_DIR", env.path().join("data"))
         .env("TEER_CONFIG", env.path().join("config.toml"))
@@ -995,16 +995,16 @@ fn cli_errors_and_help() {
 
     let out = teer(
         &fx,
-        &["pr", "https://github.com/acme/shop/issues/7", "--no-agent"],
+        &["https://github.com/acme/shop/issues/7", "--no-agent"],
     );
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("not a pull request URL"));
 
-    let out = teer(&fx, &["pr", "https://github.com/x/y/pull/1", "--no-agent"]);
+    let out = teer(&fx, &["https://github.com/x/y/pull/1", "--no-agent"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("Run teer from a clone of x/y"));
 
-    let out = teer(&fx, &["pr", &fx.url, "--base", "main", "--no-agent"]);
+    let out = teer(&fx, &[fx.url.as_str(), "--base", "main", "--no-agent"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("--base"));
 }
@@ -1111,7 +1111,7 @@ fn signal_teer(fx: &Fx, sig: &str, worktrees: usize) -> Option<i32> {
         std::env::var("PATH").unwrap()
     );
     let mut child = Command::new(teer_bin())
-        .args(["pr", &fx.url, "--json", "-C"])
+        .args([fx.url.as_str(), "--json", "-C"])
         .arg(fx.path())
         .env("PATH", path)
         .env("TEER_DATA_DIR", env.path().join("data"))
@@ -1192,7 +1192,7 @@ fn a_stalled_fetch_times_out_and_leaves_nothing_behind() {
     let env = isolate_env();
     let start = std::time::Instant::now();
     let out = Command::new(teer_bin())
-        .args(["pr", &fx.url, "--json", "--no-agent", "-C"])
+        .args([fx.url.as_str(), "--json", "--no-agent", "-C"])
         .arg(fx.path())
         .env("TEER_FETCH_TIMEOUT", "2")
         .env("TEER_DATA_DIR", env.path().join("data"))
